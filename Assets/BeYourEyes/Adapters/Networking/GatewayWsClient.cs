@@ -12,19 +12,25 @@ namespace BeYourEyes.Adapters.Networking
 {
     public sealed class GatewayWsClient : MonoBehaviour
     {
+        private const string PingMsg = "__ping__";
+        private const string PongMsg = "__pong__";
+        private const float PingIntervalSec = 2f;
+
         public string wsUrl = "ws://127.0.0.1:8000/ws/events";
         public float reconnectMinDelaySec = 1f;
         public float reconnectMaxDelaySec = 8f;
         public int ReconnectCount { get; private set; }
         public string ConnectionState { get; private set; } = "Disconnected";
+        public int LastRttMs { get; private set; } = -1;
 
         private readonly ConcurrentQueue<string> pendingJson = new ConcurrentQueue<string>();
-        private readonly ConcurrentQueue<string> pendingHealthStatus = new ConcurrentQueue<string>();
+        private readonly ConcurrentQueue<(string status, int rttMs)> pendingHealthStatus = new ConcurrentQueue<(string status, int rttMs)>();
         private readonly ConcurrentQueue<string> pendingWarnings = new ConcurrentQueue<string>();
 
         private CancellationTokenSource cts;
         private Task connectTask;
         private bool hasAttemptedConnect;
+        private long _lastPingSentMs = -1;
 
         private void OnEnable()
         {
@@ -49,9 +55,9 @@ namespace BeYourEyes.Adapters.Networking
                 Debug.LogWarning(warning);
             }
 
-            while (pendingHealthStatus.TryDequeue(out var status))
+            while (pendingHealthStatus.TryDequeue(out var health))
             {
-                GatewayPoller.PublishSystemHealth(status, -1, "gateway_ws");
+                GatewayPoller.PublishSystemHealth(health.status, health.rttMs, "gateway_ws");
             }
 
             while (pendingJson.TryDequeue(out var json))
@@ -89,6 +95,8 @@ namespace BeYourEyes.Adapters.Networking
             ReconnectCount = 0;
             hasAttemptedConnect = false;
             ConnectionState = "Connecting";
+            LastRttMs = -1;
+            Interlocked.Exchange(ref _lastPingSentMs, -1);
             cts = new CancellationTokenSource();
             connectTask = Task.Run(() => ConnectLoopAsync(cts.Token));
         }
@@ -113,6 +121,8 @@ namespace BeYourEyes.Adapters.Networking
             cts = null;
             connectTask = null;
             ConnectionState = "Disconnected";
+            LastRttMs = -1;
+            Interlocked.Exchange(ref _lastPingSentMs, -1);
         }
 
         private async Task ConnectLoopAsync(CancellationToken token)
@@ -137,10 +147,29 @@ namespace BeYourEyes.Adapters.Networking
                     {
                         await socket.ConnectAsync(BuildUri(), token);
                         ConnectionState = "Connected";
-                        pendingHealthStatus.Enqueue("gateway_connected");
+                        LastRttMs = -1;
+                        Interlocked.Exchange(ref _lastPingSentMs, -1);
+                        pendingHealthStatus.Enqueue(("gateway_connected", -1));
                         delaySec = minDelay;
 
-                        await ReceiveLoopAsync(socket, token);
+                        using (var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(token))
+                        {
+                            var connectionToken = connectionCts.Token;
+                            var receiveTask = ReceiveLoopAsync(socket, connectionToken);
+                            var pingTask = PingLoopAsync(socket, connectionToken);
+
+                            await Task.WhenAny(receiveTask, pingTask);
+                            connectionCts.Cancel();
+
+                            try
+                            {
+                                await Task.WhenAll(receiveTask, pingTask);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                // no-op
+                            }
+                        }
                     }
                     catch (OperationCanceledException)
                     {
@@ -158,7 +187,7 @@ namespace BeYourEyes.Adapters.Networking
                 }
 
                 ConnectionState = "Disconnected";
-                pendingHealthStatus.Enqueue("gateway_disconnected");
+                pendingHealthStatus.Enqueue(("gateway_disconnected", -1));
 
                 try
                 {
@@ -215,13 +244,54 @@ namespace BeYourEyes.Adapters.Networking
                         continue;
                     }
 
-                    var json = Encoding.UTF8.GetString(stream.ToArray());
-                    if (!string.IsNullOrWhiteSpace(json))
+                    var payload = Encoding.UTF8.GetString(stream.ToArray());
+                    if (string.Equals(payload, PongMsg, StringComparison.Ordinal))
                     {
-                        pendingJson.Enqueue(json);
+                        var pingSentMs = Interlocked.Read(ref _lastPingSentMs);
+                        if (pingSentMs > 0)
+                        {
+                            var rttMsLong = UtcNowMs() - pingSentMs;
+                            if (rttMsLong < 0)
+                            {
+                                rttMsLong = 0;
+                            }
+
+                            LastRttMs = (int)Math.Min(int.MaxValue, rttMsLong);
+                            pendingHealthStatus.Enqueue(("gateway_rtt", LastRttMs));
+                        }
+
+                        continue;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(payload))
+                    {
+                        pendingJson.Enqueue(payload);
                     }
                 }
             }
+        }
+
+        private async Task PingLoopAsync(ClientWebSocket socket, CancellationToken token)
+        {
+            var pingBytes = Encoding.UTF8.GetBytes(PingMsg);
+            var segment = new ArraySegment<byte>(pingBytes);
+
+            while (!token.IsCancellationRequested && socket.State == WebSocketState.Open)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(PingIntervalSec), token);
+                if (token.IsCancellationRequested || socket.State != WebSocketState.Open)
+                {
+                    return;
+                }
+
+                Interlocked.Exchange(ref _lastPingSentMs, UtcNowMs());
+                await socket.SendAsync(segment, WebSocketMessageType.Text, true, token);
+            }
+        }
+
+        private static long UtcNowMs()
+        {
+            return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         }
 
         private Uri BuildUri()
@@ -240,6 +310,7 @@ namespace BeYourEyes.Adapters.Networking
     {
         public int ReconnectCount { get; private set; }
         public string ConnectionState { get; private set; } = "Disconnected";
+        public int LastRttMs { get; private set; } = -1;
 
         private void OnEnable()
         {

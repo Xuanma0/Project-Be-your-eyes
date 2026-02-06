@@ -72,6 +72,10 @@ namespace BeYourEyes.Presenters.DebugHUD
                 }
 
                 reconnectCount = wsClient.ReconnectCount;
+                if (wsClient.LastRttMs >= 0)
+                {
+                    lastRttMs = wsClient.LastRttMs;
+                }
             }
 
             if (Time.unscaledTime < nextRefreshAt)
