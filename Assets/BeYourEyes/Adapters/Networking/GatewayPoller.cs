@@ -45,14 +45,14 @@ namespace BeYourEyes.Adapters.Networking
                 if (request.result != UnityWebRequest.Result.Success)
                 {
                     Debug.LogWarning($"Gateway poll failed: {request.error}");
-                    PublishGatewayHealth("gateway_unreachable", -1);
+                    PublishSystemHealth("gateway_unreachable", -1, "gateway");
                     yield break;
                 }
 
                 var rawJson = request.downloadHandler == null ? string.Empty : request.downloadHandler.text;
                 if (string.IsNullOrWhiteSpace(rawJson))
                 {
-                    PublishGatewayHealth("gateway_payload_empty", -1);
+                    PublishSystemHealth("gateway_payload_empty", -1, "gateway");
                     yield break;
                 }
 
@@ -64,38 +64,16 @@ namespace BeYourEyes.Adapters.Networking
                 catch (Exception ex)
                 {
                     Debug.LogWarning($"Gateway payload parse failed: {ex.Message}");
-                    PublishGatewayHealth("gateway_payload_invalid", -1);
+                    PublishSystemHealth("gateway_payload_invalid", -1, "gateway");
                     yield break;
                 }
 
-                if (dto == null)
-                {
-                    PublishGatewayHealth("gateway_payload_invalid", -1);
-                    yield break;
-                }
-
-                var envelope = ToEnvelope(dto);
                 var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                if (envelope.IsExpired(nowMs))
+                var result = PublishFromDto(dto, nowMs, "gateway");
+                if (result == GatewayPublishResult.UnknownType || result == GatewayPublishResult.InvalidPayload)
                 {
-                    yield break;
+                    PublishSystemHealth("gateway_event_unknown", -1, "gateway");
                 }
-
-                var eventType = dto.type == null ? string.Empty : dto.type.Trim().ToLowerInvariant();
-                if (eventType == "risk")
-                {
-                    AppServices.Bus.Publish(new RiskEvent(envelope, dto.riskText, dto.distanceM, dto.azimuthDeg));
-                    yield break;
-                }
-
-                if (eventType == "perception")
-                {
-                    AppServices.Bus.Publish(new PerceptionEvent(envelope, dto.summary));
-                    yield break;
-                }
-
-                PublishGatewayHealth("gateway_event_unknown", -1);
-                yield break;
             }
         }
 
@@ -105,21 +83,62 @@ namespace BeYourEyes.Adapters.Networking
             return $"{normalizedBase.TrimEnd('/')}/api/mock_event";
         }
 
-        private static EventEnvelope ToEnvelope(GatewayMockEventDto dto)
+        internal static GatewayPublishResult PublishFromDto(GatewayMockEventDto dto, long nowMs, string defaultSource)
         {
-            var source = string.IsNullOrWhiteSpace(dto.source) ? "gateway" : dto.source;
+            if (dto == null)
+            {
+                return GatewayPublishResult.InvalidPayload;
+            }
+
+            var envelope = ToEnvelope(dto, defaultSource);
+            if (envelope.IsExpired(nowMs))
+            {
+                return GatewayPublishResult.Expired;
+            }
+
+            var eventType = dto.type == null ? string.Empty : dto.type.Trim().ToLowerInvariant();
+            if (eventType == "risk")
+            {
+                AppServices.Bus.Publish(new RiskEvent(envelope, dto.riskText, dto.distanceM, dto.azimuthDeg));
+                return GatewayPublishResult.Published;
+            }
+
+            if (eventType == "perception")
+            {
+                AppServices.Bus.Publish(new PerceptionEvent(envelope, dto.summary));
+                return GatewayPublishResult.Published;
+            }
+
+            return GatewayPublishResult.UnknownType;
+        }
+
+        internal static void PublishSystemHealth(string status, int rttMs, string source)
+        {
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var envelope = new EventEnvelope(nowMs, CoordFrame.World, 1f, 1000, NormalizeSource(source));
+            AppServices.Bus.Publish(new SystemHealthEvent(envelope, status, rttMs));
+        }
+
+        private static EventEnvelope ToEnvelope(GatewayMockEventDto dto, string defaultSource)
+        {
+            var source = string.IsNullOrWhiteSpace(dto.source) ? NormalizeSource(defaultSource) : dto.source;
             var frame = string.Equals(dto.coordFrame, "World", StringComparison.OrdinalIgnoreCase)
                 ? CoordFrame.World
                 : CoordFrame.World;
-
             return new EventEnvelope(dto.timestampMs, frame, dto.confidence, dto.ttlMs, source);
         }
 
-        private static void PublishGatewayHealth(string status, int rttMs)
+        private static string NormalizeSource(string source)
         {
-            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var envelope = new EventEnvelope(nowMs, CoordFrame.World, 1f, 1000, "gateway");
-            AppServices.Bus.Publish(new SystemHealthEvent(envelope, status, rttMs));
+            return string.IsNullOrWhiteSpace(source) ? "gateway" : source;
         }
+    }
+
+    internal enum GatewayPublishResult
+    {
+        Published,
+        Expired,
+        UnknownType,
+        InvalidPayload
     }
 }

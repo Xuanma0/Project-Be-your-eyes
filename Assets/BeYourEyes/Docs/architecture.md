@@ -73,3 +73,9 @@ Runtime path: `MockEventSource -> EventBus -> PromptScheduler -> PromptEvent -> 
 `GatewayPoller` can replace `MockEventSource` as the upstream event producer.
 It polls `GET /api/mock_event`, converts DTO to core events, and publishes to `EventBus`.
 Runtime path: `GatewayPoller -> EventBus -> PromptScheduler -> PromptEvent -> DebugAudioPresenter`.
+
+## WebSocket + SafeMode
+`GatewayWsClient` is the preferred upstream in Editor/Windows and streams `/ws/events`.
+Incoming WS JSON is queued from a background task, then parsed/published on Unity main thread.
+WS `gateway_disconnected` or HTTP `gateway_unreachable` enables SafeMode in `PromptScheduler`.
+SafeMode keeps risk prompts active and silences perception prompts until `gateway_connected`.

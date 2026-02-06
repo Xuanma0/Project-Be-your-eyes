@@ -35,6 +35,17 @@ namespace BeYourEyes
                 host.AddComponent<DebugAudioPresenter>();
             }
 
+            var wsType = Type.GetType("BeYourEyes.Adapters.Networking.GatewayWsClient, BeYourEyes.Unity");
+            if (wsType != null)
+            {
+                if (host.GetComponent(wsType) == null)
+                {
+                    host.AddComponent(wsType);
+                }
+
+                return;
+            }
+
             var pollerType = Type.GetType("BeYourEyes.Adapters.Networking.GatewayPoller, BeYourEyes.Unity");
             if (pollerType != null && host.GetComponent(pollerType) == null)
             {

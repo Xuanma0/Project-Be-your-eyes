@@ -8,10 +8,14 @@ namespace BeYourEyes.Core.Scheduling
     public sealed class PromptScheduler
     {
         private const int RiskThrottleMs = 2000;
+        private const int SafeModeNoticeThrottleMs = 5000;
 
         private readonly IEventBus bus;
         private readonly Func<long> nowMs;
         private readonly Dictionary<string, long> riskLastPublishedMsByText = new Dictionary<string, long>();
+
+        private bool safeMode;
+        private long lastSafeModeNoticeMs = long.MinValue;
 
         public PromptScheduler(IEventBus bus, Func<long> nowMs)
         {
@@ -20,6 +24,7 @@ namespace BeYourEyes.Core.Scheduling
 
             this.bus.Subscribe<RiskEvent>(OnRiskEvent);
             this.bus.Subscribe<PerceptionEvent>(OnPerceptionEvent);
+            this.bus.Subscribe<SystemHealthEvent>(OnSystemHealthEvent);
         }
 
         private void OnRiskEvent(RiskEvent evt)
@@ -35,30 +40,17 @@ namespace BeYourEyes.Core.Scheduling
                 return;
             }
 
-            var riskText = string.IsNullOrWhiteSpace(evt.riskText) ? "检测到风险" : evt.riskText;
-            if (riskLastPublishedMsByText.TryGetValue(riskText, out var lastMs))
+            var riskText = string.IsNullOrWhiteSpace(evt.riskText) ? "Risk detected" : evt.riskText;
+            if (riskLastPublishedMsByText.TryGetValue(riskText, out var lastMs) && now - lastMs < RiskThrottleMs)
             {
-                if (now - lastMs < RiskThrottleMs)
-                {
-                    return;
-                }
+                return;
             }
 
             riskLastPublishedMsByText[riskText] = now;
-
-            var prompt = new PromptEvent(
-                evt.envelope,
-                riskText,
-                100,
-                true,
-                "tts",
-                "risk");
-
-            bus.Publish(prompt);
+            bus.Publish(new PromptEvent(evt.envelope, riskText, 100, true, "tts", "risk"));
 
             // TODO: wire PromptScheduler to InteractionStateMachine and force Emergency when risk escalates.
-            var suggestion = new DialogEvent(evt.envelope, "建议进入紧急状态", true);
-            bus.Publish(suggestion);
+            bus.Publish(new DialogEvent(evt.envelope, "Suggest entering emergency state", true));
         }
 
         private void OnPerceptionEvent(PerceptionEvent evt)
@@ -74,16 +66,57 @@ namespace BeYourEyes.Core.Scheduling
                 return;
             }
 
-            var text = string.IsNullOrWhiteSpace(evt.summary) ? "检测到新信息" : evt.summary;
-            var prompt = new PromptEvent(
-                evt.envelope,
-                text,
-                10,
-                false,
-                "tts",
-                "info");
+            if (safeMode)
+            {
+                return;
+            }
 
-            bus.Publish(prompt);
+            var text = string.IsNullOrWhiteSpace(evt.summary) ? "Perception update available" : evt.summary;
+            bus.Publish(new PromptEvent(evt.envelope, text, 10, false, "tts", "info"));
+        }
+
+        private void OnSystemHealthEvent(SystemHealthEvent evt)
+        {
+            if (evt == null || evt.envelope == null)
+            {
+                return;
+            }
+
+            var now = nowMs();
+            if (evt.envelope.IsExpired(now))
+            {
+                return;
+            }
+
+            var status = (evt.status ?? string.Empty).Trim().ToLowerInvariant();
+            if (status == "gateway_connected")
+            {
+                safeMode = false;
+                return;
+            }
+
+            if (status != "gateway_disconnected" && status != "gateway_unreachable")
+            {
+                return;
+            }
+
+            var shouldNotify = !safeMode || now - lastSafeModeNoticeMs >= SafeModeNoticeThrottleMs;
+            safeMode = true;
+
+            if (!shouldNotify)
+            {
+                return;
+            }
+
+            lastSafeModeNoticeMs = now;
+            bus.Publish(
+                new PromptEvent(
+                    evt.envelope,
+                    "Connection lost. Safe mode enabled: risk alerts only.",
+                    90,
+                    true,
+                    "tts",
+                    "system"));
         }
     }
 }
