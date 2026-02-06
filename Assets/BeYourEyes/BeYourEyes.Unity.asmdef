@@ -2,7 +2,8 @@
   "name": "BeYourEyes.Unity",
   "rootNamespace": "BeYourEyes.Unity",
   "references": [
-    "BeYourEyes.Core"
+    "BeYourEyes.Core",
+    "Unity.InputSystem"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],
