@@ -22,6 +22,7 @@ namespace BeYourEyes.Adapters.Networking
         public int ReconnectCount { get; private set; }
         public string ConnectionState { get; private set; } = "Disconnected";
         public int LastRttMs { get; private set; } = -1;
+        public long LastRttUpdatedMs { get; private set; } = -1;
 
         private readonly ConcurrentQueue<string> pendingJson = new ConcurrentQueue<string>();
         private readonly ConcurrentQueue<(string status, int rttMs)> pendingHealthStatus = new ConcurrentQueue<(string status, int rttMs)>();
@@ -94,9 +95,7 @@ namespace BeYourEyes.Adapters.Networking
             StopClient();
             ReconnectCount = 0;
             hasAttemptedConnect = false;
-            ConnectionState = "Connecting";
-            LastRttMs = -1;
-            Interlocked.Exchange(ref _lastPingSentMs, -1);
+            SetConnectionState("Connecting");
             cts = new CancellationTokenSource();
             connectTask = Task.Run(() => ConnectLoopAsync(cts.Token));
         }
@@ -120,9 +119,7 @@ namespace BeYourEyes.Adapters.Networking
             cts.Dispose();
             cts = null;
             connectTask = null;
-            ConnectionState = "Disconnected";
-            LastRttMs = -1;
-            Interlocked.Exchange(ref _lastPingSentMs, -1);
+            SetConnectionState("Disconnected");
         }
 
         private async Task ConnectLoopAsync(CancellationToken token)
@@ -139,15 +136,14 @@ namespace BeYourEyes.Adapters.Networking
                 }
 
                 hasAttemptedConnect = true;
-                ConnectionState = "Connecting";
+                SetConnectionState("Connecting");
 
                 using (var socket = new ClientWebSocket())
                 {
                     try
                     {
                         await socket.ConnectAsync(BuildUri(), token);
-                        ConnectionState = "Connected";
-                        LastRttMs = -1;
+                        SetConnectionState("Connected");
                         Interlocked.Exchange(ref _lastPingSentMs, -1);
                         pendingHealthStatus.Enqueue(("gateway_connected", -1));
                         delaySec = minDelay;
@@ -186,7 +182,7 @@ namespace BeYourEyes.Adapters.Networking
                     break;
                 }
 
-                ConnectionState = "Disconnected";
+                SetConnectionState("Disconnected");
                 pendingHealthStatus.Enqueue(("gateway_disconnected", -1));
 
                 try
@@ -250,13 +246,15 @@ namespace BeYourEyes.Adapters.Networking
                         var pingSentMs = Interlocked.Read(ref _lastPingSentMs);
                         if (pingSentMs > 0)
                         {
-                            var rttMsLong = UtcNowMs() - pingSentMs;
+                            var nowMs = UtcNowMs();
+                            var rttMsLong = nowMs - pingSentMs;
                             if (rttMsLong < 0)
                             {
                                 rttMsLong = 0;
                             }
 
                             LastRttMs = (int)Math.Min(int.MaxValue, rttMsLong);
+                            LastRttUpdatedMs = nowMs;
                             pendingHealthStatus.Enqueue(("gateway_rtt", LastRttMs));
                         }
 
@@ -294,6 +292,17 @@ namespace BeYourEyes.Adapters.Networking
             return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         }
 
+        private void SetConnectionState(string state)
+        {
+            ConnectionState = state;
+            if (!string.Equals(state, "Connected", StringComparison.Ordinal))
+            {
+                LastRttMs = -1;
+                LastRttUpdatedMs = -1;
+                Interlocked.Exchange(ref _lastPingSentMs, -1);
+            }
+        }
+
         private Uri BuildUri()
         {
             var url = string.IsNullOrWhiteSpace(wsUrl) ? "ws://127.0.0.1:8000/ws/events" : wsUrl.Trim();
@@ -311,6 +320,7 @@ namespace BeYourEyes.Adapters.Networking
         public int ReconnectCount { get; private set; }
         public string ConnectionState { get; private set; } = "Disconnected";
         public int LastRttMs { get; private set; } = -1;
+        public long LastRttUpdatedMs { get; private set; } = -1;
 
         private void OnEnable()
         {

@@ -19,7 +19,6 @@ namespace BeYourEyes.Presenters.DebugHUD
 
         private string gatewayState = "Connecting";
         private int reconnectCount;
-        private int lastRttMs = -1;
         private string lastEventSummary = "-";
         private long lastEventTimestampMs;
 
@@ -72,10 +71,6 @@ namespace BeYourEyes.Presenters.DebugHUD
                 }
 
                 reconnectCount = wsClient.ReconnectCount;
-                if (wsClient.LastRttMs >= 0)
-                {
-                    lastRttMs = wsClient.LastRttMs;
-                }
             }
 
             if (Time.unscaledTime < nextRefreshAt)
@@ -110,11 +105,6 @@ namespace BeYourEyes.Presenters.DebugHUD
             else if (status == "tick" && gatewayState != "Connected")
             {
                 gatewayState = "Connecting";
-            }
-
-            if (evt.rttMs.HasValue && evt.rttMs.Value >= 0)
-            {
-                lastRttMs = evt.rttMs.Value;
             }
 
             SetLastEvent("System", string.IsNullOrWhiteSpace(evt.status) ? "tick" : evt.status, evt.envelope.timestampMs);
@@ -167,7 +157,7 @@ namespace BeYourEyes.Presenters.DebugHUD
             }
 
             var safeModeText = AppServices.Scheduler != null && AppServices.Scheduler.SafeModeEnabled ? "ON" : "OFF";
-            var rttText = lastRttMs >= 0 ? $"{lastRttMs} ms" : "-";
+            var rttText = ResolveRttText();
             var eventTimeText = lastEventTimestampMs > 0
                 ? DateTimeOffset.FromUnixTimeMilliseconds(lastEventTimestampMs).ToLocalTime().ToString("HH:mm:ss")
                 : "-";
@@ -180,6 +170,32 @@ namespace BeYourEyes.Presenters.DebugHUD
                 $"LastEvent: {lastEventSummary}\n" +
                 $"LastEventAt: {eventTimeText}\n" +
                 $"RTT: {rttText}";
+        }
+
+        private string ResolveRttText()
+        {
+            if (wsClient == null)
+            {
+                return "-";
+            }
+
+            if (!string.Equals(wsClient.ConnectionState, "Connected", StringComparison.Ordinal))
+            {
+                return "-";
+            }
+
+            if (wsClient.LastRttMs < 0)
+            {
+                return "-";
+            }
+
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (wsClient.LastRttUpdatedMs > 0 && nowMs - wsClient.LastRttUpdatedMs > 5000)
+            {
+                return "-";
+            }
+
+            return $"{wsClient.LastRttMs} ms";
         }
 
         private void EnsureHud()
