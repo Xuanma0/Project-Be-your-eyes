@@ -1,6 +1,6 @@
+using System;
 using BeYourEyes.Adapters;
 using BeYourEyes.Presenters.Audio;
-using BeYourEyes.Presenters.DebugHUD;
 using UnityEngine;
 
 namespace BeYourEyes
@@ -16,7 +16,7 @@ namespace BeYourEyes
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void EnsureRuntimeLoop()
         {
-            var bootstrap = FindObjectOfType<AppBootstrap>();
+            var bootstrap = FindFirstObjectByType<AppBootstrap>();
             GameObject host;
 
             if (bootstrap == null)
@@ -30,14 +30,15 @@ namespace BeYourEyes
                 host = bootstrap.gameObject;
             }
 
-            if (FindObjectOfType<DebugAudioPresenter>() == null)
+            if (FindFirstObjectByType<DebugAudioPresenter>() == null)
             {
                 host.AddComponent<DebugAudioPresenter>();
             }
 
-            if (FindObjectOfType<MockEventSource>() == null)
+            var pollerType = Type.GetType("BeYourEyes.Adapters.Networking.GatewayPoller, BeYourEyes.Unity");
+            if (pollerType != null && host.GetComponent(pollerType) == null)
             {
-                host.AddComponent<MockEventSource>();
+                host.AddComponent(pollerType);
             }
         }
     }

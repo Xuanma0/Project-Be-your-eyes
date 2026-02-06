@@ -68,3 +68,8 @@ Expired events are dropped and must not update state or UI.
 `PromptScheduler` consumes those events and emits `PromptEvent`.
 `DebugAudioPresenter` subscribes `PromptEvent` and logs TTS text.
 Runtime path: `MockEventSource -> EventBus -> PromptScheduler -> PromptEvent -> DebugAudioPresenter`.
+
+## Gateway Runtime Loop
+`GatewayPoller` can replace `MockEventSource` as the upstream event producer.
+It polls `GET /api/mock_event`, converts DTO to core events, and publishes to `EventBus`.
+Runtime path: `GatewayPoller -> EventBus -> PromptScheduler -> PromptEvent -> DebugAudioPresenter`.
