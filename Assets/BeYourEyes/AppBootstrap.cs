@@ -69,6 +69,12 @@ namespace BeYourEyes
                 host.AddComponent<DebugAudioPresenter>();
             }
 
+            var hudType = Type.GetType("BeYourEyes.Presenters.DebugHUD.DebugHudPresenter, BeYourEyes.Unity");
+            if (hudType != null && host.GetComponent(hudType) == null)
+            {
+                host.AddComponent(hudType);
+            }
+
             var wsType = Type.GetType("BeYourEyes.Adapters.Networking.GatewayWsClient, BeYourEyes.Unity");
             if (wsType != null)
             {

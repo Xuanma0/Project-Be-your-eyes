@@ -15,6 +15,8 @@ namespace BeYourEyes.Adapters.Networking
         public string wsUrl = "ws://127.0.0.1:8000/ws/events";
         public float reconnectMinDelaySec = 1f;
         public float reconnectMaxDelaySec = 8f;
+        public int ReconnectCount { get; private set; }
+        public string ConnectionState { get; private set; } = "Disconnected";
 
         private readonly ConcurrentQueue<string> pendingJson = new ConcurrentQueue<string>();
         private readonly ConcurrentQueue<string> pendingHealthStatus = new ConcurrentQueue<string>();
@@ -22,6 +24,7 @@ namespace BeYourEyes.Adapters.Networking
 
         private CancellationTokenSource cts;
         private Task connectTask;
+        private bool hasAttemptedConnect;
 
         private void OnEnable()
         {
@@ -83,6 +86,9 @@ namespace BeYourEyes.Adapters.Networking
         private void StartClient()
         {
             StopClient();
+            ReconnectCount = 0;
+            hasAttemptedConnect = false;
+            ConnectionState = "Connecting";
             cts = new CancellationTokenSource();
             connectTask = Task.Run(() => ConnectLoopAsync(cts.Token));
         }
@@ -106,6 +112,7 @@ namespace BeYourEyes.Adapters.Networking
             cts.Dispose();
             cts = null;
             connectTask = null;
+            ConnectionState = "Disconnected";
         }
 
         private async Task ConnectLoopAsync(CancellationToken token)
@@ -116,11 +123,20 @@ namespace BeYourEyes.Adapters.Networking
 
             while (!token.IsCancellationRequested)
             {
+                if (hasAttemptedConnect)
+                {
+                    ReconnectCount++;
+                }
+
+                hasAttemptedConnect = true;
+                ConnectionState = "Connecting";
+
                 using (var socket = new ClientWebSocket())
                 {
                     try
                     {
                         await socket.ConnectAsync(BuildUri(), token);
+                        ConnectionState = "Connected";
                         pendingHealthStatus.Enqueue("gateway_connected");
                         delaySec = minDelay;
 
@@ -141,6 +157,7 @@ namespace BeYourEyes.Adapters.Networking
                     break;
                 }
 
+                ConnectionState = "Disconnected";
                 pendingHealthStatus.Enqueue("gateway_disconnected");
 
                 try
@@ -221,6 +238,9 @@ namespace BeYourEyes.Adapters.Networking
 {
     public sealed class GatewayWsClient : MonoBehaviour
     {
+        public int ReconnectCount { get; private set; }
+        public string ConnectionState { get; private set; } = "Disconnected";
+
         private void OnEnable()
         {
             Debug.LogWarning("GatewayWsClient is only enabled for Windows Editor/Standalone in this version.");

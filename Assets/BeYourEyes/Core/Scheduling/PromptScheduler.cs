@@ -24,6 +24,8 @@ namespace BeYourEyes.Core.Scheduling
         private long startupMs = long.MinValue;
         private long lastLostPromptMs = long.MinValue;
 
+        public bool SafeModeEnabled => safeMode;
+
         public PromptScheduler(IEventBus bus, Func<long> nowMs)
         {
             this.bus = bus ?? throw new ArgumentNullException(nameof(bus));

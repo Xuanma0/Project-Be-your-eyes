@@ -79,3 +79,9 @@ Runtime path: `GatewayPoller -> EventBus -> PromptScheduler -> PromptEvent -> De
 Incoming WS JSON is queued from a background task, then parsed/published on Unity main thread.
 WS `gateway_disconnected` or HTTP `gateway_unreachable` enables SafeMode in `PromptScheduler`.
 SafeMode keeps risk prompts active and silences perception prompts until `gateway_connected`.
+
+## DebugHUD Metrics
+`DebugHudPresenter` shows live gateway connectivity, SafeMode flag, reconnect attempts, and RTT.
+It also tracks the latest Risk/Perception/Dialog/System event summary and timestamp.
+HUD is built with native `UnityEngine.UI` Canvas + Text (no extra plugin dependency).
+SafeMode display reads `AppServices.Scheduler.SafeModeEnabled` directly.

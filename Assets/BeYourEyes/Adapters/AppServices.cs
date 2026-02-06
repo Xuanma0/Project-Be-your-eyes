@@ -12,6 +12,7 @@ namespace BeYourEyes.Adapters
 
         public static IEventBus Bus { get; private set; }
         public static InteractionStateMachine StateMachine { get; private set; }
+        public static PromptScheduler Scheduler { get; private set; }
 
         public static void Init()
         {
@@ -23,6 +24,7 @@ namespace BeYourEyes.Adapters
             Bus = new EventBus();
             StateMachine = new InteractionStateMachine();
             promptScheduler = new PromptScheduler(Bus, UtcNowMs);
+            Scheduler = promptScheduler;
             initialized = true;
         }
 
