@@ -53,3 +53,12 @@ Not allowed: Core -> concrete infrastructure implementation.
 Add new domain rules in Core first, then expose via interfaces.
 Implement platform details in Adapters, visualization in Presenters.
 Document major boundary changes in this file during PRs.
+
+## Event Contract
+All core events carry `EventEnvelope` with `timestampMs`, `coordFrame`, `confidence`, `ttlMs`, `source`.
+`timestampMs` is producer clock time in milliseconds.
+`coordFrame` identifies the coordinate basis for spatial values.
+`confidence` is normalized to `[0,1]`.
+`ttlMs <= 0` is normalized to `1000ms` to avoid accidental immediate drop.
+Consumers should call `IsExpired(nowMs)` before handling.
+Expired events are dropped and must not update state or UI.
