@@ -8,19 +8,27 @@ namespace BeYourEyes.Core.Scheduling
     public sealed class PromptScheduler
     {
         private const int RiskThrottleMs = 2000;
-        private const int SafeModeNoticeThrottleMs = 5000;
+        private const int SafeModeNoticeThrottleMs = 60000;
+        private const int StartupConnectingDelayMs = 3000;
+        private const string SafeModeEnteredText = "Connection lost. Safe mode enabled: risk alerts only.";
+        private const string SafeModeRestoredText = "Connection restored. Safe mode disabled.";
+        private const string StartupConnectingText = "Connecting to gateway...";
 
         private readonly IEventBus bus;
         private readonly Func<long> nowMs;
         private readonly Dictionary<string, long> riskLastPublishedMsByText = new Dictionary<string, long>();
 
         private bool safeMode;
-        private long lastSafeModeNoticeMs = long.MinValue;
+        private bool hasEverConnected;
+        private bool startupPrompted;
+        private long startupMs = long.MinValue;
+        private long lastLostPromptMs = long.MinValue;
 
         public PromptScheduler(IEventBus bus, Func<long> nowMs)
         {
             this.bus = bus ?? throw new ArgumentNullException(nameof(bus));
             this.nowMs = nowMs ?? throw new ArgumentNullException(nameof(nowMs));
+            startupMs = this.nowMs();
 
             this.bus.Subscribe<RiskEvent>(OnRiskEvent);
             this.bus.Subscribe<PerceptionEvent>(OnPerceptionEvent);
@@ -89,9 +97,25 @@ namespace BeYourEyes.Core.Scheduling
             }
 
             var status = (evt.status ?? string.Empty).Trim().ToLowerInvariant();
+            if (status == "tick")
+            {
+                if (!hasEverConnected && !startupPrompted && now - startupMs >= StartupConnectingDelayMs)
+                {
+                    startupPrompted = true;
+                    bus.Publish(new PromptEvent(evt.envelope, StartupConnectingText, 90, false, "tts", "system"));
+                }
+
+                return;
+            }
+
             if (status == "gateway_connected")
             {
-                safeMode = false;
+                hasEverConnected = true;
+                if (safeMode)
+                {
+                    safeMode = false;
+                    bus.Publish(new PromptEvent(evt.envelope, SafeModeRestoredText, 50, true, "tts", "system"));
+                }
                 return;
             }
 
@@ -100,23 +124,21 @@ namespace BeYourEyes.Core.Scheduling
                 return;
             }
 
-            var shouldNotify = !safeMode || now - lastSafeModeNoticeMs >= SafeModeNoticeThrottleMs;
+            if (!hasEverConnected || safeMode)
+            {
+                return;
+            }
+
             safeMode = true;
 
+            var shouldNotify = lastLostPromptMs == long.MinValue || now - lastLostPromptMs >= SafeModeNoticeThrottleMs;
             if (!shouldNotify)
             {
                 return;
             }
 
-            lastSafeModeNoticeMs = now;
-            bus.Publish(
-                new PromptEvent(
-                    evt.envelope,
-                    "Connection lost. Safe mode enabled: risk alerts only.",
-                    90,
-                    true,
-                    "tts",
-                    "system"));
+            lastLostPromptMs = now;
+            bus.Publish(new PromptEvent(evt.envelope, SafeModeEnteredText, 90, true, "tts", "system"));
         }
     }
 }
