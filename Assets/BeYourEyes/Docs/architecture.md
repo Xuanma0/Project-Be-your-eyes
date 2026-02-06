@@ -62,3 +62,9 @@ All core events carry `EventEnvelope` with `timestampMs`, `coordFrame`, `confide
 `ttlMs <= 0` is normalized to `1000ms` to avoid accidental immediate drop.
 Consumers should call `IsExpired(nowMs)` before handling.
 Expired events are dropped and must not update state or UI.
+
+## Minimal Closed Loop
+`MockEventSource` publishes `RiskEvent` and `PerceptionEvent` to `EventBus`.
+`PromptScheduler` consumes those events and emits `PromptEvent`.
+`DebugAudioPresenter` subscribes `PromptEvent` and logs TTS text.
+Runtime path: `MockEventSource -> EventBus -> PromptScheduler -> PromptEvent -> DebugAudioPresenter`.
