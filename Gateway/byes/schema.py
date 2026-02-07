@@ -1,0 +1,134 @@
+﻿from __future__ import annotations
+
+import secrets
+import time
+import uuid
+from enum import Enum
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, field_validator
+
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+class EventType(str, Enum):
+    PERCEPTION = "perception"
+    RISK = "risk"
+    NAVIGATION = "navigation"
+    DIALOG = "dialog"
+    HEALTH = "health"
+
+
+class CoordFrame(str, Enum):
+    CAMERA = "Camera"
+    DEVICE = "Device"
+    WORLD = "World"
+    MAP = "Map"
+    ANCHOR = "Anchor"
+
+
+class EventEnvelope(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    type: EventType
+    traceId: str = Field(default_factory=lambda: secrets.token_hex(16))
+    spanId: str = Field(default_factory=lambda: secrets.token_hex(8))
+    seq: int
+    tsCaptureMs: int
+    tsEmitMs: int = Field(default_factory=now_ms)
+    ttlMs: int = 3000
+    coordFrame: CoordFrame = CoordFrame.WORLD
+    confidence: float = 0.0
+    priority: int = 0
+    source: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("confidence")
+    @classmethod
+    def _clamp_confidence(cls, value: float) -> float:
+        return max(0.0, min(1.0, float(value)))
+
+    @field_validator("ttlMs")
+    @classmethod
+    def _ttl_positive(cls, value: int) -> int:
+        return value if value > 0 else 1
+
+    def is_expired(self, now: int | None = None) -> bool:
+        current = now if now is not None else now_ms()
+        return current - self.tsCaptureMs > self.ttlMs
+
+
+class ActionType(str, Enum):
+    STOP = "stop"
+    SCAN = "scan"
+    CONFIRM = "confirm"
+    TURN = "turn"
+    MOVE = "move"
+    FIND = "find"
+
+
+class ActionStep(BaseModel):
+    action: ActionType
+    text: str | None = None
+    distanceM: float | None = None
+    azimuthDeg: float | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class ActionPlan(BaseModel):
+    planId: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    traceId: str
+    tsEmitMs: int = Field(default_factory=now_ms)
+    expiresMs: int
+    mode: str
+    overallConfidence: float = 0.0
+    steps: list[ActionStep] = Field(default_factory=list)
+    fallback: str | None = None
+
+    @field_validator("overallConfidence")
+    @classmethod
+    def _plan_confidence(cls, value: float) -> float:
+        return max(0.0, min(1.0, float(value)))
+
+
+class ToolStatus(str, Enum):
+    OK = "ok"
+    TIMEOUT = "timeout"
+    ERROR = "error"
+    CANCELLED = "cancelled"
+    DROPPED_EXPIRED = "dropped_expired"
+
+
+class ToolResult(BaseModel):
+    toolName: str
+    toolVersion: str
+    seq: int
+    tsCaptureMs: int
+    latencyMs: int
+    confidence: float = 0.0
+    coordFrame: CoordFrame = CoordFrame.WORLD
+    payload: dict[str, Any] = Field(default_factory=dict)
+    status: ToolStatus = ToolStatus.OK
+    error: str | None = None
+
+    @field_validator("confidence")
+    @classmethod
+    def _tool_confidence(cls, value: float) -> float:
+        return max(0.0, min(1.0, float(value)))
+
+
+LegacyEventType = Literal["risk", "perception", "health"]
+
+
+class LegacyEvent(BaseModel):
+    type: LegacyEventType
+    timestampMs: int
+    coordFrame: str = "World"
+    confidence: float
+    ttlMs: int
+    source: str
+    riskText: str | None = None
+    summary: str | None = None
+    distanceM: float | None = None
+    azimuthDeg: float | None = None
