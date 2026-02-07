@@ -49,6 +49,8 @@ class GatewayConfig:
     timeout_rate_threshold: float
     timeout_window_size: int
     safe_mode_without_ws_client: bool
+    ws_disconnect_grace_ms: int
+    ws_no_client_warn_interval_ms: int
     mock_risk_delay_ms: int
     mock_risk_confidence: float
     mock_risk_distance_m: float
@@ -79,6 +81,8 @@ def load_config() -> GatewayConfig:
         timeout_rate_threshold=_env_float("BYES_TIMEOUT_RATE_THRESHOLD", 0.35),
         timeout_window_size=_env_int("BYES_TIMEOUT_WINDOW_SIZE", 50),
         safe_mode_without_ws_client=_env_bool("BYES_SAFE_MODE_NO_WS", True),
+        ws_disconnect_grace_ms=_env_int("BYES_WS_DISCONNECT_GRACE_MS", 3000),
+        ws_no_client_warn_interval_ms=_env_int("BYES_WS_NO_CLIENT_WARN_INTERVAL_MS", 5000),
         mock_risk_delay_ms=_env_int("BYES_MOCK_RISK_DELAY_MS", 120),
         mock_risk_confidence=_env_float("BYES_MOCK_RISK_CONFIDENCE", 0.92),
         mock_risk_distance_m=_env_float("BYES_MOCK_RISK_DISTANCE_M", 1.5),

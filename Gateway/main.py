@@ -4,13 +4,14 @@ import asyncio
 import contextlib
 import json
 import time
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import FastAPI, File, Form, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from byes.config import GatewayConfig, load_config
 from byes.degradation import DegradationManager, DegradationState
+from byes.faults import FaultManager
 from byes.fusion import FusionEngine
 from byes.metrics import GatewayMetrics
 from byes.observability import Observability
@@ -39,6 +40,13 @@ class MockEvent(BaseModel):
     azimuthDeg: float | None = None
 
 
+class FaultSetRequest(BaseModel):
+    tool: Literal["mock_risk", "mock_ocr", "all"]
+    mode: Literal["timeout", "slow", "low_conf", "disconnect"]
+    value: float | bool | int | None = None
+    durationMs: int | None = None
+
+
 class ConnectionManager:
     def __init__(self) -> None:
         self.active: set[WebSocket] = set()
@@ -52,22 +60,6 @@ class ConnectionManager:
     async def disconnect(self, ws: WebSocket) -> None:
         async with self._lock:
             self.active.discard(ws)
-
-    async def broadcast_text(self, text: str) -> None:
-        failed: list[WebSocket] = []
-        async with self._lock:
-            targets = list(self.active)
-
-        for ws in targets:
-            try:
-                await ws.send_text(text)
-            except Exception:  # noqa: BLE001
-                failed.append(ws)
-
-        if failed:
-            async with self._lock:
-                for ws in failed:
-                    self.active.discard(ws)
 
     async def broadcast_json(self, obj: dict[str, Any]) -> None:
         failed: list[WebSocket] = []
@@ -98,6 +90,7 @@ class GatewayApp:
         self.observability = Observability("be-your-eyes-gateway")
         self.registry = ToolRegistry()
         self.degradation = DegradationManager(self.config, self.metrics)
+        self.faults = FaultManager(self.metrics)
         self.fusion = FusionEngine(self.config)
         self.safety = SafetyKernel(self.config, self.degradation)
         self.connections = ConnectionManager()
@@ -108,8 +101,10 @@ class GatewayApp:
             metrics=self.metrics,
             degradation_manager=self.degradation,
             observability=self.observability,
+            fault_manager=self.faults,
         )
         self._mock_flip = False
+        self._degrade_watchdog_task: asyncio.Task[None] | None = None
 
     async def startup(self) -> None:
         self.registry.register(MockRiskTool(self.config))
@@ -117,9 +112,17 @@ class GatewayApp:
         self.observability.instrument_app(self.app)
         await self.scheduler.start()
         self.degradation.set_ws_client_count(0)
+        self._degrade_watchdog_task = asyncio.create_task(self._degradation_watchdog_loop())
 
     async def shutdown(self) -> None:
+        if self._degrade_watchdog_task is not None:
+            self._degrade_watchdog_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._degrade_watchdog_task
+            self._degrade_watchdog_task = None
+
         await self.scheduler.stop()
+        await self.faults.shutdown()
 
     async def submit_frame(self, frame_bytes: bytes, meta: dict[str, Any], request: Request) -> int:
         trace = self.observability.extract_trace(request.headers)
@@ -142,8 +145,7 @@ class GatewayApp:
         trace_id: str,
         span_id: str,
     ) -> None:
-        changes = self.degradation.consume_state_changes()
-        for change in changes:
+        for change in self.degradation.consume_state_changes():
             if change.current == DegradationState.SAFE_MODE:
                 status = "gateway_safe_mode"
             elif change.current == DegradationState.DEGRADED:
@@ -151,20 +153,62 @@ class GatewayApp:
             else:
                 status = "gateway_normal"
 
-            health_event = EventEnvelope(
-                type=EventType.HEALTH,
-                traceId=trace_id,
-                spanId=span_id,
-                seq=seq,
-                tsCaptureMs=ts_capture_ms,
-                ttlMs=ttl_ms,
-                coordFrame=CoordFrame.WORLD,
-                confidence=1.0,
-                priority=self.config.health_priority,
-                source="degradation@v1",
-                payload={"status": status, "reason": change.reason},
+            payload = {
+                "status": status,
+                "reason": change.reason,
+                "summary": f"{status} ({change.reason})",
+                "level": "info",
+            }
+            await self._emit_event(
+                EventEnvelope(
+                    type=EventType.HEALTH,
+                    traceId=trace_id,
+                    spanId=span_id,
+                    seq=seq,
+                    tsCaptureMs=ts_capture_ms,
+                    ttlMs=ttl_ms,
+                    coordFrame=CoordFrame.WORLD,
+                    confidence=1.0,
+                    priority=self.config.health_priority,
+                    source="degradation@v1.1",
+                    payload=payload,
+                )
             )
-            await self._emit_event(health_event)
+
+        for alert in self.degradation.consume_alerts():
+            payload = {
+                "status": alert.status,
+                "reason": alert.reason,
+                "summary": f"{alert.status} ({alert.reason})",
+                "level": "warn",
+            }
+            await self._emit_event(
+                EventEnvelope(
+                    type=EventType.HEALTH,
+                    traceId=trace_id,
+                    spanId=span_id,
+                    seq=seq,
+                    tsCaptureMs=ts_capture_ms,
+                    ttlMs=ttl_ms,
+                    coordFrame=CoordFrame.WORLD,
+                    confidence=1.0,
+                    priority=self.config.health_priority,
+                    source="degradation@v1.1",
+                    payload=payload,
+                )
+            )
+
+    async def _degradation_watchdog_loop(self) -> None:
+        while True:
+            await asyncio.sleep(1.0)
+            self.degradation.tick()
+            await self.emit_degradation_changes(
+                seq=0,
+                ts_capture_ms=_now_ms(),
+                ttl_ms=self.config.default_ttl_ms,
+                trace_id="0" * 32,
+                span_id="0" * 16,
+            )
 
     async def _on_lane_results(self, frame: FrameInput, lane: ToolLane, results: list[Any]) -> None:
         trace_id = str(frame.meta.get("traceId", "0" * 32))
@@ -241,6 +285,8 @@ def health() -> dict[str, Any]:
         "ts": _now_ms(),
         "state": gateway.degradation.state.value,
         "clients": len(gateway.connections.active),
+        "hadClientEverConnected": gateway.degradation.had_client_ever_connected,
+        "faults": gateway.faults.snapshot().get("faults", []),
     }
 
 
@@ -268,6 +314,26 @@ async def frame(
 
     seq = await gateway.submit_frame(frame_bytes=frame_bytes, meta=meta_json, request=request)
     return {"ok": True, "bytes": len(frame_bytes), "seq": seq}
+
+
+@app.post("/api/fault/set")
+async def fault_set(request: FaultSetRequest) -> dict[str, Any]:
+    try:
+        snapshot = await gateway.faults.set_fault(
+            tool=request.tool,
+            mode=request.mode,
+            value=request.value,
+            duration_ms=request.durationMs,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, **snapshot}
+
+
+@app.post("/api/fault/clear")
+async def fault_clear() -> dict[str, Any]:
+    snapshot = await gateway.faults.clear_faults()
+    return {"ok": True, **snapshot}
 
 
 @app.get("/metrics")

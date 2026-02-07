@@ -50,6 +50,30 @@ class GatewayMetrics:
             labelnames=("lane",),
             registry=self._registry,
         )
+        self.byes_fault_set_total = Counter(
+            "byes_fault_set_total",
+            "Fault injection set count",
+            labelnames=("tool", "mode"),
+            registry=self._registry,
+        )
+        self.byes_fault_trigger_total = Counter(
+            "byes_fault_trigger_total",
+            "Fault injection trigger count",
+            labelnames=("tool", "mode"),
+            registry=self._registry,
+        )
+        self.byes_degradation_state_change_total = Counter(
+            "byes_degradation_state_change_total",
+            "Degradation state change count",
+            labelnames=("from_state", "to_state", "reason"),
+            registry=self._registry,
+        )
+        self.byes_health_warn_total = Counter(
+            "byes_health_warn_total",
+            "Health warning count",
+            labelnames=("status",),
+            registry=self._registry,
+        )
 
     def observe_e2e_latency(self, latency_ms: int) -> None:
         self.byes_e2e_latency_ms.observe(max(0, latency_ms))
@@ -68,6 +92,22 @@ class GatewayMetrics:
 
     def inc_backpressure_drop(self, lane: str) -> None:
         self.byes_backpressure_drop_total.labels(lane=lane).inc()
+
+    def inc_fault_set(self, tool: str, mode: str) -> None:
+        self.byes_fault_set_total.labels(tool=tool, mode=mode).inc()
+
+    def inc_fault_trigger(self, tool: str, mode: str) -> None:
+        self.byes_fault_trigger_total.labels(tool=tool, mode=mode).inc()
+
+    def inc_degradation_state_change(self, from_state: str, to_state: str, reason: str) -> None:
+        self.byes_degradation_state_change_total.labels(
+            from_state=from_state,
+            to_state=to_state,
+            reason=reason,
+        ).inc()
+
+    def inc_health_warn(self, status: str) -> None:
+        self.byes_health_warn_total.labels(status=status).inc()
 
     def render(self) -> MetricsResponse:
         return MetricsResponse(

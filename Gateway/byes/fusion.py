@@ -122,7 +122,7 @@ class FusionEngine:
             "confidence": event.confidence,
             "ttlMs": event.ttlMs,
             "source": event.source,
-            "summary": payload.get("status", "health"),
+            "summary": payload.get("summary", payload.get("status", "health")),
             "riskText": None,
             "distanceM": None,
             "azimuthDeg": None,

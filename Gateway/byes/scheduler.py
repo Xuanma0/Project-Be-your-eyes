@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from byes.config import GatewayConfig
+from byes.faults import FaultManager
 from byes.observability import Observability, TraceInfo
 from byes.schema import ToolResult, ToolStatus
 from byes.tool_registry import ToolRegistry
@@ -37,6 +38,7 @@ class Scheduler:
         metrics: Any | None = None,
         degradation_manager: Any | None = None,
         observability: Observability | None = None,
+        fault_manager: FaultManager | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -44,6 +46,7 @@ class Scheduler:
         self._metrics = metrics
         self._degradation = degradation_manager
         self._observability = observability
+        self._faults = fault_manager
 
         self._seq = 0
         self._latest_seq = 0
@@ -178,6 +181,20 @@ class Scheduler:
     async def _run_single_tool(self, tool: Any, queued: _QueuedTask, lane: ToolLane) -> ToolResult:
         frame = queued.frame
         now = _now_ms()
+        if self._faults is not None and self._faults.should_disconnect(tool.name):
+            self._safe_call(self._degradation, "record_unavailable", tool.name)
+            return ToolResult(
+                toolName=tool.name,
+                toolVersion=tool.version,
+                seq=frame.seq,
+                tsCaptureMs=frame.ts_capture_ms,
+                latencyMs=0,
+                confidence=0.0,
+                status=ToolStatus.ERROR,
+                error="unavailable",
+                payload={},
+            )
+
         lane_deadline = self._config.fast_lane_deadline_ms if lane == ToolLane.FAST else self._config.slow_lane_deadline_ms
         ttl_left_ms = frame.ts_capture_ms + frame.ttl_ms - now
         timeout_ms = min(int(getattr(tool, "timeout_ms", lane_deadline)), lane_deadline, ttl_left_ms)
@@ -207,9 +224,19 @@ class Scheduler:
         success_elapsed_ms = 0
         with self._tool_span(trace, tool, lane, frame, timeout_ms) as span:
             try:
+                extra_delay_ms = self._faults.extra_slow_delay_ms(tool.name) if self._faults is not None else 0
+                if extra_delay_ms > 0:
+                    await asyncio.sleep(extra_delay_ms / 1000.0)
+
+                if self._faults is not None and self._faults.should_timeout(tool.name):
+                    raise asyncio.TimeoutError()
+
                 result = await asyncio.wait_for(tool.infer(frame, ctx), timeout=timeout_ms / 1000.0)
                 success_elapsed_ms = int((time.perf_counter() - started) * 1000)
                 result.latencyMs = max(result.latencyMs, success_elapsed_ms)
+                forced_conf = self._faults.low_conf_value(tool.name) if self._faults is not None else None
+                if forced_conf is not None:
+                    result.confidence = forced_conf
                 if span is not None:
                     span.set_attribute("tool.timeout", False)
                     span.set_attribute("tool.status", result.status.value)
