@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from byes.config import GatewayConfig, load_config
 from byes.degradation import DegradationManager, DegradationState
 from byes.faults import FaultManager
+from byes.frame_tracker import FrameTracker
 from byes.fusion import FusionEngine
 from byes.metrics import GatewayMetrics
 from byes.observability import Observability
@@ -83,6 +84,10 @@ class ConnectionManager:
 
 
 class GatewayApp:
+    SAFE_MODE_HEALTH_SUMMARY = (
+        "System unstable. Safe mode active: risk alerts only. Please stop and scan surroundings."
+    )
+
     def __init__(self, app: FastAPI) -> None:
         self.app = app
         self.config: GatewayConfig = load_config()
@@ -91,6 +96,11 @@ class GatewayApp:
         self.registry = ToolRegistry()
         self.degradation = DegradationManager(self.config, self.metrics)
         self.faults = FaultManager(self.metrics)
+        self.frame_tracker = FrameTracker(
+            metrics=self.metrics,
+            retention_ms=self.config.frame_tracker_retention_ms,
+            max_entries=self.config.frame_tracker_max_entries,
+        )
         self.fusion = FusionEngine(self.config)
         self.safety = SafetyKernel(self.config, self.degradation)
         self.connections = ConnectionManager()
@@ -102,9 +112,12 @@ class GatewayApp:
             degradation_manager=self.degradation,
             observability=self.observability,
             fault_manager=self.faults,
+            on_frame_terminal=self._on_frame_terminal,
         )
         self._mock_flip = False
         self._degrade_watchdog_task: asyncio.Task[None] | None = None
+        self._last_safe_mode_pulse_ms = -1
+        self._safe_mode_pulse_interval_ms = 1000
 
     async def startup(self) -> None:
         self.registry.register(MockRiskTool(self.config))
@@ -125,17 +138,41 @@ class GatewayApp:
         await self.faults.shutdown()
 
     async def submit_frame(self, frame_bytes: bytes, meta: dict[str, Any], request: Request) -> int:
+        request_start_ms = _now_ms()
         trace = self.observability.extract_trace(request.headers)
         enriched_meta = dict(meta)
         enriched_meta["traceId"] = trace.trace_id
         enriched_meta["spanId"] = trace.span_id
 
-        return await self.scheduler.submit_frame(
+        seq = await self.scheduler.submit_frame(
             frame_bytes=frame_bytes,
             meta=enriched_meta,
             trace_id=trace.trace_id,
             span_id=trace.span_id,
         )
+        ttl_ms = int(enriched_meta.get("ttlMs", self.config.default_ttl_ms))
+        if ttl_ms <= 0:
+            ttl_ms = self.config.default_ttl_ms
+        self.frame_tracker.start_frame(seq, request_start_ms, ttl_ms)
+        return seq
+
+    async def reset_runtime(self) -> dict[str, Any]:
+        faults_snapshot = await self.faults.clear_faults()
+        self.degradation.reset_runtime()
+        self.frame_tracker.reset_runtime()
+        self._last_safe_mode_pulse_ms = -1
+        client_count = await self.connections.count()
+        self.degradation.set_ws_client_count(client_count)
+        return {
+            "state": self.degradation.state.value,
+            "clients": client_count,
+            "hadClientEverConnected": self.degradation.had_client_ever_connected,
+            "frameTrackerRecords": self.frame_tracker.record_count,
+            "faults": faults_snapshot.get("faults", []),
+        }
+
+    def _on_frame_terminal(self, frame: FrameInput, outcome: str) -> None:
+        self.frame_tracker.complete_frame(frame.seq, outcome, _now_ms())
 
     async def emit_degradation_changes(
         self,
@@ -201,14 +238,42 @@ class GatewayApp:
     async def _degradation_watchdog_loop(self) -> None:
         while True:
             await asyncio.sleep(1.0)
+            now_ms = _now_ms()
             self.degradation.tick()
             await self.emit_degradation_changes(
                 seq=0,
-                ts_capture_ms=_now_ms(),
+                ts_capture_ms=now_ms,
                 ttl_ms=self.config.default_ttl_ms,
                 trace_id="0" * 32,
                 span_id="0" * 16,
             )
+            if self.degradation.is_safe_mode():
+                if (
+                    self._last_safe_mode_pulse_ms < 0
+                    or now_ms - self._last_safe_mode_pulse_ms >= self._safe_mode_pulse_interval_ms
+                ):
+                    await self._emit_event(
+                        EventEnvelope(
+                            type=EventType.HEALTH,
+                            traceId="0" * 32,
+                            spanId="0" * 16,
+                            seq=0,
+                            tsCaptureMs=now_ms,
+                            ttlMs=self.config.default_ttl_ms,
+                            coordFrame=CoordFrame.WORLD,
+                            confidence=1.0,
+                            priority=self.config.health_priority,
+                            source="degradation@v1.2.1",
+                            payload={
+                                "status": "gateway_safe_mode",
+                                "summary": self.SAFE_MODE_HEALTH_SUMMARY,
+                                "reason": "safe_mode_pulse",
+                            },
+                        )
+                    )
+                    self._last_safe_mode_pulse_ms = now_ms
+            else:
+                self._last_safe_mode_pulse_ms = -1
 
     async def _on_lane_results(self, frame: FrameInput, lane: ToolLane, results: list[Any]) -> None:
         trace_id = str(frame.meta.get("traceId", "0" * 32))
@@ -217,12 +282,20 @@ class GatewayApp:
 
         now = _now_ms()
         decision = self.safety.adjudicate(fused.events, now_ms=now)
+        emitted_count = 0
         for event in decision.events:
             if event.is_expired(now):
                 self.metrics.inc_deadline_miss(lane.value)
                 continue
-            self.metrics.observe_e2e_latency(max(0, now - event.tsCaptureMs))
             await self._emit_event(event)
+            emitted_count += 1
+
+        if emitted_count > 0:
+            self.frame_tracker.complete_frame(frame.seq, "ok", now)
+        elif lane == ToolLane.FAST:
+            # No final event from fast lane. In safe mode this is expected suppression.
+            outcome = "safemode_suppressed" if self.degradation.is_safe_mode() else "error"
+            self.frame_tracker.complete_frame(frame.seq, outcome, now)
 
         await self.emit_degradation_changes(
             seq=frame.seq,
@@ -233,6 +306,10 @@ class GatewayApp:
         )
 
     async def _emit_event(self, event: EventEnvelope) -> None:
+        if self.degradation.is_safe_mode() and event.type == EventType.PERCEPTION:
+            tool_name = str(event.source).split("@", 1)[0] if event.source else "unknown"
+            self.metrics.inc_tool_skipped(tool_name, "safe_mode")
+            return
         if self.config.send_envelope:
             await self.connections.broadcast_json(event.model_dump(mode="json"))
             return
@@ -334,6 +411,12 @@ async def fault_set(request: FaultSetRequest) -> dict[str, Any]:
 async def fault_clear() -> dict[str, Any]:
     snapshot = await gateway.faults.clear_faults()
     return {"ok": True, **snapshot}
+
+
+@app.post("/api/dev/reset")
+async def dev_reset() -> dict[str, Any]:
+    runtime = await gateway.reset_runtime()
+    return {"ok": True, **runtime}
 
 
 @app.get("/metrics")

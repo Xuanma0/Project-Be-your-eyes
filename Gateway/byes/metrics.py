@@ -50,6 +50,35 @@ class GatewayMetrics:
             labelnames=("lane",),
             registry=self._registry,
         )
+        self.byes_frame_received_total = Counter(
+            "byes_frame_received_total",
+            "Number of frames accepted by /api/frame",
+            registry=self._registry,
+        )
+        self.byes_frame_completed_total = Counter(
+            "byes_frame_completed_total",
+            "Number of frames completed by final outcome",
+            labelnames=("outcome",),
+            registry=self._registry,
+        )
+        self.byes_tool_invoked_total = Counter(
+            "byes_tool_invoked_total",
+            "Number of tool invocations attempted",
+            labelnames=("tool",),
+            registry=self._registry,
+        )
+        self.byes_tool_timeout_total = Counter(
+            "byes_tool_timeout_total",
+            "Number of tool timeouts",
+            labelnames=("tool",),
+            registry=self._registry,
+        )
+        self.byes_tool_skipped_total = Counter(
+            "byes_tool_skipped_total",
+            "Number of skipped tools",
+            labelnames=("tool", "reason"),
+            registry=self._registry,
+        )
         self.byes_fault_set_total = Counter(
             "byes_fault_set_total",
             "Fault injection set count",
@@ -92,6 +121,21 @@ class GatewayMetrics:
 
     def inc_backpressure_drop(self, lane: str) -> None:
         self.byes_backpressure_drop_total.labels(lane=lane).inc()
+
+    def inc_frame_received(self) -> None:
+        self.byes_frame_received_total.inc()
+
+    def inc_frame_completed(self, outcome: str) -> None:
+        self.byes_frame_completed_total.labels(outcome=outcome).inc()
+
+    def inc_tool_invoked(self, tool: str) -> None:
+        self.byes_tool_invoked_total.labels(tool=tool).inc()
+
+    def inc_tool_timeout(self, tool: str) -> None:
+        self.byes_tool_timeout_total.labels(tool=tool).inc()
+
+    def inc_tool_skipped(self, tool: str, reason: str) -> None:
+        self.byes_tool_skipped_total.labels(tool=tool, reason=reason).inc()
 
     def inc_fault_set(self, tool: str, mode: str) -> None:
         self.byes_fault_set_total.labels(tool=tool, mode=mode).inc()

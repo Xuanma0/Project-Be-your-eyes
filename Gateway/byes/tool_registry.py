@@ -48,3 +48,6 @@ class ToolRegistry:
         if degraded and lane == ToolLane.SLOW:
             return []
         return lane_tools
+
+    def all_lane_tools(self, lane: ToolLane) -> list[BaseTool]:
+        return [tool for tool in self._tools.values() if tool.lane == lane]

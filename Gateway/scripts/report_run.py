@@ -1,0 +1,438 @@
+﻿from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+_LABEL_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=\"((?:\\.|[^\"])*)\"")
+
+SeriesKey = tuple[str, tuple[tuple[str, str], ...]]
+
+
+def parse_metric_labels(raw_labels: str | None) -> dict[str, str]:
+    if not raw_labels:
+        return {}
+    labels: dict[str, str] = {}
+    for key, value in _LABEL_RE.findall(raw_labels):
+        labels[key] = value.replace('\\"', '"').replace('\\\\', '\\')
+    return labels
+
+
+def parse_metric_value(raw_value: str) -> float | None:
+    normalized = raw_value.strip()
+    if normalized in {"+Inf", "Inf", "+inf", "inf"}:
+        return float("inf")
+    if normalized in {"-Inf", "-inf"}:
+        return float("-inf")
+    if normalized in {"NaN", "nan"}:
+        return None
+    try:
+        return float(normalized)
+    except ValueError:
+        return None
+
+
+def make_series_key(metric_name: str, labels: dict[str, str]) -> SeriesKey:
+    return metric_name, tuple(sorted(labels.items(), key=lambda item: item[0]))
+
+
+def parse_prometheus_text_to_map(text: str) -> dict[SeriesKey, float]:
+    rows: dict[SeriesKey, float] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        parsed = parse_prometheus_line(line)
+        if parsed is None:
+            continue
+
+        metric_name, labels, value = parsed
+        if value is None:
+            continue
+
+        rows[make_series_key(metric_name, labels)] = value
+    return rows
+
+
+def parse_prometheus_line(line: str) -> tuple[str, dict[str, str], float | None] | None:
+    parts = line.split()
+    if len(parts) < 2:
+        return None
+
+    name_and_labels = parts[0]
+    raw_value = parts[1]
+
+    metric_name = name_and_labels
+    labels: dict[str, str] = {}
+    if "{" in name_and_labels and name_and_labels.endswith("}"):
+        brace_index = name_and_labels.find("{")
+        metric_name = name_and_labels[:brace_index]
+        labels = parse_metric_labels(name_and_labels[brace_index:])
+
+    if not metric_name:
+        return None
+    value = parse_metric_value(raw_value)
+    return metric_name, labels, value
+
+
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8-sig") as fp:
+        for line in fp:
+            line = line.strip()
+            if not line:
+                continue
+            rows.append(json.loads(line))
+    return rows
+
+
+def pick_health_status(event: dict[str, Any]) -> str:
+    summary = str(event.get("summary", ""))
+    status = str(event.get("status", ""))
+
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        payload_status = payload.get("status")
+        if isinstance(payload_status, str) and payload_status:
+            status = payload_status
+
+    text = " ".join([summary, status]).strip().lower()
+    if "safe_mode" in text:
+        return "SAFE_MODE"
+    if "degraded" in text:
+        return "DEGRADED"
+    if "normal" in text:
+        return "NORMAL"
+    if text:
+        return "HEALTH_OTHER"
+    return "HEALTH_UNKNOWN"
+
+
+def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    event_type_counter: Counter[str] = Counter()
+    state_counter: Counter[str] = Counter()
+    expired_emitted = 0
+    first_safe_mode_ms: int | None = None
+    perception_after_safe_mode = 0
+
+    for row in rows:
+        event = row.get("event")
+        if not isinstance(event, dict):
+            continue
+
+        event_type = str(event.get("type", "unknown"))
+        event_type_counter[event_type] += 1
+
+        if event_type == "health":
+            health_state = pick_health_status(event)
+            state_counter[health_state] += 1
+            if health_state == "SAFE_MODE" and first_safe_mode_ms is None:
+                first_safe_mode_ms = _row_time_ms(row, event)
+        elif event_type == "perception" and first_safe_mode_ms is not None:
+            row_ms = _row_time_ms(row, event)
+            if row_ms >= first_safe_mode_ms:
+                perception_after_safe_mode += 1
+
+        recv_ms = row.get("receivedAtMs")
+        event_ts = event.get("timestampMs")
+        ttl_ms = event.get("ttlMs")
+        if isinstance(recv_ms, int) and isinstance(event_ts, int) and isinstance(ttl_ms, int):
+            if ttl_ms <= 0 or recv_ms - event_ts > ttl_ms:
+                expired_emitted += 1
+
+    return {
+        "total_rows": len(rows),
+        "event_types": dict(sorted(event_type_counter.items(), key=lambda item: item[0])),
+        "states": dict(sorted(state_counter.items(), key=lambda item: item[0])),
+        "expired_emitted": expired_emitted,
+        "safe_mode_first_ms": first_safe_mode_ms,
+        "safe_mode_perception_violations": perception_after_safe_mode,
+    }
+
+
+def _row_time_ms(row: dict[str, Any], event: dict[str, Any]) -> int:
+    recv_ms = row.get("receivedAtMs")
+    if isinstance(recv_ms, int):
+        return recv_ms
+    event_ts = event.get("timestampMs")
+    if isinstance(event_ts, int):
+        return event_ts
+    return 0
+
+
+def aggregate_metric_sum(samples: dict[SeriesKey, float], metric_name: str) -> float:
+    total = 0.0
+    for (name, _labels), value in samples.items():
+        if name == metric_name:
+            total += value
+    return total
+
+
+def metric_series_count(samples: dict[SeriesKey, float], metric_name: str) -> int:
+    count = 0
+    for (name, _labels), _value in samples.items():
+        if name == metric_name:
+            count += 1
+    return count
+
+
+def render_metric_sum(samples: dict[SeriesKey, float], metric_name: str, delta: bool = False) -> str:
+    series_count = metric_series_count(samples, metric_name)
+    suffix = "delta sum" if delta else "sum"
+    if series_count == 0:
+        return f"- `{metric_name}` {suffix}: `0` (series absent)"
+    return f"- `{metric_name}` {suffix}: `{format_float(aggregate_metric_sum(samples, metric_name))}`"
+
+
+def metric_details(samples: dict[SeriesKey, float], metric_name: str) -> list[tuple[dict[str, str], float]]:
+    out: list[tuple[dict[str, str], float]] = []
+    for (name, labels), value in samples.items():
+        if name == metric_name:
+            out.append((dict(labels), value))
+    out.sort(key=lambda item: tuple(sorted(item[0].items(), key=lambda kv: kv[0])))
+    return out
+
+
+def append_metric_details(
+    lines: list[str],
+    samples: dict[SeriesKey, float],
+    metric_name: str,
+    label_names: list[str],
+    value_label: str,
+) -> None:
+    details = metric_details(samples, metric_name)
+    if not details:
+        return
+    lines.append(f"- `{metric_name}` details:")
+    for labels, value in details:
+        label_text = ", ".join([f"{name}=`{labels.get(name, '')}`" for name in label_names])
+        lines.append(f"  - {label_text}: {value_label}=`{format_float(value)}`")
+
+
+def compute_delta(before: dict[SeriesKey, float], after: dict[SeriesKey, float]) -> dict[SeriesKey, float]:
+    delta: dict[SeriesKey, float] = {}
+    for key, after_value in after.items():
+        before_value = before.get(key, 0.0)
+        value = after_value - before_value
+        if value < 0:
+            value = after_value
+        delta[key] = value
+    return delta
+
+
+def format_float(value: float) -> str:
+    if value == float("inf"):
+        return "inf"
+    if value == float("-inf"):
+        return "-inf"
+    if abs(value - round(value)) < 1e-9:
+        return str(int(round(value)))
+    return f"{value:.6f}".rstrip("0").rstrip(".")
+
+
+def build_report(
+    markdown_title: str,
+    ws_jsonl: Path,
+    metrics_source: str,
+    ws_stats: dict[str, Any],
+    after_samples: dict[SeriesKey, float],
+    delta_samples: dict[SeriesKey, float] | None,
+) -> str:
+    lines: list[str] = []
+    lines.append(f"# {markdown_title}")
+    lines.append("")
+    lines.append("## Inputs")
+    lines.append(f"- ws jsonl: `{ws_jsonl}`")
+    lines.append(f"- metrics source: `{metrics_source}`")
+    lines.append("")
+
+    lines.append("## WS Summary")
+    lines.append(f"- total rows: `{ws_stats['total_rows']}`")
+    lines.append(f"- expired emitted events: `{ws_stats['expired_emitted']}`")
+    lines.append("- event type counts:")
+    for key, value in ws_stats["event_types"].items():
+        lines.append(f"  - `{key}`: `{value}`")
+    lines.append("- health/degradation counts:")
+    for key, value in ws_stats["states"].items():
+        lines.append(f"  - `{key}`: `{value}`")
+    lines.append("- safe-mode perception violations:")
+    lines.append(f"  - `first_safe_mode_ms`: `{ws_stats['safe_mode_first_ms']}`")
+    lines.append(f"  - `perception_after_safe_mode`: `{ws_stats['safe_mode_perception_violations']}`")
+    lines.append("")
+
+    lines.append("## Metrics Snapshot - Raw After")
+    for metric_name in [
+        "byes_frame_received_total",
+        "byes_frame_completed_total",
+        "byes_tool_invoked_total",
+        "byes_tool_timeout_total",
+        "byes_tool_skipped_total",
+        "byes_safemode_enter_total",
+        "byes_deadline_miss_total",
+        "byes_backpressure_drop_total",
+        "byes_fault_set_total",
+        "byes_fault_trigger_total",
+        "byes_health_warn_total",
+    ]:
+        lines.append(render_metric_sum(after_samples, metric_name))
+
+    e2e_after_count = aggregate_metric_sum(after_samples, "byes_e2e_latency_ms_count")
+    e2e_after_sum = aggregate_metric_sum(after_samples, "byes_e2e_latency_ms_sum")
+    lines.append(f"- `byes_e2e_latency_ms_count`: `{format_float(e2e_after_count)}`")
+    lines.append(f"- `byes_e2e_latency_ms_sum`: `{format_float(e2e_after_sum)}`")
+    lines.append(f"- `byes_e2e_latency_ms_bucket` sum: `{format_float(aggregate_metric_sum(after_samples, 'byes_e2e_latency_ms_bucket'))}`")
+
+    append_metric_details(lines, after_samples, "byes_frame_completed_total", ["outcome"], "count")
+    append_metric_details(lines, after_samples, "byes_tool_invoked_total", ["tool"], "count")
+    append_metric_details(lines, after_samples, "byes_tool_timeout_total", ["tool"], "count")
+    append_metric_details(lines, after_samples, "byes_tool_skipped_total", ["tool", "reason"], "count")
+
+    raw_changes = metric_details(after_samples, "byes_degradation_state_change_total")
+    if raw_changes:
+        lines.append("- `byes_degradation_state_change_total` details:")
+        for labels, value in raw_changes:
+            lines.append(
+                "  - `{0} -> {1}` reason=`{2}` count=`{3}`".format(
+                    labels.get("from_state", ""),
+                    labels.get("to_state", ""),
+                    labels.get("reason", ""),
+                    format_float(value),
+                )
+            )
+    lines.append("")
+
+    lines.append("## Metrics Snapshot - Run Delta")
+    if delta_samples is None:
+        lines.append("- delta mode disabled (provide both `--metrics-before` and `--metrics-after`)" )
+    else:
+        for metric_name in [
+            "byes_frame_received_total",
+            "byes_frame_completed_total",
+            "byes_tool_invoked_total",
+            "byes_tool_timeout_total",
+            "byes_tool_skipped_total",
+            "byes_safemode_enter_total",
+            "byes_deadline_miss_total",
+            "byes_backpressure_drop_total",
+            "byes_fault_set_total",
+            "byes_fault_trigger_total",
+            "byes_health_warn_total",
+        ]:
+            lines.append(render_metric_sum(delta_samples, metric_name, delta=True))
+
+        e2e_delta_count = aggregate_metric_sum(delta_samples, "byes_e2e_latency_ms_count")
+        e2e_delta_sum = aggregate_metric_sum(delta_samples, "byes_e2e_latency_ms_sum")
+        lines.append(f"- `byes_e2e_latency_ms_count` delta: `{format_float(e2e_delta_count)}`")
+        lines.append(f"- `byes_e2e_latency_ms_sum` delta: `{format_float(e2e_delta_sum)}`")
+        lines.append(
+            f"- `byes_e2e_latency_ms_bucket` delta sum: "
+            f"`{format_float(aggregate_metric_sum(delta_samples, 'byes_e2e_latency_ms_bucket'))}`"
+        )
+
+        append_metric_details(lines, delta_samples, "byes_frame_completed_total", ["outcome"], "delta")
+        append_metric_details(lines, delta_samples, "byes_tool_invoked_total", ["tool"], "delta")
+        append_metric_details(lines, delta_samples, "byes_tool_timeout_total", ["tool"], "delta")
+        append_metric_details(lines, delta_samples, "byes_tool_skipped_total", ["tool", "reason"], "delta")
+
+        delta_changes = metric_details(delta_samples, "byes_degradation_state_change_total")
+        if delta_changes:
+            lines.append("- `byes_degradation_state_change_total` delta details:")
+            for labels, value in delta_changes:
+                lines.append(
+                    "  - `{0} -> {1}` reason=`{2}` delta=`{3}`".format(
+                        labels.get("from_state", ""),
+                        labels.get("to_state", ""),
+                        labels.get("reason", ""),
+                        format_float(value),
+                    )
+                )
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def derive_output_path(ws_jsonl: Path, output: str | None) -> Path:
+    if output:
+        return Path(output)
+    return Path(f"report_{ws_jsonl.stem}.md")
+
+
+def load_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8-sig")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Generate markdown report from metrics + ws jsonl")
+    parser.add_argument("--metrics-url", default="http://127.0.0.1:8000/metrics")
+    parser.add_argument("--metrics-before", default=None)
+    parser.add_argument("--metrics-after", default=None)
+    parser.add_argument("--ws-jsonl", required=True)
+    parser.add_argument("--output", default=None)
+    args = parser.parse_args()
+
+    ws_jsonl = Path(args.ws_jsonl)
+    if not ws_jsonl.exists():
+        print(f"ws jsonl not found: {ws_jsonl}")
+        return 1
+
+    metrics_before_path = Path(args.metrics_before) if args.metrics_before else None
+    metrics_after_path = Path(args.metrics_after) if args.metrics_after else None
+
+    if (metrics_before_path is None) != (metrics_after_path is None):
+        print("must provide both --metrics-before and --metrics-after, or neither")
+        return 1
+
+    output = derive_output_path(ws_jsonl, args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    ws_rows = load_jsonl(ws_jsonl)
+    ws_stats = collect_ws_stats(ws_rows)
+
+    if metrics_before_path is not None and metrics_after_path is not None:
+        if not metrics_before_path.exists():
+            print(f"metrics before file not found: {metrics_before_path}")
+            return 1
+        if not metrics_after_path.exists():
+            print(f"metrics after file not found: {metrics_after_path}")
+            return 1
+
+        before_text = load_text(metrics_before_path)
+        after_text = load_text(metrics_after_path)
+        metrics_source = f"before={metrics_before_path}, after={metrics_after_path}"
+    else:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(args.metrics_url)
+            response.raise_for_status()
+            after_text = response.text
+        before_text = ""
+        metrics_source = args.metrics_url
+
+    after_samples = parse_prometheus_text_to_map(after_text)
+    delta_samples = None
+    if before_text:
+        before_samples = parse_prometheus_text_to_map(before_text)
+        delta_samples = compute_delta(before_samples, after_samples)
+
+    report_title = f"Run Report - {ws_jsonl.stem}"
+    report_text = build_report(
+        report_title,
+        ws_jsonl,
+        metrics_source,
+        ws_stats,
+        after_samples,
+        delta_samples,
+    )
+    output.write_text(report_text + "\n", encoding="utf-8")
+    print(f"report generated -> {output}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

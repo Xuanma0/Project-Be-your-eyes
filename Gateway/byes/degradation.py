@@ -114,6 +114,19 @@ class DegradationManager:
         self._pending_alerts.clear()
         return alerts
 
+    def reset_runtime(self) -> None:
+        """Dev-only runtime reset. Metrics counters are intentionally untouched."""
+        self._state = DegradationState.NORMAL
+        self._timeout_window.clear()
+        self._ws_client_count = 0
+        self._had_client_ever_connected = False
+        self._disconnect_since_ms = None
+        self._last_warn_ms = -1
+        self._pending_changes.clear()
+        self._pending_alerts.clear()
+        self._slow_backpressure_hits = 0
+        self._unavailable_hits = 0
+
     def _recompute(self, reason: str, now_ms: int) -> None:
         timeout_rate = self._timeout_rate()
         target = DegradationState.NORMAL

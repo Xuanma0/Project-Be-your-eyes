@@ -60,6 +60,8 @@ class GatewayConfig:
     mock_ocr_confidence: float
     mock_ocr_text: str
     mock_tool_timeout_ms: int
+    frame_tracker_retention_ms: int = 120000
+    frame_tracker_max_entries: int = 20000
 
 
 def load_config() -> GatewayConfig:
@@ -92,4 +94,6 @@ def load_config() -> GatewayConfig:
         mock_ocr_confidence=_env_float("BYES_MOCK_OCR_CONFIDENCE", 0.8),
         mock_ocr_text=os.getenv("BYES_MOCK_OCR_TEXT", "Door detected"),
         mock_tool_timeout_ms=_env_int("BYES_MOCK_TOOL_TIMEOUT_MS", 1200),
+        frame_tracker_retention_ms=_env_int("BYES_FRAME_TRACKER_RETENTION_MS", 120000),
+        frame_tracker_max_entries=_env_int("BYES_FRAME_TRACKER_MAX_ENTRIES", 20000),
     )
