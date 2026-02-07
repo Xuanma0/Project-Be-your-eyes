@@ -33,6 +33,8 @@ def make_config() -> GatewayConfig:
         timeout_rate_threshold=0.35,
         timeout_window_size=20,
         safe_mode_without_ws_client=True,
+        ws_disconnect_grace_ms=3000,
+        ws_no_client_warn_interval_ms=5000,
         mock_risk_delay_ms=120,
         mock_risk_confidence=0.9,
         mock_risk_distance_m=1.5,
