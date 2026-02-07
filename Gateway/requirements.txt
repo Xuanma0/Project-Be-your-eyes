@@ -1,2 +1,10 @@
-fastapi
+﻿fastapi
 uvicorn
+python-multipart
+prometheus-client
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi
+pytest
+pytest-asyncio
+httpx
