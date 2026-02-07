@@ -8,3 +8,4 @@ opentelemetry-instrumentation-fastapi
 pytest
 pytest-asyncio
 httpx
+websockets
