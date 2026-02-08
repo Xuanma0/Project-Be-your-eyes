@@ -19,6 +19,7 @@ from byes.intent import IntentManager
 from byes.metrics import GatewayMetrics
 from byes.observability import Observability
 from byes.planner import PolicyPlannerV0
+from byes.preprocess import FramePreprocessor
 from byes.safety import SafetyKernel
 from byes.scheduler import Scheduler
 from byes.schema import CoordFrame, EventEnvelope, EventType, FrameMeta, HealthStatus, ToolStatus
@@ -110,6 +111,7 @@ class GatewayApp:
             retention_ms=self.config.frame_tracker_retention_ms,
             max_entries=self.config.frame_tracker_max_entries,
         )
+        self.preprocessor = FramePreprocessor(self.config)
         self.fusion = FusionEngine(self.config, metrics=self.metrics)
         self.planner = PolicyPlannerV0(self.config)
         self.safety = SafetyKernel(self.config, self.degradation)
@@ -124,6 +126,8 @@ class GatewayApp:
             fault_manager=self.faults,
             on_frame_terminal=self._on_frame_terminal,
             planner=self.planner,
+            frame_tracker=self.frame_tracker,
+            preprocessor=self.preprocessor,
         )
         self._mock_flip = False
         self._degrade_watchdog_task: asyncio.Task[None] | None = None

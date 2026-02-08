@@ -38,6 +38,7 @@ class ToolInvocation:
     lane: ToolLane
     timeout_ms: int
     priority: int
+    input_variant: str = "full"
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,7 @@ class PolicyPlannerV0:
                     lane=ToolLane.FAST,
                     timeout_ms=min(tool.timeoutMs, self._config.fast_budget_ms),
                     priority=self._priority_for(tool),
+                    input_variant="full",
                 )
             )
 
@@ -96,6 +98,7 @@ class PolicyPlannerV0:
                         lane=ToolLane.SLOW,
                         timeout_ms=min(tool.timeoutMs, self._config.slow_budget_ms),
                         priority=self._priority_for(tool),
+                        input_variant=self._input_variant_for(tool),
                     )
                 )
 
@@ -119,3 +122,14 @@ class PolicyPlannerV0:
         if capability == "ocr":
             return 250
         return 100
+
+    @staticmethod
+    def _input_variant_for(tool: ToolDescriptor) -> str:
+        capability = tool.capability.lower()
+        if tool.name == "real_det" or capability == "det":
+            return "det"
+        if tool.name == "real_ocr" or capability == "ocr":
+            return "ocr"
+        if tool.name == "real_depth" or capability == "depth":
+            return "depth"
+        return "full"

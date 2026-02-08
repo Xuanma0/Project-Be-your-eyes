@@ -13,8 +13,10 @@ from byes.degradation import DegradationState
 from byes.faults import FaultManager
 from byes.frame_gate import FrameContext as GateFrameContext
 from byes.frame_gate import FrameGate
+from byes.frame_tracker import FrameTracker
 from byes.observability import Observability, TraceInfo
 from byes.planner import FrameContext, PolicyPlannerV0, RecentFrameSummary, ToolInvocationPlan
+from byes.preprocess import FrameArtifacts, FramePreprocessor
 from byes.schema import ToolResult, ToolStatus
 from byes.tool_registry import ToolRegistry
 from byes.tool_cache import ToolCache
@@ -49,6 +51,8 @@ class Scheduler:
         planner: PolicyPlannerV0 | None = None,
         frame_gate: FrameGate | None = None,
         tool_cache: ToolCache | None = None,
+        frame_tracker: FrameTracker | None = None,
+        preprocessor: FramePreprocessor | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -61,6 +65,8 @@ class Scheduler:
         self._planner = planner
         self._frame_gate = frame_gate or FrameGate(config)
         self._tool_cache = tool_cache or ToolCache(config.tool_cache_max_entries)
+        self._frame_tracker = frame_tracker
+        self._preprocessor = preprocessor
 
         self._seq = 0
         self._latest_seq = 0
@@ -237,7 +243,7 @@ class Scheduler:
         plan = self._plan_by_seq.get(queued.frame.seq)
         planned = plan.lane_invocations(lane) if plan is not None else []
         tools: list[BaseTool] = []
-        planned_timeout_by_name: dict[str, int] = {}
+        planned_by_name: dict[str, Any] = {}
         if planned:
             ordered_plan = sorted(planned, key=lambda item: item.priority, reverse=True)
             for invocation in ordered_plan:
@@ -245,7 +251,7 @@ class Scheduler:
                 if tool is None:
                     continue
                 tools.append(tool)
-                planned_timeout_by_name[tool.name] = max(1, int(invocation.timeout_ms))
+                planned_by_name[tool.name] = invocation
         else:
             tools = list(available_tools)
 
@@ -271,6 +277,9 @@ class Scheduler:
         tasks: list[asyncio.Task[ToolResult]] = []
         task_meta: list[tuple[BaseTool, str, bool]] = []
         results: list[ToolResult] = []
+        artifacts: FrameArtifacts | None = None
+        if self._needs_preprocess(tools, planned_by_name):
+            artifacts = await self._get_frame_artifacts(queued.frame)
         gate_frame = GateFrameContext(
             seq=queued.frame.seq,
             received_at_ms=now_ms,
@@ -282,10 +291,15 @@ class Scheduler:
             meta=queued.frame.meta,
         )
         for tool in tools:
-            planned_timeout_ms = planned_timeout_by_name.get(tool.name)
+            invocation = planned_by_name.get(tool.name)
+            planned_timeout_ms = None
+            if invocation is not None:
+                planned_timeout_ms = max(1, int(invocation.timeout_ms))
             cache_key = self._cache_key(tool, queued.frame)
             decision = self._frame_gate.decide(tool=tool, frame=gate_frame, now_ms=now_ms)
             fault_active = bool(self._safe_call(self._faults, "has_active_fault", tool.name, default=False))
+            input_variant = self._resolve_input_variant(tool, invocation)
+            tool_frame = self._frame_with_variant(queued.frame, artifacts, input_variant)
 
             if decision.reuse_ok and cache_key and not fault_active:
                 cached = self._tool_cache.get(
@@ -319,6 +333,7 @@ class Scheduler:
                     lane=lane,
                     lane_budget_deadline_ms=lane_budget_deadline_ms,
                     planned_timeout_ms=planned_timeout_ms,
+                    frame_input=tool_frame,
                 )
             )
             self._active_by_seq[queued.frame.seq].add(task)
@@ -352,8 +367,9 @@ class Scheduler:
         lane: ToolLane,
         lane_budget_deadline_ms: int,
         planned_timeout_ms: int | None,
+        frame_input: FrameInput | None = None,
     ) -> ToolResult:
-        frame = queued.frame
+        frame = frame_input if frame_input is not None else queued.frame
         now = _now_ms()
 
         if self._faults is not None and self._faults.should_disconnect(tool.name):
@@ -375,15 +391,20 @@ class Scheduler:
         lane_deadline = self._config.fast_lane_deadline_ms if lane == ToolLane.FAST else self._config.slow_lane_deadline_ms
         ttl_left_ms = frame.ts_capture_ms + frame.ttl_ms - now
         budget_left_ms = lane_budget_deadline_ms - now
-        timeout_candidates = [
-            int(getattr(tool, "timeout_ms", lane_deadline)),
-            lane_deadline,
-            ttl_left_ms,
-            budget_left_ms,
-        ]
-        if planned_timeout_ms is not None:
-            timeout_candidates.append(int(planned_timeout_ms))
-        timeout_ms = min(timeout_candidates)
+        tool_timeout_ms = int(getattr(tool, "timeout_ms", lane_deadline))
+        is_risk_tool = str(getattr(tool, "capability", "")).strip().lower() == "risk"
+        if is_risk_tool:
+            timeout_ms = min(tool_timeout_ms, ttl_left_ms)
+        else:
+            timeout_candidates = [
+                tool_timeout_ms,
+                lane_deadline,
+                ttl_left_ms,
+                budget_left_ms,
+            ]
+            if planned_timeout_ms is not None:
+                timeout_candidates.append(int(planned_timeout_ms))
+            timeout_ms = min(timeout_candidates)
 
         if timeout_ms <= 0:
             self._metric_call("inc_deadline_miss", lane.value)
@@ -578,6 +599,60 @@ class Scheduler:
         if tool.name in {"real_det", "real_ocr", "real_depth"}:
             return str(frame.meta.get("fingerprint", ""))
         return ""
+
+    async def _get_frame_artifacts(self, frame: FrameInput) -> FrameArtifacts | None:
+        if self._frame_tracker is None or self._preprocessor is None:
+            return None
+        return await asyncio.to_thread(
+            self._frame_tracker.get_or_build_artifacts,
+            frame.seq,
+            frame.frame_bytes,
+            frame.meta,
+            self._preprocessor,
+        )
+
+    def _needs_preprocess(self, tools: list[BaseTool], planned_by_name: dict[str, Any]) -> bool:
+        for tool in tools:
+            invocation = planned_by_name.get(tool.name)
+            variant = self._resolve_input_variant(tool, invocation)
+            if variant != "full":
+                return True
+        return False
+
+    @staticmethod
+    def _resolve_input_variant(tool: BaseTool, invocation: Any | None) -> str:
+        candidate = "full"
+        if invocation is not None:
+            candidate = str(getattr(invocation, "input_variant", "full") or "full").strip().lower()
+        if candidate in {"full", "det", "ocr", "depth"}:
+            return candidate
+        if tool.name == "real_det":
+            return "det"
+        if tool.name == "real_ocr":
+            return "ocr"
+        if tool.name == "real_depth":
+            return "depth"
+        return "full"
+
+    @staticmethod
+    def _frame_with_variant(frame: FrameInput, artifacts: FrameArtifacts | None, variant: str) -> FrameInput:
+        if artifacts is None or variant == "full":
+            return frame
+        if variant == "det":
+            payload = artifacts.det_jpeg_bytes
+        elif variant == "ocr":
+            payload = artifacts.ocr_jpeg_bytes
+        elif variant == "depth":
+            payload = artifacts.depth_jpeg_bytes
+        else:
+            payload = artifacts.full_bytes
+        return FrameInput(
+            seq=frame.seq,
+            ts_capture_ms=frame.ts_capture_ms,
+            ttl_ms=frame.ttl_ms,
+            frame_bytes=payload,
+            meta=frame.meta,
+        )
 
     @staticmethod
     def _clone_tool_result_for_frame(result: ToolResult, frame: FrameInput) -> ToolResult:

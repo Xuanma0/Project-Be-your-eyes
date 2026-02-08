@@ -27,6 +27,28 @@ class GatewayMetrics:
             buckets=(10, 20, 50, 100, 200, 350, 500, 800, 1200, 2000, 3000),
             registry=self._registry,
         )
+        self.byes_preprocess_latency_ms = Histogram(
+            "byes_preprocess_latency_ms",
+            "Frame preprocess latency in milliseconds",
+            buckets=(1, 2, 5, 10, 20, 50, 100, 200, 350, 500),
+            registry=self._registry,
+        )
+        self.byes_preprocess_bytes_total = Counter(
+            "byes_preprocess_bytes_total",
+            "Total preprocess output bytes by variant",
+            labelnames=("variant",),
+            registry=self._registry,
+        )
+        self.byes_preprocess_cache_hit_total = Counter(
+            "byes_preprocess_cache_hit_total",
+            "Frame preprocess cache hit count",
+            registry=self._registry,
+        )
+        self.byes_preprocess_decode_error_total = Counter(
+            "byes_preprocess_decode_error_total",
+            "Frame preprocess decode fallback count",
+            registry=self._registry,
+        )
         self.byes_deadline_miss_total = Counter(
             "byes_deadline_miss_total",
             "Number of missed deadlines/TTL drops",
@@ -190,6 +212,18 @@ class GatewayMetrics:
 
     def observe_tool_latency(self, tool: str, latency_ms: int) -> None:
         self.byes_tool_latency_ms.labels(tool=tool).observe(max(0, latency_ms))
+
+    def observe_preprocess_latency(self, latency_ms: int) -> None:
+        self.byes_preprocess_latency_ms.observe(max(0, latency_ms))
+
+    def inc_preprocess_bytes(self, variant: str, size_bytes: int) -> None:
+        self.byes_preprocess_bytes_total.labels(variant=variant).inc(max(0, int(size_bytes)))
+
+    def inc_preprocess_cache_hit(self) -> None:
+        self.byes_preprocess_cache_hit_total.inc()
+
+    def inc_preprocess_decode_error(self) -> None:
+        self.byes_preprocess_decode_error_total.inc()
 
     def inc_deadline_miss(self, lane: str) -> None:
         self.byes_deadline_miss_total.labels(lane=lane).inc()

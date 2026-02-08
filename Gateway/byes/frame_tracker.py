@@ -5,6 +5,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from byes.preprocess import FrameArtifacts, FramePreprocessor
+
 
 @dataclass
 class _FrameRecord:
@@ -12,6 +14,8 @@ class _FrameRecord:
     ttl_ms: int
     deadline_ms: int
     frame_meta: Any | None = None
+    artifacts: FrameArtifacts | None = None
+    received_counted: bool = True
     completed: bool = False
     completed_ms: int | None = None
     outcome: str | None = None
@@ -47,6 +51,7 @@ class FrameTracker:
                 ttl_ms=normalized_ttl_ms,
                 deadline_ms=deadline_ms,
                 frame_meta=frame_meta,
+                received_counted=True,
             )
             self._records.move_to_end(seq)
             self._metric_call("inc_frame_received")
@@ -59,7 +64,59 @@ class FrameTracker:
         record.deadline_ms = min(record.deadline_ms, deadline_ms)
         if record.frame_meta is None and frame_meta is not None:
             record.frame_meta = frame_meta
+        if not record.received_counted:
+            record.received_counted = True
+            self._metric_call("inc_frame_received")
         self._records.move_to_end(seq)
+
+    def get_or_build_artifacts(
+        self,
+        seq: int,
+        frame_bytes: bytes,
+        meta: dict[str, Any] | None,
+        preprocessor: FramePreprocessor,
+    ) -> FrameArtifacts:
+        now_ms = self._now_ms_fn()
+        self._cleanup(now_ms)
+        record = self._records.get(seq)
+        if record is None:
+            ttl_ms = 1
+            if isinstance(meta, dict):
+                try:
+                    ttl_ms = max(1, int(meta.get("ttlMs", 1)))
+                except (TypeError, ValueError):
+                    ttl_ms = 1
+            record = _FrameRecord(
+                received_at_ms=now_ms,
+                ttl_ms=ttl_ms,
+                deadline_ms=now_ms + ttl_ms,
+                frame_meta=None,
+                received_counted=False,
+            )
+            self._records[seq] = record
+            self._records.move_to_end(seq)
+        elif record.artifacts is not None:
+            self._records.move_to_end(seq)
+            self._metric_call("inc_preprocess_cache_hit")
+            return record.artifacts
+
+        frame_meta = record.frame_meta
+        if frame_meta is None and isinstance(meta, dict):
+            candidate = meta.get("frameMeta")
+            if isinstance(candidate, dict):
+                frame_meta = candidate
+        artifacts = preprocessor.build(seq=seq, frame_bytes=frame_bytes, frame_meta=frame_meta)
+        record.artifacts = artifacts
+        self._records.move_to_end(seq)
+        self._metric_call("observe_preprocess_latency", artifacts.build_latency_ms)
+        self._metric_call("inc_preprocess_bytes", "full", len(artifacts.full_bytes))
+        self._metric_call("inc_preprocess_bytes", "det", len(artifacts.det_jpeg_bytes))
+        self._metric_call("inc_preprocess_bytes", "ocr", len(artifacts.ocr_jpeg_bytes))
+        self._metric_call("inc_preprocess_bytes", "depth", len(artifacts.depth_jpeg_bytes))
+        if artifacts.decode_error:
+            self._metric_call("inc_preprocess_decode_error")
+        self._enforce_capacity()
+        return artifacts
 
     def complete_frame(self, seq: int, outcome: str, completed_at_ms: int) -> bool:
         now_ms = int(completed_at_ms)
@@ -71,6 +128,7 @@ class FrameTracker:
                 received_at_ms=now_ms,
                 ttl_ms=1,
                 deadline_ms=now_ms + 1,
+                received_counted=False,
             )
             self._records[seq] = record
 

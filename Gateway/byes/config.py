@@ -98,6 +98,12 @@ class GatewayConfig:
     hazard_memory_critical_dist_m: float = 1.0
     hazard_memory_max_active: int = 64
     hazard_memory_decay_ms: int = 12000
+    det_max_side: int = 640
+    ocr_max_side: int = 1280
+    depth_max_side: int = 640
+    det_jpeg_quality: int = 75
+    ocr_jpeg_quality: int = 80
+    depth_jpeg_quality: int = 75
     critical_tools_csv: str = "mock_risk"
     enabled_tools_csv: str = ""
     tool_cache_max_entries: int = 1024
@@ -177,6 +183,12 @@ def load_config() -> GatewayConfig:
         hazard_memory_critical_dist_m=_env_float("BYES_HAZARD_CRITICAL_DIST_M", 1.0),
         hazard_memory_max_active=_env_int("BYES_HAZARD_MAX_ACTIVE", 64),
         hazard_memory_decay_ms=_env_int("BYES_HAZARD_DECAY_MS", 12000),
+        det_max_side=_env_int("BYES_DET_MAX_SIDE", 640),
+        ocr_max_side=_env_int("BYES_OCR_MAX_SIDE", 1280),
+        depth_max_side=_env_int("BYES_DEPTH_MAX_SIDE", 640),
+        det_jpeg_quality=_env_int("BYES_DET_JPEG_QUALITY", 75),
+        ocr_jpeg_quality=_env_int("BYES_OCR_JPEG_QUALITY", 80),
+        depth_jpeg_quality=_env_int("BYES_DEPTH_JPEG_QUALITY", 75),
         critical_tools_csv=os.getenv("BYES_CRITICAL_TOOLS", "mock_risk"),
         enabled_tools_csv=os.getenv("BYES_ENABLED_TOOLS", ""),
         tool_cache_max_entries=_env_int("BYES_TOOL_CACHE_MAX_ENTRIES", 1024),

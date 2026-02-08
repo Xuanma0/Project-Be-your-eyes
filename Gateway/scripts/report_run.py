@@ -351,6 +351,9 @@ def build_report(
         "byes_frame_meta_present_total",
         "byes_frame_meta_missing_total",
         "byes_frame_meta_parse_error_total",
+        "byes_preprocess_cache_hit_total",
+        "byes_preprocess_decode_error_total",
+        "byes_preprocess_bytes_total",
         "byes_tool_invoked_total",
         "byes_tool_timeout_total",
         "byes_tool_skipped_total",
@@ -379,8 +382,17 @@ def build_report(
     lines.append(f"- `byes_e2e_latency_ms_count`: `{format_float(e2e_after_count)}`")
     lines.append(f"- `byes_e2e_latency_ms_sum`: `{format_float(e2e_after_sum)}`")
     lines.append(f"- `byes_e2e_latency_ms_bucket` sum: `{format_float(aggregate_metric_sum(after_samples, 'byes_e2e_latency_ms_bucket'))}`")
+    preprocess_after_count = aggregate_metric_sum(after_samples, "byes_preprocess_latency_ms_count")
+    preprocess_after_sum = aggregate_metric_sum(after_samples, "byes_preprocess_latency_ms_sum")
+    lines.append(f"- `byes_preprocess_latency_ms_count`: `{format_float(preprocess_after_count)}`")
+    lines.append(f"- `byes_preprocess_latency_ms_sum`: `{format_float(preprocess_after_sum)}`")
+    lines.append(
+        f"- `byes_preprocess_latency_ms_bucket` sum: "
+        f"`{format_float(aggregate_metric_sum(after_samples, 'byes_preprocess_latency_ms_bucket'))}`"
+    )
 
     append_metric_details(lines, after_samples, "byes_frame_completed_total", ["outcome"], "count")
+    append_metric_details(lines, after_samples, "byes_preprocess_bytes_total", ["variant"], "count")
     append_metric_details(lines, after_samples, "byes_tool_invoked_total", ["tool"], "count")
     append_metric_details(lines, after_samples, "byes_tool_timeout_total", ["tool"], "count")
     append_metric_details(lines, after_samples, "byes_tool_skipped_total", ["tool", "reason"], "count")
@@ -422,6 +434,9 @@ def build_report(
             "byes_frame_meta_present_total",
             "byes_frame_meta_missing_total",
             "byes_frame_meta_parse_error_total",
+            "byes_preprocess_cache_hit_total",
+            "byes_preprocess_decode_error_total",
+            "byes_preprocess_bytes_total",
             "byes_tool_invoked_total",
             "byes_tool_timeout_total",
             "byes_tool_skipped_total",
@@ -453,8 +468,17 @@ def build_report(
             f"- `byes_e2e_latency_ms_bucket` delta sum: "
             f"`{format_float(aggregate_metric_sum(delta_samples, 'byes_e2e_latency_ms_bucket'))}`"
         )
+        preprocess_delta_count = aggregate_metric_sum(delta_samples, "byes_preprocess_latency_ms_count")
+        preprocess_delta_sum = aggregate_metric_sum(delta_samples, "byes_preprocess_latency_ms_sum")
+        lines.append(f"- `byes_preprocess_latency_ms_count` delta: `{format_float(preprocess_delta_count)}`")
+        lines.append(f"- `byes_preprocess_latency_ms_sum` delta: `{format_float(preprocess_delta_sum)}`")
+        lines.append(
+            f"- `byes_preprocess_latency_ms_bucket` delta sum: "
+            f"`{format_float(aggregate_metric_sum(delta_samples, 'byes_preprocess_latency_ms_bucket'))}`"
+        )
 
         append_metric_details(lines, delta_samples, "byes_frame_completed_total", ["outcome"], "delta")
+        append_metric_details(lines, delta_samples, "byes_preprocess_bytes_total", ["variant"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_invoked_total", ["tool"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_timeout_total", ["tool"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_skipped_total", ["tool", "reason"], "delta")
