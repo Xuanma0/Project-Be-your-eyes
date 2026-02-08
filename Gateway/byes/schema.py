@@ -133,6 +133,7 @@ class EventEnvelope(BaseModel):
     priority: int = 0
     source: str
     riskLevel: RiskLevel | None = None
+    criticalReason: str | None = None
     healthStatus: HealthStatus | None = None
     healthReason: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -241,6 +242,7 @@ class LegacyEvent(BaseModel):
     ttlMs: int
     source: str
     riskLevel: RiskLevel | None = None
+    criticalReason: str | None = None
     stage: str | None = None
     riskText: str | None = None
     summary: str | None = None

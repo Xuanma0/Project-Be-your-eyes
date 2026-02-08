@@ -135,6 +135,9 @@ class GatewayConfig:
     throttled_ocr_every_n_frames: int = 4
     throttled_depth_every_n_frames: int = 1
     preempt_window_ms: int = 1500
+    critical_latch_ms: int = 1500
+    critical_near_m: float = 1.0
+    critical_from_crosscheck_kinds_csv: str = "vision_without_depth,depth_without_vision,transparent_obstacle,dropoff"
 
 
 def load_config() -> GatewayConfig:
@@ -248,4 +251,10 @@ def load_config() -> GatewayConfig:
         throttled_ocr_every_n_frames=_env_int("BYES_THROTTLED_OCR_EVERY_N_FRAMES", 4),
         throttled_depth_every_n_frames=_env_int("BYES_THROTTLED_DEPTH_EVERY_N_FRAMES", 1),
         preempt_window_ms=_env_int("BYES_PREEMPT_WINDOW_MS", 1500),
+        critical_latch_ms=_env_int("BYES_CRITICAL_LATCH_MS", 1500),
+        critical_near_m=_env_float("BYES_CRITICAL_NEAR_M", 1.0),
+        critical_from_crosscheck_kinds_csv=os.getenv(
+            "BYES_CRITICAL_FROM_CROSSCHECK_KINDS",
+            "vision_without_depth,depth_without_vision,transparent_obstacle,dropoff",
+        ),
     )

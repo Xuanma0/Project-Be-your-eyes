@@ -189,6 +189,7 @@ class Scheduler:
             frame_bytes=frame_bytes,
             meta=payload,
         )
+        frame.meta["_fast_risk_critical"] = False
         self._frame_by_seq[seq] = frame
         self._frame_tool_stats[seq] = {"invoked": 0, "timeout": 0, "skipped": 0}
         self._plan_by_seq[seq] = self._build_plan(frame)
@@ -227,7 +228,8 @@ class Scheduler:
                     await self._on_lane_results(queued.frame, lane, results)
                     if lane == ToolLane.FAST:
                         now_ms = _now_ms()
-                        if self._has_critical_risk_result(results):
+                        emitted_critical_risk = bool(queued.frame.meta.get("_fast_risk_critical", False))
+                        if emitted_critical_risk or self._has_critical_risk_result(results):
                             self._enter_preempt_window(now_ms)
                             self._record_critical_preempt_skip(queued.frame)
                             queued.frame.meta["_slow_enqueued"] = False

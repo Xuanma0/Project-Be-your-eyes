@@ -146,7 +146,7 @@ class GatewayApp:
         self.governor = SloGovernor(self.config, metrics=self.metrics)
         self.faults = FaultManager(self.metrics)
         self.intent = IntentManager()
-        self.world_state = WorldState(self.config)
+        self.world_state = WorldState(self.config, metrics=self.metrics)
         self.preempt_window = PreemptWindow()
         self.runtime_stats = RuntimeStats(window_size=50, ema_alpha=0.2)
         self.frame_tracker = FrameTracker(
@@ -201,6 +201,7 @@ class GatewayApp:
 
     async def startup(self) -> None:
         self._external_readiness = {}
+        self.registry.clear()
         startup_unavailable_tools: list[str] = []
         if self._tool_enabled("mock_risk"):
             self.registry.register(MockRiskTool(self.config))
@@ -626,6 +627,8 @@ class GatewayApp:
         span_id = str(frame.meta.get("spanId", "0" * 16))
         _reported_status, health_reason = self.degradation.get_health()
         health_status = self.degradation.state.value
+        if lane == ToolLane.FAST:
+            frame.meta["_fast_risk_critical"] = False
         fused = self.fusion.fuse_lane(
             frame=frame,
             lane=lane,
@@ -654,6 +657,12 @@ class GatewayApp:
                     self.metrics.inc_deadline_miss(lane.value)
                     continue
                 if await self._emit_event(event):
+                    if (
+                        lane == ToolLane.FAST
+                        and event.type == EventType.RISK
+                        and str(event.riskLevel.value if event.riskLevel is not None else event.payload.get("riskLevel", "warn")).strip().lower() == "critical"
+                    ):
+                        frame.meta["_fast_risk_critical"] = True
                     emitted_count += 1
 
         now = _now_ms()

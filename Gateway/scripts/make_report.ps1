@@ -14,6 +14,7 @@
     [switch]$CacheScenario,
     [switch]$QueuePressureScenario,
     [switch]$PreemptWindowScenario,
+    [switch]$EvidenceCriticalScenario,
     [switch]$CriticalPreemptScenario,
     [switch]$PlannerV1CrossCheck,
     [switch]$PlannerV1ThrottledAsk,
@@ -323,6 +324,8 @@ if ($RealDetActionPlan -and $RunName -eq "run_baseline") {
     $RunName = "run_queue_pressure_v23"
 } elseif ($PreemptWindowScenario -and $RunName -eq "run_baseline") {
     $RunName = "run_preempt_window_v25"
+} elseif ($EvidenceCriticalScenario -and $RunName -eq "run_baseline") {
+    $RunName = "run_evidence_critical_v26"
 } elseif ($CriticalPreemptScenario -and $RunName -eq "run_baseline") {
     $RunName = "run_critical_preempt_v24"
 } elseif ($RealDepthBaseline -and $RunName -eq "run_baseline") {
@@ -417,6 +420,10 @@ if ($CriticalPreemptScenario) {
     Write-Host "Inject critical-risk fault -> mock_risk"
     Set-CriticalRiskFault -BaseUrl $BaseUrl -ToolName "mock_risk"
 }
+if ($EvidenceCriticalScenario) {
+    Write-Host "Inject short slow fault -> mock_ocr (+700ms for 6000ms)"
+    Set-SlowFault -BaseUrl $BaseUrl -ToolName "mock_ocr" -DelayMs 700 -DurationMs 6000
+}
 
 Write-Host "[1/4] Start WS record -> $wsJsonl"
 Save-MetricsSnapshot -MetricsUrl $metricsUrl -OutputPath $metricsBefore
@@ -449,6 +456,21 @@ if ($PreemptWindowScenario) {
     }
 }
 
+$evidenceCriticalJob = $null
+if ($EvidenceCriticalScenario) {
+    Write-Host "Schedule delayed crosscheck evidence injection -> vision_without_depth (delay=300ms, duration=8000ms)"
+    $evidenceCriticalJob = Start-Job -ArgumentList $BaseUrl -ScriptBlock {
+        param($baseUrlInner)
+        Start-Sleep -Milliseconds 300
+        $url = "{0}/api/dev/crosscheck" -f $baseUrlInner.TrimEnd('/')
+        $body = @{
+            kind = "vision_without_depth"
+            durationMs = 8000
+        } | ConvertTo-Json
+        Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/json" -TimeoutSec 20 | Out-Null
+    }
+}
+
 Write-Host "[2/4] Send frames -> $framesDirAbs"
 $replayArgs = @(
     (Join-Path $scriptsDir "replay_send_frames.py"),
@@ -466,6 +488,9 @@ if ($CriticalPreemptScenario) {
     $replayArgs += @("--preserve-old")
 }
 if ($PreemptWindowScenario) {
+    $replayArgs += @("--preserve-old")
+}
+if ($EvidenceCriticalScenario) {
     $replayArgs += @("--preserve-old")
 }
 & python @replayArgs
@@ -499,6 +524,11 @@ if ($null -ne $preemptWindowJob) {
     Receive-Job -Job $preemptWindowJob -ErrorAction SilentlyContinue | Out-Null
     Remove-Job -Job $preemptWindowJob -Force -ErrorAction SilentlyContinue
 }
+if ($null -ne $evidenceCriticalJob) {
+    Wait-Job -Job $evidenceCriticalJob -Timeout 20 | Out-Null
+    Receive-Job -Job $evidenceCriticalJob -ErrorAction SilentlyContinue | Out-Null
+    Remove-Job -Job $evidenceCriticalJob -Force -ErrorAction SilentlyContinue
+}
 
 Write-Host "[4/4] Generate report -> $reportMd"
 Save-MetricsSnapshot -MetricsUrl $metricsUrl -OutputPath $metricsAfter
@@ -507,7 +537,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "report_run.py failed with code $LASTEXITCODE"
 }
 
-if ($TimeoutScenario -or $QueuePressureScenario -or $CriticalPreemptScenario -or $PreemptWindowScenario) {
+if ($TimeoutScenario -or $QueuePressureScenario -or $CriticalPreemptScenario -or $PreemptWindowScenario -or $EvidenceCriticalScenario) {
     $null = Invoke-RestMethod -Uri ("{0}/api/fault/clear" -f $BaseUrl.TrimEnd('/')) -Method Post -TimeoutSec 20
 }
 

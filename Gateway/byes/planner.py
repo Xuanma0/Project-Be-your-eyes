@@ -240,6 +240,9 @@ class PolicyPlannerV1:
                 crosscheck_kind=None,
                 crosscheck_force_tool=None,
                 crosscheck_force_expires_ms=-1,
+                critical_until_ms=-1,
+                critical_reason=None,
+                critical_last_set_ms=-1,
             )
         )
 

@@ -20,6 +20,9 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, BaseTool] = {}
 
+    def clear(self) -> None:
+        self._tools.clear()
+
     def register(self, tool: BaseTool) -> None:
         self._tools[tool.name] = tool
 

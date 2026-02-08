@@ -156,6 +156,23 @@ class GatewayMetrics:
             labelnames=("lane",),
             registry=self._registry,
         )
+        self.byes_critical_latch_active_gauge = Gauge(
+            "byes_critical_latch_active_gauge",
+            "Evidence-driven critical latch active state (0/1)",
+            registry=self._registry,
+        )
+        self.byes_critical_latch_enter_total = Counter(
+            "byes_critical_latch_enter_total",
+            "Critical latch enter count by evidence reason",
+            labelnames=("reason",),
+            registry=self._registry,
+        )
+        self.byes_risklevel_upgrade_total = Counter(
+            "byes_risklevel_upgrade_total",
+            "Risk-level upgrades caused by latch evidence",
+            labelnames=("from_level", "to_level", "reason"),
+            registry=self._registry,
+        )
         self.byes_tool_cache_hit_total = Counter(
             "byes_tool_cache_hit_total",
             "Number of tool cache hits",
@@ -305,6 +322,7 @@ class GatewayMetrics:
         self.byes_throttle_state_gauge.labels(state="NORMAL").set(1)
         self.byes_throttle_state_gauge.labels(state="THROTTLED").set(0)
         self.byes_preempt_window_active_gauge.set(0)
+        self.byes_critical_latch_active_gauge.set(0)
 
     def observe_e2e_latency(self, latency_ms: int) -> None:
         self.byes_e2e_latency_ms.observe(max(0, latency_ms))
@@ -377,6 +395,19 @@ class GatewayMetrics:
 
     def inc_preempt_drop_queued(self, lane: str, count: int = 1) -> None:
         self.byes_preempt_drop_queued_total.labels(lane=lane).inc(max(0, int(count)))
+
+    def set_critical_latch_active(self, active: int) -> None:
+        self.byes_critical_latch_active_gauge.set(max(0, min(1, int(active))))
+
+    def inc_critical_latch_enter(self, reason: str) -> None:
+        self.byes_critical_latch_enter_total.labels(reason=reason).inc()
+
+    def inc_risklevel_upgrade(self, from_level: str, to_level: str, reason: str) -> None:
+        self.byes_risklevel_upgrade_total.labels(
+            from_level=from_level,
+            to_level=to_level,
+            reason=reason,
+        ).inc()
 
     def inc_tool_cache_hit(self, tool: str) -> None:
         self.byes_tool_cache_hit_total.labels(tool=tool).inc()

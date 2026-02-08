@@ -38,6 +38,9 @@ class _SessionWorldState:
     crosscheck_force_expires_ms: int = -1
     crosscheck_last_trigger_ms: dict[str, int] = field(default_factory=dict)
     ask_guidance_last_emit_ms: int = -1
+    critical_until_ms: int = -1
+    critical_reason: str | None = None
+    critical_last_set_ms: int = -1
 
 
 @dataclass(frozen=True)
@@ -51,9 +54,15 @@ class WorldStateSnapshot:
     crosscheck_kind: str | None
     crosscheck_force_tool: str | None
     crosscheck_force_expires_ms: int
+    critical_until_ms: int
+    critical_reason: str | None
+    critical_last_set_ms: int
 
     def has_forced_tool(self, now_ms: int) -> bool:
         return bool(self.crosscheck_force_tool) and self.crosscheck_force_expires_ms > now_ms
+
+    def is_critical_active(self, now_ms: int) -> bool:
+        return self.critical_until_ms > now_ms
 
 
 class WorldState:
@@ -63,9 +72,16 @@ class WorldState:
         "vision_without_depth": "real_depth",
         "depth_without_vision": "real_det",
     }
+    _CRITICAL_REASON_TOKENS = {
+        "crosscheck",
+        "depth_near",
+        "hazard_persist",
+        "dev_inject",
+    }
 
-    def __init__(self, config: GatewayConfig) -> None:
+    def __init__(self, config: GatewayConfig, metrics: object | None = None) -> None:
         self._config = config
+        self._metrics = metrics
         self._retention_ms = max(5000, int(config.world_state_retention_ms))
         self._max_sessions = max(1, int(config.world_state_max_sessions))
         self._det_stale_ms = max(100, int(config.planner_det_stale_ms))
@@ -75,6 +91,7 @@ class WorldState:
         self._crosscheck_force_ms = max(100, int(config.planner_crosscheck_force_ms))
         self._crosscheck_cooldown_ms = max(0, int(config.planner_crosscheck_cooldown_ms))
         self._ask_guidance_cooldown_ms = max(0, int(config.planner_ask_guidance_cooldown_ms))
+        self._critical_latch_ms = max(1, int(config.critical_latch_ms))
         self._text_aliases = {
             item.strip().lower()
             for item in str(config.planner_text_object_aliases_csv).split(",")
@@ -84,6 +101,53 @@ class WorldState:
 
     def reset_runtime(self) -> None:
         self._sessions.clear()
+        self._set_critical_gauge()
+
+    def set_critical(
+        self,
+        now_ms: int,
+        duration_ms: int,
+        reason: str,
+        *,
+        session_id: str = "default",
+    ) -> None:
+        current_ms = int(now_ms)
+        session = self._session(session_id, current_ms)
+        normalized_reason = self._normalize_critical_reason(reason)
+        was_active = session.critical_until_ms > current_ms
+        session.critical_reason = normalized_reason
+        session.critical_last_set_ms = current_ms
+        duration = max(1, int(duration_ms)) if int(duration_ms) > 0 else self._critical_latch_ms
+        next_until_ms = current_ms + duration
+        if next_until_ms > session.critical_until_ms:
+            session.critical_until_ms = next_until_ms
+        session.last_updated_ms = current_ms
+        if not was_active:
+            self._metric_call("inc_critical_latch_enter", normalized_reason)
+        self._set_critical_gauge(current_ms)
+
+    def is_critical_active(self, now_ms: int, *, session_id: str = "default") -> bool:
+        current_ms = int(now_ms)
+        session = self._sessions.get(_safe_session_id(session_id))
+        if session is None:
+            self._set_critical_gauge(current_ms)
+            return False
+        if session.critical_until_ms > current_ms:
+            self._set_critical_gauge(current_ms)
+            return True
+        if session.critical_until_ms >= 0:
+            session.critical_until_ms = -1
+            session.critical_reason = None
+        self._set_critical_gauge(current_ms)
+        return False
+
+    def get_critical_reason(self, now_ms: int, *, session_id: str = "default") -> str | None:
+        if not self.is_critical_active(now_ms, session_id=session_id):
+            return None
+        session = self._sessions.get(_safe_session_id(session_id))
+        if session is None:
+            return None
+        return session.critical_reason
 
     def ingest_tool_results(
         self,
@@ -306,6 +370,9 @@ class WorldState:
                 crosscheck_kind=None,
                 crosscheck_force_tool=None,
                 crosscheck_force_expires_ms=-1,
+                critical_until_ms=-1,
+                critical_reason=None,
+                critical_last_set_ms=-1,
             )
         return WorldStateSnapshot(
             session_id=sid,
@@ -317,6 +384,9 @@ class WorldState:
             crosscheck_kind=session.crosscheck_kind,
             crosscheck_force_tool=session.crosscheck_force_tool,
             crosscheck_force_expires_ms=session.crosscheck_force_expires_ms,
+            critical_until_ms=session.critical_until_ms,
+            critical_reason=session.critical_reason,
+            critical_last_set_ms=session.critical_last_set_ms,
         )
 
     def _session(self, session_id: str, now_ms: int) -> _SessionWorldState:
@@ -342,6 +412,30 @@ class WorldState:
         while len(ordered) > self._max_sessions:
             session_id, _state = ordered.pop(0)
             self._sessions.pop(session_id, None)
+
+        self._set_critical_gauge(now_ms)
+
+    def _set_critical_gauge(self, now_ms: int | None = None) -> None:
+        current_ms = int(now_ms) if now_ms is not None else _now_ms()
+        active = 0
+        for session in self._sessions.values():
+            if session.critical_until_ms > current_ms:
+                active = 1
+                break
+        self._metric_call("set_critical_latch_active", active)
+
+    def _normalize_critical_reason(self, reason: str) -> str:
+        token = str(reason or "").strip().lower().replace("-", "_")
+        if token in self._CRITICAL_REASON_TOKENS:
+            return token
+        return "crosscheck"
+
+    def _metric_call(self, method: str, *args: Any) -> None:
+        if self._metrics is None:
+            return
+        fn = getattr(self._metrics, method, None)
+        if callable(fn):
+            fn(*args)
 
 
 def _evidence_to_dict(value: _Evidence | None) -> dict[str, Any] | None:
