@@ -97,7 +97,7 @@ def pick_health_status(event: dict[str, Any]) -> str:
     health_status = event.get("healthStatus")
     if isinstance(health_status, str):
         normalized = health_status.strip().upper()
-        if normalized in {"NORMAL", "DEGRADED", "SAFE_MODE", "WAITING_CLIENT"}:
+        if normalized in {"NORMAL", "THROTTLED", "DEGRADED", "SAFE_MODE", "WAITING_CLIENT"}:
             return normalized
 
     summary = str(event.get("summary", ""))
@@ -108,7 +108,7 @@ def pick_health_status(event: dict[str, Any]) -> str:
         payload_health_status = payload.get("healthStatus")
         if isinstance(payload_health_status, str):
             normalized = payload_health_status.strip().upper()
-            if normalized in {"NORMAL", "DEGRADED", "SAFE_MODE", "WAITING_CLIENT"}:
+            if normalized in {"NORMAL", "THROTTLED", "DEGRADED", "SAFE_MODE", "WAITING_CLIENT"}:
                 return normalized
         payload_status = payload.get("status")
         if isinstance(payload_status, str) and payload_status:
@@ -117,6 +117,8 @@ def pick_health_status(event: dict[str, Any]) -> str:
     text = " ".join([summary, status]).strip().lower()
     if "safe_mode" in text:
         return "SAFE_MODE"
+    if "throttled" in text:
+        return "THROTTLED"
     if "degraded" in text:
         return "DEGRADED"
     if "normal" in text:
@@ -363,6 +365,10 @@ def build_report(
         "byes_tool_rate_limited_total",
         "byes_frame_gate_skip_total",
         "byes_ttfa_count_total",
+        "byes_ttfa_outcome_total",
+        "byes_throttle_enter_total",
+        "byes_throttle_state_gauge",
+        "byes_slo_violation_total",
         "byes_safemode_enter_total",
         "byes_deadline_miss_total",
         "byes_backpressure_drop_total",
@@ -415,6 +421,9 @@ def build_report(
     append_metric_details(lines, after_samples, "byes_actiongate_block_total", ["reason"], "count")
     append_metric_details(lines, after_samples, "byes_actiongate_patch_total", ["reason"], "count")
     append_metric_details(lines, after_samples, "byes_ttfa_count_total", ["outcome", "kind"], "count")
+    append_metric_details(lines, after_samples, "byes_ttfa_outcome_total", ["outcome", "kind"], "count")
+    append_metric_details(lines, after_samples, "byes_throttle_state_gauge", ["state"], "count")
+    append_metric_details(lines, after_samples, "byes_slo_violation_total", ["kind"], "count")
     append_metric_details(lines, after_samples, "byes_hazard_emit_total", ["kind"], "count")
     append_metric_details(lines, after_samples, "byes_hazard_suppressed_total", ["reason"], "count")
     append_metric_details(lines, after_samples, "byes_hazard_persist_total", ["kind"], "count")
@@ -458,6 +467,10 @@ def build_report(
             "byes_tool_rate_limited_total",
             "byes_frame_gate_skip_total",
             "byes_ttfa_count_total",
+            "byes_ttfa_outcome_total",
+            "byes_throttle_enter_total",
+            "byes_throttle_state_gauge",
+            "byes_slo_violation_total",
             "byes_safemode_enter_total",
             "byes_deadline_miss_total",
             "byes_backpressure_drop_total",
@@ -516,6 +529,9 @@ def build_report(
         append_metric_details(lines, delta_samples, "byes_actiongate_block_total", ["reason"], "delta")
         append_metric_details(lines, delta_samples, "byes_actiongate_patch_total", ["reason"], "delta")
         append_metric_details(lines, delta_samples, "byes_ttfa_count_total", ["outcome", "kind"], "delta")
+        append_metric_details(lines, delta_samples, "byes_ttfa_outcome_total", ["outcome", "kind"], "delta")
+        append_metric_details(lines, delta_samples, "byes_throttle_state_gauge", ["state"], "delta")
+        append_metric_details(lines, delta_samples, "byes_slo_violation_total", ["kind"], "delta")
         append_metric_details(lines, delta_samples, "byes_hazard_emit_total", ["kind"], "delta")
         append_metric_details(lines, delta_samples, "byes_hazard_suppressed_total", ["reason"], "delta")
         append_metric_details(lines, delta_samples, "byes_hazard_persist_total", ["kind"], "delta")
@@ -524,10 +540,11 @@ def build_report(
         _append_tool_focus(lines, delta_samples, tool="real_depth", delta=True)
         _append_tool_focus(lines, delta_samples, tool="real_vlm", delta=True)
         completed_delta_total = aggregate_metric_sum(delta_samples, "byes_frame_completed_total")
-        ttfa_consistent = ttfa_delta_count <= completed_delta_total + 1e-9
+        ttfa_outcome_delta = aggregate_metric_sum(delta_samples, "byes_ttfa_outcome_total")
+        ttfa_consistent = abs(ttfa_outcome_delta - completed_delta_total) <= 1e-9
         lines.append(
-            f"- `ttfa_count_le_frame_completed`: `{ttfa_consistent}` "
-            f"(ttfa_count_delta=`{format_float(ttfa_delta_count)}`, frame_completed_delta=`{format_float(completed_delta_total)}`)"
+            f"- `ttfa_outcome_equals_frame_completed`: `{ttfa_consistent}` "
+            f"(ttfa_outcome_delta=`{format_float(ttfa_outcome_delta)}`, frame_completed_delta=`{format_float(completed_delta_total)}`)"
         )
 
         delta_changes = metric_details(delta_samples, "byes_degradation_state_change_total")

@@ -16,6 +16,7 @@ from byes.action_gate import ActionPlanGate
 from byes.faults import FaultManager
 from byes.frame_tracker import FrameTracker
 from byes.fusion import FusionEngine
+from byes.governor import SloGovernor
 from byes.intent import IntentManager
 from byes.metrics import GatewayMetrics
 from byes.observability import Observability
@@ -126,12 +127,14 @@ class GatewayApp:
         self.observability = Observability("be-your-eyes-gateway")
         self.registry = ToolRegistry()
         self.degradation = DegradationManager(self.config, self.metrics)
+        self.governor = SloGovernor(self.config, metrics=self.metrics)
         self.faults = FaultManager(self.metrics)
         self.intent = IntentManager()
         self.frame_tracker = FrameTracker(
             metrics=self.metrics,
             retention_ms=self.config.frame_tracker_retention_ms,
             max_entries=self.config.frame_tracker_max_entries,
+            governor=self.governor,
         )
         self.preprocessor = FramePreprocessor(self.config)
         self.fusion = FusionEngine(self.config, metrics=self.metrics)
@@ -206,6 +209,11 @@ class GatewayApp:
         active_question = self.intent.active_question()
         if active_intent == "ask" and active_question:
             enriched_meta["intentQuestion"] = active_question
+        governor_snapshot = self.governor.snapshot()
+        if "performanceMode" not in enriched_meta:
+            enriched_meta["performanceMode"] = governor_snapshot.mode
+        if "performanceReason" not in enriched_meta:
+            enriched_meta["performanceReason"] = governor_snapshot.reason
         enriched_meta["fingerprint"] = hashlib.sha1(frame_bytes).hexdigest()
 
         seq = await self.scheduler.submit_frame(
@@ -224,6 +232,7 @@ class GatewayApp:
         faults_snapshot = await self.faults.clear_faults()
         self.degradation.reset_runtime()
         self.frame_tracker.reset_runtime()
+        self.governor.reset_runtime()
         self.intent.reset_runtime()
         self.fusion.reset_runtime()
         self.scheduler.reset_runtime()
@@ -238,6 +247,8 @@ class GatewayApp:
             "frameTrackerRecords": self.frame_tracker.record_count,
             "intent": self.intent.active_intent(),
             "intentQuestion": self.intent.active_question(),
+            "performanceMode": self.governor.mode,
+            "performanceReason": self.governor.reason,
             "faults": faults_snapshot.get("faults", []),
         }
 
@@ -397,6 +408,13 @@ class GatewayApp:
             await asyncio.sleep(1.0)
             now_ms = _now_ms()
             self.degradation.tick()
+            queue_depth = self.scheduler.queue_depth_snapshot()
+            max_depth = max(queue_depth.values()) if queue_depth else 0
+            timeout_rate = self.degradation.timeout_rate()
+            governor_snapshot = self.governor.tick(
+                queue_depth=max_depth,
+                timeout_rate=timeout_rate,
+            )
             await self.emit_degradation_changes(
                 seq=0,
                 ts_capture_ms=now_ms,
@@ -409,6 +427,9 @@ class GatewayApp:
                 health_status = HealthStatus(health_status_raw)
             except ValueError:
                 health_status = HealthStatus.DEGRADED
+            if health_status in {HealthStatus.NORMAL, HealthStatus.WAITING_CLIENT} and governor_snapshot.mode == "THROTTLED":
+                health_status = HealthStatus.THROTTLED
+                health_reason = governor_snapshot.reason or "slo_pressure"
             if not health_reason:
                 health_reason = "tool_result:normal" if health_status == HealthStatus.NORMAL else "waiting_client"
             await self._emit_health_event(
@@ -442,11 +463,13 @@ class GatewayApp:
             if not stage_events:
                 continue
             now = _now_ms()
-            gated = self.action_gate.gate_events(
+            gated, blocked = self.action_gate.gate_events_with_diagnostics(
                 stage_events,
                 health_status=health_status,
                 health_reason=health_reason,
             )
+            for seq, reason, kind in blocked:
+                self.frame_tracker.note_ttfa_block(seq, f"action_gate:{reason}", kind)
             decision = self.safety.adjudicate(gated, now_ms=now)
             for event in decision.events:
                 if event.is_expired(now):
@@ -496,6 +519,8 @@ class GatewayApp:
         if self.degradation.is_safe_mode() and event.type in {EventType.PERCEPTION, EventType.ACTION_PLAN}:
             tool_name = str(event.source).split("@", 1)[0] if event.source else "unknown"
             self.metrics.inc_tool_skipped(tool_name, "safe_mode")
+            blocked_kind = "action_plan" if event.type == EventType.ACTION_PLAN else "none"
+            self.frame_tracker.note_ttfa_block(event.seq, "safe_mode", blocked_kind)
             return False
         if self.config.send_envelope:
             await self.connections.broadcast_json(event.model_dump(mode="json"))
@@ -550,12 +575,18 @@ async def _shutdown() -> None:
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     health_status, health_reason = gateway.degradation.get_health()
+    governor_snapshot = gateway.governor.snapshot()
+    if health_status in {"NORMAL", "WAITING_CLIENT"} and governor_snapshot.mode == "THROTTLED":
+        health_status = "THROTTLED"
+        health_reason = governor_snapshot.reason
     return {
         "ok": True,
         "ts": _now_ms(),
         "state": gateway.degradation.state.value,
         "healthStatus": health_status,
         "healthReason": health_reason,
+        "performanceMode": governor_snapshot.mode,
+        "performanceReason": governor_snapshot.reason,
         "clients": len(gateway.connections.active),
         "hadClientEverConnected": gateway.degradation.had_client_ever_connected,
         "intent": gateway.intent.active_intent(),

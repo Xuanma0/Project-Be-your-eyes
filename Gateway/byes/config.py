@@ -114,6 +114,15 @@ class GatewayConfig:
     planner_recent_window: int = 8
     fast_budget_ms: int = 500
     slow_budget_ms: int = 1200
+    slo_e2e_p95_ms: int = 400
+    slo_preproc_p95_ms: int = 80
+    slo_queue_depth_threshold: int = 24
+    slo_timeout_rate_threshold: float = 0.35
+    slo_window_size: int = 50
+    slo_recover_ticks: int = 3
+    throttled_det_every_n_frames: int = 3
+    throttled_ocr_every_n_frames: int = 4
+    throttled_depth_every_n_frames: int = 1
 
 
 def load_config() -> GatewayConfig:
@@ -203,4 +212,13 @@ def load_config() -> GatewayConfig:
         planner_recent_window=_env_int("BYES_PLANNER_RECENT_WINDOW", 8),
         fast_budget_ms=_env_int("BYES_FAST_BUDGET_MS", 500),
         slow_budget_ms=_env_int("BYES_SLOW_BUDGET_MS", 1200),
+        slo_e2e_p95_ms=_env_int("BYES_SLO_E2E_P95_MS", 400),
+        slo_preproc_p95_ms=_env_int("BYES_SLO_PREPROC_P95_MS", 80),
+        slo_queue_depth_threshold=_env_int("BYES_SLO_QUEUE_DEPTH_THRESHOLD", 24),
+        slo_timeout_rate_threshold=_env_float("BYES_SLO_TIMEOUT_RATE_THRESHOLD", 0.35),
+        slo_window_size=_env_int("BYES_SLO_WINDOW_SIZE", 50),
+        slo_recover_ticks=_env_int("BYES_SLO_RECOVER_TICKS", 3),
+        throttled_det_every_n_frames=_env_int("BYES_THROTTLED_DET_EVERY_N_FRAMES", 3),
+        throttled_ocr_every_n_frames=_env_int("BYES_THROTTLED_OCR_EVERY_N_FRAMES", 4),
+        throttled_depth_every_n_frames=_env_int("BYES_THROTTLED_DEPTH_EVERY_N_FRAMES", 1),
     )

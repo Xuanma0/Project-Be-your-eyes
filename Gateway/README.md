@@ -364,6 +364,21 @@ Legacy risk events remain backward compatible and now may include optional field
 - `byes_actiongate_block_total{reason}`
 - `byes_actiongate_patch_total{reason}`
 
+## v1.9 SLO Governor + TTFA Outcome
+
+- `byes_ttfa_ms` remains delivery-only latency (only observed when first `risk` or `action_plan` is emitted).
+- New strict accounting metric:
+- `byes_ttfa_outcome_total{outcome,kind}`
+- per-frame outcome is finalized exactly once at `complete_frame`, so run delta sum equals `frame_completed` delta.
+- SLO Governor introduces performance mode without adding calls:
+- mode: `NORMAL` / `THROTTLED`
+- on pressure (e2e p95 / preprocess p95 / queue depth / timeout rate), planner reduces non-critical slow tools.
+- safety remains unchanged: SAFE_MODE still only allows risk/health.
+- New governor metrics:
+- `byes_throttle_enter_total`
+- `byes_throttle_state_gauge{state}`
+- `byes_slo_violation_total{kind}`
+
 `byes_frame_gate_skip_total.reason` is constrained to:
 `intent_off`, `rate_limit`, `safe_mode`, `unchanged`, `ttl_risk`, `policy`.
 

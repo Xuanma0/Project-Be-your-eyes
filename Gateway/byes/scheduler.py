@@ -671,6 +671,12 @@ class Scheduler:
         self._metric_call("set_queue_depth", ToolLane.FAST.value, self._fast_q.qsize())
         self._metric_call("set_queue_depth", ToolLane.SLOW.value, self._slow_q.qsize())
 
+    def queue_depth_snapshot(self) -> dict[str, int]:
+        return {
+            ToolLane.FAST.value: self._fast_q.qsize(),
+            ToolLane.SLOW.value: self._slow_q.qsize(),
+        }
+
     @staticmethod
     def _drain_queue(queue: asyncio.Queue[_QueuedTask]) -> None:
         with contextlib.suppress(asyncio.QueueEmpty):

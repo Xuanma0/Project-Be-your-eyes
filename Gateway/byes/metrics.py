@@ -32,6 +32,12 @@ class GatewayMetrics:
             labelnames=("outcome", "kind"),
             registry=self._registry,
         )
+        self.byes_ttfa_outcome_total = Counter(
+            "byes_ttfa_outcome_total",
+            "Per-frame TTFA outcome accounting",
+            labelnames=("outcome", "kind"),
+            registry=self._registry,
+        )
         self.byes_tool_latency_ms = Histogram(
             "byes_tool_latency_ms",
             "Tool latency in milliseconds",
@@ -206,6 +212,23 @@ class GatewayMetrics:
             labelnames=("reason",),
             registry=self._registry,
         )
+        self.byes_throttle_enter_total = Counter(
+            "byes_throttle_enter_total",
+            "SLO governor throttle enter count",
+            registry=self._registry,
+        )
+        self.byes_throttle_state_gauge = Gauge(
+            "byes_throttle_state_gauge",
+            "SLO governor state gauge",
+            labelnames=("state",),
+            registry=self._registry,
+        )
+        self.byes_slo_violation_total = Counter(
+            "byes_slo_violation_total",
+            "SLO violation count by kind",
+            labelnames=("kind",),
+            registry=self._registry,
+        )
         self.byes_hazard_emit_total = Counter(
             "byes_hazard_emit_total",
             "Risk events emitted after hazard-memory filtering",
@@ -230,6 +253,8 @@ class GatewayMetrics:
             registry=self._registry,
         )
         self.byes_hazard_active_gauge.set(0)
+        self.byes_throttle_state_gauge.labels(state="NORMAL").set(1)
+        self.byes_throttle_state_gauge.labels(state="THROTTLED").set(0)
 
     def observe_e2e_latency(self, latency_ms: int) -> None:
         self.byes_e2e_latency_ms.observe(max(0, latency_ms))
@@ -239,6 +264,9 @@ class GatewayMetrics:
 
     def inc_ttfa_count(self, outcome: str, kind: str) -> None:
         self.byes_ttfa_count_total.labels(outcome=outcome, kind=kind).inc()
+
+    def inc_ttfa_outcome(self, outcome: str, kind: str) -> None:
+        self.byes_ttfa_outcome_total.labels(outcome=outcome, kind=kind).inc()
 
     def observe_tool_latency(self, tool: str, latency_ms: int) -> None:
         self.byes_tool_latency_ms.labels(tool=tool).observe(max(0, latency_ms))
@@ -333,6 +361,15 @@ class GatewayMetrics:
 
     def inc_actiongate_patch(self, reason: str) -> None:
         self.byes_actiongate_patch_total.labels(reason=reason).inc()
+
+    def inc_throttle_enter(self) -> None:
+        self.byes_throttle_enter_total.inc()
+
+    def set_throttle_state(self, state: str, value: int) -> None:
+        self.byes_throttle_state_gauge.labels(state=state).set(max(0, int(value)))
+
+    def inc_slo_violation(self, kind: str) -> None:
+        self.byes_slo_violation_total.labels(kind=kind).inc()
 
     def inc_hazard_emit(self, kind: str) -> None:
         self.byes_hazard_emit_total.labels(kind=kind).inc()

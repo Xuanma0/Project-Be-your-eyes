@@ -33,8 +33,23 @@ class ActionPlanGate:
         health_status: str,
         health_reason: str,
     ) -> list[EventEnvelope]:
+        filtered, _ = self.gate_events_with_diagnostics(
+            events,
+            health_status=health_status,
+            health_reason=health_reason,
+        )
+        return filtered
+
+    def gate_events_with_diagnostics(
+        self,
+        events: list[EventEnvelope],
+        *,
+        health_status: str,
+        health_reason: str,
+    ) -> tuple[list[EventEnvelope], list[tuple[int, str, str]]]:
         risk_snapshot = self._build_risk_snapshot(events)
         output: list[EventEnvelope] = []
+        blocked: list[tuple[int, str, str]] = []
         for event in events:
             result = self._gate_action_plan(
                 event,
@@ -44,12 +59,13 @@ class ActionPlanGate:
             )
             if not result.allowed:
                 self._metric_call("inc_actiongate_block", result.reason)
+                blocked.append((event.seq, result.reason, "action_plan"))
                 continue
             if result.patched:
                 self._metric_call("inc_actiongate_patch", result.reason)
             if result.event is not None:
                 output.append(result.event)
-        return output
+        return output, blocked
 
     def _gate_action_plan(
         self,

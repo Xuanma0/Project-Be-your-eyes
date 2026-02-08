@@ -67,6 +67,7 @@ class PolicyPlannerV0:
         tools: list[ToolDescriptor],
     ) -> ToolInvocationPlan:
         active_intent = str(frame.meta.get("intent", "none")).strip().lower()
+        performance_mode = str(frame.meta.get("performanceMode", "NORMAL")).strip().upper()
         _ = recent
         invocations: list[ToolInvocation] = []
 
@@ -96,6 +97,10 @@ class PolicyPlannerV0:
                     continue
                 elif tool.name == "real_vlm":
                     continue
+
+                if performance_mode == "THROTTLED":
+                    if not self._allow_in_throttled_mode(tool, frame.seq, active_intent):
+                        continue
 
                 invocations.append(
                     ToolInvocation(
@@ -142,3 +147,23 @@ class PolicyPlannerV0:
         if tool.name == "real_vlm" or capability == "vlm":
             return "full"
         return "full"
+
+    def _allow_in_throttled_mode(self, tool: ToolDescriptor, seq: int, active_intent: str) -> bool:
+        name = tool.name.strip().lower()
+        if name == "real_vlm":
+            return active_intent in {"ask", "qa"}
+        if name == "real_ocr":
+            if active_intent == "scan_text":
+                return True
+            every_n = max(1, int(self._config.throttled_ocr_every_n_frames))
+            return seq % every_n == 0
+        if name == "real_det":
+            every_n = max(1, int(self._config.throttled_det_every_n_frames))
+            return seq % every_n == 0
+        if name == "real_depth":
+            every_n = max(1, int(self._config.throttled_depth_every_n_frames))
+            return seq % every_n == 0
+        if name == "mock_ocr":
+            every_n = max(1, int(self._config.throttled_ocr_every_n_frames))
+            return seq % every_n == 0
+        return True

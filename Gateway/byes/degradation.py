@@ -84,6 +84,9 @@ class DegradationManager:
     def is_safe_mode(self) -> bool:
         return self._state == DegradationState.SAFE_MODE
 
+    def timeout_rate(self) -> float:
+        return self._timeout_rate()
+
     def set_ws_client_count(self, count: int) -> None:
         now_ms = self._now_ms_fn()
         previous_count = self._ws_client_count

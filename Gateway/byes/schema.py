@@ -32,6 +32,7 @@ class CoordFrame(str, Enum):
 
 class HealthStatus(str, Enum):
     NORMAL = "NORMAL"
+    THROTTLED = "THROTTLED"
     DEGRADED = "DEGRADED"
     SAFE_MODE = "SAFE_MODE"
     WAITING_CLIENT = "WAITING_CLIENT"
