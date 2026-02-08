@@ -330,14 +330,25 @@ class PolicyPlannerV1:
                 question=question,
             )
 
+        missing_expected = _missing_expected_tools(
+            self._config,
+            tools_by_name=tools_by_name,
+            active_intent=active_intent,
+            need_det=bool(need_det),
+            need_depth=bool(need_depth),
+            need_ocr=bool(need_ocr),
+            need_vlm=bool(need_vlm),
+        )
+        for tool_name in missing_expected:
+            _record_skip(self._metrics, skipped_tools, tool_name, REASON_UNAVAILABLE)
+            if tool_name == "real_vlm":
+                if working_world_state is None or working_world_state.should_emit_ask_guidance(
+                    session_id=session_id,
+                    now_ms=now_ms,
+                ):
+                    action_hints.append(_ask_guidance_hint("unavailable"))
+
         has_real_vlm = "real_vlm" in tools_by_name
-        if active_intent in {"ask", "qa"} and not has_real_vlm:
-            _record_skip(self._metrics, skipped_tools, "real_vlm", REASON_UNAVAILABLE)
-            if working_world_state is None or working_world_state.should_emit_ask_guidance(
-                session_id=session_id,
-                now_ms=now_ms,
-            ):
-                action_hints.append(_ask_guidance_hint("unavailable"))
 
         for tool in slow_tools:
             reason = REASON_POLICY
@@ -601,6 +612,57 @@ def _allow_in_throttled_mode(config: GatewayConfig, tool: ToolDescriptor, seq: i
         every_n = max(1, int(config.throttled_ocr_every_n_frames))
         return seq % every_n == 0
     return True
+
+
+def _missing_expected_tools(
+    config: GatewayConfig,
+    *,
+    tools_by_name: dict[str, ToolDescriptor],
+    active_intent: str,
+    need_det: bool,
+    need_depth: bool,
+    need_ocr: bool,
+    need_vlm: bool,
+) -> list[str]:
+    expected: list[str] = []
+    if active_intent in {"ask", "qa"}:
+        if need_vlm and _tool_config_enabled(config, "real_vlm"):
+            expected.append("real_vlm")
+    elif active_intent == "scan_text":
+        if need_ocr and _tool_config_enabled(config, "real_ocr"):
+            expected.append("real_ocr")
+    else:
+        if need_det and _tool_config_enabled(config, "real_det"):
+            expected.append("real_det")
+        if need_depth and _tool_config_enabled(config, "real_depth"):
+            expected.append("real_depth")
+        if need_ocr and _tool_config_enabled(config, "real_ocr"):
+            expected.append("real_ocr")
+
+    missing = [tool_name for tool_name in expected if tool_name not in tools_by_name]
+    return sorted(set(missing))
+
+
+def _tool_config_enabled(config: GatewayConfig, tool_name: str) -> bool:
+    normalized = str(tool_name).strip().lower()
+    if normalized == "real_det":
+        enabled = bool(config.enable_real_det)
+    elif normalized == "real_ocr":
+        enabled = bool(config.enable_real_ocr)
+    elif normalized == "real_depth":
+        enabled = bool(config.enable_real_depth)
+    elif normalized == "real_vlm":
+        enabled = bool(str(config.real_vlm_url).strip())
+    else:
+        enabled = False
+    if not enabled:
+        return False
+
+    enabled_csv = str(config.enabled_tools_csv).strip()
+    if not enabled_csv:
+        return True
+    configured = {item.strip().lower() for item in enabled_csv.split(",") if item.strip()}
+    return normalized in configured
 
 
 def _ask_guidance_hint(reason: str) -> dict[str, Any]:

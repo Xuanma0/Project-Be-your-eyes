@@ -14,6 +14,7 @@
     [switch]$CacheScenario,
     [switch]$PlannerV1CrossCheck,
     [switch]$PlannerV1ThrottledAsk,
+    [switch]$ExternalReadinessSmoke,
     [switch]$TimeoutScenario
 )
 
@@ -207,6 +208,49 @@ function Set-DevPerformance {
     }
 }
 
+function Invoke-ExternalReadinessSmoke {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BaseUrl
+    )
+
+    $url = "{0}/api/external_readiness" -f $BaseUrl.TrimEnd('/')
+    try {
+        $resp = Invoke-RestMethod -Uri $url -Method Get -TimeoutSec 20
+    } catch {
+        Write-Warning "External readiness smoke failed: $($_.Exception.Message)"
+        return
+    }
+
+    if ($null -eq $resp -or $null -eq $resp.tools) {
+        Write-Warning "External readiness smoke: empty response from $url"
+        return
+    }
+
+    $entries = $resp.tools.PSObject.Properties
+    if ($null -eq $entries -or $entries.Count -eq 0) {
+        Write-Host "External readiness smoke: no real_* tools configured."
+        return
+    }
+
+    foreach ($entry in $entries) {
+        $name = [string]$entry.Name
+        $item = $entry.Value
+        $ready = $false
+        if ($null -ne $item -and $null -ne $item.ready) {
+            $ready = [bool]$item.ready
+        }
+        $reason = if ($null -ne $item -and $null -ne $item.reason) { [string]$item.reason } else { "-" }
+        $backend = if ($null -ne $item -and $null -ne $item.backend) { [string]$item.backend } else { "-" }
+        $modelId = if ($null -ne $item -and $null -ne $item.model_id) { [string]$item.model_id } else { "-" }
+        if ($ready) {
+            Write-Host ("[READY] {0} backend={1} model_id={2} reason={3}" -f $name, $backend, $modelId, $reason)
+        } else {
+            Write-Warning ("[NOT_READY] {0} backend={1} model_id={2} reason={3}" -f $name, $backend, $modelId, $reason)
+        }
+    }
+}
+
 $scriptsDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $gatewayDir = Split-Path -Parent $scriptsDir
 $outDirAbs = if ([System.IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $gatewayDir $OutDir }
@@ -246,6 +290,10 @@ $metricsUrl = "{0}/metrics" -f $BaseUrl.TrimEnd('/')
 
 Write-Host "Reset gateway runtime state -> $BaseUrl"
 Reset-GatewayRuntime -BaseUrl $BaseUrl
+if ($ExternalReadinessSmoke) {
+    Write-Host "External readiness smoke"
+    Invoke-ExternalReadinessSmoke -BaseUrl $BaseUrl
+}
 if ($RealDetBaseline -or $RealDetActionPlan) {
     Write-Host "Validate tool availability -> real_det"
     Assert-ToolEnabled -BaseUrl $BaseUrl -ToolName "real_det"

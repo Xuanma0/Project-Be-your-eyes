@@ -5,8 +5,10 @@ import contextlib
 import hashlib
 import json
 import time
+from urllib.parse import urlparse, urlunparse
 from typing import Any, Literal
 
+import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ValidationError, model_validator
 
@@ -178,6 +180,7 @@ class GatewayApp:
         self._safe_mode_pulse_interval_ms = 1000
         self._last_meta_warn_ms: dict[str, int] = {"meta_missing": -1, "meta_parse_error": -1}
         self._enabled_tools = self._parse_csv_tools(self.config.enabled_tools_csv)
+        self._external_readiness: dict[str, dict[str, Any]] = {}
         self._forced_crosscheck_kind = "none"
         self._forced_crosscheck_expires_ms = -1
         self._forced_performance_mode = "NORMAL"
@@ -185,20 +188,36 @@ class GatewayApp:
         self._forced_performance_expires_ms = -1
 
     async def startup(self) -> None:
+        self._external_readiness = {}
+        startup_unavailable_tools: list[str] = []
         if self._tool_enabled("mock_risk"):
             self.registry.register(MockRiskTool(self.config))
         if self._tool_enabled("mock_ocr"):
             self.registry.register(MockOcrTool(self.config))
+
+        real_tools: list[tuple[str, str, Any]] = []
         if self.config.enable_real_det and self._tool_enabled("real_det"):
-            self.registry.register(RealDetTool(self.config))
+            real_tools.append(("real_det", self.config.real_det_endpoint, RealDetTool))
         if self.config.enable_real_ocr and self._tool_enabled("real_ocr"):
-            self.registry.register(RealOcrTool(self.config))
+            real_tools.append(("real_ocr", self.config.real_ocr_endpoint, RealOcrTool))
         if self.config.enable_real_depth and self._tool_enabled("real_depth"):
-            self.registry.register(RealDepthTool(self.config))
+            real_tools.append(("real_depth", self.config.real_depth_endpoint, RealDepthTool))
         if self.config.real_vlm_url.strip() and self._tool_enabled("real_vlm"):
-            self.registry.register(RealVlmTool(self.config))
+            real_tools.append(("real_vlm", self.config.real_vlm_url, RealVlmTool))
+
+        for tool_name, endpoint, factory in real_tools:
+            readiness = await self._probe_external_service(tool_name, endpoint)
+            self._external_readiness[tool_name] = readiness
+            if bool(readiness.get("ready", False)):
+                self.registry.register(factory(self.config))
+            else:
+                startup_unavailable_tools.append(tool_name)
+
         registered_tools = {item.name for item in self.registry.list_descriptors()}
         self.degradation.set_tool_inventory(registered_tools, self._enabled_tools or None)
+        for tool_name in startup_unavailable_tools:
+            self.metrics.inc_tool_skipped(tool_name, "unavailable")
+            self.degradation.record_unavailable(tool_name)
         self.observability.instrument_app(self.app)
         await self.scheduler.start()
         self.degradation.set_ws_client_count(0)
@@ -333,6 +352,54 @@ class GatewayApp:
         if not self._enabled_tools:
             return True
         return tool_name.strip().lower() in self._enabled_tools
+
+    @staticmethod
+    def _healthz_url_from_endpoint(endpoint: str) -> str:
+        parsed = urlparse(str(endpoint).strip())
+        if not parsed.scheme or not parsed.netloc:
+            return ""
+        return urlunparse((parsed.scheme, parsed.netloc, "/healthz", "", "", ""))
+
+    async def _probe_external_service(self, tool_name: str, endpoint: str) -> dict[str, Any]:
+        healthz_url = self._healthz_url_from_endpoint(endpoint)
+        snapshot: dict[str, Any] = {
+            "tool": tool_name,
+            "endpoint": endpoint,
+            "healthz": healthz_url,
+            "ready": False,
+            "reason": "probe_failed",
+        }
+        if not healthz_url:
+            snapshot["reason"] = "invalid_endpoint"
+            return snapshot
+
+        try:
+            timeout_s = max(0.2, self.config.default_ttl_ms / 3000.0)
+            async with httpx.AsyncClient(timeout=timeout_s) as client:
+                response = await client.get(healthz_url)
+            snapshot["httpStatus"] = int(response.status_code)
+            if response.status_code >= 400:
+                snapshot["reason"] = f"http_{response.status_code}"
+                return snapshot
+            payload = response.json()
+            if not isinstance(payload, dict):
+                snapshot["reason"] = "invalid_payload"
+                return snapshot
+            ready = bool(payload.get("ready", False))
+            warmed_up = bool(payload.get("warmed_up", False))
+            if ready and warmed_up:
+                snapshot["ready"] = True
+                snapshot["reason"] = "ok"
+            else:
+                snapshot["reason"] = "not_ready"
+            snapshot["backend"] = str(payload.get("backend", ""))
+            snapshot["model_id"] = str(payload.get("model_id", ""))
+            snapshot["version"] = str(payload.get("version", ""))
+            snapshot["warmed_up"] = warmed_up
+            return snapshot
+        except Exception as exc:  # noqa: BLE001
+            snapshot["reason"] = f"probe_error:{exc.__class__.__name__}"
+            return snapshot
 
     def _active_forced_crosscheck_kind(self) -> str:
         now_ms = _now_ms()
@@ -704,6 +771,11 @@ def mock_event() -> MockEvent:
 @app.get("/api/tools")
 def list_tools() -> dict[str, Any]:
     return {"tools": [item.__dict__ for item in gateway.registry.list_descriptors()]}
+
+
+@app.get("/api/external_readiness")
+def external_readiness() -> dict[str, Any]:
+    return {"tools": gateway._external_readiness}  # noqa: SLF001
 
 
 @app.post("/api/frame")

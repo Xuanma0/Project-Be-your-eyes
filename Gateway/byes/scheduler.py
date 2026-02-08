@@ -244,6 +244,7 @@ class Scheduler:
         available_map = {tool.name: tool for tool in available_tools}
 
         plan = self._plan_by_seq.get(queued.frame.seq)
+        self._emit_planner_unavailable_skips(queued.frame, plan)
         planned = plan.lane_invocations(lane) if plan is not None else []
         tools: list[BaseTool] = []
         planned_by_name: dict[str, Any] = {}
@@ -373,6 +374,28 @@ class Scheduler:
                 pass
         self._active_by_seq.pop(queued.frame.seq, None)
         return results
+
+    def _emit_planner_unavailable_skips(self, frame: FrameInput, plan: ToolInvocationPlan | None) -> None:
+        if plan is None:
+            return
+        if bool(frame.meta.get("_planner_unavailable_accounted", False)):
+            return
+        diagnostics = plan.diagnostics if isinstance(plan.diagnostics, dict) else {}
+        skipped = diagnostics.get("skipped_tools")
+        if not isinstance(skipped, list):
+            frame.meta["_planner_unavailable_accounted"] = True
+            return
+        for item in skipped:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("reason", "")).strip().lower() != "unavailable":
+                continue
+            tool_name = str(item.get("tool", "")).strip().lower()
+            if not tool_name:
+                continue
+            self._metric_call("inc_tool_skipped", tool_name, "unavailable")
+            self._inc_frame_stat(frame.seq, "skipped")
+        frame.meta["_planner_unavailable_accounted"] = True
 
     async def _run_single_tool(
         self,

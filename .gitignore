@@ -63,6 +63,7 @@ Gateway/.venv/
 Gateway/__pycache__/
 Gateway/artifacts/
 Gateway/run*.jsonl
+Gateway/frames/
 **/__pycache__/
 **/*.pyc
 **/*.pyo

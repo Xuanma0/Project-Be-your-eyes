@@ -10,3 +10,7 @@ pytest-asyncio
 httpx
 websockets
 Pillow
+requests
+PyYAML
+onnxruntime
+onnx

@@ -7,6 +7,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 
@@ -324,6 +325,7 @@ def build_report(
     ws_stats: dict[str, Any],
     after_samples: dict[SeriesKey, float],
     delta_samples: dict[SeriesKey, float] | None,
+    external_readiness: dict[str, Any] | None,
 ) -> str:
     lines: list[str] = []
     lines.append(f"# {markdown_title}")
@@ -331,6 +333,29 @@ def build_report(
     lines.append("## Inputs")
     lines.append(f"- ws jsonl: `{ws_jsonl}`")
     lines.append(f"- metrics source: `{metrics_source}`")
+    lines.append("")
+    lines.append("## External Readiness")
+    if not external_readiness:
+        lines.append("- unavailable")
+    else:
+        tools = external_readiness.get("tools", {})
+        if isinstance(tools, dict) and tools:
+            for tool_name in sorted(tools.keys()):
+                item = tools.get(tool_name)
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    "- `{0}`: ready=`{1}`, warmed_up=`{2}`, backend=`{3}`, model_id=`{4}`, reason=`{5}`".format(
+                        tool_name,
+                        item.get("ready", False),
+                        item.get("warmed_up", False),
+                        item.get("backend", ""),
+                        item.get("model_id", ""),
+                        item.get("reason", ""),
+                    )
+                )
+        else:
+            lines.append("- no configured real_* tools")
     lines.append("")
 
     lines.append("## WS Summary")
@@ -629,6 +654,7 @@ def main() -> int:
     parser.add_argument("--metrics-url", default="http://127.0.0.1:8000/metrics")
     parser.add_argument("--metrics-before", default=None)
     parser.add_argument("--metrics-after", default=None)
+    parser.add_argument("--external-readiness-url", default=None)
     parser.add_argument("--ws-jsonl", required=True)
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
@@ -676,6 +702,19 @@ def main() -> int:
         before_samples = parse_prometheus_text_to_map(before_text)
         delta_samples = compute_delta(before_samples, after_samples)
 
+    external_readiness: dict[str, Any] | None = None
+    readiness_url = args.external_readiness_url or _derive_external_readiness_url(args.metrics_url)
+    if readiness_url:
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                response = client.get(readiness_url)
+                response.raise_for_status()
+                payload = response.json()
+                if isinstance(payload, dict):
+                    external_readiness = payload
+        except Exception:
+            external_readiness = None
+
     report_title = f"Run Report - {ws_jsonl.stem}"
     report_text = build_report(
         report_title,
@@ -684,10 +723,18 @@ def main() -> int:
         ws_stats,
         after_samples,
         delta_samples,
+        external_readiness,
     )
     output.write_text(report_text + "\n", encoding="utf-8")
     print(f"report generated -> {output}")
     return 0
+
+
+def _derive_external_readiness_url(metrics_url: str) -> str:
+    parsed = urlparse(str(metrics_url).strip())
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return urlunparse((parsed.scheme, parsed.netloc, "/api/external_readiness", "", "", ""))
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ Gateway keeps Unity legacy WS protocol by default and adds hardening:
 - `GET /api/mock_event`
 - `POST /api/frame`
 - `GET /api/tools`
+- `GET /api/external_readiness`
 - `POST /api/fault/set`
 - `POST /api/fault/clear`
 - `POST /api/dev/reset`
@@ -39,7 +40,7 @@ Legacy WS event types now include: `risk`, `perception`, `health`, `action_plan`
 `FrameMeta` is optional; when Unity does not send meta, gateway behavior remains compatible.
 Gateway never injects `FrameMeta` into legacy WS JSON payloads.
 Health legacy events now also carry stable optional fields:
-- `healthStatus`: `NORMAL|DEGRADED|SAFE_MODE|WAITING_CLIENT`
+- `healthStatus`: `NORMAL|THROTTLED|DEGRADED|SAFE_MODE|WAITING_CLIENT`
 - `healthReason`: stable token such as `critical_timeout:mock_risk`
 
 ## RealDet Tool (v1.2 mainline start)
@@ -98,6 +99,44 @@ When set, only allowlisted tools are registered/planned.
 Low-cardinality skip reasons used by scheduler/report include:
 `safe_mode`, `degraded`, `disconnect`, `ttl_expired`, `max_inflight`, `policy`.
 
+## ModelPack + External Readiness (v2.1)
+
+ModelPack manifest lives at:
+
+- `external/modelpack/manifest.yaml`
+
+Pull placeholders (or real files if manifest has `url`):
+
+```bash
+cd Gateway
+python scripts/pull_models.py --manifest external/modelpack/manifest.yaml --models det,ocr,depth,vlm --out-dir external/modelpack/weights
+```
+
+`det` now ships with an ONNXRuntime entry in manifest (`backend=onnxruntime`).
+By default it downloads to:
+
+- `<BYES_WEIGHTS_DIR>/<model_id>/model.onnx`
+- example: `external/modelpack/weights/byes-real-det-onnx-cpu-v1/model.onnx`
+
+If `url` is missing in manifest, script creates placeholder files and prints:
+
+- `未配置下载源(url)，已创建占位文件`
+
+Every external real_* service now exposes `GET /healthz`:
+
+- response contract: `{ready, model_id, backend, version, warmed_up}`
+- startup performs mock load + warmup
+- env knobs: `BYES_BACKEND=mock|torch|onnx`, `BYES_MODEL_ID`, `BYES_WEIGHTS_DIR`
+
+Gateway startup probes enabled real_* services via `/healthz`:
+
+- ready + warmed_up => register tool
+- not ready => mark tool unavailable and record `reason=unavailable`
+- inspect probe snapshot via `GET /api/external_readiness`
+
+`report_run.py` also records external readiness snapshot (`real_det` model_id/backend/ready/warmed_up)
+in report markdown.
+
 ## External Inference Service (Minimal)
 
 Run local mock service (returns bbox/class/conf, configurable delay):
@@ -109,6 +148,23 @@ python -m venv .venv
 pip install -r requirements.txt
 python -m uvicorn main:app --host 127.0.0.1 --port 9001
 ```
+
+Run ONNXRuntime backend (CPU) for real inference:
+
+```bash
+cd Gateway
+python scripts/pull_models.py --models det --out-dir external/modelpack/weights
+set BYES_BACKEND=onnxruntime
+set BYES_MODEL_ID=byes-real-det-onnx-cpu-v1
+set BYES_WEIGHTS_DIR=%CD%\\external\\modelpack\\weights
+set BYES_MODEL_FILE=model.onnx
+cd external/real_det_service
+python -m uvicorn main:app --host 127.0.0.1 --port 9001
+```
+
+Readiness contract:
+- if model file missing: `/healthz` => `ready=false`, `/infer` => `503`
+- after startup warmup: `/healthz` => `ready=true`, `warmed_up=true`
 
 Optional Docker:
 
@@ -183,6 +239,13 @@ docker run --rm -p 9103:9103 byes-real-vlm
 Dev knobs for VLM service:
 - `VLM_SLEEP_MS`
 - `VLM_FAIL_PROB`
+
+Common readiness env for all external services:
+
+- `BYES_BACKEND=mock|torch|onnx` (default `mock`)
+- `BYES_MODEL_ID=<service_model_id>`
+- `BYES_WEIGHTS_DIR=/models`
+- `GET /healthz` must return `ready=true` and `warmed_up=true` before Gateway registers the tool
 
 ## Dev Intent API
 
@@ -452,6 +515,12 @@ Baseline:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RunName run_baseline
+```
+
+Optional external readiness smoke (prints all enabled real_* `/healthz` status, non-blocking for mock baseline):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RunName run_baseline -ExternalReadinessSmoke
 ```
 
 RealDet baseline (requires gateway started with `BYES_ENABLE_REAL_DET=1` and det service up):

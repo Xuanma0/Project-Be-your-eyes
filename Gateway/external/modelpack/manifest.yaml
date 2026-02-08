@@ -1,0 +1,36 @@
+version: 1
+models:
+  det:
+    model_id: byes-real-det-onnx-cpu-v1
+    backend: onnxruntime
+    file_name: model.onnx
+    input_size: 640
+    output_format: yolo
+    weights_path: byes-real-det-onnx-cpu-v1/model.onnx
+    url: https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.onnx
+    sha256: null
+    license_note: "YOLOv5n ONNX (GPLv3). Replace URL with your approved model source if needed."
+  ocr:
+    model_id: byes-real-ocr-v1
+    backend: mock
+    file_name: model.bin
+    weights_path: byes-real-ocr-v1/model.bin
+    sha256: null
+    url: null
+    license_note: "Placeholder model entry for OCR."
+  depth:
+    model_id: byes-real-depth-v1
+    backend: mock
+    file_name: model.bin
+    weights_path: byes-real-depth-v1/model.bin
+    sha256: null
+    url: null
+    license_note: "Placeholder model entry for depth hazards."
+  vlm:
+    model_id: byes-real-vlm-v1
+    backend: mock
+    file_name: model.bin
+    weights_path: byes-real-vlm-v1/model.bin
+    sha256: null
+    url: null
+    license_note: "Placeholder model entry for VLM."
