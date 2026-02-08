@@ -53,15 +53,9 @@ class FusionEngine:
             )
             return FusionOutput(events=[event])
 
-        ocr = self._pick_ocr(ok_results)
-        if ocr is None:
+        perception_payload = self._build_perception_payload(ok_results)
+        if perception_payload is None:
             return FusionOutput(events=[])
-
-        confidence = ocr.confidence
-        reason = "single_source"
-        if len(ok_results) > 1:
-            confidence = confidence * 0.9
-            reason = "multi_source_normalized"
 
         event = EventEnvelope(
             type=EventType.PERCEPTION,
@@ -71,16 +65,10 @@ class FusionEngine:
             tsCaptureMs=frame.ts_capture_ms,
             ttlMs=frame.ttl_ms,
             coordFrame=CoordFrame.WORLD,
-            confidence=confidence,
+            confidence=perception_payload["confidence"],
             priority=self._config.perception_priority,
-            source=f"{ocr.toolName}@{ocr.toolVersion}",
-            payload={
-                "summary": ocr.payload.get("text", "Perception detected"),
-                "reason": reason,
-                "riskText": None,
-                "distanceM": None,
-                "azimuthDeg": None,
-            },
+            source=perception_payload["source"],
+            payload=perception_payload["payload"],
         )
         return FusionOutput(events=[event])
 
@@ -141,3 +129,58 @@ class FusionEngine:
         if not candidates:
             return None
         return max(candidates, key=lambda item: item.confidence)
+
+    def _pick_det(self, results: list[ToolResult]) -> ToolResult | None:
+        candidates = [item for item in results if isinstance(item.payload.get("detections"), list)]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: item.confidence)
+
+    def _build_perception_payload(self, results: list[ToolResult]) -> dict[str, object] | None:
+        ocr = self._pick_ocr(results)
+        det = self._pick_det(results)
+        if ocr is None and det is None:
+            return None
+
+        if ocr is not None and det is not None:
+            confidence = max(0.0, min(1.0, (ocr.confidence * 0.5) + (det.confidence * 0.5)))
+            summary = str(ocr.payload.get("text", "")) or str(det.payload.get("summary", "Perception detected"))
+            return {
+                "confidence": confidence,
+                "source": f"{ocr.toolName}@{ocr.toolVersion}",
+                "payload": {
+                    "summary": summary,
+                    "reason": "multi_source_normalized",
+                    "detections": det.payload.get("detections", []),
+                    "riskText": None,
+                    "distanceM": None,
+                    "azimuthDeg": None,
+                },
+            }
+
+        if ocr is not None:
+            return {
+                "confidence": ocr.confidence,
+                "source": f"{ocr.toolName}@{ocr.toolVersion}",
+                "payload": {
+                    "summary": ocr.payload.get("text", "Perception detected"),
+                    "reason": "single_source_ocr",
+                    "riskText": None,
+                    "distanceM": None,
+                    "azimuthDeg": None,
+                },
+            }
+
+        assert det is not None
+        return {
+            "confidence": det.confidence,
+            "source": f"{det.toolName}@{det.toolVersion}",
+            "payload": {
+                "summary": det.payload.get("summary", "Perception detected"),
+                "reason": "single_source_det",
+                "detections": det.payload.get("detections", []),
+                "riskText": None,
+                "distanceM": None,
+                "azimuthDeg": None,
+            },
+        }

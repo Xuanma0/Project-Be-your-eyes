@@ -39,6 +39,10 @@ class BaseTool(ABC):
     degradable: bool
     capability: str
 
+    def should_skip(self, frame: FrameInput) -> str | None:
+        _ = frame
+        return None
+
     @abstractmethod
     async def infer(self, frame: FrameInput, ctx: ToolContext) -> ToolResult:
         raise NotImplementedError

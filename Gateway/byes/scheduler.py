@@ -252,6 +252,22 @@ class Scheduler:
         )
         trace = TraceInfo(trace_id=queued.trace_id, span_id=queued.span_id, context=None)
 
+        pre_skip_reason = self._safe_call(tool, "should_skip", frame, default=None)
+        if isinstance(pre_skip_reason, str) and pre_skip_reason.strip():
+            reason = self._normalize_skip_reason(pre_skip_reason)
+            self._metric_call("inc_tool_skipped", tool.name, reason)
+            return ToolResult(
+                toolName=tool.name,
+                toolVersion=tool.version,
+                seq=frame.seq,
+                tsCaptureMs=frame.ts_capture_ms,
+                latencyMs=0,
+                confidence=0.0,
+                status=ToolStatus.CANCELLED,
+                error=f"skipped:{reason}",
+                payload={},
+            )
+
         started = time.perf_counter()
         success_elapsed_ms = 0
         self._metric_call("inc_tool_invoked", tool.name)
@@ -369,6 +385,22 @@ class Scheduler:
             return "safe_mode"
         if degraded and lane == ToolLane.SLOW:
             return "degraded"
+        return "policy"
+
+    def _normalize_skip_reason(self, reason: str) -> str:
+        normalized = reason.strip().lower().replace("-", "_")
+        allowed = {
+            "policy",
+            "degraded",
+            "safe_mode",
+            "disconnect",
+            "ttl_expired",
+            "max_inflight",
+            "queue_drop",
+            "unavailable",
+        }
+        if normalized in allowed:
+            return normalized
         return "policy"
 
     def _complete_frame(self, frame: FrameInput, outcome: str) -> None:

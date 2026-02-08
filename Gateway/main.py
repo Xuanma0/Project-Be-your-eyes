@@ -20,7 +20,7 @@ from byes.safety import SafetyKernel
 from byes.scheduler import Scheduler
 from byes.schema import CoordFrame, EventEnvelope, EventType
 from byes.tool_registry import ToolRegistry
-from byes.tools import MockOcrTool, MockRiskTool
+from byes.tools import MockOcrTool, MockRiskTool, RealDetTool
 from byes.tools.base import FrameInput, ToolLane
 
 
@@ -122,6 +122,8 @@ class GatewayApp:
     async def startup(self) -> None:
         self.registry.register(MockRiskTool(self.config))
         self.registry.register(MockOcrTool(self.config))
+        if self.config.enable_real_det:
+            self.registry.register(RealDetTool(self.config))
         self.observability.instrument_app(self.app)
         await self.scheduler.start()
         self.degradation.set_ws_client_count(0)

@@ -62,6 +62,12 @@ class GatewayConfig:
     mock_tool_timeout_ms: int
     frame_tracker_retention_ms: int = 120000
     frame_tracker_max_entries: int = 20000
+    enable_real_det: bool = False
+    real_det_endpoint: str = "http://127.0.0.1:9001/infer"
+    real_det_timeout_ms: int = 600
+    real_det_p95_budget_ms: int = 450
+    real_det_max_inflight: int = 2
+    real_det_queue_policy: str = "drop"
 
 
 def load_config() -> GatewayConfig:
@@ -96,4 +102,10 @@ def load_config() -> GatewayConfig:
         mock_tool_timeout_ms=_env_int("BYES_MOCK_TOOL_TIMEOUT_MS", 1200),
         frame_tracker_retention_ms=_env_int("BYES_FRAME_TRACKER_RETENTION_MS", 120000),
         frame_tracker_max_entries=_env_int("BYES_FRAME_TRACKER_MAX_ENTRIES", 20000),
+        enable_real_det=_env_bool("BYES_ENABLE_REAL_DET", False),
+        real_det_endpoint=os.getenv("BYES_REAL_DET_ENDPOINT", "http://127.0.0.1:9001/infer"),
+        real_det_timeout_ms=_env_int("BYES_REAL_DET_TIMEOUT_MS", 600),
+        real_det_p95_budget_ms=_env_int("BYES_REAL_DET_P95_BUDGET_MS", 450),
+        real_det_max_inflight=_env_int("BYES_REAL_DET_MAX_INFLIGHT", 2),
+        real_det_queue_policy=os.getenv("BYES_REAL_DET_QUEUE_POLICY", "drop"),
     )
