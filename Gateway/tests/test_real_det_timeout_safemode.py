@@ -99,12 +99,17 @@ def _metric_total(samples: dict[SeriesKey, float], name: str) -> float:
     return sum(value for (metric, _labels), value in samples.items() if metric == name)
 
 
+def _metric_with_labels(samples: dict[SeriesKey, float], name: str, labels: dict[str, str]) -> float:
+    labels_key = tuple(sorted(labels.items(), key=lambda item: item[0]))
+    return samples.get((name, labels_key), 0.0)
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
 @pytest.mark.asyncio
-async def test_real_det_timeout_enters_safemode_and_preserves_per_frame_e2e() -> None:
+async def test_real_det_timeout_noncritical_stays_degraded_and_preserves_per_frame_e2e() -> None:
     cfg = _cfg()
     metrics = GatewayMetrics()
     registry = ToolRegistry()
@@ -204,11 +209,17 @@ async def test_real_det_timeout_enters_safemode_and_preserves_per_frame_e2e() ->
     safemode_enter_delta = _metric_total(after, "byes_safemode_enter_total") - _metric_total(
         baseline_metrics, "byes_safemode_enter_total"
     )
+    real_det_timeout_delta = _metric_with_labels(after, "byes_tool_timeout_total", {"tool": "real_det"}) - _metric_with_labels(
+        baseline_metrics,
+        "byes_tool_timeout_total",
+        {"tool": "real_det"},
+    )
 
     assert int(round(frame_received_delta)) == total_frames
     assert int(round(frame_completed_delta)) == total_frames
     assert int(round(e2e_count_delta)) == total_frames
-    assert safemode_enter_delta >= 1
+    assert int(round(safemode_enter_delta)) == 0
+    assert real_det_timeout_delta > 0
 
     safe_mode_perception = [item for item in emitted if item["safe_mode"] and item["type"] == EventType.PERCEPTION.value]
     assert safe_mode_perception == []

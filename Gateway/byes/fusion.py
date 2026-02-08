@@ -73,6 +73,11 @@ class FusionEngine:
             )
             events.append(perception_event)
 
+        depth = self._pick_depth(ok_results)
+        risk_from_depth = self._risk_from_depth(depth, frame, trace_id, span_id)
+        if risk_from_depth is not None:
+            events.append(risk_from_depth)
+
         det = self._pick_det(ok_results)
         risk_semantic = self._risk_from_det(det, frame, trace_id, span_id)
         if risk_semantic is not None:
@@ -83,7 +88,8 @@ class FusionEngine:
             trace_id=trace_id,
             span_id=span_id,
             perception=perception_event,
-            risk=risk_semantic,
+            risk=risk_from_depth or risk_semantic,
+            depth=depth,
         )
         if action_plan is not None:
             events.append(action_plan)
@@ -145,6 +151,16 @@ class FusionEngine:
             "ttlMs": event.ttlMs,
             "source": event.source,
             "summary": payload.get("summary", payload.get("status", "health")),
+            "healthStatus": (
+                event.healthStatus.value
+                if event.healthStatus is not None
+                else payload.get("healthStatus")
+            ),
+            "healthReason": (
+                event.healthReason
+                if event.healthReason is not None
+                else payload.get("healthReason", payload.get("reason"))
+            ),
             "riskText": None,
             "distanceM": None,
             "azimuthDeg": None,
@@ -170,15 +186,26 @@ class FusionEngine:
             return None
         return max(candidates, key=lambda item: item.confidence)
 
+    def _pick_depth(self, results: list[ToolResult]) -> ToolResult | None:
+        candidates = [item for item in results if isinstance(item.payload.get("hazards"), list)]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: item.confidence)
+
     def _build_perception_payload(self, results: list[ToolResult]) -> dict[str, object] | None:
         ocr = self._pick_ocr(results)
         det = self._pick_det(results)
-        if ocr is None and det is None:
+        depth = self._pick_depth(results)
+        if ocr is None and det is None and depth is None:
             return None
 
         if ocr is not None and det is not None:
             confidence = max(0.0, min(1.0, (ocr.confidence * 0.5) + (det.confidence * 0.5)))
-            summary = str(ocr.payload.get("text", "")) or str(det.payload.get("summary", "Perception detected"))
+            summary = (
+                str(ocr.payload.get("text", ""))
+                or str(det.payload.get("summary", "Perception detected"))
+                or (str(depth.payload.get("summary", "")) if depth is not None else "Perception detected")
+            )
             return {
                 "confidence": confidence,
                 "source": f"{ocr.toolName}@{ocr.toolVersion}",
@@ -186,6 +213,7 @@ class FusionEngine:
                     "summary": summary,
                     "reason": "multi_source_normalized",
                     "detections": det.payload.get("detections", []),
+                    "hazards": depth.payload.get("hazards", []) if depth is not None else [],
                     "riskText": None,
                     "distanceM": None,
                     "azimuthDeg": None,
@@ -199,20 +227,36 @@ class FusionEngine:
                 "payload": {
                     "summary": ocr.payload.get("text", "Perception detected"),
                     "reason": "single_source_ocr",
+                    "hazards": depth.payload.get("hazards", []) if depth is not None else [],
                     "riskText": None,
                     "distanceM": None,
                     "azimuthDeg": None,
                 },
             }
 
-        assert det is not None
+        if det is not None:
+            return {
+                "confidence": det.confidence,
+                "source": f"{det.toolName}@{det.toolVersion}",
+                "payload": {
+                    "summary": det.payload.get("summary", "Perception detected"),
+                    "reason": "single_source_det",
+                    "detections": det.payload.get("detections", []),
+                    "hazards": depth.payload.get("hazards", []) if depth is not None else [],
+                    "riskText": None,
+                    "distanceM": None,
+                    "azimuthDeg": None,
+                },
+            }
+
+        assert depth is not None
         return {
-            "confidence": det.confidence,
-            "source": f"{det.toolName}@{det.toolVersion}",
+            "confidence": depth.confidence,
+            "source": f"{depth.toolName}@{depth.toolVersion}",
             "payload": {
-                "summary": det.payload.get("summary", "Perception detected"),
-                "reason": "single_source_det",
-                "detections": det.payload.get("detections", []),
+                "summary": depth.payload.get("summary", "Depth updated"),
+                "reason": "single_source_depth",
+                "hazards": depth.payload.get("hazards", []),
                 "riskText": None,
                 "distanceM": None,
                 "azimuthDeg": None,
@@ -270,6 +314,68 @@ class FusionEngine:
             },
         )
 
+    def _risk_from_depth(
+        self,
+        depth: ToolResult | None,
+        frame: FrameInput,
+        trace_id: str,
+        span_id: str,
+    ) -> EventEnvelope | None:
+        if depth is None:
+            return None
+        hazards = depth.payload.get("hazards")
+        if not isinstance(hazards, list) or not hazards:
+            return None
+
+        chosen: dict[str, object] | None = None
+        for item in hazards:
+            if not isinstance(item, dict):
+                continue
+            try:
+                distance_m = float(item.get("distanceM"))
+                azimuth_deg = float(item.get("azimuthDeg"))
+                confidence = max(0.0, min(1.0, float(item.get("confidence", 0.0))))
+            except (TypeError, ValueError):
+                continue
+            if distance_m >= float(self._config.real_depth_hazard_distance_threshold_m):
+                continue
+            if abs(azimuth_deg) > float(self._config.real_depth_hazard_azimuth_threshold_deg):
+                continue
+            if chosen is None or distance_m < float(chosen.get("distanceM", 9999.0)):
+                chosen = {
+                    "distanceM": distance_m,
+                    "azimuthDeg": azimuth_deg,
+                    "confidence": confidence,
+                    "kind": str(item.get("kind", "obstacle")),
+                }
+
+        if chosen is None:
+            return None
+
+        kind = str(chosen.get("kind", "obstacle"))
+        distance_m = float(chosen.get("distanceM", 0.0))
+        azimuth_deg = float(chosen.get("azimuthDeg", 0.0))
+        confidence = float(chosen.get("confidence", 0.0))
+        return EventEnvelope(
+            type=EventType.RISK,
+            traceId=trace_id,
+            spanId=span_id,
+            seq=frame.seq,
+            tsCaptureMs=frame.ts_capture_ms,
+            ttlMs=frame.ttl_ms,
+            coordFrame=CoordFrame.WORLD,
+            confidence=confidence,
+            priority=self._config.risk_priority,
+            source=f"{depth.toolName}@{depth.toolVersion}",
+            payload={
+                "riskText": f"Depth hazard ahead: {kind}",
+                "distanceM": distance_m,
+                "azimuthDeg": azimuth_deg,
+                "summary": f"{kind} at {distance_m:.2f}m ahead",
+                "reason": "depth_hazard_risk",
+            },
+        )
+
     def _action_plan_from_semantics(
         self,
         frame: FrameInput,
@@ -277,6 +383,7 @@ class FusionEngine:
         span_id: str,
         perception: EventEnvelope | None,
         risk: EventEnvelope | None,
+        depth: ToolResult | None,
     ) -> EventEnvelope | None:
         if perception is None and risk is None:
             return None
@@ -294,15 +401,30 @@ class FusionEngine:
             source = risk.source
         else:
             assert perception is not None
-            steps = [
-                ActionStep(action=ActionType.MOVE, text="Proceed carefully."),
-                ActionStep(action=ActionType.CONFIRM, text="Confirm path remains clear."),
-            ]
-            mode = "assist"
+            depth_available = (
+                depth is not None and isinstance(depth.payload.get("hazards"), list)
+            )
+            if depth_available:
+                steps = [
+                    ActionStep(action=ActionType.MOVE, text="Proceed carefully."),
+                    ActionStep(action=ActionType.CONFIRM, text="Confirm path remains clear."),
+                ]
+                mode = "assist"
+                speech_prefix = "Perception updated."
+                hud_prefix = ""
+            else:
+                # Depth lane missing/timeout: bias action plan to conservative scan.
+                steps = [
+                    ActionStep(action=ActionType.SCAN, text="Scan surroundings for safety."),
+                    ActionStep(action=ActionType.CONFIRM, text="Confirm path before moving."),
+                ]
+                mode = "degraded_assist"
+                speech_prefix = "Depth unavailable."
+                hud_prefix = "Depth unavailable. "
             overall_conf = perception.confidence
             summary = str(perception.payload.get("summary", "Perception updated"))
-            speech = f"{summary}. Proceed carefully."
-            hud = summary
+            speech = f"{speech_prefix} {summary}".strip()
+            hud = f"{hud_prefix}{summary}".strip()
             source = perception.source
 
         plan = ActionPlan(

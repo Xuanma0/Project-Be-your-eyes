@@ -94,11 +94,22 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def pick_health_status(event: dict[str, Any]) -> str:
+    health_status = event.get("healthStatus")
+    if isinstance(health_status, str):
+        normalized = health_status.strip().upper()
+        if normalized in {"NORMAL", "DEGRADED", "SAFE_MODE", "WAITING_CLIENT"}:
+            return normalized
+
     summary = str(event.get("summary", ""))
     status = str(event.get("status", ""))
 
     payload = event.get("payload")
     if isinstance(payload, dict):
+        payload_health_status = payload.get("healthStatus")
+        if isinstance(payload_health_status, str):
+            normalized = payload_health_status.strip().upper()
+            if normalized in {"NORMAL", "DEGRADED", "SAFE_MODE", "WAITING_CLIENT"}:
+                return normalized
         payload_status = payload.get("status")
         if isinstance(payload_status, str) and payload_status:
             status = payload_status
@@ -110,14 +121,41 @@ def pick_health_status(event: dict[str, Any]) -> str:
         return "DEGRADED"
     if "normal" in text:
         return "NORMAL"
+    if "waiting_client" in text:
+        return "WAITING_CLIENT"
     if text:
         return "HEALTH_OTHER"
     return "HEALTH_UNKNOWN"
 
 
+def pick_health_reason(event: dict[str, Any]) -> str:
+    reason = event.get("healthReason")
+    if isinstance(reason, str) and reason.strip():
+        return reason.strip()
+
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        payload_reason = payload.get("healthReason")
+        if isinstance(payload_reason, str) and payload_reason.strip():
+            return payload_reason.strip()
+        payload_reason = payload.get("reason")
+        if isinstance(payload_reason, str) and payload_reason.strip():
+            return payload_reason.strip()
+
+    summary = str(event.get("summary", "")).strip()
+    start = summary.rfind("(")
+    end = summary.rfind(")")
+    if start >= 0 and end > start:
+        parsed = summary[start + 1 : end].strip()
+        if parsed:
+            return parsed
+    return "unknown"
+
+
 def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     event_type_counter: Counter[str] = Counter()
     state_counter: Counter[str] = Counter()
+    reason_counter: Counter[str] = Counter()
     expired_emitted = 0
     first_safe_mode_ms: int | None = None
     safe_mode_active = False
@@ -135,6 +173,7 @@ def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if event_type == "health":
             health_state = pick_health_status(event)
             state_counter[health_state] += 1
+            reason_counter[pick_health_reason(event)] += 1
             if health_state == "SAFE_MODE":
                 if first_safe_mode_ms is None:
                     first_safe_mode_ms = _row_time_ms(row, event)
@@ -157,6 +196,7 @@ def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "total_rows": len(rows),
         "event_types": dict(sorted(event_type_counter.items(), key=lambda item: item[0])),
         "states": dict(sorted(state_counter.items(), key=lambda item: item[0])),
+        "health_reasons_topk": reason_counter.most_common(8),
         "expired_emitted": expired_emitted,
         "safe_mode_first_ms": first_safe_mode_ms,
         "safe_mode_perception_violations": perception_after_safe_mode,
@@ -273,9 +313,12 @@ def build_report(
     lines.append("- event type counts:")
     for key, value in ws_stats["event_types"].items():
         lines.append(f"  - `{key}`: `{value}`")
-    lines.append("- health/degradation counts:")
+    lines.append("- healthStatus counts:")
     for key, value in ws_stats["states"].items():
         lines.append(f"  - `{key}`: `{value}`")
+    lines.append("- healthReason topK:")
+    for reason, count in ws_stats["health_reasons_topk"]:
+        lines.append(f"  - `{reason}`: `{count}`")
     lines.append("- safe-mode perception violations:")
     lines.append(f"  - `first_safe_mode_ms`: `{ws_stats['safe_mode_first_ms']}`")
     lines.append(f"  - `perception_after_safe_mode`: `{ws_stats['safe_mode_perception_violations']}`")
@@ -323,6 +366,7 @@ def build_report(
     append_metric_details(lines, after_samples, "byes_frame_gate_skip_total", ["tool", "reason"], "count")
     _append_tool_focus(lines, after_samples, tool="real_det", delta=False)
     _append_tool_focus(lines, after_samples, tool="real_ocr", delta=False)
+    _append_tool_focus(lines, after_samples, tool="real_depth", delta=False)
 
     raw_changes = metric_details(after_samples, "byes_degradation_state_change_total")
     if raw_changes:
@@ -383,6 +427,7 @@ def build_report(
         append_metric_details(lines, delta_samples, "byes_frame_gate_skip_total", ["tool", "reason"], "delta")
         _append_tool_focus(lines, delta_samples, tool="real_det", delta=True)
         _append_tool_focus(lines, delta_samples, tool="real_ocr", delta=True)
+        _append_tool_focus(lines, delta_samples, tool="real_depth", delta=True)
 
         delta_changes = metric_details(delta_samples, "byes_degradation_state_change_total")
         if delta_changes:

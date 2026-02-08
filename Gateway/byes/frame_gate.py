@@ -132,6 +132,25 @@ class FrameGate:
                 max_age_ms=max_age_ms,
             )
 
+        if tool.name == "real_depth":
+            sample_every_n = max(1, int(self._config.real_depth_sample_every_n_frames))
+            max_age_ms = max(0, int(self._config.real_depth_cache_max_age_ms))
+            if sample_every_n > 1 and (frame.seq % sample_every_n) != 0:
+                return GateDecision(
+                    run=False,
+                    reason="rate_limit",
+                    reuse_ok=True,
+                    min_interval_ms=0,
+                    max_age_ms=max_age_ms,
+                )
+            return GateDecision(
+                run=True,
+                reason="policy",
+                reuse_ok=True,
+                min_interval_ms=0,
+                max_age_ms=max_age_ms,
+            )
+
         return GateDecision(
             run=True,
             reason="policy",

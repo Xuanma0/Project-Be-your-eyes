@@ -575,7 +575,7 @@ class Scheduler:
 
     @staticmethod
     def _cache_key(tool: BaseTool, frame: FrameInput) -> str:
-        if tool.name in {"real_det", "real_ocr"}:
+        if tool.name in {"real_det", "real_ocr", "real_depth"}:
             return str(frame.meta.get("fingerprint", ""))
         return ""
 

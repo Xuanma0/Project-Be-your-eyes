@@ -21,9 +21,9 @@ from byes.observability import Observability
 from byes.planner import PolicyPlannerV0
 from byes.safety import SafetyKernel
 from byes.scheduler import Scheduler
-from byes.schema import CoordFrame, EventEnvelope, EventType, FrameMeta
+from byes.schema import CoordFrame, EventEnvelope, EventType, FrameMeta, HealthStatus
 from byes.tool_registry import ToolRegistry
-from byes.tools import MockOcrTool, MockRiskTool, RealDetTool, RealOcrTool
+from byes.tools import MockOcrTool, MockRiskTool, RealDepthTool, RealDetTool, RealOcrTool
 from byes.tools.base import FrameInput, ToolLane
 
 
@@ -45,7 +45,7 @@ class MockEvent(BaseModel):
 
 
 class FaultSetRequest(BaseModel):
-    tool: Literal["mock_risk", "mock_ocr", "real_det", "real_ocr", "all"]
+    tool: Literal["mock_risk", "mock_ocr", "real_det", "real_ocr", "real_depth", "all"]
     mode: Literal["timeout", "slow", "low_conf", "disconnect"]
     value: float | bool | int | None = None
     durationMs: int | None = None
@@ -130,14 +130,21 @@ class GatewayApp:
         self._last_safe_mode_pulse_ms = -1
         self._safe_mode_pulse_interval_ms = 1000
         self._last_meta_warn_ms: dict[str, int] = {"meta_missing": -1, "meta_parse_error": -1}
+        self._enabled_tools = self._parse_csv_tools(self.config.enabled_tools_csv)
 
     async def startup(self) -> None:
-        self.registry.register(MockRiskTool(self.config))
-        self.registry.register(MockOcrTool(self.config))
-        if self.config.enable_real_det:
+        if self._tool_enabled("mock_risk"):
+            self.registry.register(MockRiskTool(self.config))
+        if self._tool_enabled("mock_ocr"):
+            self.registry.register(MockOcrTool(self.config))
+        if self.config.enable_real_det and self._tool_enabled("real_det"):
             self.registry.register(RealDetTool(self.config))
-        if self.config.enable_real_ocr:
+        if self.config.enable_real_ocr and self._tool_enabled("real_ocr"):
             self.registry.register(RealOcrTool(self.config))
+        if self.config.enable_real_depth and self._tool_enabled("real_depth"):
+            self.registry.register(RealDepthTool(self.config))
+        registered_tools = {item.name for item in self.registry.list_descriptors()}
+        self.degradation.set_tool_inventory(registered_tools, self._enabled_tools or None)
         self.observability.instrument_app(self.app)
         await self.scheduler.start()
         self.degradation.set_ws_client_count(0)
@@ -238,6 +245,58 @@ class GatewayApp:
             meta_payload["coordFrame"] = frame_meta.coordFrame.value
         return meta_payload, frame_meta, "present"
 
+    @staticmethod
+    def _parse_csv_tools(raw_csv: str) -> set[str]:
+        return {item.strip().lower() for item in str(raw_csv).split(",") if item.strip()}
+
+    def _tool_enabled(self, tool_name: str) -> bool:
+        if not self._enabled_tools:
+            return True
+        return tool_name.strip().lower() in self._enabled_tools
+
+    @staticmethod
+    def _format_health_summary(health_status: HealthStatus, reason: str) -> str:
+        return f"gateway_{health_status.value.lower()} ({reason})"
+
+    async def _emit_health_event(
+        self,
+        *,
+        seq: int,
+        ts_capture_ms: int,
+        ttl_ms: int,
+        trace_id: str,
+        span_id: str,
+        health_status: HealthStatus,
+        health_reason: str,
+        source: str,
+        level: str = "info",
+    ) -> None:
+        summary = self._format_health_summary(health_status, health_reason)
+        await self._emit_event(
+            EventEnvelope(
+                type=EventType.HEALTH,
+                traceId=trace_id,
+                spanId=span_id,
+                seq=seq,
+                tsCaptureMs=ts_capture_ms,
+                ttlMs=ttl_ms,
+                coordFrame=CoordFrame.WORLD,
+                confidence=1.0,
+                priority=self.config.health_priority,
+                source=source,
+                healthStatus=health_status,
+                healthReason=health_reason,
+                payload={
+                    "status": summary.split(" ", 1)[0],
+                    "reason": health_reason,
+                    "summary": summary,
+                    "level": level,
+                    "healthStatus": health_status.value,
+                    "healthReason": health_reason,
+                },
+            )
+        )
+
     async def emit_meta_health_warn(self, status: str, reason: str, min_interval_ms: int = 5000) -> None:
         now_ms = _now_ms()
         last_ms = self._last_meta_warn_ms.get(status, -1)
@@ -245,25 +304,17 @@ class GatewayApp:
             return
         self._last_meta_warn_ms[status] = now_ms
 
-        await self._emit_event(
-            EventEnvelope(
-                type=EventType.HEALTH,
-                traceId="0" * 32,
-                spanId="0" * 16,
-                seq=0,
-                tsCaptureMs=now_ms,
-                ttlMs=self.config.default_ttl_ms,
-                coordFrame=CoordFrame.WORLD,
-                confidence=1.0,
-                priority=self.config.health_priority,
-                source="frame_meta@v1.3",
-                payload={
-                    "status": status,
-                    "reason": reason,
-                    "summary": f"{status} ({reason})",
-                    "level": "warn",
-                },
-            )
+        health_status = HealthStatus.WAITING_CLIENT if status == "meta_missing" else HealthStatus.DEGRADED
+        await self._emit_health_event(
+            seq=0,
+            ts_capture_ms=now_ms,
+            ttl_ms=self.config.default_ttl_ms,
+            trace_id="0" * 32,
+            span_id="0" * 16,
+            health_status=health_status,
+            health_reason=reason,
+            source="frame_meta@v1.3",
+            level="warn",
         )
 
     async def emit_degradation_changes(
@@ -276,55 +327,34 @@ class GatewayApp:
     ) -> None:
         for change in self.degradation.consume_state_changes():
             if change.current == DegradationState.SAFE_MODE:
-                status = "gateway_safe_mode"
+                health_status = HealthStatus.SAFE_MODE
             elif change.current == DegradationState.DEGRADED:
-                status = "gateway_degraded"
+                health_status = HealthStatus.DEGRADED
             else:
-                status = "gateway_normal"
-
-            payload = {
-                "status": status,
-                "reason": change.reason,
-                "summary": f"{status} ({change.reason})",
-                "level": "info",
-            }
-            await self._emit_event(
-                EventEnvelope(
-                    type=EventType.HEALTH,
-                    traceId=trace_id,
-                    spanId=span_id,
-                    seq=seq,
-                    tsCaptureMs=ts_capture_ms,
-                    ttlMs=ttl_ms,
-                    coordFrame=CoordFrame.WORLD,
-                    confidence=1.0,
-                    priority=self.config.health_priority,
-                    source="degradation@v1.1",
-                    payload=payload,
-                )
+                health_status = HealthStatus.NORMAL
+            await self._emit_health_event(
+                seq=seq,
+                ts_capture_ms=ts_capture_ms,
+                ttl_ms=ttl_ms,
+                trace_id=trace_id,
+                span_id=span_id,
+                health_status=health_status,
+                health_reason=change.reason,
+                source="degradation@v1.3.1",
             )
 
         for alert in self.degradation.consume_alerts():
-            payload = {
-                "status": alert.status,
-                "reason": alert.reason,
-                "summary": f"{alert.status} ({alert.reason})",
-                "level": "warn",
-            }
-            await self._emit_event(
-                EventEnvelope(
-                    type=EventType.HEALTH,
-                    traceId=trace_id,
-                    spanId=span_id,
-                    seq=seq,
-                    tsCaptureMs=ts_capture_ms,
-                    ttlMs=ttl_ms,
-                    coordFrame=CoordFrame.WORLD,
-                    confidence=1.0,
-                    priority=self.config.health_priority,
-                    source="degradation@v1.1",
-                    payload=payload,
-                )
+            health_status = HealthStatus.WAITING_CLIENT if alert.reason == "waiting_client" else HealthStatus.DEGRADED
+            await self._emit_health_event(
+                seq=seq,
+                ts_capture_ms=ts_capture_ms,
+                ttl_ms=ttl_ms,
+                trace_id=trace_id,
+                span_id=span_id,
+                health_status=health_status,
+                health_reason=alert.reason,
+                source="degradation@v1.3.1",
+                level="warn",
             )
 
     async def _degradation_watchdog_loop(self) -> None:
@@ -339,33 +369,23 @@ class GatewayApp:
                 trace_id="0" * 32,
                 span_id="0" * 16,
             )
-            if self.degradation.is_safe_mode():
-                if (
-                    self._last_safe_mode_pulse_ms < 0
-                    or now_ms - self._last_safe_mode_pulse_ms >= self._safe_mode_pulse_interval_ms
-                ):
-                    await self._emit_event(
-                        EventEnvelope(
-                            type=EventType.HEALTH,
-                            traceId="0" * 32,
-                            spanId="0" * 16,
-                            seq=0,
-                            tsCaptureMs=now_ms,
-                            ttlMs=self.config.default_ttl_ms,
-                            coordFrame=CoordFrame.WORLD,
-                            confidence=1.0,
-                            priority=self.config.health_priority,
-                            source="degradation@v1.2.1",
-                            payload={
-                                "status": "gateway_safe_mode",
-                                "summary": self.SAFE_MODE_HEALTH_SUMMARY,
-                                "reason": "safe_mode_pulse",
-                            },
-                        )
-                    )
-                    self._last_safe_mode_pulse_ms = now_ms
-            else:
-                self._last_safe_mode_pulse_ms = -1
+            health_status_raw, health_reason = self.degradation.get_health()
+            try:
+                health_status = HealthStatus(health_status_raw)
+            except ValueError:
+                health_status = HealthStatus.DEGRADED
+            if not health_reason:
+                health_reason = "tool_result:normal" if health_status == HealthStatus.NORMAL else "waiting_client"
+            await self._emit_health_event(
+                seq=0,
+                ts_capture_ms=now_ms,
+                ttl_ms=self.config.default_ttl_ms,
+                trace_id="0" * 32,
+                span_id="0" * 16,
+                health_status=health_status,
+                health_reason=health_reason,
+                source="degradation@v1.3.1",
+            )
 
     async def _on_lane_results(self, frame: FrameInput, lane: ToolLane, results: list[Any]) -> None:
         trace_id = str(frame.meta.get("traceId", "0" * 32))
@@ -449,10 +469,13 @@ async def _shutdown() -> None:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
+    health_status, health_reason = gateway.degradation.get_health()
     return {
         "ok": True,
         "ts": _now_ms(),
         "state": gateway.degradation.state.value,
+        "healthStatus": health_status,
+        "healthReason": health_reason,
         "clients": len(gateway.connections.active),
         "hadClientEverConnected": gateway.degradation.had_client_ever_connected,
         "intent": gateway.intent.active_intent(),

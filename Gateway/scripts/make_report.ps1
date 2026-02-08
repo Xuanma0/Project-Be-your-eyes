@@ -7,6 +7,7 @@
     [string]$OutDir = "artifacts",
     [string]$RunName = "run_baseline",
     [switch]$RealDetBaseline,
+    [switch]$RealDepthBaseline,
     [switch]$RealOcrScan,
     [switch]$RealDetActionPlan,
     [switch]$CacheScenario,
@@ -163,6 +164,8 @@ if ($RealDetActionPlan -and $RunName -eq "run_baseline") {
     $RunName = "run_realdet_actionplan"
 } elseif ($CacheScenario -and $RunName -eq "run_baseline") {
     $RunName = "run_cache"
+} elseif ($RealDepthBaseline -and $RunName -eq "run_baseline") {
+    $RunName = "run_real_depth_baseline"
 } elseif ($RealOcrScan -and $RunName -eq "run_baseline") {
     $RunName = "run_realoocr_scan"
 } elseif ($RealDetBaseline -and $RunName -eq "run_baseline") {
@@ -188,6 +191,10 @@ Reset-GatewayRuntime -BaseUrl $BaseUrl
 if ($RealDetBaseline -or $RealDetActionPlan) {
     Write-Host "Validate tool availability -> real_det"
     Assert-ToolEnabled -BaseUrl $BaseUrl -ToolName "real_det"
+}
+if ($RealDepthBaseline -or $RunName.ToLower().Contains("real_depth")) {
+    Write-Host "Validate tool availability -> real_depth"
+    Assert-ToolEnabled -BaseUrl $BaseUrl -ToolName "real_depth"
 }
 if ($CacheScenario) {
     Write-Host "Validate tool availability -> real_det"

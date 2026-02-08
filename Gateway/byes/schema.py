@@ -30,6 +30,13 @@ class CoordFrame(str, Enum):
     ANCHOR = "Anchor"
 
 
+class HealthStatus(str, Enum):
+    NORMAL = "NORMAL"
+    DEGRADED = "DEGRADED"
+    SAFE_MODE = "SAFE_MODE"
+    WAITING_CLIENT = "WAITING_CLIENT"
+
+
 class Intrinsics(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -118,6 +125,8 @@ class EventEnvelope(BaseModel):
     confidence: float = 0.0
     priority: int = 0
     source: str
+    healthStatus: HealthStatus | None = None
+    healthReason: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("confidence")
@@ -168,6 +177,24 @@ class ActionPlan(BaseModel):
         return max(0.0, min(1.0, float(value)))
 
 
+class DepthHazard(BaseModel):
+    distanceM: float
+    azimuthDeg: float
+    confidence: float
+    kind: str
+
+    @field_validator("confidence")
+    @classmethod
+    def _hazard_confidence(cls, value: float) -> float:
+        return max(0.0, min(1.0, float(value)))
+
+
+class DepthResult(BaseModel):
+    hazards: list[DepthHazard] = Field(default_factory=list)
+    model: str | None = None
+    latencyMs: int | None = None
+
+
 class ToolStatus(str, Enum):
     OK = "ok"
     TIMEOUT = "timeout"
@@ -208,3 +235,5 @@ class LegacyEvent(BaseModel):
     summary: str | None = None
     distanceM: float | None = None
     azimuthDeg: float | None = None
+    healthStatus: HealthStatus | None = None
+    healthReason: str | None = None

@@ -84,8 +84,12 @@ class PolicyPlannerV0:
 
         if degradation_state not in {DegradationState.SAFE_MODE, DegradationState.DEGRADED}:
             for tool in sorted(slow_tools, key=lambda item: self._priority_for(item), reverse=True):
-                if tool.name == "real_ocr" and active_intent != "scan_text":
+                if active_intent == "scan_text":
+                    if tool.name != "real_ocr":
+                        continue
+                elif tool.name == "real_ocr":
                     continue
+
                 invocations.append(
                     ToolInvocation(
                         tool_name=tool.name,
@@ -110,6 +114,8 @@ class PolicyPlannerV0:
             return 1000
         if capability == "det":
             return 300
+        if capability == "depth":
+            return 320
         if capability == "ocr":
             return 250
         return 100

@@ -9,7 +9,7 @@ from typing import Any
 
 LOGGER = logging.getLogger("byes.faults")
 
-_VALID_TOOLS = {"mock_risk", "mock_ocr", "real_det", "real_ocr", "all"}
+_VALID_TOOLS = {"mock_risk", "mock_ocr", "real_det", "real_ocr", "real_depth", "all"}
 _VALID_MODES = {"timeout", "slow", "low_conf", "disconnect"}
 
 

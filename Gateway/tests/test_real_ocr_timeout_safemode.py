@@ -112,28 +112,7 @@ def _wait_completed(client: TestClient, before: dict[SeriesKey, float], expected
     return _parse_metrics(client.get("/metrics").text)
 
 
-def _safe_mode_window_violations(events: list[dict[str, Any]]) -> tuple[int, int]:
-    safe_mode_seen = 0
-    violations = 0
-    safe_mode_active = False
-    for evt in events:
-        event_type = str(evt.get("type", ""))
-        summary = str(evt.get("summary", "")).lower()
-        if event_type == "health":
-            if "safe_mode" in summary or "safe mode" in summary:
-                safe_mode_seen += 1
-                safe_mode_active = True
-                continue
-            if "gateway_normal" in summary or "gateway_degraded" in summary:
-                safe_mode_active = False
-                continue
-
-        if safe_mode_active and event_type in {"perception", "action_plan"}:
-            violations += 1
-    return safe_mode_seen, violations
-
-
-def test_real_ocr_timeout_enters_safemode_and_blocks_perception_actionplan() -> None:
+def test_real_ocr_timeout_noncritical_stays_out_of_safemode() -> None:
     with TestClient(app) as client:
         _speedup_mock_tools()
         _ensure_stub_real_ocr()
@@ -147,9 +126,6 @@ def test_real_ocr_timeout_enters_safemode_and_blocks_perception_actionplan() -> 
             before = _parse_metrics(client.get("/metrics").text)
             set_fault = client.post("/api/fault/set", json={"tool": "real_ocr", "mode": "timeout", "value": True})
             assert set_fault.status_code == 200
-            set_fault_mock = client.post("/api/fault/set", json={"tool": "mock_ocr", "mode": "timeout", "value": True})
-            assert set_fault_mock.status_code == 200
-
             _send_frames(client, 50)
             after = _wait_completed(client, before, 50)
         finally:
@@ -181,9 +157,10 @@ def test_real_ocr_timeout_enters_safemode_and_blocks_perception_actionplan() -> 
         assert int(round(frame_received_delta)) == 50
         assert int(round(frame_completed_delta)) == 50
         assert int(round(e2e_count_delta)) == 50
-        assert int(round(safemode_enter_delta)) == 1
+        assert int(round(safemode_enter_delta)) == 0
         assert real_ocr_timeout_delta > 0
-
-        safe_mode_seen, violations = _safe_mode_window_violations(capture.messages)
-        assert safe_mode_seen >= 1
-        assert violations == 0
+        assert any(
+            str(item.get("summary", "")).lower().find("gateway_degraded") >= 0
+            for item in capture.messages
+            if isinstance(item, dict) and str(item.get("type", "")) == "health"
+        )

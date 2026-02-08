@@ -141,7 +141,7 @@ def test_v12_baseline_frame_e2e_accounting() -> None:
 def test_v12_timeout_fault_frame_completion_and_skips() -> None:
     with TestClient(app) as client:
         speedup_mock_tools()
-        client.post("/api/fault/clear")
+        client.post("/api/dev/reset")
         stabilize_before = parse_metrics(client.get("/metrics").text)
         send_frames(client, 1)
         _ = wait_completed_delta(client, stabilize_before, expected=1)
