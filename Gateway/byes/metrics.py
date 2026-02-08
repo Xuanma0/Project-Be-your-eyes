@@ -137,6 +137,18 @@ class GatewayMetrics:
             labelnames=("tool",),
             registry=self._registry,
         )
+        self.byes_planner_select_total = Counter(
+            "byes_planner_select_total",
+            "Planner selected tool count by reason",
+            labelnames=("tool", "reason"),
+            registry=self._registry,
+        )
+        self.byes_planner_skip_total = Counter(
+            "byes_planner_skip_total",
+            "Planner skipped tool count by reason",
+            labelnames=("tool", "reason"),
+            registry=self._registry,
+        )
         self.byes_frame_gate_skip_total = Counter(
             "byes_frame_gate_skip_total",
             "Number of frame-gate skips",
@@ -318,6 +330,12 @@ class GatewayMetrics:
 
     def inc_tool_rate_limited(self, tool: str) -> None:
         self.byes_tool_rate_limited_total.labels(tool=tool).inc()
+
+    def inc_planner_select(self, tool: str, reason: str) -> None:
+        self.byes_planner_select_total.labels(tool=tool, reason=reason).inc()
+
+    def inc_planner_skip(self, tool: str, reason: str) -> None:
+        self.byes_planner_skip_total.labels(tool=tool, reason=reason).inc()
 
     def inc_frame_gate_skip(self, tool: str, reason: str) -> None:
         self.byes_frame_gate_skip_total.labels(tool=tool, reason=reason).inc()

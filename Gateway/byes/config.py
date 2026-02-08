@@ -112,6 +112,17 @@ class GatewayConfig:
     enabled_tools_csv: str = ""
     tool_cache_max_entries: int = 1024
     planner_recent_window: int = 8
+    planner_v1_enabled: bool = True
+    world_state_retention_ms: int = 30000
+    world_state_max_sessions: int = 64
+    planner_det_stale_ms: int = 1500
+    planner_depth_stale_ms: int = 1200
+    planner_ocr_stale_ms: int = 3000
+    planner_vlm_stale_ms: int = 3000
+    planner_crosscheck_force_ms: int = 4000
+    planner_crosscheck_cooldown_ms: int = 2500
+    planner_ask_guidance_cooldown_ms: int = 5000
+    planner_text_object_aliases_csv: str = "sign,label,screen,panel,text"
     fast_budget_ms: int = 500
     slow_budget_ms: int = 1200
     slo_e2e_p95_ms: int = 400
@@ -210,6 +221,20 @@ def load_config() -> GatewayConfig:
         enabled_tools_csv=os.getenv("BYES_ENABLED_TOOLS", ""),
         tool_cache_max_entries=_env_int("BYES_TOOL_CACHE_MAX_ENTRIES", 1024),
         planner_recent_window=_env_int("BYES_PLANNER_RECENT_WINDOW", 8),
+        planner_v1_enabled=_env_bool("BYES_PLANNER_V1_ENABLED", True),
+        world_state_retention_ms=_env_int("BYES_WORLD_STATE_RETENTION_MS", 30000),
+        world_state_max_sessions=_env_int("BYES_WORLD_STATE_MAX_SESSIONS", 64),
+        planner_det_stale_ms=_env_int("BYES_PLANNER_DET_STALE_MS", 1500),
+        planner_depth_stale_ms=_env_int("BYES_PLANNER_DEPTH_STALE_MS", 1200),
+        planner_ocr_stale_ms=_env_int("BYES_PLANNER_OCR_STALE_MS", 3000),
+        planner_vlm_stale_ms=_env_int("BYES_PLANNER_VLM_STALE_MS", 3000),
+        planner_crosscheck_force_ms=_env_int("BYES_PLANNER_CROSSCHECK_FORCE_MS", 4000),
+        planner_crosscheck_cooldown_ms=_env_int("BYES_PLANNER_CROSSCHECK_COOLDOWN_MS", 2500),
+        planner_ask_guidance_cooldown_ms=_env_int("BYES_PLANNER_ASK_GUIDANCE_COOLDOWN_MS", 5000),
+        planner_text_object_aliases_csv=os.getenv(
+            "BYES_PLANNER_TEXT_OBJECT_ALIASES",
+            "sign,label,screen,panel,text",
+        ),
         fast_budget_ms=_env_int("BYES_FAST_BUDGET_MS", 500),
         slow_budget_ms=_env_int("BYES_SLOW_BUDGET_MS", 1200),
         slo_e2e_p95_ms=_env_int("BYES_SLO_E2E_P95_MS", 400),

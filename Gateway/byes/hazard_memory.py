@@ -37,6 +37,27 @@ class HazardMemory:
         self._active_by_session.clear()
         self._set_active_gauge()
 
+    def snapshot(self, session_id: str) -> list[dict[str, object]]:
+        sid = session_id.strip() if session_id else "default"
+        session = self._active_by_session.get(sid, {})
+        output: list[dict[str, object]] = []
+        for item in session.values():
+            output.append(
+                {
+                    "hazardId": item.hazard_id,
+                    "kind": item.kind,
+                    "firstSeenMs": item.first_seen_ms,
+                    "lastSeenMs": item.last_seen_ms,
+                    "lastEmittedMs": item.last_emitted_ms,
+                    "confidence": item.confidence,
+                    "distanceM": item.distance_m,
+                    "azimuthDeg": item.azimuth_deg,
+                    "source": item.source,
+                    "summary": item.summary,
+                }
+            )
+        return output
+
     def update_and_filter(
         self,
         *,

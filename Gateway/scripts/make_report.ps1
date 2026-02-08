@@ -12,6 +12,8 @@
     [switch]$RealVlmAsk,
     [switch]$RealDetActionPlan,
     [switch]$CacheScenario,
+    [switch]$PlannerV1CrossCheck,
+    [switch]$PlannerV1ThrottledAsk,
     [switch]$TimeoutScenario
 )
 
@@ -161,6 +163,50 @@ function Set-DevIntent {
     }
 }
 
+function Set-DevCrossCheck {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BaseUrl,
+        [Parameter(Mandatory = $true)]
+        [string]$Kind,
+        [Parameter(Mandatory = $true)]
+        [int]$DurationMs
+    )
+
+    $url = "{0}/api/dev/crosscheck" -f $BaseUrl.TrimEnd('/')
+    $body = @{
+        kind = $Kind
+        durationMs = $DurationMs
+    } | ConvertTo-Json
+    $resp = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/json" -TimeoutSec 20
+    if ($null -eq $resp -or -not $resp.ok) {
+        throw "failed to set dev crosscheck override via $url"
+    }
+}
+
+function Set-DevPerformance {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BaseUrl,
+        [Parameter(Mandatory = $true)]
+        [string]$Mode,
+        [Parameter(Mandatory = $true)]
+        [int]$DurationMs,
+        [string]$Reason = "manual_override"
+    )
+
+    $url = "{0}/api/dev/performance" -f $BaseUrl.TrimEnd('/')
+    $body = @{
+        mode = $Mode
+        durationMs = $DurationMs
+        reason = $Reason
+    } | ConvertTo-Json
+    $resp = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/json" -TimeoutSec 20
+    if ($null -eq $resp -or -not $resp.ok) {
+        throw "failed to set dev performance override via $url"
+    }
+}
+
 $scriptsDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $gatewayDir = Split-Path -Parent $scriptsDir
 $outDirAbs = if ([System.IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $gatewayDir $OutDir }
@@ -168,6 +214,10 @@ $framesDirAbs = if ([System.IO.Path]::IsPathRooted($FramesDir)) { $FramesDir } e
 
 if ($RealDetActionPlan -and $RunName -eq "run_baseline") {
     $RunName = "run_realdet_actionplan"
+} elseif ($PlannerV1CrossCheck -and $RunName -eq "run_baseline") {
+    $RunName = "run_planner_crosscheck"
+} elseif ($PlannerV1ThrottledAsk -and $RunName -eq "run_baseline") {
+    $RunName = "run_planner_throttledask"
 } elseif ($CacheScenario -and $RunName -eq "run_baseline") {
     $RunName = "run_cache"
 } elseif ($RealDepthBaseline -and $RunName -eq "run_baseline") {
@@ -221,6 +271,18 @@ if ($RealVlmAsk -or $RunName.ToLower().Contains("real_vlm")) {
     $intentDurationMs = [Math]::Max(5000, ($RecordDurationSec + 5) * 1000)
     Write-Host "Set dev intent -> ask (${intentDurationMs}ms)"
     Set-DevIntent -BaseUrl $BaseUrl -Intent "ask" -DurationMs $intentDurationMs -Question "what is in front of me?"
+}
+if ($PlannerV1CrossCheck -or $RunName.ToLower().Contains("planner_crosscheck")) {
+    $overrideDurationMs = [Math]::Max(8000, ($RecordDurationSec + 5) * 1000)
+    Write-Host "Set dev crosscheck override -> vision_without_depth (${overrideDurationMs}ms)"
+    Set-DevCrossCheck -BaseUrl $BaseUrl -Kind "vision_without_depth" -DurationMs $overrideDurationMs
+}
+if ($PlannerV1ThrottledAsk -or $RunName.ToLower().Contains("planner_throttledask")) {
+    $intentDurationMs = [Math]::Max(8000, ($RecordDurationSec + 5) * 1000)
+    Write-Host "Set dev intent -> ask (${intentDurationMs}ms)"
+    Set-DevIntent -BaseUrl $BaseUrl -Intent "ask" -DurationMs $intentDurationMs -Question "what is in front of me?"
+    Write-Host "Force performance mode -> throttled (${intentDurationMs}ms)"
+    Set-DevPerformance -BaseUrl $BaseUrl -Mode "throttled" -DurationMs $intentDurationMs -Reason "planner_v1_demo"
 }
 if ($TimeoutScenario) {
     $timeoutTool = "mock_risk"

@@ -363,6 +363,8 @@ Legacy risk events remain backward compatible and now may include optional field
 - `byes_ttfa_count_total{outcome,kind}`
 - `byes_actiongate_block_total{reason}`
 - `byes_actiongate_patch_total{reason}`
+- `byes_planner_select_total{tool,reason}`
+- `byes_planner_skip_total{tool,reason}`
 
 ## v1.9 SLO Governor + TTFA Outcome
 
@@ -381,6 +383,19 @@ Legacy risk events remain backward compatible and now may include optional field
 
 `byes_frame_gate_skip_total.reason` is constrained to:
 `intent_off`, `rate_limit`, `safe_mode`, `unchanged`, `ttl_risk`, `policy`.
+
+## v2.0 PlannerV1
+
+- Added `WorldState` short-window evidence cache (`last_det/last_depth/last_ocr/last_vlm/active_hazards`).
+- PlannerV1 now chooses tools using safety gain + information gain + budget:
+- `SAFE_MODE`: no slow tools.
+- `THROTTLED`: disables `real_vlm`, down-samples non-critical slow tools.
+- crosscheck conflicts can force next-frame `real_det`/`real_depth` under budget constraints.
+- Planner diagnostics are emitted per frame in runtime meta and measured via:
+- `byes_planner_select_total{tool,reason}`
+- `byes_planner_skip_total{tool,reason}`
+- Reason tokens are fixed for regression stability:
+- `policy`, `intent`, `crosscheck`, `stale`, `throttled_skip`, `budget_skip`, `safe_mode_skip`, `degraded_skip`, `unavailable`.
 
 ## FrameGate + ToolCache (v1)
 
@@ -467,6 +482,18 @@ RealVLM ask scenario (requires `BYES_REAL_VLM_URL` configured and VLM service up
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RunName run_real_vlm_ask -RealVlmAsk
+```
+
+PlannerV1 crosscheck scenario (forces crosscheck conflicts through dev override):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RunName run_planner_crosscheck_v20 -PlannerV1CrossCheck
+```
+
+PlannerV1 throttled ask scenario (forces THROTTLED + ask intent):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RunName run_planner_throttledask_v20 -PlannerV1ThrottledAsk
 ```
 
 Timeout regression examples:

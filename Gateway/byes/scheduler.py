@@ -15,12 +15,13 @@ from byes.frame_gate import FrameContext as GateFrameContext
 from byes.frame_gate import FrameGate
 from byes.frame_tracker import FrameTracker
 from byes.observability import Observability, TraceInfo
-from byes.planner import FrameContext, PolicyPlannerV0, RecentFrameSummary, ToolInvocationPlan
+from byes.planner import FrameContext, PlannerPolicy, RecentFrameSummary, ToolInvocationPlan
 from byes.preprocess import FrameArtifacts, FramePreprocessor
 from byes.schema import ToolResult, ToolStatus
 from byes.tool_registry import ToolRegistry
 from byes.tool_cache import ToolCache
 from byes.tools.base import BaseTool, FrameInput, ToolContext, ToolLane
+from byes.world_state import WorldState
 
 OnLaneResults = Callable[[FrameInput, ToolLane, list[ToolResult]], Awaitable[None]]
 OnFrameTerminal = Callable[[FrameInput, str], None]
@@ -48,11 +49,12 @@ class Scheduler:
         observability: Observability | None = None,
         fault_manager: FaultManager | None = None,
         on_frame_terminal: OnFrameTerminal | None = None,
-        planner: PolicyPlannerV0 | None = None,
+        planner: PlannerPolicy | None = None,
         frame_gate: FrameGate | None = None,
         tool_cache: ToolCache | None = None,
         frame_tracker: FrameTracker | None = None,
         preprocessor: FramePreprocessor | None = None,
+        world_state: WorldState | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -67,6 +69,7 @@ class Scheduler:
         self._tool_cache = tool_cache or ToolCache(config.tool_cache_max_entries)
         self._frame_tracker = frame_tracker
         self._preprocessor = preprocessor
+        self._world_state = world_state
 
         self._seq = 0
         self._latest_seq = 0
@@ -357,6 +360,17 @@ class Scheduler:
                         fingerprint=fingerprint,
                     )
 
+        session_id = self._session_id_from_meta(queued.frame.meta)
+        if self._world_state is not None:
+            try:
+                self._world_state.ingest_tool_results(
+                    session_id=session_id,
+                    results=results,
+                    now_ms=now_ms,
+                    frame_meta=queued.frame.meta,
+                )
+            except Exception:  # noqa: BLE001
+                pass
         self._active_by_seq.pop(queued.frame.seq, None)
         return results
 
@@ -701,9 +715,28 @@ class Scheduler:
             meta=frame.meta,
         )
         state = self._current_degradation_state()
+        health_status, health_reason = self._safe_call(
+            self._degradation,
+            "get_health",
+            default=(state.value, "planner"),
+        )
         recent = list(self._recent_summaries)
         tools = self._registry.list_descriptors()
-        return self._planner.plan(context, state, recent, tools)
+        plan = self._planner.plan(
+            context,
+            state,
+            recent,
+            tools,
+            health_status=str(health_status),
+            health_reason=str(health_reason),
+            world_state=self._world_state,
+        )
+        if isinstance(plan.diagnostics, dict):
+            frame.meta["_plannerDiagnostics"] = dict(plan.diagnostics)
+            hints = plan.diagnostics.get("actionHints")
+            if isinstance(hints, list):
+                frame.meta["_plannerActionHints"] = [dict(item) for item in hints if isinstance(item, dict)]
+        return plan
 
     def _current_degradation_state(self) -> DegradationState:
         state = getattr(self._degradation, "state", None)
@@ -741,6 +774,11 @@ class Scheduler:
         self._frame_by_seq.pop(seq, None)
         self._plan_by_seq.pop(seq, None)
         self._frame_tool_stats.pop(seq, None)
+
+    @staticmethod
+    def _session_id_from_meta(meta: dict[str, Any]) -> str:
+        session_id = str(meta.get("sessionId", "")).strip()
+        return session_id or "default"
 
     def _tool_span(self, trace: TraceInfo, tool: BaseTool, lane: ToolLane, frame: FrameInput, timeout_ms: int):
         if self._observability is None:

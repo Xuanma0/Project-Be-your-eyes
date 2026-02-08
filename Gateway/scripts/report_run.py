@@ -158,6 +158,7 @@ def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     event_type_counter: Counter[str] = Counter()
     state_counter: Counter[str] = Counter()
     reason_counter: Counter[str] = Counter()
+    action_plan_category_counter: Counter[str] = Counter()
     expired_emitted = 0
     first_safe_mode_ms: int | None = None
     safe_mode_active = False
@@ -197,6 +198,14 @@ def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
             perception_after_safe_mode += 1
         elif event_type == "action_plan" and safe_mode_active:
             action_plan_after_safe_mode += 1
+        if event_type == "action_plan":
+            category = str(
+                event.get("actionCategory")
+                or event.get("reason")
+                or event.get("summary")
+                or "unknown"
+            ).strip()
+            action_plan_category_counter[category] += 1
 
         recv_ms = row.get("receivedAtMs")
         event_ts = event.get("timestampMs")
@@ -217,6 +226,7 @@ def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "active_confirm_events": active_confirm_events,
         "hazard_events": hazard_events,
         "unique_hazards": len(unique_hazard_ids),
+        "action_plan_categories": dict(sorted(action_plan_category_counter.items(), key=lambda item: item[0])),
     }
 
 
@@ -344,6 +354,9 @@ def build_report(
     lines.append(f"- hazard_events: `{ws_stats['hazard_events']}`")
     lines.append(f"- unique_hazards: `{ws_stats['unique_hazards']}`")
     lines.append(f"- action-plan events: `{ws_stats['event_types'].get('action_plan', 0)}`")
+    lines.append("- action-plan categories:")
+    for key, value in ws_stats["action_plan_categories"].items():
+        lines.append(f"  - `{key}`: `{value}`")
     lines.append(f"- dialog events: `{ws_stats['event_types'].get('dialog', 0)}`")
     lines.append("")
 
@@ -363,6 +376,8 @@ def build_report(
         "byes_tool_cache_hit_total",
         "byes_tool_cache_miss_total",
         "byes_tool_rate_limited_total",
+        "byes_planner_select_total",
+        "byes_planner_skip_total",
         "byes_frame_gate_skip_total",
         "byes_ttfa_count_total",
         "byes_ttfa_outcome_total",
@@ -414,6 +429,8 @@ def build_report(
     append_metric_details(lines, after_samples, "byes_tool_cache_hit_total", ["tool"], "count")
     append_metric_details(lines, after_samples, "byes_tool_cache_miss_total", ["tool"], "count")
     append_metric_details(lines, after_samples, "byes_tool_rate_limited_total", ["tool"], "count")
+    append_metric_details(lines, after_samples, "byes_planner_select_total", ["tool", "reason"], "count")
+    append_metric_details(lines, after_samples, "byes_planner_skip_total", ["tool", "reason"], "count")
     append_metric_details(lines, after_samples, "byes_frame_gate_skip_total", ["tool", "reason"], "count")
     append_metric_details(lines, after_samples, "byes_crosscheck_conflict_total", ["kind"], "count")
     append_metric_details(lines, after_samples, "byes_active_confirm_total", ["kind"], "count")
@@ -465,6 +482,8 @@ def build_report(
             "byes_tool_cache_hit_total",
             "byes_tool_cache_miss_total",
             "byes_tool_rate_limited_total",
+            "byes_planner_select_total",
+            "byes_planner_skip_total",
             "byes_frame_gate_skip_total",
             "byes_ttfa_count_total",
             "byes_ttfa_outcome_total",
@@ -522,6 +541,8 @@ def build_report(
         append_metric_details(lines, delta_samples, "byes_tool_cache_hit_total", ["tool"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_cache_miss_total", ["tool"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_rate_limited_total", ["tool"], "delta")
+        append_metric_details(lines, delta_samples, "byes_planner_select_total", ["tool", "reason"], "delta")
+        append_metric_details(lines, delta_samples, "byes_planner_skip_total", ["tool", "reason"], "delta")
         append_metric_details(lines, delta_samples, "byes_frame_gate_skip_total", ["tool", "reason"], "delta")
         append_metric_details(lines, delta_samples, "byes_crosscheck_conflict_total", ["kind"], "delta")
         append_metric_details(lines, delta_samples, "byes_active_confirm_total", ["kind"], "delta")

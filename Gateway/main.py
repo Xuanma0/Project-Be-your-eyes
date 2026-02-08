@@ -20,7 +20,7 @@ from byes.governor import SloGovernor
 from byes.intent import IntentManager
 from byes.metrics import GatewayMetrics
 from byes.observability import Observability
-from byes.planner import PolicyPlannerV0
+from byes.planner import PolicyPlannerV0, PolicyPlannerV1
 from byes.preprocess import FramePreprocessor
 from byes.safety import SafetyKernel
 from byes.scheduler import Scheduler
@@ -28,6 +28,7 @@ from byes.schema import CoordFrame, EventEnvelope, EventType, FrameMeta, HealthS
 from byes.tool_registry import ToolRegistry
 from byes.tools import MockOcrTool, MockRiskTool, RealDepthTool, RealDetTool, RealOcrTool, RealVlmTool
 from byes.tools.base import FrameInput, ToolLane
+from byes.world_state import WorldState
 
 
 def _now_ms() -> int:
@@ -80,6 +81,17 @@ class IntentRequest(BaseModel):
         return self
 
 
+class CrossCheckRequest(BaseModel):
+    kind: Literal["none", "vision_without_depth", "depth_without_vision"] = "none"
+    durationMs: int | None = 10000
+
+
+class PerformanceRequest(BaseModel):
+    mode: Literal["normal", "throttled"] = "normal"
+    reason: str | None = "manual_override"
+    durationMs: int | None = 10000
+
+
 class ConnectionManager:
     def __init__(self) -> None:
         self.active: set[WebSocket] = set()
@@ -130,6 +142,7 @@ class GatewayApp:
         self.governor = SloGovernor(self.config, metrics=self.metrics)
         self.faults = FaultManager(self.metrics)
         self.intent = IntentManager()
+        self.world_state = WorldState(self.config)
         self.frame_tracker = FrameTracker(
             metrics=self.metrics,
             retention_ms=self.config.frame_tracker_retention_ms,
@@ -137,9 +150,12 @@ class GatewayApp:
             governor=self.governor,
         )
         self.preprocessor = FramePreprocessor(self.config)
-        self.fusion = FusionEngine(self.config, metrics=self.metrics)
+        self.fusion = FusionEngine(self.config, metrics=self.metrics, world_state=self.world_state)
         self.action_gate = ActionPlanGate(metrics=self.metrics)
-        self.planner = PolicyPlannerV0(self.config)
+        if self.config.planner_v1_enabled:
+            self.planner = PolicyPlannerV1(self.config, metrics=self.metrics, world_state=self.world_state)
+        else:
+            self.planner = PolicyPlannerV0(self.config)
         self.safety = SafetyKernel(self.config, self.degradation)
         self.connections = ConnectionManager()
         self.scheduler = Scheduler(
@@ -154,6 +170,7 @@ class GatewayApp:
             planner=self.planner,
             frame_tracker=self.frame_tracker,
             preprocessor=self.preprocessor,
+            world_state=self.world_state,
         )
         self._mock_flip = False
         self._degrade_watchdog_task: asyncio.Task[None] | None = None
@@ -161,6 +178,11 @@ class GatewayApp:
         self._safe_mode_pulse_interval_ms = 1000
         self._last_meta_warn_ms: dict[str, int] = {"meta_missing": -1, "meta_parse_error": -1}
         self._enabled_tools = self._parse_csv_tools(self.config.enabled_tools_csv)
+        self._forced_crosscheck_kind = "none"
+        self._forced_crosscheck_expires_ms = -1
+        self._forced_performance_mode = "NORMAL"
+        self._forced_performance_reason = "manual_override"
+        self._forced_performance_expires_ms = -1
 
     async def startup(self) -> None:
         if self._tool_enabled("mock_risk"):
@@ -210,10 +232,14 @@ class GatewayApp:
         if active_intent == "ask" and active_question:
             enriched_meta["intentQuestion"] = active_question
         governor_snapshot = self.governor.snapshot()
+        effective_mode, effective_reason = self._effective_performance(governor_snapshot.mode, governor_snapshot.reason)
         if "performanceMode" not in enriched_meta:
-            enriched_meta["performanceMode"] = governor_snapshot.mode
+            enriched_meta["performanceMode"] = effective_mode
         if "performanceReason" not in enriched_meta:
-            enriched_meta["performanceReason"] = governor_snapshot.reason
+            enriched_meta["performanceReason"] = effective_reason
+        forced_crosscheck_kind = self._active_forced_crosscheck_kind()
+        if forced_crosscheck_kind != "none" and "forceCrosscheckKind" not in enriched_meta:
+            enriched_meta["forceCrosscheckKind"] = forced_crosscheck_kind
         enriched_meta["fingerprint"] = hashlib.sha1(frame_bytes).hexdigest()
 
         seq = await self.scheduler.submit_frame(
@@ -234,10 +260,16 @@ class GatewayApp:
         self.frame_tracker.reset_runtime()
         self.governor.reset_runtime()
         self.intent.reset_runtime()
+        self.world_state.reset_runtime()
         self.fusion.reset_runtime()
         self.scheduler.reset_runtime()
         self._last_safe_mode_pulse_ms = -1
         self._last_meta_warn_ms = {"meta_missing": -1, "meta_parse_error": -1}
+        self._forced_crosscheck_kind = "none"
+        self._forced_crosscheck_expires_ms = -1
+        self._forced_performance_mode = "NORMAL"
+        self._forced_performance_reason = "manual_override"
+        self._forced_performance_expires_ms = -1
         client_count = await self.connections.count()
         self.degradation.set_ws_client_count(client_count)
         return {
@@ -249,6 +281,8 @@ class GatewayApp:
             "intentQuestion": self.intent.active_question(),
             "performanceMode": self.governor.mode,
             "performanceReason": self.governor.reason,
+            "forcedCrosscheckKind": self._forced_crosscheck_kind,
+            "forcedPerformanceMode": self._forced_performance_mode,
             "faults": faults_snapshot.get("faults", []),
         }
 
@@ -299,6 +333,62 @@ class GatewayApp:
         if not self._enabled_tools:
             return True
         return tool_name.strip().lower() in self._enabled_tools
+
+    def _active_forced_crosscheck_kind(self) -> str:
+        now_ms = _now_ms()
+        if self._forced_crosscheck_expires_ms > 0 and now_ms >= self._forced_crosscheck_expires_ms:
+            self._forced_crosscheck_kind = "none"
+            self._forced_crosscheck_expires_ms = -1
+        return self._forced_crosscheck_kind
+
+    def set_forced_crosscheck(self, kind: str, duration_ms: int) -> dict[str, Any]:
+        normalized = str(kind or "none").strip()
+        if normalized not in {"none", "vision_without_depth", "depth_without_vision"}:
+            raise ValueError("kind must be one of: none, vision_without_depth, depth_without_vision")
+        if normalized == "none":
+            self._forced_crosscheck_kind = "none"
+            self._forced_crosscheck_expires_ms = -1
+            return {"kind": self._forced_crosscheck_kind, "expiresAtMs": self._forced_crosscheck_expires_ms}
+        now_ms = _now_ms()
+        ttl_ms = max(1, int(duration_ms))
+        self._forced_crosscheck_kind = normalized
+        self._forced_crosscheck_expires_ms = now_ms + ttl_ms
+        return {"kind": self._forced_crosscheck_kind, "expiresAtMs": self._forced_crosscheck_expires_ms}
+
+    def _effective_performance(self, governor_mode: str, governor_reason: str) -> tuple[str, str]:
+        now_ms = _now_ms()
+        if self._forced_performance_expires_ms > 0 and now_ms >= self._forced_performance_expires_ms:
+            self._forced_performance_mode = "NORMAL"
+            self._forced_performance_reason = "manual_override_expired"
+            self._forced_performance_expires_ms = -1
+        if self._forced_performance_expires_ms > 0:
+            return self._forced_performance_mode, self._forced_performance_reason
+        return governor_mode, governor_reason
+
+    def set_forced_performance(self, mode: str, reason: str, duration_ms: int) -> dict[str, Any]:
+        normalized = str(mode or "normal").strip().upper()
+        if normalized not in {"NORMAL", "THROTTLED"}:
+            raise ValueError("mode must be one of: normal, throttled")
+        if normalized == "NORMAL":
+            self._forced_performance_mode = "NORMAL"
+            self._forced_performance_reason = "manual_override"
+            self._forced_performance_expires_ms = -1
+            return {
+                "mode": self._forced_performance_mode,
+                "reason": self._forced_performance_reason,
+                "expiresAtMs": self._forced_performance_expires_ms,
+            }
+        now_ms = _now_ms()
+        ttl_ms = max(1, int(duration_ms))
+        normalized_reason = str(reason or "manual_override").strip() or "manual_override"
+        self._forced_performance_mode = normalized
+        self._forced_performance_reason = normalized_reason
+        self._forced_performance_expires_ms = now_ms + ttl_ms
+        return {
+            "mode": self._forced_performance_mode,
+            "reason": self._forced_performance_reason,
+            "expiresAtMs": self._forced_performance_expires_ms,
+        }
 
     @staticmethod
     def _format_health_summary(health_status: HealthStatus, reason: str) -> str:
@@ -415,6 +505,10 @@ class GatewayApp:
                 queue_depth=max_depth,
                 timeout_rate=timeout_rate,
             )
+            effective_mode, effective_reason = self._effective_performance(
+                governor_snapshot.mode,
+                governor_snapshot.reason,
+            )
             await self.emit_degradation_changes(
                 seq=0,
                 ts_capture_ms=now_ms,
@@ -427,9 +521,9 @@ class GatewayApp:
                 health_status = HealthStatus(health_status_raw)
             except ValueError:
                 health_status = HealthStatus.DEGRADED
-            if health_status in {HealthStatus.NORMAL, HealthStatus.WAITING_CLIENT} and governor_snapshot.mode == "THROTTLED":
+            if health_status in {HealthStatus.NORMAL, HealthStatus.WAITING_CLIENT} and effective_mode == "THROTTLED":
                 health_status = HealthStatus.THROTTLED
-                health_reason = governor_snapshot.reason or "slo_pressure"
+                health_reason = effective_reason or "slo_pressure"
             if not health_reason:
                 health_reason = "tool_result:normal" if health_status == HealthStatus.NORMAL else "waiting_client"
             await self._emit_health_event(
@@ -576,21 +670,28 @@ async def _shutdown() -> None:
 def health() -> dict[str, Any]:
     health_status, health_reason = gateway.degradation.get_health()
     governor_snapshot = gateway.governor.snapshot()
-    if health_status in {"NORMAL", "WAITING_CLIENT"} and governor_snapshot.mode == "THROTTLED":
+    effective_mode, effective_reason = gateway._effective_performance(  # noqa: SLF001
+        governor_snapshot.mode,
+        governor_snapshot.reason,
+    )
+    if health_status in {"NORMAL", "WAITING_CLIENT"} and effective_mode == "THROTTLED":
         health_status = "THROTTLED"
-        health_reason = governor_snapshot.reason
+        health_reason = effective_reason
     return {
         "ok": True,
         "ts": _now_ms(),
         "state": gateway.degradation.state.value,
         "healthStatus": health_status,
         "healthReason": health_reason,
-        "performanceMode": governor_snapshot.mode,
-        "performanceReason": governor_snapshot.reason,
+        "performanceMode": effective_mode,
+        "performanceReason": effective_reason,
         "clients": len(gateway.connections.active),
         "hadClientEverConnected": gateway.degradation.had_client_ever_connected,
         "intent": gateway.intent.active_intent(),
         "intentQuestion": gateway.intent.active_question(),
+        "forcedCrosscheckKind": gateway._active_forced_crosscheck_kind(),  # noqa: SLF001
+        "forcedPerformanceMode": gateway._forced_performance_mode,  # noqa: SLF001
+        "forcedPerformanceExpiresAtMs": gateway._forced_performance_expires_ms,  # noqa: SLF001
         "faults": gateway.faults.snapshot().get("faults", []),
     }
 
@@ -686,6 +787,26 @@ async def dev_intent(request: IntentRequest) -> dict[str, Any]:
         "question": snapshot.question,
         "expiresAtMs": snapshot.expires_at_ms,
     }
+
+
+@app.post("/api/dev/crosscheck")
+async def dev_crosscheck(request: CrossCheckRequest) -> dict[str, Any]:
+    duration_ms = int(request.durationMs or 0)
+    try:
+        snapshot = gateway.set_forced_crosscheck(request.kind, duration_ms)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, **snapshot}
+
+
+@app.post("/api/dev/performance")
+async def dev_performance(request: PerformanceRequest) -> dict[str, Any]:
+    duration_ms = int(request.durationMs or 0)
+    try:
+        snapshot = gateway.set_forced_performance(request.mode, request.reason or "manual_override", duration_ms)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, **snapshot}
 
 
 @app.get("/metrics")

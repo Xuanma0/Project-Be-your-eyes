@@ -2,12 +2,14 @@
 
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
 from byes.config import GatewayConfig
 from byes.crosscheck import CrossCheckActionPatch, CrossCheckEngine
 from byes.hazard_memory import HazardMemory
 from byes.schema import ActionPlan, ActionStep, ActionType, CoordFrame, EventEnvelope, EventType, ToolResult, ToolStatus
 from byes.tools.base import FrameInput, ToolLane
+from byes.world_state import WorldState
 
 
 @dataclass
@@ -22,10 +24,16 @@ class FusionOutput:
 
 
 class FusionEngine:
-    def __init__(self, config: GatewayConfig, metrics: object | None = None) -> None:
+    def __init__(
+        self,
+        config: GatewayConfig,
+        metrics: object | None = None,
+        world_state: WorldState | None = None,
+    ) -> None:
         self._config = config
         self._crosscheck = CrossCheckEngine(config)
         self._hazard_memory = HazardMemory(config, metrics=metrics)
+        self._world_state = world_state
 
     def reset_runtime(self) -> None:
         self._crosscheck.reset_runtime()
@@ -42,24 +50,74 @@ class FusionEngine:
     ) -> FusionOutput:
         ok_results = [result for result in results if result.status == ToolStatus.OK]
         normalized_health = str(health_status).strip().upper()
+        planner_hints = self._extract_planner_hints(frame.meta)
+        session_id = self._session_id_from_meta(frame.meta)
         if not ok_results:
+            if lane == ToolLane.FAST and planner_hints and normalized_health != "SAFE_MODE":
+                stage1 = self._tag_stage(self._planner_hint_events(frame, trace_id, span_id, planner_hints), "stage1")
+                self._update_world_state(
+                    frame=frame,
+                    session_id=session_id,
+                    results=ok_results,
+                    diagnostics=[],
+                    emitted_events=stage1,
+                )
+                return FusionOutput(stage1_events=stage1)
             if lane == ToolLane.FAST and normalized_health in {"DEGRADED", "SAFE_MODE"}:
                 stage1 = self._tag_stage(
                     [self._conservative_stage1_action_plan(frame, trace_id, span_id, normalized_health)],
                     "stage1",
                 )
+                self._update_world_state(
+                    frame=frame,
+                    session_id=session_id,
+                    results=ok_results,
+                    diagnostics=[],
+                    emitted_events=stage1,
+                )
                 return FusionOutput(stage1_events=stage1)
+            self._update_world_state(
+                frame=frame,
+                session_id=session_id,
+                results=ok_results,
+                diagnostics=[],
+                emitted_events=[],
+            )
             return FusionOutput()
 
         if lane == ToolLane.FAST:
             risk = self._pick_risk(ok_results)
             if risk is None:
+                if planner_hints and normalized_health != "SAFE_MODE":
+                    stage1 = self._tag_stage(self._planner_hint_events(frame, trace_id, span_id, planner_hints), "stage1")
+                    self._update_world_state(
+                        frame=frame,
+                        session_id=session_id,
+                        results=ok_results,
+                        diagnostics=[],
+                        emitted_events=stage1,
+                    )
+                    return FusionOutput(stage1_events=stage1)
                 if normalized_health in {"DEGRADED", "SAFE_MODE"}:
                     stage1 = self._tag_stage(
                         [self._conservative_stage1_action_plan(frame, trace_id, span_id, normalized_health)],
                         "stage1",
                     )
+                    self._update_world_state(
+                        frame=frame,
+                        session_id=session_id,
+                        results=ok_results,
+                        diagnostics=[],
+                        emitted_events=stage1,
+                    )
                     return FusionOutput(stage1_events=stage1)
+                self._update_world_state(
+                    frame=frame,
+                    session_id=session_id,
+                    results=ok_results,
+                    diagnostics=[],
+                    emitted_events=[],
+                )
                 return FusionOutput()
             event = EventEnvelope(
                 type=EventType.RISK,
@@ -78,11 +136,21 @@ class FusionEngine:
                     "azimuthDeg": risk.payload.get("azimuthDeg"),
                     "summary": risk.payload.get("summary", risk.payload.get("riskText", "Obstacle ahead")),
                     "reason": "risk_lane",
+                    "actionCategory": "risk_lane",
                     "activeConfirm": bool(risk.payload.get("activeConfirm", False)),
                     "crosscheckKind": risk.payload.get("crosscheckKind"),
                 },
             )
             events = self._tag_stage(self._apply_hazard_memory(frame, [event]), "stage1")
+            if planner_hints and normalized_health != "SAFE_MODE":
+                events.extend(self._tag_stage(self._planner_hint_events(frame, trace_id, span_id, planner_hints), "stage1"))
+            self._update_world_state(
+                frame=frame,
+                session_id=session_id,
+                results=ok_results,
+                diagnostics=[],
+                emitted_events=events,
+            )
             return FusionOutput(stage1_events=events)
 
         events: list[EventEnvelope] = []
@@ -112,7 +180,7 @@ class FusionEngine:
         crosscheck = self._crosscheck.evaluate(
             det_result=det,
             depth_result=depth,
-            frame_meta=frame.meta.get("frameMeta") if isinstance(frame.meta, dict) else None,
+            frame_meta=frame.meta if isinstance(frame.meta, dict) else None,
             health_status=health_status,
             session_id=str(frame.meta.get("sessionId", "default")),
             now_ms=frame.ts_capture_ms,
@@ -169,6 +237,13 @@ class FusionEngine:
         if action_plan is not None:
             events.append(action_plan)
         events = self._tag_stage(self._apply_hazard_memory(frame, events), "stage2")
+        self._update_world_state(
+            frame=frame,
+            session_id=session_id,
+            results=ok_results,
+            diagnostics=diagnostics,
+            emitted_events=events,
+        )
         return FusionOutput(stage2_events=events, diagnostics=diagnostics)
 
     @staticmethod
@@ -188,6 +263,8 @@ class FusionEngine:
                 "summary": payload.get("summary"),
                 "distanceM": payload.get("distanceM"),
                 "azimuthDeg": payload.get("azimuthDeg"),
+                "reason": payload.get("reason"),
+                "actionCategory": payload.get("actionCategory"),
                 "activeConfirm": payload.get("activeConfirm"),
                 "crosscheckKind": payload.get("crosscheckKind"),
                 "hazardId": payload.get("hazardId"),
@@ -225,6 +302,8 @@ class FusionEngine:
                 "actionPlan": payload.get("plan"),
                 "speech": payload.get("speech"),
                 "hud": payload.get("hud"),
+                "reason": payload.get("reason"),
+                "actionCategory": payload.get("actionCategory", payload.get("reason")),
                 "activeConfirm": payload.get("activeConfirm"),
                 "crosscheckKind": payload.get("crosscheckKind"),
                 "riskText": None,
@@ -572,7 +651,8 @@ class FusionEngine:
                 "speech": speech,
                 "hud": hud,
                 "plan": plan.model_dump(mode="json"),
-                "reason": "policy_planner_v0",
+                "reason": "semantic_policy",
+                "actionCategory": "semantic",
             },
         )
 
@@ -660,6 +740,7 @@ class FusionEngine:
                 "plan": plan.model_dump(mode="json"),
                 "tags": raw_plan.get("tags") if isinstance(raw_plan.get("tags"), list) else [],
                 "reason": "real_vlm",
+                "actionCategory": "ask_qa",
             },
         )
 
@@ -759,6 +840,7 @@ class FusionEngine:
         payload["speech"] = patch.speech
         payload["hud"] = patch.hud
         payload["reason"] = "crosscheck_patch"
+        payload["actionCategory"] = "crosscheck"
         payload["activeConfirm"] = bool(patch.active_confirm)
         payload["crosscheckKind"] = patch.kind
         event.payload = payload
@@ -825,8 +907,147 @@ class FusionEngine:
                 "hud": "Stop and scan",
                 "plan": plan.model_dump(mode="json"),
                 "reason": "stage1_guard",
+                "actionCategory": "stage1_guard",
             },
         )
+
+    def _planner_hint_events(
+        self,
+        frame: FrameInput,
+        trace_id: str,
+        span_id: str,
+        hints: list[dict[str, Any]],
+    ) -> list[EventEnvelope]:
+        events: list[EventEnvelope] = []
+        for hint in hints:
+            event = self._planner_hint_action_plan(frame, trace_id, span_id, hint)
+            if event is not None:
+                events.append(event)
+        return events
+
+    def _planner_hint_action_plan(
+        self,
+        frame: FrameInput,
+        trace_id: str,
+        span_id: str,
+        hint: dict[str, Any],
+    ) -> EventEnvelope | None:
+        if not isinstance(hint, dict):
+            return None
+        summary = str(hint.get("summary", "")).strip()
+        speech = str(hint.get("speech", summary)).strip() or summary
+        hud = str(hint.get("hud", speech)).strip() or speech
+        if not summary:
+            return None
+        steps_raw = hint.get("steps")
+        steps: list[ActionStep] = []
+        if isinstance(steps_raw, list):
+            for item in steps_raw:
+                if not isinstance(item, dict):
+                    continue
+                action_raw = str(item.get("action", ActionType.CONFIRM.value)).strip().lower()
+                try:
+                    action = ActionType(action_raw)
+                except ValueError:
+                    action = ActionType.CONFIRM
+                steps.append(
+                    ActionStep(
+                        action=action,
+                        text=str(item.get("text", "")).strip() or None,
+                    )
+                )
+        if not steps:
+            steps = [ActionStep(action=ActionType.CONFIRM, text=speech)]
+        fallback = str(hint.get("fallback", ActionType.SCAN.value)).strip().lower()
+        if fallback not in {item.value for item in ActionType}:
+            fallback = ActionType.SCAN.value
+        plan = ActionPlan(
+            traceId=trace_id,
+            expiresMs=frame.ts_capture_ms + frame.ttl_ms,
+            mode=str(hint.get("mode", "planner_hint")),
+            overallConfidence=max(0.0, min(1.0, float(hint.get("confidence", 0.8)))),
+            steps=steps,
+            fallback=fallback,
+        )
+        reason = str(hint.get("reason", "planner_hint")).strip().lower() or "planner_hint"
+        action_category = str(hint.get("actionCategory", reason)).strip().lower() or reason
+        return EventEnvelope(
+            type=EventType.ACTION_PLAN,
+            traceId=trace_id,
+            spanId=span_id,
+            seq=frame.seq,
+            tsCaptureMs=frame.ts_capture_ms,
+            ttlMs=frame.ttl_ms,
+            coordFrame=CoordFrame.WORLD,
+            confidence=max(0.0, min(1.0, float(hint.get("confidence", 0.8)))),
+            priority=self._config.navigation_priority,
+            source="planner_v1@v2.0",
+            payload={
+                "summary": summary,
+                "speech": speech,
+                "hud": hud,
+                "plan": plan.model_dump(mode="json"),
+                "reason": reason,
+                "actionCategory": action_category,
+            },
+        )
+
+    @staticmethod
+    def _extract_planner_hints(meta: dict[str, Any]) -> list[dict[str, Any]]:
+        raw = meta.get("_plannerActionHints")
+        if not isinstance(raw, list):
+            return []
+        return [dict(item) for item in raw if isinstance(item, dict)]
+
+    @staticmethod
+    def _session_id_from_meta(meta: dict[str, Any]) -> str:
+        session_id = str(meta.get("sessionId", "")).strip()
+        return session_id or "default"
+
+    def _update_world_state(
+        self,
+        *,
+        frame: FrameInput,
+        session_id: str,
+        results: list[ToolResult],
+        diagnostics: list[dict[str, object]],
+        emitted_events: list[EventEnvelope],
+    ) -> None:
+        if self._world_state is None:
+            return
+        now_ms = frame.ts_capture_ms
+        try:
+            self._world_state.ingest_tool_results(
+                session_id=session_id,
+                results=results,
+                now_ms=now_ms,
+                frame_meta=frame.meta,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        for item in diagnostics:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind", "")).strip()
+            if not kind:
+                continue
+            try:
+                self._world_state.note_crosscheck_conflict(
+                    session_id=session_id,
+                    kind=kind,
+                    now_ms=now_ms,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        hazards = self._hazard_memory.snapshot(session_id)
+        try:
+            self._world_state.update_active_hazards(
+                session_id=session_id,
+                hazards=hazards,
+                now_ms=now_ms,
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     @staticmethod
     def _tag_stage(events: list[EventEnvelope], stage: str) -> list[EventEnvelope]:
