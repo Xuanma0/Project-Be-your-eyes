@@ -79,6 +79,30 @@ class GatewayMetrics:
             labelnames=("tool", "reason"),
             registry=self._registry,
         )
+        self.byes_tool_cache_hit_total = Counter(
+            "byes_tool_cache_hit_total",
+            "Number of tool cache hits",
+            labelnames=("tool",),
+            registry=self._registry,
+        )
+        self.byes_tool_cache_miss_total = Counter(
+            "byes_tool_cache_miss_total",
+            "Number of tool cache misses",
+            labelnames=("tool",),
+            registry=self._registry,
+        )
+        self.byes_tool_rate_limited_total = Counter(
+            "byes_tool_rate_limited_total",
+            "Number of rate-limited tool decisions",
+            labelnames=("tool",),
+            registry=self._registry,
+        )
+        self.byes_frame_gate_skip_total = Counter(
+            "byes_frame_gate_skip_total",
+            "Number of frame-gate skips",
+            labelnames=("tool", "reason"),
+            registry=self._registry,
+        )
         self.byes_fault_set_total = Counter(
             "byes_fault_set_total",
             "Fault injection set count",
@@ -136,6 +160,18 @@ class GatewayMetrics:
 
     def inc_tool_skipped(self, tool: str, reason: str) -> None:
         self.byes_tool_skipped_total.labels(tool=tool, reason=reason).inc()
+
+    def inc_tool_cache_hit(self, tool: str) -> None:
+        self.byes_tool_cache_hit_total.labels(tool=tool).inc()
+
+    def inc_tool_cache_miss(self, tool: str) -> None:
+        self.byes_tool_cache_miss_total.labels(tool=tool).inc()
+
+    def inc_tool_rate_limited(self, tool: str) -> None:
+        self.byes_tool_rate_limited_total.labels(tool=tool).inc()
+
+    def inc_frame_gate_skip(self, tool: str, reason: str) -> None:
+        self.byes_frame_gate_skip_total.labels(tool=tool, reason=reason).inc()
 
     def inc_fault_set(self, tool: str, mode: str) -> None:
         self.byes_fault_set_total.labels(tool=tool, mode=mode).inc()

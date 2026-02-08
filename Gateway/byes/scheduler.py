@@ -11,10 +11,13 @@ from typing import Any
 from byes.config import GatewayConfig
 from byes.degradation import DegradationState
 from byes.faults import FaultManager
+from byes.frame_gate import FrameContext as GateFrameContext
+from byes.frame_gate import FrameGate
 from byes.observability import Observability, TraceInfo
 from byes.planner import FrameContext, PolicyPlannerV0, RecentFrameSummary, ToolInvocationPlan
 from byes.schema import ToolResult, ToolStatus
 from byes.tool_registry import ToolRegistry
+from byes.tool_cache import ToolCache
 from byes.tools.base import BaseTool, FrameInput, ToolContext, ToolLane
 
 OnLaneResults = Callable[[FrameInput, ToolLane, list[ToolResult]], Awaitable[None]]
@@ -44,6 +47,8 @@ class Scheduler:
         fault_manager: FaultManager | None = None,
         on_frame_terminal: OnFrameTerminal | None = None,
         planner: PolicyPlannerV0 | None = None,
+        frame_gate: FrameGate | None = None,
+        tool_cache: ToolCache | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -54,6 +59,8 @@ class Scheduler:
         self._faults = fault_manager
         self._on_frame_terminal = on_frame_terminal
         self._planner = planner
+        self._frame_gate = frame_gate or FrameGate(config)
+        self._tool_cache = tool_cache or ToolCache(config.tool_cache_max_entries)
 
         self._seq = 0
         self._latest_seq = 0
@@ -80,6 +87,9 @@ class Scheduler:
         self._frame_by_seq.clear()
         self._plan_by_seq.clear()
         self._frame_tool_stats.clear()
+        self._recent_summaries.clear()
+        self._frame_gate.reset_runtime()
+        self._tool_cache.reset_runtime()
 
         self._running = True
         self._workers = [
@@ -87,6 +97,15 @@ class Scheduler:
             asyncio.create_task(self._worker_loop(ToolLane.SLOW), name="byes-slow-worker"),
         ]
         self._set_queue_depth_metrics()
+
+    def reset_runtime(self) -> None:
+        self._active_by_seq.clear()
+        self._frame_by_seq.clear()
+        self._plan_by_seq.clear()
+        self._frame_tool_stats.clear()
+        self._recent_summaries.clear()
+        self._frame_gate.reset_runtime()
+        self._tool_cache.reset_runtime()
 
     async def stop(self) -> None:
         if not self._running:
@@ -196,6 +215,9 @@ class Scheduler:
     async def _run_tools_for_lane(self, queued: _QueuedTask, lane: ToolLane) -> list[ToolResult]:
         degraded = bool(self._safe_call(self._degradation, "is_degraded", default=False))
         safe_mode = bool(self._safe_call(self._degradation, "is_safe_mode", default=False))
+        now_ms = _now_ms()
+        fingerprint = str(queued.frame.meta.get("fingerprint", ""))
+        intent = str(queued.frame.meta.get("intent", "none"))
 
         all_lane_tools = self._registry.all_lane_tools(lane)
         available_tools = self._registry.lane_tools(
@@ -229,6 +251,9 @@ class Scheduler:
             else:
                 reason = self._derive_skip_reason(tool, lane, degraded, safe_mode)
             self._metric_call("inc_tool_skipped", tool.name, reason)
+            self._metric_call("inc_frame_gate_skip", tool.name, self._normalize_gate_reason(reason))
+            if self._normalize_gate_reason(reason) == "rate_limit":
+                self._metric_call("inc_tool_rate_limited", tool.name)
             self._inc_frame_stat(queued.frame.seq, "skipped")
 
         if not tools:
@@ -237,8 +262,49 @@ class Scheduler:
         lane_budget_ms = self._lane_budget_ms(plan, lane)
         lane_budget_deadline_ms = _now_ms() + max(1, lane_budget_ms)
         tasks: list[asyncio.Task[ToolResult]] = []
+        task_meta: list[tuple[BaseTool, str, bool]] = []
+        results: list[ToolResult] = []
+        gate_frame = GateFrameContext(
+            seq=queued.frame.seq,
+            received_at_ms=now_ms,
+            ttl_ms=queued.frame.ttl_ms,
+            intent=intent,
+            frame_fingerprint=fingerprint,
+            safe_mode=safe_mode,
+            degraded=degraded,
+            meta=queued.frame.meta,
+        )
         for tool in tools:
             planned_timeout_ms = planned_timeout_by_name.get(tool.name)
+            cache_key = self._cache_key(tool, queued.frame)
+            decision = self._frame_gate.decide(tool=tool, frame=gate_frame, now_ms=now_ms)
+            fault_active = bool(self._safe_call(self._faults, "has_active_fault", tool.name, default=False))
+
+            if decision.reuse_ok and cache_key and not fault_active:
+                cached = self._tool_cache.get(
+                    tool_name=tool.name,
+                    cache_key=cache_key,
+                    now_ms=now_ms,
+                    max_age_ms=decision.max_age_ms,
+                    fingerprint=fingerprint,
+                )
+                if cached is not None:
+                    self._metric_call("inc_tool_cache_hit", tool.name)
+                    cached_result = self._clone_tool_result_for_frame(cached.tool_result, queued.frame)
+                    results.append(cached_result)
+                    self._safe_call(self._degradation, "record_tool_result", cached_result)
+                    continue
+                self._metric_call("inc_tool_cache_miss", tool.name)
+
+            if not decision.run:
+                reason = self._normalize_gate_reason(decision.reason)
+                self._metric_call("inc_tool_skipped", tool.name, reason)
+                self._metric_call("inc_frame_gate_skip", tool.name, reason)
+                if reason == "rate_limit":
+                    self._metric_call("inc_tool_rate_limited", tool.name)
+                self._inc_frame_stat(queued.frame.seq, "skipped")
+                continue
+
             task = asyncio.create_task(
                 self._run_single_tool(
                     tool=tool,
@@ -250,13 +316,24 @@ class Scheduler:
             )
             self._active_by_seq[queued.frame.seq].add(task)
             tasks.append(task)
+            task_meta.append((tool, cache_key, decision.reuse_ok))
+            self._frame_gate.record_run(tool.name, fingerprint, now_ms=now_ms)
 
-        gathered = await asyncio.gather(*tasks, return_exceptions=True)
-        results: list[ToolResult] = []
-        for item in gathered:
+        gathered = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []
+        for index, item in enumerate(gathered):
             if isinstance(item, ToolResult):
                 results.append(item)
                 self._safe_call(self._degradation, "record_tool_result", item)
+                tool, cache_key, reuse_ok = task_meta[index]
+                if reuse_ok and cache_key and item.status == ToolStatus.OK:
+                    self._tool_cache.set(
+                        tool_name=tool.name,
+                        cache_key=cache_key,
+                        tool_result=item,
+                        produced_events=[],
+                        produced_at_ms=now_ms,
+                        fingerprint=fingerprint,
+                    )
 
         self._active_by_seq.pop(queued.frame.seq, None)
         return results
@@ -481,6 +558,26 @@ class Scheduler:
         if normalized in allowed:
             return normalized
         return "policy"
+
+    def _normalize_gate_reason(self, reason: str) -> str:
+        normalized = reason.strip().lower().replace("-", "_")
+        allowed = {"intent_off", "rate_limit", "safe_mode", "unchanged", "ttl_risk", "policy"}
+        if normalized in allowed:
+            return normalized
+        return "policy"
+
+    @staticmethod
+    def _cache_key(tool: BaseTool, frame: FrameInput) -> str:
+        if tool.name in {"real_det", "real_ocr"}:
+            return str(frame.meta.get("fingerprint", ""))
+        return ""
+
+    @staticmethod
+    def _clone_tool_result_for_frame(result: ToolResult, frame: FrameInput) -> ToolResult:
+        cloned = result.model_copy(deep=True)
+        cloned.seq = frame.seq
+        cloned.tsCaptureMs = frame.ts_capture_ms
+        return cloned
 
     def _complete_frame(self, frame: FrameInput, outcome: str) -> None:
         self._record_recent_summary(frame.seq, outcome)

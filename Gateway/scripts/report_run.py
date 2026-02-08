@@ -120,6 +120,7 @@ def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     state_counter: Counter[str] = Counter()
     expired_emitted = 0
     first_safe_mode_ms: int | None = None
+    safe_mode_active = False
     perception_after_safe_mode = 0
     action_plan_after_safe_mode = 0
 
@@ -134,16 +135,16 @@ def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if event_type == "health":
             health_state = pick_health_status(event)
             state_counter[health_state] += 1
-            if health_state == "SAFE_MODE" and first_safe_mode_ms is None:
-                first_safe_mode_ms = _row_time_ms(row, event)
-        elif event_type == "perception" and first_safe_mode_ms is not None:
-            row_ms = _row_time_ms(row, event)
-            if row_ms >= first_safe_mode_ms:
-                perception_after_safe_mode += 1
-        elif event_type == "action_plan" and first_safe_mode_ms is not None:
-            row_ms = _row_time_ms(row, event)
-            if row_ms >= first_safe_mode_ms:
-                action_plan_after_safe_mode += 1
+            if health_state == "SAFE_MODE":
+                if first_safe_mode_ms is None:
+                    first_safe_mode_ms = _row_time_ms(row, event)
+                safe_mode_active = True
+            elif health_state in {"NORMAL", "DEGRADED"}:
+                safe_mode_active = False
+        elif event_type == "perception" and safe_mode_active:
+            perception_after_safe_mode += 1
+        elif event_type == "action_plan" and safe_mode_active:
+            action_plan_after_safe_mode += 1
 
         recv_ms = row.get("receivedAtMs")
         event_ts = event.get("timestampMs")
@@ -290,6 +291,10 @@ def build_report(
         "byes_tool_invoked_total",
         "byes_tool_timeout_total",
         "byes_tool_skipped_total",
+        "byes_tool_cache_hit_total",
+        "byes_tool_cache_miss_total",
+        "byes_tool_rate_limited_total",
+        "byes_frame_gate_skip_total",
         "byes_safemode_enter_total",
         "byes_deadline_miss_total",
         "byes_backpressure_drop_total",
@@ -309,7 +314,12 @@ def build_report(
     append_metric_details(lines, after_samples, "byes_tool_invoked_total", ["tool"], "count")
     append_metric_details(lines, after_samples, "byes_tool_timeout_total", ["tool"], "count")
     append_metric_details(lines, after_samples, "byes_tool_skipped_total", ["tool", "reason"], "count")
-    _append_real_det_focus(lines, after_samples, delta=False)
+    append_metric_details(lines, after_samples, "byes_tool_cache_hit_total", ["tool"], "count")
+    append_metric_details(lines, after_samples, "byes_tool_cache_miss_total", ["tool"], "count")
+    append_metric_details(lines, after_samples, "byes_tool_rate_limited_total", ["tool"], "count")
+    append_metric_details(lines, after_samples, "byes_frame_gate_skip_total", ["tool", "reason"], "count")
+    _append_tool_focus(lines, after_samples, tool="real_det", delta=False)
+    _append_tool_focus(lines, after_samples, tool="real_ocr", delta=False)
 
     raw_changes = metric_details(after_samples, "byes_degradation_state_change_total")
     if raw_changes:
@@ -335,6 +345,10 @@ def build_report(
             "byes_tool_invoked_total",
             "byes_tool_timeout_total",
             "byes_tool_skipped_total",
+            "byes_tool_cache_hit_total",
+            "byes_tool_cache_miss_total",
+            "byes_tool_rate_limited_total",
+            "byes_frame_gate_skip_total",
             "byes_safemode_enter_total",
             "byes_deadline_miss_total",
             "byes_backpressure_drop_total",
@@ -357,7 +371,12 @@ def build_report(
         append_metric_details(lines, delta_samples, "byes_tool_invoked_total", ["tool"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_timeout_total", ["tool"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_skipped_total", ["tool", "reason"], "delta")
-        _append_real_det_focus(lines, delta_samples, delta=True)
+        append_metric_details(lines, delta_samples, "byes_tool_cache_hit_total", ["tool"], "delta")
+        append_metric_details(lines, delta_samples, "byes_tool_cache_miss_total", ["tool"], "delta")
+        append_metric_details(lines, delta_samples, "byes_tool_rate_limited_total", ["tool"], "delta")
+        append_metric_details(lines, delta_samples, "byes_frame_gate_skip_total", ["tool", "reason"], "delta")
+        _append_tool_focus(lines, delta_samples, tool="real_det", delta=True)
+        _append_tool_focus(lines, delta_samples, tool="real_ocr", delta=True)
 
         delta_changes = metric_details(delta_samples, "byes_degradation_state_change_total")
         if delta_changes:
@@ -376,31 +395,31 @@ def build_report(
     return "\n".join(lines)
 
 
-def _append_real_det_focus(lines: list[str], samples: dict[SeriesKey, float], delta: bool) -> None:
+def _append_tool_focus(lines: list[str], samples: dict[SeriesKey, float], tool: str, delta: bool) -> None:
     suffix = "delta" if delta else "count"
-    invoked = metric_value_with_labels(samples, "byes_tool_invoked_total", {"tool": "real_det"})
-    timeout = metric_value_with_labels(samples, "byes_tool_timeout_total", {"tool": "real_det"})
+    invoked = metric_value_with_labels(samples, "byes_tool_invoked_total", {"tool": tool})
+    timeout = metric_value_with_labels(samples, "byes_tool_timeout_total", {"tool": tool})
     skipped_total = 0.0
     skipped_found = False
     for labels, value in metric_details(samples, "byes_tool_skipped_total"):
-        if labels.get("tool") == "real_det":
+        if labels.get("tool") == tool:
             skipped_total += value
             skipped_found = True
 
     if invoked is None and timeout is None and not skipped_found:
         return
 
-    lines.append("- real_det focus:")
+    lines.append(f"- {tool} focus:")
     lines.append(
-        f"  - `byes_tool_invoked_total{{tool=real_det}}` {suffix}: "
+        f"  - `byes_tool_invoked_total{{tool={tool}}}` {suffix}: "
         f"`{format_float(invoked if invoked is not None else 0.0)}`"
     )
     lines.append(
-        f"  - `byes_tool_timeout_total{{tool=real_det}}` {suffix}: "
+        f"  - `byes_tool_timeout_total{{tool={tool}}}` {suffix}: "
         f"`{format_float(timeout if timeout is not None else 0.0)}`"
     )
     lines.append(
-        f"  - `byes_tool_skipped_total{{tool=real_det,*}}` {suffix}: "
+        f"  - `byes_tool_skipped_total{{tool={tool},*}}` {suffix}: "
         f"`{format_float(skipped_total if skipped_found else 0.0)}`"
     )
 

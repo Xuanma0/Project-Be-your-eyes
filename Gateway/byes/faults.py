@@ -9,7 +9,7 @@ from typing import Any
 
 LOGGER = logging.getLogger("byes.faults")
 
-_VALID_TOOLS = {"mock_risk", "mock_ocr", "all"}
+_VALID_TOOLS = {"mock_risk", "mock_ocr", "real_det", "real_ocr", "all"}
 _VALID_MODES = {"timeout", "slow", "low_conf", "disconnect"}
 
 
@@ -132,6 +132,13 @@ class FaultManager:
             return None
         self._metric_call("inc_fault_trigger", tool_name, "low_conf")
         return max(0.0, min(1.0, float(value)))
+
+    def has_active_fault(self, tool_name: str) -> bool:
+        self._cleanup_expired()
+        for mode in _VALID_MODES:
+            if self._effective_value(tool_name, mode) is not None:
+                return True
+        return False
 
     async def _expire_later(self, key: tuple[str, str], duration_ms: int) -> None:
         try:

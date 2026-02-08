@@ -18,6 +18,7 @@ Gateway keeps Unity legacy WS protocol by default and adds hardening:
 - `POST /api/fault/set`
 - `POST /api/fault/clear`
 - `POST /api/dev/reset`
+- `POST /api/dev/intent`
 - `GET /metrics`
 - `WS /ws/events`
 
@@ -51,6 +52,16 @@ set BYES_REAL_DET_MAX_INFLIGHT=2
 set BYES_REAL_DET_QUEUE_POLICY=drop
 ```
 
+`real_ocr` is an intent-triggered SLOW-lane OCR tool (`scan_text` only):
+
+```bash
+set BYES_ENABLE_REAL_OCR=1
+set BYES_REAL_OCR_ENDPOINT=http://127.0.0.1:9102/infer/ocr
+set BYES_REAL_OCR_TIMEOUT_MS=900
+set BYES_REAL_OCR_MAX_INFLIGHT=1
+set BYES_REAL_OCR_QUEUE_POLICY=drop
+```
+
 Low-cardinality skip reasons used by scheduler/report include:
 `safe_mode`, `degraded`, `disconnect`, `ttl_expired`, `max_inflight`, `policy`.
 
@@ -73,6 +84,40 @@ cd Gateway/external/real_det_service
 docker build -t byes-real-det:dev .
 docker run --rm -p 9001:9001 byes-real-det:dev
 ```
+
+## External OCR Service (RealOCR)
+
+```bash
+cd Gateway/external/real_ocr_service
+python -m venv .venv
+. .venv/Scripts/activate
+pip install -r requirements.txt
+python -m uvicorn main:app --host 127.0.0.1 --port 9102
+```
+
+Optional Docker:
+
+```bash
+cd Gateway/external/real_ocr_service
+docker build -t byes-real-ocr .
+docker run --rm -p 9102:9102 byes-real-ocr
+```
+
+Dev knobs for OCR service:
+- `OCR_SLEEP_MS`
+- `OCR_TIMEOUT_PROB`
+
+## Dev Intent API
+
+Enable short-lived scan intent for OCR planning:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/dev/intent ^
+  -H "Content-Type: application/json" ^
+  -d "{\"intent\":\"scan_text\",\"durationMs\":5000}"
+```
+
+Without `scan_text`, planner does not schedule `real_ocr`.
 
 ## Fault Injection
 
@@ -117,6 +162,21 @@ Modes:
 - `byes_fault_trigger_total{tool,mode}`
 - `byes_degradation_state_change_total{from_state,to_state,reason}`
 - `byes_health_warn_total{status}`
+- `byes_tool_cache_hit_total{tool}`
+- `byes_tool_cache_miss_total{tool}`
+- `byes_tool_rate_limited_total{tool}`
+- `byes_frame_gate_skip_total{tool,reason}`
+
+`byes_frame_gate_skip_total.reason` is constrained to:
+`intent_off`, `rate_limit`, `safe_mode`, `unchanged`, `ttl_risk`, `policy`.
+
+## FrameGate + ToolCache (v1)
+
+- Frame fingerprint: gateway computes `sha1(image_bytes)` on `/api/frame`.
+- `real_ocr`: runs only when `intent=scan_text`; otherwise gated with `intent_off`.
+- `real_det`: gated by min interval + unchanged-frame reuse.
+- SAFE_MODE: gate layer also counts skip decisions (WS output still guarded by SafetyKernel/output layer).
+- Cache key v1: `(tool_name, frame_fingerprint)` with exact-fingerprint reuse and max-age guard.
 
 ## Replay / Record / Assert
 
@@ -173,11 +233,33 @@ RealDet ActionPlan scenario:
 powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RealDetActionPlan
 ```
 
-Timeout regression example:
+RealOCR scan-text scenario (requires `BYES_ENABLE_REAL_OCR=1` and OCR service up):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RunName run_realoocr_scan -RealOcrScan
+```
+
+Timeout regression examples:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -TimeoutScenario
 ```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RunName run_realoocr_timeout -RealOcrScan -TimeoutScenario
+```
+
+Cache scenario (repeat same first frame 50 times, intent off):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RunName run_cache -CacheScenario
+```
+
+How to read cache scenario report:
+- `frame_received/frame_completed/e2e_count` should all be `50`.
+- `real_det invoked` should be much smaller than `50`.
+- `real_ocr invoked` should be `0` when intent is off.
+- `byes_tool_cache_hit_total{tool=real_det}` should grow.
 
 ## Tests
 

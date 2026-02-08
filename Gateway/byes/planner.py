@@ -65,7 +65,7 @@ class PolicyPlannerV0:
         recent: list[RecentFrameSummary],
         tools: list[ToolDescriptor],
     ) -> ToolInvocationPlan:
-        _ = frame
+        active_intent = str(frame.meta.get("intent", "none")).strip().lower()
         _ = recent
         invocations: list[ToolInvocation] = []
 
@@ -84,6 +84,8 @@ class PolicyPlannerV0:
 
         if degradation_state not in {DegradationState.SAFE_MODE, DegradationState.DEGRADED}:
             for tool in sorted(slow_tools, key=lambda item: self._priority_for(item), reverse=True):
+                if tool.name == "real_ocr" and active_intent != "scan_text":
+                    continue
                 invocations.append(
                     ToolInvocation(
                         tool_name=tool.name,

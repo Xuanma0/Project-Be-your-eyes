@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import time
 from typing import Any, Literal
@@ -14,6 +15,7 @@ from byes.degradation import DegradationManager, DegradationState
 from byes.faults import FaultManager
 from byes.frame_tracker import FrameTracker
 from byes.fusion import FusionEngine
+from byes.intent import IntentManager
 from byes.metrics import GatewayMetrics
 from byes.observability import Observability
 from byes.planner import PolicyPlannerV0
@@ -21,7 +23,7 @@ from byes.safety import SafetyKernel
 from byes.scheduler import Scheduler
 from byes.schema import CoordFrame, EventEnvelope, EventType
 from byes.tool_registry import ToolRegistry
-from byes.tools import MockOcrTool, MockRiskTool, RealDetTool
+from byes.tools import MockOcrTool, MockRiskTool, RealDetTool, RealOcrTool
 from byes.tools.base import FrameInput, ToolLane
 
 
@@ -43,10 +45,15 @@ class MockEvent(BaseModel):
 
 
 class FaultSetRequest(BaseModel):
-    tool: Literal["mock_risk", "mock_ocr", "all"]
+    tool: Literal["mock_risk", "mock_ocr", "real_det", "real_ocr", "all"]
     mode: Literal["timeout", "slow", "low_conf", "disconnect"]
     value: float | bool | int | None = None
     durationMs: int | None = None
+
+
+class IntentRequest(BaseModel):
+    intent: Literal["none", "scan_text"] = "none"
+    durationMs: int | None = 5000
 
 
 class ConnectionManager:
@@ -97,6 +104,7 @@ class GatewayApp:
         self.registry = ToolRegistry()
         self.degradation = DegradationManager(self.config, self.metrics)
         self.faults = FaultManager(self.metrics)
+        self.intent = IntentManager()
         self.frame_tracker = FrameTracker(
             metrics=self.metrics,
             retention_ms=self.config.frame_tracker_retention_ms,
@@ -127,6 +135,8 @@ class GatewayApp:
         self.registry.register(MockOcrTool(self.config))
         if self.config.enable_real_det:
             self.registry.register(RealDetTool(self.config))
+        if self.config.enable_real_ocr:
+            self.registry.register(RealOcrTool(self.config))
         self.observability.instrument_app(self.app)
         await self.scheduler.start()
         self.degradation.set_ws_client_count(0)
@@ -148,6 +158,8 @@ class GatewayApp:
         enriched_meta = dict(meta)
         enriched_meta["traceId"] = trace.trace_id
         enriched_meta["spanId"] = trace.span_id
+        enriched_meta["intent"] = self.intent.active_intent()
+        enriched_meta["fingerprint"] = hashlib.sha1(frame_bytes).hexdigest()
 
         seq = await self.scheduler.submit_frame(
             frame_bytes=frame_bytes,
@@ -165,6 +177,8 @@ class GatewayApp:
         faults_snapshot = await self.faults.clear_faults()
         self.degradation.reset_runtime()
         self.frame_tracker.reset_runtime()
+        self.intent.reset_runtime()
+        self.scheduler.reset_runtime()
         self._last_safe_mode_pulse_ms = -1
         client_count = await self.connections.count()
         self.degradation.set_ws_client_count(client_count)
@@ -173,6 +187,7 @@ class GatewayApp:
             "clients": client_count,
             "hadClientEverConnected": self.degradation.had_client_ever_connected,
             "frameTrackerRecords": self.frame_tracker.record_count,
+            "intent": self.intent.active_intent(),
             "faults": faults_snapshot.get("faults", []),
         }
 
@@ -368,6 +383,7 @@ def health() -> dict[str, Any]:
         "state": gateway.degradation.state.value,
         "clients": len(gateway.connections.active),
         "hadClientEverConnected": gateway.degradation.had_client_ever_connected,
+        "intent": gateway.intent.active_intent(),
         "faults": gateway.faults.snapshot().get("faults", []),
     }
 
@@ -422,6 +438,17 @@ async def fault_clear() -> dict[str, Any]:
 async def dev_reset() -> dict[str, Any]:
     runtime = await gateway.reset_runtime()
     return {"ok": True, **runtime}
+
+
+@app.post("/api/dev/intent")
+async def dev_intent(request: IntentRequest) -> dict[str, Any]:
+    duration_ms = int(request.durationMs or 0)
+    snapshot = gateway.intent.set_intent(request.intent, duration_ms)
+    return {
+        "ok": True,
+        "intent": snapshot.intent,
+        "expiresAtMs": snapshot.expires_at_ms,
+    }
 
 
 @app.get("/metrics")

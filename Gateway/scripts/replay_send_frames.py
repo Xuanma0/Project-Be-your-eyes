@@ -20,6 +20,8 @@ def main() -> int:
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--interval-ms", type=int, default=500)
     parser.add_argument("--ttl-ms", type=int, default=3000)
+    parser.add_argument("--repeat-first", type=int, default=0, help="repeat first image N times")
+    parser.add_argument("--preserve-old", action="store_true", help="set preserveOld=true in frame meta")
     args = parser.parse_args()
 
     folder = Path(args.dir)
@@ -31,6 +33,8 @@ def main() -> int:
     if not images:
         print("no images found")
         return 1
+    if args.repeat_first > 0:
+        images = [images[0]] * int(args.repeat_first)
 
     endpoint = args.base_url.rstrip("/") + "/api/frame"
     print(f"sending {len(images)} frames -> {endpoint}")
@@ -43,6 +47,7 @@ def main() -> int:
                 "tsCaptureMs": ts_capture,
                 "ttlMs": args.ttl_ms,
                 "source": "replay_send_frames",
+                "preserveOld": bool(args.preserve_old),
             }
             files = {
                 "image": (image_path.name, image_path.read_bytes(), "image/jpeg"),

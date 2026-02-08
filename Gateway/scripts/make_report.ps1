@@ -1,13 +1,15 @@
 ﻿param(
     [string]$BaseUrl = "http://127.0.0.1:8000",
     [string]$WsUrl = "ws://127.0.0.1:8000/ws/events",
-    [string]$FramesDir = "fixtures/frames",
+    [string]$FramesDir = "frames",
     [int]$IntervalMs = 500,
     [int]$RecordDurationSec = 20,
     [string]$OutDir = "artifacts",
     [string]$RunName = "run_baseline",
     [switch]$RealDetBaseline,
+    [switch]$RealOcrScan,
     [switch]$RealDetActionPlan,
+    [switch]$CacheScenario,
     [switch]$TimeoutScenario
 )
 
@@ -85,10 +87,12 @@ function Reset-GatewayRuntime {
     }
 }
 
-function Assert-RealDetEnabled {
+function Assert-ToolEnabled {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$BaseUrl
+        [string]$BaseUrl,
+        [Parameter(Mandatory = $true)]
+        [string]$ToolName
     )
 
     $toolsUrl = "{0}/api/tools" -f $BaseUrl.TrimEnd('/')
@@ -99,31 +103,54 @@ function Assert-RealDetEnabled {
     }
     $hasRealDet = $false
     foreach ($tool in $tools) {
-        if ($null -ne $tool.name -and [string]$tool.name -eq "real_det") {
+        if ($null -ne $tool.name -and [string]$tool.name -eq $ToolName) {
             $hasRealDet = $true
             break
         }
     }
     if (-not $hasRealDet) {
-        throw "real_det tool is not enabled. Start gateway with BYES_ENABLE_REAL_DET=1."
+        throw "$ToolName tool is not enabled."
     }
 }
 
 function Set-TimeoutFault {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$BaseUrl
+        [string]$BaseUrl,
+        [Parameter(Mandatory = $true)]
+        [string]$ToolName
     )
 
     $faultUrl = "{0}/api/fault/set" -f $BaseUrl.TrimEnd('/')
     $body = @{
-        tool = "mock_risk"
+        tool = $ToolName
         mode = "timeout"
         value = $true
     } | ConvertTo-Json
     $resp = Invoke-RestMethod -Uri $faultUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 20
     if ($null -eq $resp -or -not $resp.ok) {
         throw "failed to set timeout fault via $faultUrl"
+    }
+}
+
+function Set-DevIntent {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BaseUrl,
+        [Parameter(Mandatory = $true)]
+        [string]$Intent,
+        [Parameter(Mandatory = $true)]
+        [int]$DurationMs
+    )
+
+    $intentUrl = "{0}/api/dev/intent" -f $BaseUrl.TrimEnd('/')
+    $body = @{
+        intent = $Intent
+        durationMs = $DurationMs
+    } | ConvertTo-Json
+    $resp = Invoke-RestMethod -Uri $intentUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 20
+    if ($null -eq $resp -or -not $resp.ok) {
+        throw "failed to set dev intent via $intentUrl"
     }
 }
 
@@ -134,6 +161,10 @@ $framesDirAbs = if ([System.IO.Path]::IsPathRooted($FramesDir)) { $FramesDir } e
 
 if ($RealDetActionPlan -and $RunName -eq "run_baseline") {
     $RunName = "run_realdet_actionplan"
+} elseif ($CacheScenario -and $RunName -eq "run_baseline") {
+    $RunName = "run_cache"
+} elseif ($RealOcrScan -and $RunName -eq "run_baseline") {
+    $RunName = "run_realoocr_scan"
 } elseif ($RealDetBaseline -and $RunName -eq "run_baseline") {
     $RunName = "run_real_det_baseline"
 } elseif ($TimeoutScenario -and $RunName -eq "run_baseline") {
@@ -156,11 +187,26 @@ Write-Host "Reset gateway runtime state -> $BaseUrl"
 Reset-GatewayRuntime -BaseUrl $BaseUrl
 if ($RealDetBaseline -or $RealDetActionPlan) {
     Write-Host "Validate tool availability -> real_det"
-    Assert-RealDetEnabled -BaseUrl $BaseUrl
+    Assert-ToolEnabled -BaseUrl $BaseUrl -ToolName "real_det"
+}
+if ($CacheScenario) {
+    Write-Host "Validate tool availability -> real_det"
+    Assert-ToolEnabled -BaseUrl $BaseUrl -ToolName "real_det"
+}
+if ($RealOcrScan -or $RunName.ToLower().Contains("realoocr")) {
+    Write-Host "Validate tool availability -> real_ocr"
+    Assert-ToolEnabled -BaseUrl $BaseUrl -ToolName "real_ocr"
+    $intentDurationMs = [Math]::Max(5000, ($RecordDurationSec + 5) * 1000)
+    Write-Host "Set dev intent -> scan_text (${intentDurationMs}ms)"
+    Set-DevIntent -BaseUrl $BaseUrl -Intent "scan_text" -DurationMs $intentDurationMs
 }
 if ($TimeoutScenario) {
-    Write-Host "Inject timeout fault -> mock_risk"
-    Set-TimeoutFault -BaseUrl $BaseUrl
+    $timeoutTool = "mock_risk"
+    if ($RunName.ToLower().Contains("realoocr")) {
+        $timeoutTool = "real_ocr"
+    }
+    Write-Host "Inject timeout fault -> $timeoutTool"
+    Set-TimeoutFault -BaseUrl $BaseUrl -ToolName $timeoutTool
 }
 
 Write-Host "[1/4] Start WS record -> $wsJsonl"
@@ -176,7 +222,16 @@ $recordProc = Start-PythonProcess -WorkingDirectory $gatewayDir -Arguments $reco
 Start-Sleep -Seconds 1
 
 Write-Host "[2/4] Send frames -> $framesDirAbs"
-& python (Join-Path $scriptsDir "replay_send_frames.py") --dir $framesDirAbs --base-url $BaseUrl --interval-ms $IntervalMs
+$replayArgs = @(
+    (Join-Path $scriptsDir "replay_send_frames.py"),
+    "--dir", $framesDirAbs,
+    "--base-url", $BaseUrl,
+    "--interval-ms", $IntervalMs
+)
+if ($CacheScenario) {
+    $replayArgs += @("--repeat-first", "50", "--preserve-old")
+}
+& python @replayArgs
 if ($LASTEXITCODE -ne 0) {
     throw "replay_send_frames.py failed with code $LASTEXITCODE"
 }

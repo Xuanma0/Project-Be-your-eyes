@@ -140,6 +140,7 @@ def test_v12_timeout_fault_frame_completion_and_skips() -> None:
                 json={"tool": "all", "mode": "timeout", "value": True},
             )
             assert response.status_code == 200
+            capture.messages.clear()
 
             send_frames(client, 50)
             after = wait_completed_delta(client, before, expected=50)
