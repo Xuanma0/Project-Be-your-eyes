@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 from byes.config import GatewayConfig
-from byes.schema import ActionType, EventEnvelope, EventType
+from byes.schema import ActionType, EventEnvelope, EventType, RiskLevel
 
 
 @dataclass
@@ -36,6 +36,11 @@ class SafetyKernel:
 
         risk_events = [event for event in fresh if event.type == EventType.RISK]
         if risk_events:
+            for risk in risk_events:
+                if risk.riskLevel is None:
+                    risk.riskLevel = RiskLevel.WARN
+                if "riskLevel" not in risk.payload:
+                    risk.payload = {**dict(risk.payload), "riskLevel": risk.riskLevel.value}
             # Invariant 1: risk preempts every non-risk event.
             risk_events.sort(key=lambda item: item.priority, reverse=True)
             return SafetyDecision(events=risk_events)

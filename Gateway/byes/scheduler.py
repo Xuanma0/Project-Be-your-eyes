@@ -40,6 +40,9 @@ class _QueuedTask:
 
 
 class Scheduler:
+    PREEMPT_REASON = "preempted_by_critical_risk"
+    PREEMPT_METRIC_REASON = "critical_risk"
+
     def __init__(
         self,
         config: GatewayConfig,
@@ -189,17 +192,7 @@ class Scheduler:
 
         await self._fast_q.put(queued)
         self._set_queue_depth_metrics()
-
-        slow_enqueued = False
-        if self._slow_q.qsize() >= self._config.slow_q_drop_threshold:
-            self._metric_call("inc_backpressure_drop", ToolLane.SLOW.value)
-            self._safe_call(self._degradation, "note_backpressure", ToolLane.SLOW.value)
-        else:
-            with contextlib.suppress(asyncio.QueueFull):
-                self._slow_q.put_nowait(queued)
-                slow_enqueued = True
-                queued.enqueued_at_ms_by_lane[ToolLane.SLOW.value] = _now_ms()
-        frame.meta["_slow_enqueued"] = slow_enqueued
+        frame.meta["_slow_enqueued"] = False
         self._set_queue_depth_metrics()
 
         return seq
@@ -223,6 +216,11 @@ class Scheduler:
                 if results:
                     await self._on_lane_results(queued.frame, lane, results)
                     if lane == ToolLane.FAST:
+                        if self._has_critical_risk_result(results):
+                            self._preempt_slow_lane_for_frame(queued.frame)
+                            queued.frame.meta["_slow_enqueued"] = False
+                        else:
+                            queued.frame.meta["_slow_enqueued"] = self._enqueue_slow_after_fast(queued)
                         self._record_recent_summary(queued.frame.seq, "ok")
                         if not bool(queued.frame.meta.get("_slow_enqueued", False)):
                             self._discard_frame_runtime(queued.frame.seq)
@@ -561,6 +559,11 @@ class Scheduler:
                 forced_conf = self._faults.low_conf_value(tool.name) if self._faults is not None else None
                 if forced_conf is not None:
                     result.confidence = forced_conf
+                forced_risk_level = self._faults.forced_risk_level(tool.name) if self._faults is not None else None
+                if forced_risk_level and isinstance(result.payload, dict) and "riskText" in result.payload:
+                    patched_payload = dict(result.payload)
+                    patched_payload["riskLevel"] = forced_risk_level
+                    result.payload = patched_payload
                 if span is not None:
                     span.set_attribute("tool.timeout", False)
                     span.set_attribute("tool.status", result.status.value)
@@ -685,6 +688,7 @@ class Scheduler:
             "throttled_skip",
             "budget_skip",
             "latency_pred_exceeds_budget",
+            self.PREEMPT_REASON,
             "degraded",
             "safe_mode",
             "disconnect",
@@ -707,6 +711,7 @@ class Scheduler:
             "ttl_risk",
             "policy",
             "latency_pred_exceeds_budget",
+            self.PREEMPT_REASON,
         }
         if normalized in allowed:
             return normalized
@@ -788,6 +793,55 @@ class Scheduler:
     def _set_queue_depth_metrics(self) -> None:
         self._metric_call("set_queue_depth", ToolLane.FAST.value, self._fast_q.qsize())
         self._metric_call("set_queue_depth", ToolLane.SLOW.value, self._slow_q.qsize())
+
+    def _enqueue_slow_after_fast(self, queued: _QueuedTask) -> bool:
+        if self._slow_q.qsize() >= self._config.slow_q_drop_threshold:
+            self._metric_call("inc_backpressure_drop", ToolLane.SLOW.value)
+            self._safe_call(self._degradation, "note_backpressure", ToolLane.SLOW.value)
+            return False
+
+        if not self._frame_has_slow_work(queued.frame):
+            return False
+
+        with contextlib.suppress(asyncio.QueueFull):
+            self._slow_q.put_nowait(queued)
+            queued.enqueued_at_ms_by_lane[ToolLane.SLOW.value] = _now_ms()
+            self._set_queue_depth_metrics()
+            return True
+        return False
+
+    def _frame_has_slow_work(self, frame: FrameInput) -> bool:
+        _ = frame
+        return bool(self._registry.all_lane_tools(ToolLane.SLOW))
+
+    @staticmethod
+    def _normalize_risk_level(value: object) -> str:
+        raw = str(value or "").strip().lower()
+        if raw in {"info", "warn", "critical"}:
+            return raw
+        if raw in {"warning", "high"}:
+            return "warn"
+        return "warn"
+
+    def _has_critical_risk_result(self, results: list[ToolResult]) -> bool:
+        for result in results:
+            if result.status != ToolStatus.OK:
+                continue
+            payload = result.payload if isinstance(result.payload, dict) else {}
+            if "riskText" not in payload:
+                continue
+            if self._normalize_risk_level(payload.get("riskLevel", payload.get("severity"))) == "critical":
+                return True
+        return False
+
+    def _preempt_slow_lane_for_frame(self, frame: FrameInput) -> None:
+        tool_names = sorted({tool.name for tool in self._registry.all_lane_tools(ToolLane.SLOW)})
+        if not tool_names:
+            return
+        self._metric_call("inc_preempt_enter", self.PREEMPT_METRIC_REASON)
+        for tool_name in tool_names:
+            self._metric_call("inc_tool_skipped", tool_name, self.PREEMPT_REASON)
+            self._inc_frame_stat(frame.seq, "skipped")
 
     def queue_depth_snapshot(self) -> dict[str, int]:
         return {

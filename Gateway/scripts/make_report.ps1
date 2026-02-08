@@ -13,6 +13,7 @@
     [switch]$RealDetActionPlan,
     [switch]$CacheScenario,
     [switch]$QueuePressureScenario,
+    [switch]$CriticalPreemptScenario,
     [switch]$PlannerV1CrossCheck,
     [switch]$PlannerV1ThrottledAsk,
     [switch]$ExternalReadinessSmoke,
@@ -161,6 +162,26 @@ function Set-SlowFault {
     }
 }
 
+function Set-CriticalRiskFault {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BaseUrl,
+        [Parameter(Mandatory = $true)]
+        [string]$ToolName
+    )
+
+    $faultUrl = "{0}/api/fault/set" -f $BaseUrl.TrimEnd('/')
+    $body = @{
+        tool = $ToolName
+        mode = "critical"
+        value = $true
+    } | ConvertTo-Json
+    $resp = Invoke-RestMethod -Uri $faultUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 20
+    if ($null -eq $resp -or -not $resp.ok) {
+        throw "failed to set critical fault via $faultUrl"
+    }
+}
+
 function Set-DevIntent {
     param(
         [Parameter(Mandatory = $true)]
@@ -289,6 +310,8 @@ if ($RealDetActionPlan -and $RunName -eq "run_baseline") {
     $RunName = "run_cache"
 } elseif ($QueuePressureScenario -and $RunName -eq "run_baseline") {
     $RunName = "run_queue_pressure_v23"
+} elseif ($CriticalPreemptScenario -and $RunName -eq "run_baseline") {
+    $RunName = "run_critical_preempt_v24"
 } elseif ($RealDepthBaseline -and $RunName -eq "run_baseline") {
     $RunName = "run_real_depth_baseline"
 } elseif ($RealOcrScan -and $RunName -eq "run_baseline") {
@@ -377,6 +400,10 @@ if ($QueuePressureScenario) {
     Write-Host "Inject slow fault -> mock_ocr (+1200ms)"
     Set-SlowFault -BaseUrl $BaseUrl -ToolName "mock_ocr" -DelayMs 1200
 }
+if ($CriticalPreemptScenario) {
+    Write-Host "Inject critical-risk fault -> mock_risk"
+    Set-CriticalRiskFault -BaseUrl $BaseUrl -ToolName "mock_risk"
+}
 
 Write-Host "[1/4] Start WS record -> $wsJsonl"
 Save-MetricsSnapshot -MetricsUrl $metricsUrl -OutputPath $metricsBefore
@@ -401,6 +428,9 @@ if ($CacheScenario) {
     $replayArgs += @("--repeat-first", "50", "--preserve-old")
 }
 if ($QueuePressureScenario) {
+    $replayArgs += @("--preserve-old")
+}
+if ($CriticalPreemptScenario) {
     $replayArgs += @("--preserve-old")
 }
 & python @replayArgs
@@ -436,7 +466,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "report_run.py failed with code $LASTEXITCODE"
 }
 
-if ($TimeoutScenario -or $QueuePressureScenario) {
+if ($TimeoutScenario -or $QueuePressureScenario -or $CriticalPreemptScenario) {
     $null = Invoke-RestMethod -Uri ("{0}/api/fault/clear" -f $BaseUrl.TrimEnd('/')) -Method Post -TimeoutSec 20
 }
 

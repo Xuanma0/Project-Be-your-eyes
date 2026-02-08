@@ -43,5 +43,6 @@ class MockRiskTool(BaseTool):
                 "distanceM": self._distance_m,
                 "azimuthDeg": self._azimuth_deg,
                 "summary": self._risk_text,
+                "riskLevel": "warn",
             },
         )

@@ -10,7 +10,7 @@ from typing import Any
 LOGGER = logging.getLogger("byes.faults")
 
 _VALID_TOOLS = {"mock_risk", "mock_ocr", "real_det", "real_ocr", "real_depth", "real_vlm", "all"}
-_VALID_MODES = {"timeout", "slow", "low_conf", "disconnect"}
+_VALID_MODES = {"timeout", "slow", "low_conf", "disconnect", "critical"}
 
 
 @dataclass
@@ -139,6 +139,25 @@ class FaultManager:
             if self._effective_value(tool_name, mode) is not None:
                 return True
         return False
+
+    def forced_risk_level(self, tool_name: str) -> str | None:
+        value = self._effective_value(tool_name, "critical")
+        if value is None:
+            return None
+
+        level: str | None = None
+        if isinstance(value, bool):
+            level = "critical" if value else None
+        elif isinstance(value, (int, float)):
+            level = "critical" if float(value) > 0 else None
+        elif isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"info", "warn", "critical"}:
+                level = normalized
+
+        if level is not None:
+            self._metric_call("inc_fault_trigger", tool_name, "critical")
+        return level
 
     async def _expire_later(self, key: tuple[str, str], duration_ms: int) -> None:
         try:

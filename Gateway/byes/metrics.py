@@ -133,6 +133,12 @@ class GatewayMetrics:
             labelnames=("tool", "reason"),
             registry=self._registry,
         )
+        self.byes_preempt_enter_total = Counter(
+            "byes_preempt_enter_total",
+            "Per-frame critical-risk preemption count",
+            labelnames=("reason",),
+            registry=self._registry,
+        )
         self.byes_tool_cache_hit_total = Counter(
             "byes_tool_cache_hit_total",
             "Number of tool cache hits",
@@ -341,6 +347,9 @@ class GatewayMetrics:
 
     def inc_tool_skipped(self, tool: str, reason: str) -> None:
         self.byes_tool_skipped_total.labels(tool=tool, reason=reason).inc()
+
+    def inc_preempt_enter(self, reason: str) -> None:
+        self.byes_preempt_enter_total.labels(reason=reason).inc()
 
     def inc_tool_cache_hit(self, tool: str) -> None:
         self.byes_tool_cache_hit_total.labels(tool=tool).inc()

@@ -53,7 +53,7 @@ class MockEvent(BaseModel):
 
 class FaultSetRequest(BaseModel):
     tool: Literal["mock_risk", "mock_ocr", "real_det", "real_ocr", "real_depth", "real_vlm", "all"]
-    mode: Literal["timeout", "slow", "low_conf", "disconnect"]
+    mode: Literal["timeout", "slow", "low_conf", "disconnect", "critical"]
     value: float | bool | int | None = None
     durationMs: int | None = None
 

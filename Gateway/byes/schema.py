@@ -38,6 +38,12 @@ class HealthStatus(str, Enum):
     WAITING_CLIENT = "WAITING_CLIENT"
 
 
+class RiskLevel(str, Enum):
+    INFO = "info"
+    WARN = "warn"
+    CRITICAL = "critical"
+
+
 class Intrinsics(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -126,6 +132,7 @@ class EventEnvelope(BaseModel):
     confidence: float = 0.0
     priority: int = 0
     source: str
+    riskLevel: RiskLevel | None = None
     healthStatus: HealthStatus | None = None
     healthReason: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -233,6 +240,7 @@ class LegacyEvent(BaseModel):
     confidence: float
     ttlMs: int
     source: str
+    riskLevel: RiskLevel | None = None
     stage: str | None = None
     riskText: str | None = None
     summary: str | None = None

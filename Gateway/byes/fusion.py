@@ -7,7 +7,17 @@ from typing import Any
 from byes.config import GatewayConfig
 from byes.crosscheck import CrossCheckActionPatch, CrossCheckEngine
 from byes.hazard_memory import HazardMemory
-from byes.schema import ActionPlan, ActionStep, ActionType, CoordFrame, EventEnvelope, EventType, ToolResult, ToolStatus
+from byes.schema import (
+    ActionPlan,
+    ActionStep,
+    ActionType,
+    CoordFrame,
+    EventEnvelope,
+    EventType,
+    RiskLevel,
+    ToolResult,
+    ToolStatus,
+)
 from byes.tools.base import FrameInput, ToolLane
 from byes.world_state import WorldState
 
@@ -130,11 +140,13 @@ class FusionEngine:
                 confidence=risk.confidence,
                 priority=self._config.risk_priority,
                 source=f"{risk.toolName}@{risk.toolVersion}",
+                riskLevel=self._normalize_risk_level(risk.payload.get("riskLevel")),
                 payload={
                     "riskText": risk.payload.get("riskText", "Obstacle ahead"),
                     "distanceM": risk.payload.get("distanceM"),
                     "azimuthDeg": risk.payload.get("azimuthDeg"),
                     "summary": risk.payload.get("summary", risk.payload.get("riskText", "Obstacle ahead")),
+                    "riskLevel": self._normalize_risk_level(risk.payload.get("riskLevel")).value,
                     "reason": "risk_lane",
                     "actionCategory": "risk_lane",
                     "activeConfirm": bool(risk.payload.get("activeConfirm", False)),
@@ -258,6 +270,11 @@ class FusionEngine:
                 "confidence": event.confidence,
                 "ttlMs": event.ttlMs,
                 "source": event.source,
+                "riskLevel": (
+                    event.riskLevel.value
+                    if event.riskLevel is not None
+                    else str(payload.get("riskLevel", RiskLevel.WARN.value))
+                ),
                 "stage": payload.get("stage"),
                 "riskText": payload.get("riskText"),
                 "summary": payload.get("summary"),
@@ -504,11 +521,13 @@ class FusionEngine:
             confidence=conf,
             priority=self._config.risk_priority,
             source=f"{det.toolName}@{det.toolVersion}",
+            riskLevel=RiskLevel.WARN,
             payload={
                 "riskText": f"Potential obstacle: {cls}",
                 "distanceM": None,
                 "azimuthDeg": self._compute_azimuth_from_meta(frame, top),
                 "summary": f"{cls} detected in front",
+                "riskLevel": RiskLevel.WARN.value,
                 "reason": "det_semantic_risk",
             },
         )
@@ -566,11 +585,13 @@ class FusionEngine:
             confidence=confidence,
             priority=self._config.risk_priority,
             source=f"{depth.toolName}@{depth.toolVersion}",
+            riskLevel=RiskLevel.WARN,
             payload={
                 "riskText": f"Depth hazard ahead: {kind}",
                 "distanceM": distance_m,
                 "azimuthDeg": azimuth_deg,
                 "summary": f"{kind} at {distance_m:.2f}m ahead",
+                "riskLevel": RiskLevel.WARN.value,
                 "reason": "depth_hazard_risk",
             },
         )
@@ -808,11 +829,13 @@ class FusionEngine:
             confidence=max(0.0, min(1.0, risk_conf)),
             priority=self._config.risk_priority,
             source="crosscheck@v1.4",
+            riskLevel=self._normalize_risk_level(payload.get("riskLevel", payload.get("severity", "warn"))),
             payload={
                 "riskText": payload.get("riskText", "Cross-check hazard"),
                 "distanceM": payload.get("distanceM"),
                 "azimuthDeg": payload.get("azimuthDeg"),
                 "summary": payload.get("summary", payload.get("riskText", "Cross-check hazard")),
+                "riskLevel": self._normalize_risk_level(payload.get("riskLevel", payload.get("severity", "warn"))).value,
                 "reason": "crosscheck",
                 "severity": payload.get("severity", "warning"),
                 "activeConfirm": bool(payload.get("activeConfirm", True)),
@@ -1055,10 +1078,25 @@ class FusionEngine:
         for event in events:
             payload = dict(event.payload)
             payload["stage"] = stage
+            if event.type == EventType.RISK and "riskLevel" not in payload:
+                payload["riskLevel"] = (
+                    event.riskLevel.value if event.riskLevel is not None else RiskLevel.WARN.value
+                )
             patched = event.model_copy(deep=True)
             patched.payload = payload
             tagged.append(patched)
         return tagged
+
+    @staticmethod
+    def _normalize_risk_level(value: object) -> RiskLevel:
+        if isinstance(value, RiskLevel):
+            return value
+        raw = str(value or "").strip().lower()
+        if raw == RiskLevel.INFO.value:
+            return RiskLevel.INFO
+        if raw == RiskLevel.CRITICAL.value:
+            return RiskLevel.CRITICAL
+        return RiskLevel.WARN
 
 
 def _optional_float(value: object) -> float | None:
