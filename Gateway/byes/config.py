@@ -88,6 +88,10 @@ class GatewayConfig:
     real_depth_cache_max_age_ms: int = 1800
     real_depth_hazard_distance_threshold_m: float = 1.5
     real_depth_hazard_azimuth_threshold_deg: float = 30.0
+    real_vlm_url: str = ""
+    real_vlm_timeout_ms: int = 1800
+    real_vlm_max_inflight: int = 1
+    real_vlm_queue_policy: str = "drop_newest"
     crosscheck_depth_far_threshold_m: float = 3.0
     crosscheck_depth_near_threshold_m: float = 1.5
     crosscheck_det_low_conf_threshold: float = 0.45
@@ -170,6 +174,10 @@ def load_config() -> GatewayConfig:
         real_depth_cache_max_age_ms=_env_int("BYES_REAL_DEPTH_CACHE_MAX_AGE_MS", 1800),
         real_depth_hazard_distance_threshold_m=_env_float("BYES_REAL_DEPTH_HAZARD_DISTANCE_M", 1.5),
         real_depth_hazard_azimuth_threshold_deg=_env_float("BYES_REAL_DEPTH_HAZARD_AZIMUTH_DEG", 30.0),
+        real_vlm_url=os.getenv("BYES_REAL_VLM_URL", ""),
+        real_vlm_timeout_ms=_env_int("BYES_REAL_VLM_TIMEOUT_MS", 1800),
+        real_vlm_max_inflight=_env_int("BYES_REAL_VLM_MAX_INFLIGHT", 1),
+        real_vlm_queue_policy=os.getenv("BYES_REAL_VLM_QUEUE_POLICY", "drop_newest"),
         crosscheck_depth_far_threshold_m=_env_float("BYES_CROSSCHECK_DEPTH_FAR_THRESHOLD_M", 3.0),
         crosscheck_depth_near_threshold_m=_env_float("BYES_CROSSCHECK_DEPTH_NEAR_THRESHOLD_M", 1.5),
         crosscheck_det_low_conf_threshold=_env_float("BYES_CROSSCHECK_DET_LOW_CONF", 0.45),

@@ -8,7 +8,7 @@ import time
 from typing import Any, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, model_validator
 
 from byes.config import GatewayConfig, load_config
 from byes.degradation import DegradationManager, DegradationState
@@ -24,7 +24,7 @@ from byes.safety import SafetyKernel
 from byes.scheduler import Scheduler
 from byes.schema import CoordFrame, EventEnvelope, EventType, FrameMeta, HealthStatus, ToolStatus
 from byes.tool_registry import ToolRegistry
-from byes.tools import MockOcrTool, MockRiskTool, RealDepthTool, RealDetTool, RealOcrTool
+from byes.tools import MockOcrTool, MockRiskTool, RealDepthTool, RealDetTool, RealOcrTool, RealVlmTool
 from byes.tools.base import FrameInput, ToolLane
 
 
@@ -46,15 +46,36 @@ class MockEvent(BaseModel):
 
 
 class FaultSetRequest(BaseModel):
-    tool: Literal["mock_risk", "mock_ocr", "real_det", "real_ocr", "real_depth", "all"]
+    tool: Literal["mock_risk", "mock_ocr", "real_det", "real_ocr", "real_depth", "real_vlm", "all"]
     mode: Literal["timeout", "slow", "low_conf", "disconnect"]
     value: float | bool | int | None = None
     durationMs: int | None = None
 
 
 class IntentRequest(BaseModel):
-    intent: Literal["none", "scan_text"] = "none"
+    intent: str | None = None
+    kind: str | None = None
+    question: str | None = None
     durationMs: int | None = 5000
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "IntentRequest":
+        resolved = self.kind if self.kind is not None else self.intent
+        normalized = str(resolved or "none").strip().lower()
+        if normalized == "qa":
+            normalized = "ask"
+        if normalized not in {"none", "scan_text", "ask"}:
+            raise ValueError("kind/intent must be one of: none, scan_text, ask, qa")
+        self.kind = normalized
+        self.intent = normalized
+        if normalized == "ask":
+            question = str(self.question or "").strip()
+            if not question:
+                raise ValueError("ask intent requires non-empty question")
+            self.question = question
+        else:
+            self.question = None
+        return self
 
 
 class ConnectionManager:
@@ -147,6 +168,8 @@ class GatewayApp:
             self.registry.register(RealOcrTool(self.config))
         if self.config.enable_real_depth and self._tool_enabled("real_depth"):
             self.registry.register(RealDepthTool(self.config))
+        if self.config.real_vlm_url.strip() and self._tool_enabled("real_vlm"):
+            self.registry.register(RealVlmTool(self.config))
         registered_tools = {item.name for item in self.registry.list_descriptors()}
         self.degradation.set_tool_inventory(registered_tools, self._enabled_tools or None)
         self.observability.instrument_app(self.app)
@@ -176,7 +199,11 @@ class GatewayApp:
         enriched_meta = dict(meta)
         enriched_meta["traceId"] = trace.trace_id
         enriched_meta["spanId"] = trace.span_id
-        enriched_meta["intent"] = self.intent.active_intent()
+        active_intent = self.intent.active_intent()
+        enriched_meta["intent"] = active_intent
+        active_question = self.intent.active_question()
+        if active_intent == "ask" and active_question:
+            enriched_meta["intentQuestion"] = active_question
         enriched_meta["fingerprint"] = hashlib.sha1(frame_bytes).hexdigest()
 
         seq = await self.scheduler.submit_frame(
@@ -208,6 +235,7 @@ class GatewayApp:
             "hadClientEverConnected": self.degradation.had_client_ever_connected,
             "frameTrackerRecords": self.frame_tracker.record_count,
             "intent": self.intent.active_intent(),
+            "intentQuestion": self.intent.active_question(),
             "faults": faults_snapshot.get("faults", []),
         }
 
@@ -514,6 +542,7 @@ def health() -> dict[str, Any]:
         "clients": len(gateway.connections.active),
         "hadClientEverConnected": gateway.degradation.had_client_ever_connected,
         "intent": gateway.intent.active_intent(),
+        "intentQuestion": gateway.intent.active_question(),
         "faults": gateway.faults.snapshot().get("faults", []),
     }
 
@@ -598,10 +627,15 @@ async def dev_reset() -> dict[str, Any]:
 @app.post("/api/dev/intent")
 async def dev_intent(request: IntentRequest) -> dict[str, Any]:
     duration_ms = int(request.durationMs or 0)
-    snapshot = gateway.intent.set_intent(request.intent, duration_ms)
+    try:
+        snapshot = gateway.intent.set_intent(request.kind or "none", duration_ms, question=request.question)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "ok": True,
         "intent": snapshot.intent,
+        "kind": snapshot.intent,
+        "question": snapshot.question,
         "expiresAtMs": snapshot.expires_at_ms,
     }
 

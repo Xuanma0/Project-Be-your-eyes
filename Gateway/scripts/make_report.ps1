@@ -9,6 +9,7 @@
     [switch]$RealDetBaseline,
     [switch]$RealDepthBaseline,
     [switch]$RealOcrScan,
+    [switch]$RealVlmAsk,
     [switch]$RealDetActionPlan,
     [switch]$CacheScenario,
     [switch]$TimeoutScenario
@@ -141,14 +142,19 @@ function Set-DevIntent {
         [Parameter(Mandatory = $true)]
         [string]$Intent,
         [Parameter(Mandatory = $true)]
-        [int]$DurationMs
+        [int]$DurationMs,
+        [string]$Question = ""
     )
 
     $intentUrl = "{0}/api/dev/intent" -f $BaseUrl.TrimEnd('/')
-    $body = @{
+    $payload = @{
         intent = $Intent
         durationMs = $DurationMs
-    } | ConvertTo-Json
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Question)) {
+        $payload.question = $Question
+    }
+    $body = $payload | ConvertTo-Json
     $resp = Invoke-RestMethod -Uri $intentUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 20
     if ($null -eq $resp -or -not $resp.ok) {
         throw "failed to set dev intent via $intentUrl"
@@ -168,6 +174,8 @@ if ($RealDetActionPlan -and $RunName -eq "run_baseline") {
     $RunName = "run_real_depth_baseline"
 } elseif ($RealOcrScan -and $RunName -eq "run_baseline") {
     $RunName = "run_realoocr_scan"
+} elseif ($RealVlmAsk -and $RunName -eq "run_baseline") {
+    $RunName = "run_real_vlm_ask"
 } elseif ($RealDetBaseline -and $RunName -eq "run_baseline") {
     $RunName = "run_real_det_baseline"
 } elseif ($TimeoutScenario -and $RunName -eq "run_baseline") {
@@ -207,10 +215,19 @@ if ($RealOcrScan -or $RunName.ToLower().Contains("realoocr")) {
     Write-Host "Set dev intent -> scan_text (${intentDurationMs}ms)"
     Set-DevIntent -BaseUrl $BaseUrl -Intent "scan_text" -DurationMs $intentDurationMs
 }
+if ($RealVlmAsk -or $RunName.ToLower().Contains("real_vlm")) {
+    Write-Host "Validate tool availability -> real_vlm"
+    Assert-ToolEnabled -BaseUrl $BaseUrl -ToolName "real_vlm"
+    $intentDurationMs = [Math]::Max(5000, ($RecordDurationSec + 5) * 1000)
+    Write-Host "Set dev intent -> ask (${intentDurationMs}ms)"
+    Set-DevIntent -BaseUrl $BaseUrl -Intent "ask" -DurationMs $intentDurationMs -Question "what is in front of me?"
+}
 if ($TimeoutScenario) {
     $timeoutTool = "mock_risk"
     if ($RunName.ToLower().Contains("realoocr")) {
         $timeoutTool = "real_ocr"
+    } elseif ($RunName.ToLower().Contains("real_vlm")) {
+        $timeoutTool = "real_vlm"
     }
     Write-Host "Inject timeout fault -> $timeoutTool"
     Set-TimeoutFault -BaseUrl $BaseUrl -ToolName $timeoutTool

@@ -89,7 +89,12 @@ class PolicyPlannerV0:
                 if active_intent == "scan_text":
                     if tool.name != "real_ocr":
                         continue
+                elif active_intent in {"ask", "qa"}:
+                    if tool.name != "real_vlm":
+                        continue
                 elif tool.name == "real_ocr":
+                    continue
+                elif tool.name == "real_vlm":
                     continue
 
                 invocations.append(
@@ -121,6 +126,8 @@ class PolicyPlannerV0:
             return 320
         if capability == "ocr":
             return 250
+        if capability == "vlm":
+            return 220
         return 100
 
     @staticmethod
@@ -132,4 +139,6 @@ class PolicyPlannerV0:
             return "ocr"
         if tool.name == "real_depth" or capability == "depth":
             return "depth"
+        if tool.name == "real_vlm" or capability == "vlm":
+            return "full"
         return "full"

@@ -89,6 +89,7 @@ class FusionEngine:
 
         depth = self._pick_depth(ok_results)
         det = self._pick_det(ok_results)
+        vlm = self._pick_vlm(ok_results)
 
         crosscheck = self._crosscheck.evaluate(
             det_result=det,
@@ -133,6 +134,14 @@ class FusionEngine:
             risk=risk_for_plan,
             depth=depth,
         )
+        vlm_action_plan = self._action_plan_from_vlm(
+            frame=frame,
+            trace_id=trace_id,
+            span_id=span_id,
+            vlm=vlm,
+        )
+        if vlm_action_plan is not None:
+            events.append(vlm_action_plan)
         if action_plan is not None and crosscheck.action_patch is not None and health_status.upper() != "SAFE_MODE":
             self._apply_crosscheck_patch(action_plan, crosscheck.action_patch)
             for item in diagnostics:
@@ -199,6 +208,21 @@ class FusionEngine:
                 "azimuthDeg": None,
             }
 
+        if event.type == EventType.DIALOG:
+            return {
+                "type": "dialog",
+                "timestampMs": event.tsEmitMs,
+                "coordFrame": event.coordFrame.value,
+                "confidence": event.confidence,
+                "ttlMs": event.ttlMs,
+                "source": event.source,
+                "summary": payload.get("summary", payload.get("text", "")),
+                "text": payload.get("text"),
+                "riskText": None,
+                "distanceM": None,
+                "azimuthDeg": None,
+            }
+
         return {
             "type": "health",
             "timestampMs": event.tsEmitMs,
@@ -244,6 +268,18 @@ class FusionEngine:
 
     def _pick_depth(self, results: list[ToolResult]) -> ToolResult | None:
         candidates = [item for item in results if isinstance(item.payload.get("hazards"), list)]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: item.confidence)
+
+    def _pick_vlm(self, results: list[ToolResult]) -> ToolResult | None:
+        candidates = [
+            item
+            for item in results
+            if item.toolName == "real_vlm"
+            or isinstance(item.payload.get("actionPlan"), dict)
+            or isinstance(item.payload.get("answerText"), str)
+        ]
         if not candidates:
             return None
         return max(candidates, key=lambda item: item.confidence)
@@ -512,6 +548,93 @@ class FusionEngine:
             },
         )
 
+    def _action_plan_from_vlm(
+        self,
+        *,
+        frame: FrameInput,
+        trace_id: str,
+        span_id: str,
+        vlm: ToolResult | None,
+    ) -> EventEnvelope | None:
+        if vlm is None:
+            return None
+        payload = vlm.payload if isinstance(vlm.payload, dict) else {}
+        raw_plan = payload.get("actionPlan")
+        if not isinstance(raw_plan, dict):
+            raw_plan = {}
+        answer_text = str(payload.get("answerText", "")).strip()
+        speech = str(raw_plan.get("speech") or answer_text or "VLM guidance available").strip()
+        hud_raw = raw_plan.get("hud")
+        if isinstance(hud_raw, list):
+            hud_text = " | ".join(str(item).strip() for item in hud_raw if str(item).strip())
+        else:
+            hud_text = str(hud_raw or speech).strip()
+        summary = str(raw_plan.get("summary") or answer_text or speech).strip()
+        confidence = vlm.confidence
+        try:
+            confidence = max(0.0, min(1.0, float(raw_plan.get("confidence", confidence))))
+        except (TypeError, ValueError):
+            confidence = max(0.0, min(1.0, confidence))
+
+        steps_payload = raw_plan.get("steps")
+        steps: list[ActionStep] = []
+        if isinstance(steps_payload, list):
+            for step in steps_payload:
+                if not isinstance(step, dict):
+                    continue
+                action_name = str(step.get("action", ActionType.CONFIRM.value)).strip().lower()
+                try:
+                    action = ActionType(action_name)
+                except ValueError:
+                    action = ActionType.CONFIRM
+                steps.append(
+                    ActionStep(
+                        action=action,
+                        text=str(step.get("text", "")).strip() or None,
+                        distanceM=_optional_float(step.get("distanceM")),
+                        azimuthDeg=_optional_float(step.get("azimuthDeg")),
+                        params=step.get("params") if isinstance(step.get("params"), dict) else {},
+                    )
+                )
+        if not steps:
+            steps = [ActionStep(action=ActionType.CONFIRM, text=speech)]
+
+        fallback = str(raw_plan.get("fallback", ActionType.CONFIRM.value)).strip().lower()
+        if fallback not in {item.value for item in ActionType}:
+            fallback = ActionType.CONFIRM.value
+
+        mode = str(raw_plan.get("mode", "ask")).strip() or "ask"
+        plan = ActionPlan(
+            traceId=trace_id,
+            expiresMs=frame.ts_capture_ms + frame.ttl_ms,
+            mode=mode,
+            overallConfidence=confidence,
+            steps=steps,
+            fallback=fallback,
+        )
+
+        return EventEnvelope(
+            type=EventType.ACTION_PLAN,
+            traceId=trace_id,
+            spanId=span_id,
+            seq=frame.seq,
+            tsCaptureMs=frame.ts_capture_ms,
+            ttlMs=frame.ttl_ms,
+            coordFrame=CoordFrame.WORLD,
+            confidence=confidence,
+            priority=self._config.navigation_priority,
+            source=f"{vlm.toolName}@{vlm.toolVersion}",
+            payload={
+                "summary": summary,
+                "speech": speech,
+                "hud": hud_text,
+                "answerText": answer_text,
+                "plan": plan.model_dump(mode="json"),
+                "tags": raw_plan.get("tags") if isinstance(raw_plan.get("tags"), list) else [],
+                "reason": "real_vlm",
+            },
+        )
+
     def _compute_azimuth_from_meta(self, frame: FrameInput, det: dict[str, object]) -> float | None:
         frame_meta = frame.meta.get("frameMeta")
         if not isinstance(frame_meta, dict):
@@ -634,3 +757,11 @@ class FusionEngine:
             if event.type != EventType.RISK or event.id in allowed:
                 ordered.append(event)
         return ordered
+
+
+def _optional_float(value: object) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed

@@ -78,6 +78,15 @@ set BYES_REAL_DEPTH_QUEUE_POLICY=drop
 set BYES_REAL_DEPTH_SAMPLE_EVERY_N_FRAMES=5
 ```
 
+`real_vlm` is an on-demand SLOW-lane tool (ask/qa intent only):
+
+```bash
+set BYES_REAL_VLM_URL=http://127.0.0.1:9103/infer/real_vlm
+set BYES_REAL_VLM_TIMEOUT_MS=1800
+set BYES_REAL_VLM_MAX_INFLIGHT=1
+set BYES_REAL_VLM_QUEUE_POLICY=drop_newest
+```
+
 Optional tool allowlist:
 
 ```bash
@@ -153,6 +162,28 @@ Dev knobs for depth service:
 - `DELAY_MS`
 - `FAIL_PROB`
 
+## External VLM Service (RealVLM)
+
+```bash
+cd Gateway/external/real_vlm_service
+python -m venv .venv
+. .venv/Scripts/activate
+pip install -r requirements.txt
+python -m uvicorn main:app --host 127.0.0.1 --port 9103
+```
+
+Optional Docker:
+
+```bash
+cd Gateway/external/real_vlm_service
+docker build -t byes-real-vlm .
+docker run --rm -p 9103:9103 byes-real-vlm
+```
+
+Dev knobs for VLM service:
+- `VLM_SLEEP_MS`
+- `VLM_FAIL_PROB`
+
 ## Dev Intent API
 
 Enable short-lived scan intent for OCR planning:
@@ -163,7 +194,16 @@ curl -X POST http://127.0.0.1:8000/api/dev/intent ^
   -d "{\"intent\":\"scan_text\",\"durationMs\":5000}"
 ```
 
+Enable short-lived ask intent for VLM planning:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/dev/intent ^
+  -H "Content-Type: application/json" ^
+  -d "{\"kind\":\"ask\",\"question\":\"what is in front of me?\",\"durationMs\":5000}"
+```
+
 Without `scan_text`, planner does not schedule `real_ocr`.
+Without `ask`/`qa`, planner does not schedule `real_vlm`.
 
 ## FrameMeta v1.3
 
@@ -389,6 +429,12 @@ RealOCR scan-text scenario (requires `BYES_ENABLE_REAL_OCR=1` and OCR service up
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RunName run_realoocr_scan -RealOcrScan
+```
+
+RealVLM ask scenario (requires `BYES_REAL_VLM_URL` configured and VLM service up):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RunName run_real_vlm_ask -RealVlmAsk
 ```
 
 Timeout regression examples:

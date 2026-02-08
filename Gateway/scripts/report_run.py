@@ -342,6 +342,7 @@ def build_report(
     lines.append(f"- hazard_events: `{ws_stats['hazard_events']}`")
     lines.append(f"- unique_hazards: `{ws_stats['unique_hazards']}`")
     lines.append(f"- action-plan events: `{ws_stats['event_types'].get('action_plan', 0)}`")
+    lines.append(f"- dialog events: `{ws_stats['event_types'].get('dialog', 0)}`")
     lines.append("")
 
     lines.append("## Metrics Snapshot - Raw After")
@@ -409,6 +410,7 @@ def build_report(
     _append_tool_focus(lines, after_samples, tool="real_det", delta=False)
     _append_tool_focus(lines, after_samples, tool="real_ocr", delta=False)
     _append_tool_focus(lines, after_samples, tool="real_depth", delta=False)
+    _append_tool_focus(lines, after_samples, tool="real_vlm", delta=False)
 
     raw_changes = metric_details(after_samples, "byes_degradation_state_change_total")
     if raw_changes:
@@ -495,6 +497,7 @@ def build_report(
         _append_tool_focus(lines, delta_samples, tool="real_det", delta=True)
         _append_tool_focus(lines, delta_samples, tool="real_ocr", delta=True)
         _append_tool_focus(lines, delta_samples, tool="real_depth", delta=True)
+        _append_tool_focus(lines, delta_samples, tool="real_vlm", delta=True)
 
         delta_changes = metric_details(delta_samples, "byes_degradation_state_change_total")
         if delta_changes:
