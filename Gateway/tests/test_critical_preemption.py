@@ -201,3 +201,108 @@ def test_baseline_not_preempted() -> None:
 
         assert preempt_enter_delta == 0
         assert ocr_invoked_delta > 0
+
+
+def test_preempt_window_skips_slow_for_grace_period() -> None:
+    with TestClient(app) as client:
+        _speedup_mock_tools()
+        client.post("/api/dev/reset")
+        client.post("/api/fault/clear")
+
+        before = _parse_metrics(client.get("/metrics").text)
+        fault_resp = client.post(
+            "/api/fault/set",
+            json={"tool": "mock_risk", "mode": "critical", "value": True, "durationMs": 300},
+        )
+        assert fault_resp.status_code == 200
+        try:
+            _send_frames(client, 6, preserve_old=True)
+            time.sleep(0.4)
+            _send_frames(client, 24, preserve_old=True)
+            _ = _wait_completed(client, before, 30)
+            after = _wait_metric_delta_positive(
+                client,
+                before,
+                "byes_tool_skipped_total",
+                {"tool": "mock_ocr", "reason": "preempt_window_active"},
+            )
+        finally:
+            client.post("/api/fault/clear")
+
+        preempt_window_skip_delta = _metric_with_labels(
+            after,
+            "byes_tool_skipped_total",
+            {"tool": "mock_ocr", "reason": "preempt_window_active"},
+        ) - _metric_with_labels(
+            before,
+            "byes_tool_skipped_total",
+            {"tool": "mock_ocr", "reason": "preempt_window_active"},
+        )
+        safemode_enter_delta = _metric_total(after, "byes_safemode_enter_total") - _metric_total(
+            before, "byes_safemode_enter_total"
+        )
+        assert preempt_window_skip_delta > 0
+        assert int(round(safemode_enter_delta)) == 0
+
+
+def test_preempt_window_cancels_inflight_slow() -> None:
+    with TestClient(app) as client:
+        _speedup_mock_tools()
+        client.post("/api/dev/reset")
+        client.post("/api/fault/clear")
+
+        # Build slow-lane backlog first.
+        slow_fault_resp = client.post(
+            "/api/fault/set",
+            json={"tool": "mock_ocr", "mode": "slow", "value": 1200, "durationMs": 4000},
+        )
+        assert slow_fault_resp.status_code == 200
+
+        before = _parse_metrics(client.get("/metrics").text)
+        _send_frames(client, 8, preserve_old=True)
+        time.sleep(0.4)
+
+        critical_resp = client.post(
+            "/api/fault/set",
+            json={"tool": "mock_risk", "mode": "critical", "value": True, "durationMs": 300},
+        )
+        assert critical_resp.status_code == 200
+        try:
+            _send_frames(client, 42, preserve_old=True)
+            _ = _wait_completed(client, before, 50)
+            after = _parse_metrics(client.get("/metrics").text)
+        finally:
+            client.post("/api/fault/clear")
+
+        canceled_delta = _metric_with_labels(
+            after,
+            "byes_preempt_cancel_inflight_total",
+            {"lane": "slow"},
+        ) - _metric_with_labels(
+            before,
+            "byes_preempt_cancel_inflight_total",
+            {"lane": "slow"},
+        )
+        dropped_delta = _metric_with_labels(
+            after,
+            "byes_preempt_drop_queued_total",
+            {"lane": "slow"},
+        ) - _metric_with_labels(
+            before,
+            "byes_preempt_drop_queued_total",
+            {"lane": "slow"},
+        )
+        frame_received_delta = _metric_total(after, "byes_frame_received_total") - _metric_total(
+            before, "byes_frame_received_total"
+        )
+        frame_completed_delta = _metric_total(after, "byes_frame_completed_total") - _metric_total(
+            before, "byes_frame_completed_total"
+        )
+        e2e_count_delta = _metric_total(after, "byes_e2e_latency_ms_count") - _metric_total(
+            before, "byes_e2e_latency_ms_count"
+        )
+
+        assert canceled_delta > 0 or dropped_delta > 0
+        assert int(round(frame_received_delta)) == 50
+        assert int(round(frame_completed_delta)) == 50
+        assert int(round(e2e_count_delta)) == 50

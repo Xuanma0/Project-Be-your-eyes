@@ -60,6 +60,7 @@ class Scheduler:
         preprocessor: FramePreprocessor | None = None,
         world_state: WorldState | None = None,
         runtime_stats: object | None = None,
+        preempt_window: object | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -76,6 +77,7 @@ class Scheduler:
         self._preprocessor = preprocessor
         self._world_state = world_state
         self._runtime_stats = runtime_stats
+        self._preempt_window = preempt_window
 
         self._seq = 0
         self._latest_seq = 0
@@ -86,6 +88,7 @@ class Scheduler:
         self._slow_q: asyncio.Queue[_QueuedTask] = asyncio.Queue(maxsize=config.slow_q_maxsize)
         self._workers: list[asyncio.Task[None]] = []
         self._active_by_seq: dict[int, set[asyncio.Task[ToolResult]]] = defaultdict(set)
+        self._task_lane: dict[asyncio.Task[ToolResult], ToolLane] = {}
         self._frame_by_seq: dict[int, FrameInput] = {}
         self._plan_by_seq: dict[int, ToolInvocationPlan] = {}
         self._recent_summaries: deque[RecentFrameSummary] = deque(maxlen=max(1, config.planner_recent_window))
@@ -99,6 +102,7 @@ class Scheduler:
         self._fast_q = asyncio.Queue(maxsize=self._config.fast_q_maxsize)
         self._slow_q = asyncio.Queue(maxsize=self._config.slow_q_maxsize)
         self._active_by_seq.clear()
+        self._task_lane.clear()
         self._frame_by_seq.clear()
         self._plan_by_seq.clear()
         self._frame_tool_stats.clear()
@@ -112,6 +116,7 @@ class Scheduler:
             asyncio.create_task(self._worker_loop(ToolLane.SLOW), name="byes-slow-worker"),
         ]
         self._set_queue_depth_metrics()
+        self._set_preempt_window_gauge()
 
     def reset_runtime(self) -> None:
         for tasks in self._active_by_seq.values():
@@ -119,6 +124,7 @@ class Scheduler:
                 if not task.done():
                     task.cancel()
         self._active_by_seq.clear()
+        self._task_lane.clear()
         self._frame_by_seq.clear()
         self._plan_by_seq.clear()
         self._frame_tool_stats.clear()
@@ -128,6 +134,7 @@ class Scheduler:
         self._drain_queue(self._fast_q)
         self._drain_queue(self._slow_q)
         self._set_queue_depth_metrics()
+        self._set_preempt_window_gauge()
 
     async def stop(self) -> None:
         if not self._running:
@@ -144,10 +151,12 @@ class Scheduler:
         await asyncio.gather(*self._workers, return_exceptions=True)
         self._workers.clear()
         self._active_by_seq.clear()
+        self._task_lane.clear()
         self._frame_by_seq.clear()
         self._plan_by_seq.clear()
         self._frame_tool_stats.clear()
         self._set_queue_depth_metrics()
+        self._set_preempt_window_gauge()
 
     async def submit_frame(
         self,
@@ -200,6 +209,7 @@ class Scheduler:
     async def _worker_loop(self, lane: ToolLane) -> None:
         queue = self._fast_q if lane == ToolLane.FAST else self._slow_q
         while True:
+            self._set_preempt_window_gauge()
             queued = await queue.get()
             self._set_queue_depth_metrics()
             try:
@@ -216,8 +226,13 @@ class Scheduler:
                 if results:
                     await self._on_lane_results(queued.frame, lane, results)
                     if lane == ToolLane.FAST:
+                        now_ms = _now_ms()
                         if self._has_critical_risk_result(results):
-                            self._preempt_slow_lane_for_frame(queued.frame)
+                            self._enter_preempt_window(now_ms)
+                            self._record_critical_preempt_skip(queued.frame)
+                            queued.frame.meta["_slow_enqueued"] = False
+                        elif self._is_preempt_window_active(now_ms):
+                            self._record_preempt_window_skip(queued.frame)
                             queued.frame.meta["_slow_enqueued"] = False
                         else:
                             queued.frame.meta["_slow_enqueued"] = self._enqueue_slow_after_fast(queued)
@@ -366,6 +381,8 @@ class Scheduler:
                 )
             )
             self._active_by_seq[queued.frame.seq].add(task)
+            self._task_lane[task] = lane
+            task.add_done_callback(lambda done_task: self._task_lane.pop(done_task, None))
             tasks.append(task)
             task_meta.append((tool, cache_key, decision.reuse_ok))
             self._frame_gate.record_run(tool.name, fingerprint, now_ms=now_ms)
@@ -385,6 +402,8 @@ class Scheduler:
                         produced_at_ms=now_ms,
                         fingerprint=fingerprint,
                     )
+        for task in tasks:
+            self._task_lane.pop(task, None)
 
         session_id = self._session_id_from_meta(queued.frame.meta)
         if self._world_state is not None:
@@ -688,6 +707,7 @@ class Scheduler:
             "throttled_skip",
             "budget_skip",
             "latency_pred_exceeds_budget",
+            "preempt_window_active",
             self.PREEMPT_REASON,
             "degraded",
             "safe_mode",
@@ -711,6 +731,7 @@ class Scheduler:
             "ttl_risk",
             "policy",
             "latency_pred_exceeds_budget",
+            "preempt_window_active",
             self.PREEMPT_REASON,
         }
         if normalized in allowed:
@@ -793,6 +814,46 @@ class Scheduler:
     def _set_queue_depth_metrics(self) -> None:
         self._metric_call("set_queue_depth", ToolLane.FAST.value, self._fast_q.qsize())
         self._metric_call("set_queue_depth", ToolLane.SLOW.value, self._slow_q.qsize())
+        self._set_preempt_window_gauge()
+
+    def _set_preempt_window_gauge(self) -> None:
+        if self._preempt_window is None:
+            self._metric_call("set_preempt_window_active", 0)
+            return
+        is_active = bool(self._safe_call(self._preempt_window, "is_active", _now_ms(), default=False))
+        self._metric_call("set_preempt_window_active", 1 if is_active else 0)
+
+    def _is_preempt_window_active(self, now_ms: int) -> bool:
+        if self._preempt_window is None:
+            self._metric_call("set_preempt_window_active", 0)
+            return False
+        is_active = bool(self._safe_call(self._preempt_window, "is_active", int(now_ms), default=False))
+        self._metric_call("set_preempt_window_active", 1 if is_active else 0)
+        return is_active
+
+    def _enter_preempt_window(self, now_ms: int) -> None:
+        if self._preempt_window is None:
+            return
+        entered = bool(
+            self._safe_call(
+                self._preempt_window,
+                "enter",
+                int(now_ms),
+                int(self._config.preempt_window_ms),
+                self.PREEMPT_METRIC_REASON,
+                default=False,
+            )
+        )
+        self._metric_call("set_preempt_window_active", 1)
+        if not entered:
+            return
+        self._metric_call("inc_preempt_enter", self.PREEMPT_METRIC_REASON)
+        canceled = self._cancel_inflight_slow_tasks()
+        dropped = self._drop_slow_queue()
+        if canceled > 0:
+            self._metric_call("inc_preempt_cancel_inflight", ToolLane.SLOW.value, canceled)
+        if dropped > 0:
+            self._metric_call("inc_preempt_drop_queued", ToolLane.SLOW.value, dropped)
 
     def _enqueue_slow_after_fast(self, queued: _QueuedTask) -> bool:
         if self._slow_q.qsize() >= self._config.slow_q_drop_threshold:
@@ -834,14 +895,45 @@ class Scheduler:
                 return True
         return False
 
-    def _preempt_slow_lane_for_frame(self, frame: FrameInput) -> None:
+    def _record_critical_preempt_skip(self, frame: FrameInput) -> None:
         tool_names = sorted({tool.name for tool in self._registry.all_lane_tools(ToolLane.SLOW)})
         if not tool_names:
             return
-        self._metric_call("inc_preempt_enter", self.PREEMPT_METRIC_REASON)
         for tool_name in tool_names:
             self._metric_call("inc_tool_skipped", tool_name, self.PREEMPT_REASON)
             self._inc_frame_stat(frame.seq, "skipped")
+
+    def _record_preempt_window_skip(self, frame: FrameInput) -> None:
+        tool_names = sorted({tool.name for tool in self._registry.all_lane_tools(ToolLane.SLOW)})
+        if not tool_names:
+            return
+        for tool_name in tool_names:
+            self._metric_call("inc_tool_skipped", tool_name, "preempt_window_active")
+            self._inc_frame_stat(frame.seq, "skipped")
+
+    def _cancel_inflight_slow_tasks(self) -> int:
+        canceled = 0
+        for task, lane in list(self._task_lane.items()):
+            if lane != ToolLane.SLOW:
+                continue
+            if task.done():
+                continue
+            task.cancel()
+            canceled += 1
+        return canceled
+
+    def _drop_slow_queue(self) -> int:
+        dropped = 0
+        while True:
+            try:
+                queued = self._slow_q.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            self._slow_q.task_done()
+            dropped += 1
+            self._discard_frame_runtime(queued.frame.seq)
+        self._set_queue_depth_metrics()
+        return dropped
 
     def queue_depth_snapshot(self) -> dict[str, int]:
         return {

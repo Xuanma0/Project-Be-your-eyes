@@ -134,6 +134,7 @@ class GatewayConfig:
     throttled_det_every_n_frames: int = 3
     throttled_ocr_every_n_frames: int = 4
     throttled_depth_every_n_frames: int = 1
+    preempt_window_ms: int = 1500
 
 
 def load_config() -> GatewayConfig:
@@ -246,4 +247,5 @@ def load_config() -> GatewayConfig:
         throttled_det_every_n_frames=_env_int("BYES_THROTTLED_DET_EVERY_N_FRAMES", 3),
         throttled_ocr_every_n_frames=_env_int("BYES_THROTTLED_OCR_EVERY_N_FRAMES", 4),
         throttled_depth_every_n_frames=_env_int("BYES_THROTTLED_DEPTH_EVERY_N_FRAMES", 1),
+        preempt_window_ms=_env_int("BYES_PREEMPT_WINDOW_MS", 1500),
     )

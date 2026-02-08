@@ -399,6 +399,9 @@ def build_report(
         "byes_tool_timeout_total",
         "byes_tool_skipped_total",
         "byes_preempt_enter_total",
+        "byes_preempt_window_active_gauge",
+        "byes_preempt_cancel_inflight_total",
+        "byes_preempt_drop_queued_total",
         "byes_tool_queue_ms_count",
         "byes_tool_queue_ms_sum",
         "byes_tool_exec_ms_count",
@@ -457,6 +460,9 @@ def build_report(
     append_metric_details(lines, after_samples, "byes_tool_timeout_total", ["tool"], "count")
     append_metric_details(lines, after_samples, "byes_tool_skipped_total", ["tool", "reason"], "count")
     append_metric_details(lines, after_samples, "byes_preempt_enter_total", ["reason"], "count")
+    append_metric_details(lines, after_samples, "byes_preempt_window_active_gauge", [], "count")
+    append_metric_details(lines, after_samples, "byes_preempt_cancel_inflight_total", ["lane"], "count")
+    append_metric_details(lines, after_samples, "byes_preempt_drop_queued_total", ["lane"], "count")
     append_metric_details(lines, after_samples, "byes_tool_queue_ms_count", ["tool", "lane"], "count")
     append_metric_details(lines, after_samples, "byes_tool_exec_ms_count", ["tool", "lane"], "count")
     append_metric_details(lines, after_samples, "byes_tool_cache_hit_total", ["tool"], "count")
@@ -513,6 +519,9 @@ def build_report(
             "byes_tool_timeout_total",
             "byes_tool_skipped_total",
             "byes_preempt_enter_total",
+            "byes_preempt_window_active_gauge",
+            "byes_preempt_cancel_inflight_total",
+            "byes_preempt_drop_queued_total",
             "byes_tool_queue_ms_count",
             "byes_tool_queue_ms_sum",
             "byes_tool_exec_ms_count",
@@ -577,6 +586,9 @@ def build_report(
         append_metric_details(lines, delta_samples, "byes_tool_timeout_total", ["tool"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_skipped_total", ["tool", "reason"], "delta")
         append_metric_details(lines, delta_samples, "byes_preempt_enter_total", ["reason"], "delta")
+        append_metric_details(lines, delta_samples, "byes_preempt_window_active_gauge", [], "delta")
+        append_metric_details(lines, delta_samples, "byes_preempt_cancel_inflight_total", ["lane"], "delta")
+        append_metric_details(lines, delta_samples, "byes_preempt_drop_queued_total", ["lane"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_queue_ms_count", ["tool", "lane"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_exec_ms_count", ["tool", "lane"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_cache_hit_total", ["tool"], "delta")

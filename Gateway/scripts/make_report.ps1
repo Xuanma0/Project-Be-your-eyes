@@ -13,6 +13,7 @@
     [switch]$RealDetActionPlan,
     [switch]$CacheScenario,
     [switch]$QueuePressureScenario,
+    [switch]$PreemptWindowScenario,
     [switch]$CriticalPreemptScenario,
     [switch]$PlannerV1CrossCheck,
     [switch]$PlannerV1ThrottledAsk,
@@ -147,15 +148,20 @@ function Set-SlowFault {
         [Parameter(Mandatory = $true)]
         [string]$ToolName,
         [Parameter(Mandatory = $true)]
-        [int]$DelayMs
+        [int]$DelayMs,
+        [int]$DurationMs = 0
     )
 
     $faultUrl = "{0}/api/fault/set" -f $BaseUrl.TrimEnd('/')
-    $body = @{
+    $payload = @{
         tool = $ToolName
         mode = "slow"
         value = $DelayMs
-    } | ConvertTo-Json
+    }
+    if ($DurationMs -gt 0) {
+        $payload.durationMs = $DurationMs
+    }
+    $body = $payload | ConvertTo-Json
     $resp = Invoke-RestMethod -Uri $faultUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 20
     if ($null -eq $resp -or -not $resp.ok) {
         throw "failed to set slow fault via $faultUrl"
@@ -167,15 +173,20 @@ function Set-CriticalRiskFault {
         [Parameter(Mandatory = $true)]
         [string]$BaseUrl,
         [Parameter(Mandatory = $true)]
-        [string]$ToolName
+        [string]$ToolName,
+        [int]$DurationMs = 0
     )
 
     $faultUrl = "{0}/api/fault/set" -f $BaseUrl.TrimEnd('/')
-    $body = @{
+    $payload = @{
         tool = $ToolName
         mode = "critical"
         value = $true
-    } | ConvertTo-Json
+    }
+    if ($DurationMs -gt 0) {
+        $payload.durationMs = $DurationMs
+    }
+    $body = $payload | ConvertTo-Json
     $resp = Invoke-RestMethod -Uri $faultUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 20
     if ($null -eq $resp -or -not $resp.ok) {
         throw "failed to set critical fault via $faultUrl"
@@ -310,6 +321,8 @@ if ($RealDetActionPlan -and $RunName -eq "run_baseline") {
     $RunName = "run_cache"
 } elseif ($QueuePressureScenario -and $RunName -eq "run_baseline") {
     $RunName = "run_queue_pressure_v23"
+} elseif ($PreemptWindowScenario -and $RunName -eq "run_baseline") {
+    $RunName = "run_preempt_window_v25"
 } elseif ($CriticalPreemptScenario -and $RunName -eq "run_baseline") {
     $RunName = "run_critical_preempt_v24"
 } elseif ($RealDepthBaseline -and $RunName -eq "run_baseline") {
@@ -417,6 +430,25 @@ $recordProc = Start-PythonProcess -WorkingDirectory $gatewayDir -Arguments $reco
 
 Start-Sleep -Seconds 1
 
+$preemptWindowJob = $null
+if ($PreemptWindowScenario) {
+    Write-Host "Inject short slow fault -> mock_ocr (+1200ms for 6s)"
+    Set-SlowFault -BaseUrl $BaseUrl -ToolName "mock_ocr" -DelayMs 1200 -DurationMs 6000
+    Write-Host "Schedule delayed critical-risk fault -> mock_risk (delay=1200ms, duration=300ms)"
+    $preemptWindowJob = Start-Job -ArgumentList $BaseUrl -ScriptBlock {
+        param($baseUrlInner)
+        Start-Sleep -Milliseconds 1200
+        $faultUrl = "{0}/api/fault/set" -f $baseUrlInner.TrimEnd('/')
+        $body = @{
+            tool = "mock_risk"
+            mode = "critical"
+            value = $true
+            durationMs = 300
+        } | ConvertTo-Json
+        Invoke-RestMethod -Uri $faultUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 20 | Out-Null
+    }
+}
+
 Write-Host "[2/4] Send frames -> $framesDirAbs"
 $replayArgs = @(
     (Join-Path $scriptsDir "replay_send_frames.py"),
@@ -431,6 +463,9 @@ if ($QueuePressureScenario) {
     $replayArgs += @("--preserve-old")
 }
 if ($CriticalPreemptScenario) {
+    $replayArgs += @("--preserve-old")
+}
+if ($PreemptWindowScenario) {
     $replayArgs += @("--preserve-old")
 }
 & python @replayArgs
@@ -459,6 +494,12 @@ if ($recordExitCode -ne 0) {
     throw "ws_record_events.py failed with code $recordExitCode"
 }
 
+if ($null -ne $preemptWindowJob) {
+    Wait-Job -Job $preemptWindowJob -Timeout 20 | Out-Null
+    Receive-Job -Job $preemptWindowJob -ErrorAction SilentlyContinue | Out-Null
+    Remove-Job -Job $preemptWindowJob -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "[4/4] Generate report -> $reportMd"
 Save-MetricsSnapshot -MetricsUrl $metricsUrl -OutputPath $metricsAfter
 & python (Join-Path $scriptsDir "report_run.py") --metrics-url $metricsUrl --ws-jsonl $wsJsonl --metrics-before $metricsBefore --metrics-after $metricsAfter --output $reportMd
@@ -466,7 +507,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "report_run.py failed with code $LASTEXITCODE"
 }
 
-if ($TimeoutScenario -or $QueuePressureScenario -or $CriticalPreemptScenario) {
+if ($TimeoutScenario -or $QueuePressureScenario -or $CriticalPreemptScenario -or $PreemptWindowScenario) {
     $null = Invoke-RestMethod -Uri ("{0}/api/fault/clear" -f $BaseUrl.TrimEnd('/')) -Method Post -TimeoutSec 20
 }
 

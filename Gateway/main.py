@@ -24,6 +24,7 @@ from byes.metrics import GatewayMetrics
 from byes.observability import Observability
 from byes.planner import PolicyPlannerV0, PolicyPlannerV1
 from byes.preprocess import FramePreprocessor
+from byes.preempt_window import PreemptWindow
 from byes.runtime_stats import RuntimeStats
 from byes.safety import SafetyKernel
 from byes.scheduler import Scheduler
@@ -146,6 +147,7 @@ class GatewayApp:
         self.faults = FaultManager(self.metrics)
         self.intent = IntentManager()
         self.world_state = WorldState(self.config)
+        self.preempt_window = PreemptWindow()
         self.runtime_stats = RuntimeStats(window_size=50, ema_alpha=0.2)
         self.frame_tracker = FrameTracker(
             metrics=self.metrics,
@@ -162,6 +164,7 @@ class GatewayApp:
                 metrics=self.metrics,
                 world_state=self.world_state,
                 runtime_stats=self.runtime_stats,
+                preempt_window=self.preempt_window,
             )
         else:
             self.planner = PolicyPlannerV0(self.config)
@@ -181,6 +184,7 @@ class GatewayApp:
             preprocessor=self.preprocessor,
             world_state=self.world_state,
             runtime_stats=self.runtime_stats,
+            preempt_window=self.preempt_window,
         )
         self._mock_flip = False
         self._degrade_watchdog_task: asyncio.Task[None] | None = None
@@ -264,6 +268,9 @@ class GatewayApp:
             enriched_meta["performanceMode"] = effective_mode
         if "performanceReason" not in enriched_meta:
             enriched_meta["performanceReason"] = effective_reason
+        preempt_active = self.preempt_window.is_active(request_start_ms)
+        enriched_meta["preemptWindowActive"] = bool(preempt_active)
+        enriched_meta["preemptWindowUntilMs"] = int(self.preempt_window.active_until_ms)
         forced_crosscheck_kind = self._active_forced_crosscheck_kind()
         if forced_crosscheck_kind != "none" and "forceCrosscheckKind" not in enriched_meta:
             enriched_meta["forceCrosscheckKind"] = forced_crosscheck_kind
@@ -286,6 +293,7 @@ class GatewayApp:
         self.degradation.reset_runtime()
         self.frame_tracker.reset_runtime()
         self.governor.reset_runtime()
+        self.preempt_window.reset_runtime()
         self.intent.reset_runtime()
         self.world_state.reset_runtime()
         self.runtime_stats.reset_runtime()

@@ -22,6 +22,7 @@ REASON_STALE = "stale"
 REASON_THROTTLED_SKIP = "throttled_skip"
 REASON_BUDGET_SKIP = "budget_skip"
 REASON_LATENCY_PRED_EXCEEDS_BUDGET = "latency_pred_exceeds_budget"
+REASON_PREEMPT_WINDOW_ACTIVE = "preempt_window_active"
 REASON_SAFE_MODE_SKIP = "safe_mode_skip"
 REASON_DEGRADED_SKIP = "degraded_skip"
 REASON_UNAVAILABLE = "unavailable"
@@ -34,6 +35,7 @@ _ALLOWED_REASON_TOKENS = {
     REASON_THROTTLED_SKIP,
     REASON_BUDGET_SKIP,
     REASON_LATENCY_PRED_EXCEEDS_BUDGET,
+    REASON_PREEMPT_WINDOW_ACTIVE,
     REASON_SAFE_MODE_SKIP,
     REASON_DEGRADED_SKIP,
     REASON_UNAVAILABLE,
@@ -195,11 +197,13 @@ class PolicyPlannerV1:
         metrics: object | None = None,
         world_state: WorldState | None = None,
         runtime_stats: object | None = None,
+        preempt_window: object | None = None,
     ) -> None:
         self._config = config
         self._metrics = metrics
         self._world_state = world_state
         self._runtime_stats = runtime_stats
+        self._preempt_window = preempt_window
 
     def plan(
         self,
@@ -268,6 +272,22 @@ class PolicyPlannerV1:
             )
             invocations.append(invocation)
             _record_select(self._metrics, selected_tools, tool.name, REASON_POLICY)
+
+        preempt_active = self._is_preempt_window_active(now_ms=now_ms, frame=frame)
+        if preempt_active:
+            for tool in slow_tools:
+                _record_skip(self._metrics, skipped_tools, tool.name, REASON_PREEMPT_WINDOW_ACTIVE)
+            return self._build_plan(
+                frame=frame,
+                invocations=invocations,
+                selected_tools=selected_tools,
+                skipped_tools=skipped_tools,
+                action_hints=action_hints,
+                active_intent=active_intent,
+                performance_mode=performance_mode,
+                health_status=normalized_health,
+                slow_budget_remaining_ms=slow_budget_remaining_ms,
+            )
 
         if degradation_state == DegradationState.SAFE_MODE or normalized_health == "SAFE_MODE":
             for tool in slow_tools:
@@ -564,6 +584,15 @@ class PolicyPlannerV1:
         if numeric <= 0:
             return None
         return numeric
+
+    def _is_preempt_window_active(self, *, now_ms: int, frame: FrameContext) -> bool:
+        check_fn = getattr(self._preempt_window, "is_active", None)
+        if callable(check_fn):
+            try:
+                return bool(check_fn(int(now_ms)))
+            except Exception:  # noqa: BLE001
+                pass
+        return bool(frame.meta.get("preemptWindowActive", False))
 
 
 def _record_select(metrics: object | None, bucket: list[dict[str, str]], tool: str, reason: str) -> None:

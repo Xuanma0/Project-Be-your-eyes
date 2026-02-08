@@ -139,6 +139,23 @@ class GatewayMetrics:
             labelnames=("reason",),
             registry=self._registry,
         )
+        self.byes_preempt_window_active_gauge = Gauge(
+            "byes_preempt_window_active_gauge",
+            "Critical preempt window active state (0/1)",
+            registry=self._registry,
+        )
+        self.byes_preempt_cancel_inflight_total = Counter(
+            "byes_preempt_cancel_inflight_total",
+            "Number of canceled inflight tasks due to preempt window",
+            labelnames=("lane",),
+            registry=self._registry,
+        )
+        self.byes_preempt_drop_queued_total = Counter(
+            "byes_preempt_drop_queued_total",
+            "Number of dropped queued tasks due to preempt window",
+            labelnames=("lane",),
+            registry=self._registry,
+        )
         self.byes_tool_cache_hit_total = Counter(
             "byes_tool_cache_hit_total",
             "Number of tool cache hits",
@@ -287,6 +304,7 @@ class GatewayMetrics:
         self.byes_hazard_active_gauge.set(0)
         self.byes_throttle_state_gauge.labels(state="NORMAL").set(1)
         self.byes_throttle_state_gauge.labels(state="THROTTLED").set(0)
+        self.byes_preempt_window_active_gauge.set(0)
 
     def observe_e2e_latency(self, latency_ms: int) -> None:
         self.byes_e2e_latency_ms.observe(max(0, latency_ms))
@@ -350,6 +368,15 @@ class GatewayMetrics:
 
     def inc_preempt_enter(self, reason: str) -> None:
         self.byes_preempt_enter_total.labels(reason=reason).inc()
+
+    def set_preempt_window_active(self, active: int) -> None:
+        self.byes_preempt_window_active_gauge.set(max(0, min(1, int(active))))
+
+    def inc_preempt_cancel_inflight(self, lane: str, count: int = 1) -> None:
+        self.byes_preempt_cancel_inflight_total.labels(lane=lane).inc(max(0, int(count)))
+
+    def inc_preempt_drop_queued(self, lane: str, count: int = 1) -> None:
+        self.byes_preempt_drop_queued_total.labels(lane=lane).inc(max(0, int(count)))
 
     def inc_tool_cache_hit(self, tool: str) -> None:
         self.byes_tool_cache_hit_total.labels(tool=tool).inc()
