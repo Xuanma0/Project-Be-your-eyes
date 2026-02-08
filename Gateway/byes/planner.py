@@ -21,6 +21,7 @@ REASON_CROSSCHECK = "crosscheck"
 REASON_STALE = "stale"
 REASON_THROTTLED_SKIP = "throttled_skip"
 REASON_BUDGET_SKIP = "budget_skip"
+REASON_LATENCY_PRED_EXCEEDS_BUDGET = "latency_pred_exceeds_budget"
 REASON_SAFE_MODE_SKIP = "safe_mode_skip"
 REASON_DEGRADED_SKIP = "degraded_skip"
 REASON_UNAVAILABLE = "unavailable"
@@ -32,6 +33,7 @@ _ALLOWED_REASON_TOKENS = {
     REASON_STALE,
     REASON_THROTTLED_SKIP,
     REASON_BUDGET_SKIP,
+    REASON_LATENCY_PRED_EXCEEDS_BUDGET,
     REASON_SAFE_MODE_SKIP,
     REASON_DEGRADED_SKIP,
     REASON_UNAVAILABLE,
@@ -192,10 +194,12 @@ class PolicyPlannerV1:
         *,
         metrics: object | None = None,
         world_state: WorldState | None = None,
+        runtime_stats: object | None = None,
     ) -> None:
         self._config = config
         self._metrics = metrics
         self._world_state = world_state
+        self._runtime_stats = runtime_stats
 
     def plan(
         self,
@@ -415,6 +419,25 @@ class PolicyPlannerV1:
                     should_run = False
                     reason = REASON_THROTTLED_SKIP
 
+            if should_run:
+                predicted_latency_ms = self._predict_tool_latency_ms(
+                    tool_name=tool_name,
+                    performance_mode=performance_mode,
+                )
+                if predicted_latency_ms is not None:
+                    budget_cap_ms = max(
+                        1,
+                        min(
+                            int(self._config.slow_budget_ms),
+                            int(slow_budget_remaining_ms),
+                        ),
+                    )
+                    if performance_mode == "THROTTLED":
+                        budget_cap_ms = max(1, int(budget_cap_ms * 0.85))
+                    if predicted_latency_ms > budget_cap_ms:
+                        should_run = False
+                        reason = REASON_LATENCY_PRED_EXCEEDS_BUDGET
+
             if should_run and estimated_cost_ms > slow_budget_remaining_ms:
                 should_run = False
                 reason = REASON_BUDGET_SKIP
@@ -515,6 +538,32 @@ class PolicyPlannerV1:
             invocations=invocations,
             diagnostics=diagnostics,
         )
+
+    def _predict_tool_latency_ms(self, *, tool_name: str, performance_mode: str) -> float | None:
+        if self._runtime_stats is None:
+            return None
+        quantile = "p50" if str(performance_mode).strip().upper() == "THROTTLED" else "p95"
+        predict_fn = getattr(self._runtime_stats, "predict_total_ms", None)
+        if not callable(predict_fn):
+            return None
+        try:
+            value = predict_fn(tool_name, quantile=quantile)
+        except TypeError:
+            try:
+                value = predict_fn(tool_name)
+            except Exception:  # noqa: BLE001
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+        if value is None:
+            return None
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        if numeric <= 0:
+            return None
+        return numeric
 
 
 def _record_select(metrics: object | None, bucket: list[dict[str, str]], tool: str, reason: str) -> None:

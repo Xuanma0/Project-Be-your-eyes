@@ -398,6 +398,10 @@ def build_report(
         "byes_tool_invoked_total",
         "byes_tool_timeout_total",
         "byes_tool_skipped_total",
+        "byes_tool_queue_ms_count",
+        "byes_tool_queue_ms_sum",
+        "byes_tool_exec_ms_count",
+        "byes_tool_exec_ms_sum",
         "byes_tool_cache_hit_total",
         "byes_tool_cache_miss_total",
         "byes_tool_rate_limited_total",
@@ -451,6 +455,8 @@ def build_report(
     append_metric_details(lines, after_samples, "byes_tool_invoked_total", ["tool"], "count")
     append_metric_details(lines, after_samples, "byes_tool_timeout_total", ["tool"], "count")
     append_metric_details(lines, after_samples, "byes_tool_skipped_total", ["tool", "reason"], "count")
+    append_metric_details(lines, after_samples, "byes_tool_queue_ms_count", ["tool", "lane"], "count")
+    append_metric_details(lines, after_samples, "byes_tool_exec_ms_count", ["tool", "lane"], "count")
     append_metric_details(lines, after_samples, "byes_tool_cache_hit_total", ["tool"], "count")
     append_metric_details(lines, after_samples, "byes_tool_cache_miss_total", ["tool"], "count")
     append_metric_details(lines, after_samples, "byes_tool_rate_limited_total", ["tool"], "count")
@@ -504,6 +510,10 @@ def build_report(
             "byes_tool_invoked_total",
             "byes_tool_timeout_total",
             "byes_tool_skipped_total",
+            "byes_tool_queue_ms_count",
+            "byes_tool_queue_ms_sum",
+            "byes_tool_exec_ms_count",
+            "byes_tool_exec_ms_sum",
             "byes_tool_cache_hit_total",
             "byes_tool_cache_miss_total",
             "byes_tool_rate_limited_total",
@@ -563,6 +573,8 @@ def build_report(
         append_metric_details(lines, delta_samples, "byes_tool_invoked_total", ["tool"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_timeout_total", ["tool"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_skipped_total", ["tool", "reason"], "delta")
+        append_metric_details(lines, delta_samples, "byes_tool_queue_ms_count", ["tool", "lane"], "delta")
+        append_metric_details(lines, delta_samples, "byes_tool_exec_ms_count", ["tool", "lane"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_cache_hit_total", ["tool"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_cache_miss_total", ["tool"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_rate_limited_total", ["tool"], "delta")

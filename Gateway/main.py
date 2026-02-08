@@ -24,6 +24,7 @@ from byes.metrics import GatewayMetrics
 from byes.observability import Observability
 from byes.planner import PolicyPlannerV0, PolicyPlannerV1
 from byes.preprocess import FramePreprocessor
+from byes.runtime_stats import RuntimeStats
 from byes.safety import SafetyKernel
 from byes.scheduler import Scheduler
 from byes.schema import CoordFrame, EventEnvelope, EventType, FrameMeta, HealthStatus, ToolStatus
@@ -145,6 +146,7 @@ class GatewayApp:
         self.faults = FaultManager(self.metrics)
         self.intent = IntentManager()
         self.world_state = WorldState(self.config)
+        self.runtime_stats = RuntimeStats(window_size=50, ema_alpha=0.2)
         self.frame_tracker = FrameTracker(
             metrics=self.metrics,
             retention_ms=self.config.frame_tracker_retention_ms,
@@ -155,7 +157,12 @@ class GatewayApp:
         self.fusion = FusionEngine(self.config, metrics=self.metrics, world_state=self.world_state)
         self.action_gate = ActionPlanGate(metrics=self.metrics)
         if self.config.planner_v1_enabled:
-            self.planner = PolicyPlannerV1(self.config, metrics=self.metrics, world_state=self.world_state)
+            self.planner = PolicyPlannerV1(
+                self.config,
+                metrics=self.metrics,
+                world_state=self.world_state,
+                runtime_stats=self.runtime_stats,
+            )
         else:
             self.planner = PolicyPlannerV0(self.config)
         self.safety = SafetyKernel(self.config, self.degradation)
@@ -173,6 +180,7 @@ class GatewayApp:
             frame_tracker=self.frame_tracker,
             preprocessor=self.preprocessor,
             world_state=self.world_state,
+            runtime_stats=self.runtime_stats,
         )
         self._mock_flip = False
         self._degrade_watchdog_task: asyncio.Task[None] | None = None
@@ -280,6 +288,7 @@ class GatewayApp:
         self.governor.reset_runtime()
         self.intent.reset_runtime()
         self.world_state.reset_runtime()
+        self.runtime_stats.reset_runtime()
         self.fusion.reset_runtime()
         self.scheduler.reset_runtime()
         self._last_safe_mode_pulse_ms = -1

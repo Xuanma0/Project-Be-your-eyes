@@ -565,6 +565,12 @@ PlannerV1 throttled ask scenario (forces THROTTLED + ask intent):
 powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RunName run_planner_throttledask_v20 -PlannerV1ThrottledAsk
 ```
 
+Queue pressure scenario (injects slow fault on `mock_ocr`, validates queue/exec latency metrics + adaptive planner skip):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RunName run_queue_pressure_v23 -QueuePressureScenario
+```
+
 Timeout regression examples:
 
 ```powershell
@@ -586,6 +592,11 @@ How to read cache scenario report:
 - `real_det invoked` should be much smaller than `50`.
 - `real_ocr invoked` should be `0` when intent is off.
 - `byes_tool_cache_hit_total{tool=real_det}` should grow.
+
+v2.3 runtime latency metrics:
+- `byes_tool_queue_ms{tool,lane}`
+- `byes_tool_exec_ms{tool,lane}`
+- planner adaptive skip reason: `latency_pred_exceeds_budget`
 
 Meta baseline (optional FrameMeta on all frames):
 

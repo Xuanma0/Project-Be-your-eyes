@@ -64,6 +64,8 @@ Gateway/__pycache__/
 Gateway/artifacts/
 Gateway/run*.jsonl
 Gateway/frames/
+Gateway/external/modelpack/weights/
+Gateway/external/modelpack/weights_test/
 **/__pycache__/
 **/*.pyc
 **/*.pyo

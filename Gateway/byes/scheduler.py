@@ -5,7 +5,7 @@ import contextlib
 import time
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from byes.config import GatewayConfig
@@ -36,6 +36,7 @@ class _QueuedTask:
     frame: FrameInput
     trace_id: str
     span_id: str
+    enqueued_at_ms_by_lane: dict[str, int] = field(default_factory=dict)
 
 
 class Scheduler:
@@ -55,6 +56,7 @@ class Scheduler:
         frame_tracker: FrameTracker | None = None,
         preprocessor: FramePreprocessor | None = None,
         world_state: WorldState | None = None,
+        runtime_stats: object | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -70,6 +72,7 @@ class Scheduler:
         self._frame_tracker = frame_tracker
         self._preprocessor = preprocessor
         self._world_state = world_state
+        self._runtime_stats = runtime_stats
 
         self._seq = 0
         self._latest_seq = 0
@@ -177,7 +180,12 @@ class Scheduler:
         self._frame_by_seq[seq] = frame
         self._frame_tool_stats[seq] = {"invoked": 0, "timeout": 0, "skipped": 0}
         self._plan_by_seq[seq] = self._build_plan(frame)
-        queued = _QueuedTask(frame=frame, trace_id=trace_id, span_id=span_id)
+        queued = _QueuedTask(
+            frame=frame,
+            trace_id=trace_id,
+            span_id=span_id,
+            enqueued_at_ms_by_lane={ToolLane.FAST.value: _now_ms()},
+        )
 
         await self._fast_q.put(queued)
         self._set_queue_depth_metrics()
@@ -190,6 +198,7 @@ class Scheduler:
             with contextlib.suppress(asyncio.QueueFull):
                 self._slow_q.put_nowait(queued)
                 slow_enqueued = True
+                queued.enqueued_at_ms_by_lane[ToolLane.SLOW.value] = _now_ms()
         frame.meta["_slow_enqueued"] = slow_enqueued
         self._set_queue_depth_metrics()
 
@@ -236,6 +245,8 @@ class Scheduler:
         intent = str(queued.frame.meta.get("intent", "none"))
 
         all_lane_tools = self._registry.all_lane_tools(lane)
+        all_lane_tool_names = {tool.name for tool in all_lane_tools}
+        planner_skip_reasons = self._planner_skip_reasons(self._plan_by_seq.get(queued.frame.seq))
         available_tools = self._registry.lane_tools(
             lane=lane,
             degraded=degraded,
@@ -243,12 +254,21 @@ class Scheduler:
         )
         available_map = {tool.name: tool for tool in available_tools}
 
-        plan = self._plan_by_seq.get(queued.frame.seq)
-        self._emit_planner_unavailable_skips(queued.frame, plan)
+        raw_plan = self._plan_by_seq.get(queued.frame.seq)
+        use_plan = False
+        if raw_plan is not None:
+            if raw_plan.invocations:
+                use_plan = True
+            elif isinstance(raw_plan.diagnostics, dict):
+                skipped_diag = raw_plan.diagnostics.get("skipped_tools")
+                use_plan = isinstance(skipped_diag, list) and len(skipped_diag) > 0
+
+        plan = raw_plan if use_plan else None
+        self._emit_planner_unavailable_skips(queued.frame, plan, all_lane_tool_names)
         planned = plan.lane_invocations(lane) if plan is not None else []
         tools: list[BaseTool] = []
         planned_by_name: dict[str, Any] = {}
-        if planned:
+        if plan is not None:
             ordered_plan = sorted(planned, key=lambda item: item.priority, reverse=True)
             for invocation in ordered_plan:
                 tool = available_map.get(invocation.tool_name)
@@ -263,13 +283,18 @@ class Scheduler:
         for tool in all_lane_tools:
             if tool.name in selected_names:
                 continue
-            if planned:
+            reason_from_plan = planner_skip_reasons.get(tool.name)
+            if reason_from_plan:
+                reason = reason_from_plan
+            elif planned:
                 reason = "planner"
             else:
                 reason = self._derive_skip_reason(tool, lane, degraded, safe_mode)
-            self._metric_call("inc_tool_skipped", tool.name, reason)
-            self._metric_call("inc_frame_gate_skip", tool.name, self._normalize_gate_reason(reason))
-            if self._normalize_gate_reason(reason) == "rate_limit":
+            normalized_reason = self._normalize_skip_reason(reason)
+            gate_reason = self._normalize_gate_reason(normalized_reason)
+            self._metric_call("inc_tool_skipped", tool.name, normalized_reason)
+            self._metric_call("inc_frame_gate_skip", tool.name, gate_reason)
+            if gate_reason == "rate_limit":
                 self._metric_call("inc_tool_rate_limited", tool.name)
             self._inc_frame_stat(queued.frame.seq, "skipped")
 
@@ -294,6 +319,7 @@ class Scheduler:
             degraded=degraded,
             meta=queued.frame.meta,
         )
+        lane_enqueued_ms = int(queued.enqueued_at_ms_by_lane.get(lane.value, now_ms))
         for tool in tools:
             invocation = planned_by_name.get(tool.name)
             planned_timeout_ms = None
@@ -338,6 +364,7 @@ class Scheduler:
                     lane_budget_deadline_ms=lane_budget_deadline_ms,
                     planned_timeout_ms=planned_timeout_ms,
                     frame_input=tool_frame,
+                    enqueued_at_ms=lane_enqueued_ms,
                 )
             )
             self._active_by_seq[queued.frame.seq].add(task)
@@ -375,7 +402,12 @@ class Scheduler:
         self._active_by_seq.pop(queued.frame.seq, None)
         return results
 
-    def _emit_planner_unavailable_skips(self, frame: FrameInput, plan: ToolInvocationPlan | None) -> None:
+    def _emit_planner_unavailable_skips(
+        self,
+        frame: FrameInput,
+        plan: ToolInvocationPlan | None,
+        known_tool_names: set[str],
+    ) -> None:
         if plan is None:
             return
         if bool(frame.meta.get("_planner_unavailable_accounted", False)):
@@ -393,9 +425,32 @@ class Scheduler:
             tool_name = str(item.get("tool", "")).strip().lower()
             if not tool_name:
                 continue
+            if tool_name in known_tool_names:
+                continue
             self._metric_call("inc_tool_skipped", tool_name, "unavailable")
             self._inc_frame_stat(frame.seq, "skipped")
         frame.meta["_planner_unavailable_accounted"] = True
+
+    @staticmethod
+    def _planner_skip_reasons(plan: ToolInvocationPlan | None) -> dict[str, str]:
+        if plan is None or not isinstance(plan.diagnostics, dict):
+            return {}
+        skipped = plan.diagnostics.get("skipped_tools")
+        if not isinstance(skipped, list):
+            return {}
+        out: dict[str, str] = {}
+        for item in skipped:
+            if not isinstance(item, dict):
+                continue
+            tool_name = str(item.get("tool", "")).strip().lower()
+            if not tool_name:
+                continue
+            reason = str(item.get("reason", "")).strip().lower()
+            if not reason:
+                continue
+            if tool_name not in out:
+                out[tool_name] = reason
+        return out
 
     async def _run_single_tool(
         self,
@@ -405,8 +460,12 @@ class Scheduler:
         lane_budget_deadline_ms: int,
         planned_timeout_ms: int | None,
         frame_input: FrameInput | None = None,
+        enqueued_at_ms: int | None = None,
     ) -> ToolResult:
         frame = frame_input if frame_input is not None else queued.frame
+        start_exec_ms = _now_ms()
+        queue_ms = max(0, start_exec_ms - int(enqueued_at_ms if enqueued_at_ms is not None else start_exec_ms))
+        self._metric_call("observe_tool_queue", tool.name, lane.value, queue_ms)
         now = _now_ms()
 
         if self._faults is not None and self._faults.should_disconnect(tool.name):
@@ -508,6 +567,7 @@ class Scheduler:
                     span.set_attribute("tool.latency_ms", result.latencyMs)
             except asyncio.TimeoutError:
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
+                self._observe_tool_timing(tool.name, lane.value, queue_ms, elapsed_ms)
                 self._safe_call(self._degradation, "record_timeout", tool.name)
                 self._metric_call("inc_tool_timeout", tool.name)
                 self._inc_frame_stat(frame.seq, "timeout")
@@ -529,6 +589,7 @@ class Scheduler:
                 )
             except asyncio.CancelledError:
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
+                self._observe_tool_timing(tool.name, lane.value, queue_ms, elapsed_ms)
                 self._metric_call("observe_tool_latency", tool.name, elapsed_ms)
                 if span is not None:
                     span.set_attribute("tool.status", ToolStatus.CANCELLED.value)
@@ -546,6 +607,7 @@ class Scheduler:
                 )
             except Exception as exc:  # noqa: BLE001
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
+                self._observe_tool_timing(tool.name, lane.value, queue_ms, elapsed_ms)
                 self._metric_call("observe_tool_latency", tool.name, elapsed_ms)
                 if span is not None:
                     span.set_attribute("tool.status", ToolStatus.ERROR.value)
@@ -566,6 +628,7 @@ class Scheduler:
         if success_elapsed_ms <= 0:
             success_elapsed_ms = int((time.perf_counter() - started) * 1000)
             result.latencyMs = max(result.latencyMs, success_elapsed_ms)
+        self._observe_tool_timing(tool.name, lane.value, queue_ms, result.latencyMs)
         self._metric_call("observe_tool_latency", tool.name, result.latencyMs)
 
         if self._is_expired(frame.ts_capture_ms, frame.ttl_ms, _now_ms()):
@@ -609,9 +672,19 @@ class Scheduler:
 
     def _normalize_skip_reason(self, reason: str) -> str:
         normalized = reason.strip().lower().replace("-", "_")
+        if normalized == "safe_mode_skip":
+            return "safe_mode"
+        if normalized == "degraded_skip":
+            return "degraded"
         allowed = {
             "policy",
             "planner",
+            "intent",
+            "crosscheck",
+            "stale",
+            "throttled_skip",
+            "budget_skip",
+            "latency_pred_exceeds_budget",
             "degraded",
             "safe_mode",
             "disconnect",
@@ -626,7 +699,15 @@ class Scheduler:
 
     def _normalize_gate_reason(self, reason: str) -> str:
         normalized = reason.strip().lower().replace("-", "_")
-        allowed = {"intent_off", "rate_limit", "safe_mode", "unchanged", "ttl_risk", "policy"}
+        allowed = {
+            "intent_off",
+            "rate_limit",
+            "safe_mode",
+            "unchanged",
+            "ttl_risk",
+            "policy",
+            "latency_pred_exceeds_budget",
+        }
         if normalized in allowed:
             return normalized
         return "policy"
@@ -815,10 +896,21 @@ class Scheduler:
             timeout_ms=timeout_ms,
         )
 
+    def _observe_tool_timing(self, tool_name: str, lane: str, queue_ms: int, exec_ms: int) -> None:
+        self._metric_call("observe_tool_exec", tool_name, lane, exec_ms)
+        self._runtime_stats_call("observe", tool_name, lane, queue_ms, exec_ms)
+
     def _metric_call(self, method: str, *args: Any) -> None:
         if self._metrics is None:
             return
         fn = getattr(self._metrics, method, None)
+        if callable(fn):
+            fn(*args)
+
+    def _runtime_stats_call(self, method: str, *args: Any) -> None:
+        if self._runtime_stats is None:
+            return
+        fn = getattr(self._runtime_stats, method, None)
         if callable(fn):
             fn(*args)
 

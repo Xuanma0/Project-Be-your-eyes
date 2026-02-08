@@ -12,6 +12,7 @@
     [switch]$RealVlmAsk,
     [switch]$RealDetActionPlan,
     [switch]$CacheScenario,
+    [switch]$QueuePressureScenario,
     [switch]$PlannerV1CrossCheck,
     [switch]$PlannerV1ThrottledAsk,
     [switch]$ExternalReadinessSmoke,
@@ -135,6 +136,28 @@ function Set-TimeoutFault {
     $resp = Invoke-RestMethod -Uri $faultUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 20
     if ($null -eq $resp -or -not $resp.ok) {
         throw "failed to set timeout fault via $faultUrl"
+    }
+}
+
+function Set-SlowFault {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BaseUrl,
+        [Parameter(Mandatory = $true)]
+        [string]$ToolName,
+        [Parameter(Mandatory = $true)]
+        [int]$DelayMs
+    )
+
+    $faultUrl = "{0}/api/fault/set" -f $BaseUrl.TrimEnd('/')
+    $body = @{
+        tool = $ToolName
+        mode = "slow"
+        value = $DelayMs
+    } | ConvertTo-Json
+    $resp = Invoke-RestMethod -Uri $faultUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 20
+    if ($null -eq $resp -or -not $resp.ok) {
+        throw "failed to set slow fault via $faultUrl"
     }
 }
 
@@ -264,6 +287,8 @@ if ($RealDetActionPlan -and $RunName -eq "run_baseline") {
     $RunName = "run_planner_throttledask"
 } elseif ($CacheScenario -and $RunName -eq "run_baseline") {
     $RunName = "run_cache"
+} elseif ($QueuePressureScenario -and $RunName -eq "run_baseline") {
+    $RunName = "run_queue_pressure_v23"
 } elseif ($RealDepthBaseline -and $RunName -eq "run_baseline") {
     $RunName = "run_real_depth_baseline"
 } elseif ($RealOcrScan -and $RunName -eq "run_baseline") {
@@ -342,6 +367,16 @@ if ($TimeoutScenario) {
     Write-Host "Inject timeout fault -> $timeoutTool"
     Set-TimeoutFault -BaseUrl $BaseUrl -ToolName $timeoutTool
 }
+if ($QueuePressureScenario) {
+    if (-not $PSBoundParameters.ContainsKey('IntervalMs')) {
+        $IntervalMs = 100
+    }
+    if (-not $PSBoundParameters.ContainsKey('RecordDurationSec')) {
+        $RecordDurationSec = 25
+    }
+    Write-Host "Inject slow fault -> mock_ocr (+1200ms)"
+    Set-SlowFault -BaseUrl $BaseUrl -ToolName "mock_ocr" -DelayMs 1200
+}
 
 Write-Host "[1/4] Start WS record -> $wsJsonl"
 Save-MetricsSnapshot -MetricsUrl $metricsUrl -OutputPath $metricsBefore
@@ -364,6 +399,9 @@ $replayArgs = @(
 )
 if ($CacheScenario) {
     $replayArgs += @("--repeat-first", "50", "--preserve-old")
+}
+if ($QueuePressureScenario) {
+    $replayArgs += @("--preserve-old")
 }
 & python @replayArgs
 if ($LASTEXITCODE -ne 0) {
@@ -398,7 +436,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "report_run.py failed with code $LASTEXITCODE"
 }
 
-if ($TimeoutScenario) {
+if ($TimeoutScenario -or $QueuePressureScenario) {
     $null = Invoke-RestMethod -Uri ("{0}/api/fault/clear" -f $BaseUrl.TrimEnd('/')) -Method Post -TimeoutSec 20
 }
 

@@ -45,6 +45,20 @@ class GatewayMetrics:
             buckets=(10, 20, 50, 100, 200, 350, 500, 800, 1200, 2000, 3000),
             registry=self._registry,
         )
+        self.byes_tool_queue_ms = Histogram(
+            "byes_tool_queue_ms",
+            "Tool queue wait time in milliseconds",
+            labelnames=("tool", "lane"),
+            buckets=(1, 2, 5, 10, 20, 50, 100, 200, 350, 500, 800, 1200, 2000, 3000, 5000),
+            registry=self._registry,
+        )
+        self.byes_tool_exec_ms = Histogram(
+            "byes_tool_exec_ms",
+            "Tool execution time in milliseconds",
+            labelnames=("tool", "lane"),
+            buckets=(1, 2, 5, 10, 20, 50, 100, 200, 350, 500, 800, 1200, 2000, 3000, 5000),
+            registry=self._registry,
+        )
         self.byes_preprocess_latency_ms = Histogram(
             "byes_preprocess_latency_ms",
             "Frame preprocess latency in milliseconds",
@@ -282,6 +296,12 @@ class GatewayMetrics:
 
     def observe_tool_latency(self, tool: str, latency_ms: int) -> None:
         self.byes_tool_latency_ms.labels(tool=tool).observe(max(0, latency_ms))
+
+    def observe_tool_queue(self, tool: str, lane: str, queue_ms: int) -> None:
+        self.byes_tool_queue_ms.labels(tool=tool, lane=lane).observe(max(0, queue_ms))
+
+    def observe_tool_exec(self, tool: str, lane: str, exec_ms: int) -> None:
+        self.byes_tool_exec_ms.labels(tool=tool, lane=lane).observe(max(0, exec_ms))
 
     def observe_preprocess_latency(self, latency_ms: int) -> None:
         self.byes_preprocess_latency_ms.observe(max(0, latency_ms))
