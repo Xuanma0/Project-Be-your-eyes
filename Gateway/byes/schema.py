@@ -19,6 +19,7 @@ class EventType(str, Enum):
     NAVIGATION = "navigation"
     DIALOG = "dialog"
     HEALTH = "health"
+    ACTION_PLAN = "action_plan"
 
 
 class CoordFrame(str, Enum):
@@ -118,7 +119,7 @@ class ToolResult(BaseModel):
         return max(0.0, min(1.0, float(value)))
 
 
-LegacyEventType = Literal["risk", "perception", "health"]
+LegacyEventType = Literal["risk", "perception", "health", "action_plan"]
 
 
 class LegacyEvent(BaseModel):

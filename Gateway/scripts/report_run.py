@@ -121,6 +121,7 @@ def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     expired_emitted = 0
     first_safe_mode_ms: int | None = None
     perception_after_safe_mode = 0
+    action_plan_after_safe_mode = 0
 
     for row in rows:
         event = row.get("event")
@@ -139,6 +140,10 @@ def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
             row_ms = _row_time_ms(row, event)
             if row_ms >= first_safe_mode_ms:
                 perception_after_safe_mode += 1
+        elif event_type == "action_plan" and first_safe_mode_ms is not None:
+            row_ms = _row_time_ms(row, event)
+            if row_ms >= first_safe_mode_ms:
+                action_plan_after_safe_mode += 1
 
         recv_ms = row.get("receivedAtMs")
         event_ts = event.get("timestampMs")
@@ -154,6 +159,7 @@ def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "expired_emitted": expired_emitted,
         "safe_mode_first_ms": first_safe_mode_ms,
         "safe_mode_perception_violations": perception_after_safe_mode,
+        "safe_mode_actionplan_violations": action_plan_after_safe_mode,
     }
 
 
@@ -272,6 +278,9 @@ def build_report(
     lines.append("- safe-mode perception violations:")
     lines.append(f"  - `first_safe_mode_ms`: `{ws_stats['safe_mode_first_ms']}`")
     lines.append(f"  - `perception_after_safe_mode`: `{ws_stats['safe_mode_perception_violations']}`")
+    lines.append("- safe-mode action-plan violations:")
+    lines.append(f"  - `action_plan_after_safe_mode`: `{ws_stats['safe_mode_actionplan_violations']}`")
+    lines.append(f"- action-plan events: `{ws_stats['event_types'].get('action_plan', 0)}`")
     lines.append("")
 
     lines.append("## Metrics Snapshot - Raw After")

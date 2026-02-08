@@ -68,6 +68,9 @@ class GatewayConfig:
     real_det_p95_budget_ms: int = 450
     real_det_max_inflight: int = 2
     real_det_queue_policy: str = "drop"
+    planner_recent_window: int = 8
+    fast_budget_ms: int = 500
+    slow_budget_ms: int = 1200
 
 
 def load_config() -> GatewayConfig:
@@ -108,4 +111,7 @@ def load_config() -> GatewayConfig:
         real_det_p95_budget_ms=_env_int("BYES_REAL_DET_P95_BUDGET_MS", 450),
         real_det_max_inflight=_env_int("BYES_REAL_DET_MAX_INFLIGHT", 2),
         real_det_queue_policy=os.getenv("BYES_REAL_DET_QUEUE_POLICY", "drop"),
+        planner_recent_window=_env_int("BYES_PLANNER_RECENT_WINDOW", 8),
+        fast_budget_ms=_env_int("BYES_FAST_BUDGET_MS", 500),
+        slow_budget_ms=_env_int("BYES_SLOW_BUDGET_MS", 1200),
     )

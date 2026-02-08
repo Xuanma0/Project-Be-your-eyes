@@ -6,7 +6,9 @@
     [int]$RecordDurationSec = 20,
     [string]$OutDir = "artifacts",
     [string]$RunName = "run_baseline",
-    [switch]$RealDetBaseline
+    [switch]$RealDetBaseline,
+    [switch]$RealDetActionPlan,
+    [switch]$TimeoutScenario
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,8 +66,10 @@ function Save-MetricsSnapshot {
         [string]$OutputPath
     )
 
-    $resp = Invoke-WebRequest -Uri $MetricsUrl -Method Get -TimeoutSec 20
-    [System.IO.File]::WriteAllText($OutputPath, [string]$resp.Content, [System.Text.Encoding]::UTF8)
+    & curl.exe -sS $MetricsUrl -o $OutputPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to fetch metrics from $MetricsUrl"
+    }
 }
 
 function Reset-GatewayRuntime {
@@ -105,13 +109,35 @@ function Assert-RealDetEnabled {
     }
 }
 
+function Set-TimeoutFault {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BaseUrl
+    )
+
+    $faultUrl = "{0}/api/fault/set" -f $BaseUrl.TrimEnd('/')
+    $body = @{
+        tool = "mock_risk"
+        mode = "timeout"
+        value = $true
+    } | ConvertTo-Json
+    $resp = Invoke-RestMethod -Uri $faultUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 20
+    if ($null -eq $resp -or -not $resp.ok) {
+        throw "failed to set timeout fault via $faultUrl"
+    }
+}
+
 $scriptsDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $gatewayDir = Split-Path -Parent $scriptsDir
 $outDirAbs = if ([System.IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $gatewayDir $OutDir }
 $framesDirAbs = if ([System.IO.Path]::IsPathRooted($FramesDir)) { $FramesDir } else { Join-Path $gatewayDir $FramesDir }
 
-if ($RealDetBaseline -and $RunName -eq "run_baseline") {
+if ($RealDetActionPlan -and $RunName -eq "run_baseline") {
+    $RunName = "run_realdet_actionplan"
+} elseif ($RealDetBaseline -and $RunName -eq "run_baseline") {
     $RunName = "run_real_det_baseline"
+} elseif ($TimeoutScenario -and $RunName -eq "run_baseline") {
+    $RunName = "run_timeout"
 }
 
 if (-not (Test-Path $framesDirAbs)) {
@@ -128,9 +154,13 @@ $metricsUrl = "{0}/metrics" -f $BaseUrl.TrimEnd('/')
 
 Write-Host "Reset gateway runtime state -> $BaseUrl"
 Reset-GatewayRuntime -BaseUrl $BaseUrl
-if ($RealDetBaseline) {
+if ($RealDetBaseline -or $RealDetActionPlan) {
     Write-Host "Validate tool availability -> real_det"
     Assert-RealDetEnabled -BaseUrl $BaseUrl
+}
+if ($TimeoutScenario) {
+    Write-Host "Inject timeout fault -> mock_risk"
+    Set-TimeoutFault -BaseUrl $BaseUrl
 }
 
 Write-Host "[1/4] Start WS record -> $wsJsonl"
@@ -177,6 +207,10 @@ Save-MetricsSnapshot -MetricsUrl $metricsUrl -OutputPath $metricsAfter
 & python (Join-Path $scriptsDir "report_run.py") --metrics-url $metricsUrl --ws-jsonl $wsJsonl --metrics-before $metricsBefore --metrics-after $metricsAfter --output $reportMd
 if ($LASTEXITCODE -ne 0) {
     throw "report_run.py failed with code $LASTEXITCODE"
+}
+
+if ($TimeoutScenario) {
+    $null = Invoke-RestMethod -Uri ("{0}/api/fault/clear" -f $BaseUrl.TrimEnd('/')) -Method Post -TimeoutSec 20
 }
 
 Write-Host "Done. Report: $reportMd"

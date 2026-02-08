@@ -16,6 +16,7 @@ from byes.frame_tracker import FrameTracker
 from byes.fusion import FusionEngine
 from byes.metrics import GatewayMetrics
 from byes.observability import Observability
+from byes.planner import PolicyPlannerV0
 from byes.safety import SafetyKernel
 from byes.scheduler import Scheduler
 from byes.schema import CoordFrame, EventEnvelope, EventType
@@ -102,6 +103,7 @@ class GatewayApp:
             max_entries=self.config.frame_tracker_max_entries,
         )
         self.fusion = FusionEngine(self.config)
+        self.planner = PolicyPlannerV0(self.config)
         self.safety = SafetyKernel(self.config, self.degradation)
         self.connections = ConnectionManager()
         self.scheduler = Scheduler(
@@ -113,6 +115,7 @@ class GatewayApp:
             observability=self.observability,
             fault_manager=self.faults,
             on_frame_terminal=self._on_frame_terminal,
+            planner=self.planner,
         )
         self._mock_flip = False
         self._degrade_watchdog_task: asyncio.Task[None] | None = None
@@ -308,7 +311,7 @@ class GatewayApp:
         )
 
     async def _emit_event(self, event: EventEnvelope) -> None:
-        if self.degradation.is_safe_mode() and event.type == EventType.PERCEPTION:
+        if self.degradation.is_safe_mode() and event.type in {EventType.PERCEPTION, EventType.ACTION_PLAN}:
             tool_name = str(event.source).split("@", 1)[0] if event.source else "unknown"
             self.metrics.inc_tool_skipped(tool_name, "safe_mode")
             return

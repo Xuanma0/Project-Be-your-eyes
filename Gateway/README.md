@@ -34,6 +34,7 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
 Default remains legacy WS JSON for Unity (`GATEWAY_SEND_ENVELOPE=0`).
+Legacy WS event types now include: `risk`, `perception`, `health`, `action_plan`.
 
 ## RealDet Tool (v1.2 mainline start)
 
@@ -166,12 +167,16 @@ RealDet baseline (requires gateway started with `BYES_ENABLE_REAL_DET=1` and det
 powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RealDetBaseline
 ```
 
+RealDet ActionPlan scenario:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RealDetActionPlan
+```
+
 Timeout regression example:
 
 ```powershell
-curl -X POST http://127.0.0.1:8000/api/fault/set -H "Content-Type: application/json" -d "{\"tool\":\"mock_risk\",\"mode\":\"timeout\",\"value\":true}"
-powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RunName run_timeout
-curl -X POST http://127.0.0.1:8000/api/fault/clear
+powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -TimeoutScenario
 ```
 
 ## Tests
