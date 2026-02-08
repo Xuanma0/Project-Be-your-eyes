@@ -127,6 +127,21 @@ class GatewayMetrics:
             labelnames=("status",),
             registry=self._registry,
         )
+        self.byes_frame_meta_present_total = Counter(
+            "byes_frame_meta_present_total",
+            "Frames with valid parsed FrameMeta",
+            registry=self._registry,
+        )
+        self.byes_frame_meta_missing_total = Counter(
+            "byes_frame_meta_missing_total",
+            "Frames without FrameMeta",
+            registry=self._registry,
+        )
+        self.byes_frame_meta_parse_error_total = Counter(
+            "byes_frame_meta_parse_error_total",
+            "FrameMeta parse failures",
+            registry=self._registry,
+        )
 
     def observe_e2e_latency(self, latency_ms: int) -> None:
         self.byes_e2e_latency_ms.observe(max(0, latency_ms))
@@ -188,6 +203,15 @@ class GatewayMetrics:
 
     def inc_health_warn(self, status: str) -> None:
         self.byes_health_warn_total.labels(status=status).inc()
+
+    def inc_frame_meta_present(self) -> None:
+        self.byes_frame_meta_present_total.inc()
+
+    def inc_frame_meta_missing(self) -> None:
+        self.byes_frame_meta_missing_total.inc()
+
+    def inc_frame_meta_parse_error(self) -> None:
+        self.byes_frame_meta_parse_error_total.inc()
 
     def render(self) -> MetricsResponse:
         return MetricsResponse(

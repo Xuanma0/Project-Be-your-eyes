@@ -3,7 +3,7 @@
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 
 @dataclass
@@ -11,6 +11,7 @@ class _FrameRecord:
     received_at_ms: int
     ttl_ms: int
     deadline_ms: int
+    frame_meta: Any | None = None
     completed: bool = False
     completed_ms: int | None = None
     outcome: str | None = None
@@ -32,7 +33,7 @@ class FrameTracker:
         self._now_ms_fn = now_ms_fn or (lambda: int(time.time() * 1000))
         self._records: OrderedDict[int, _FrameRecord] = OrderedDict()
 
-    def start_frame(self, seq: int, received_at_ms: int, ttl_ms: int) -> None:
+    def start_frame(self, seq: int, received_at_ms: int, ttl_ms: int, frame_meta: Any | None = None) -> None:
         now_ms = self._now_ms_fn()
         self._cleanup(now_ms)
         normalized_ttl_ms = max(1, int(ttl_ms))
@@ -45,6 +46,7 @@ class FrameTracker:
                 received_at_ms=normalized_received_at_ms,
                 ttl_ms=normalized_ttl_ms,
                 deadline_ms=deadline_ms,
+                frame_meta=frame_meta,
             )
             self._records.move_to_end(seq)
             self._metric_call("inc_frame_received")
@@ -55,6 +57,8 @@ class FrameTracker:
         record.received_at_ms = min(record.received_at_ms, normalized_received_at_ms)
         record.ttl_ms = min(record.ttl_ms, normalized_ttl_ms)
         record.deadline_ms = min(record.deadline_ms, deadline_ms)
+        if record.frame_meta is None and frame_meta is not None:
+            record.frame_meta = frame_meta
         self._records.move_to_end(seq)
 
     def complete_frame(self, seq: int, outcome: str, completed_at_ms: int) -> bool:
@@ -91,6 +95,12 @@ class FrameTracker:
     @property
     def record_count(self) -> int:
         return len(self._records)
+
+    def get_frame_meta(self, seq: int) -> Any | None:
+        record = self._records.get(seq)
+        if record is None:
+            return None
+        return record.frame_meta
 
     def _cleanup(self, now_ms: int) -> None:
         stale_keys: list[int] = []

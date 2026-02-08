@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from byes.config import GatewayConfig
@@ -263,7 +264,7 @@ class FusionEngine:
             payload={
                 "riskText": f"Potential obstacle: {cls}",
                 "distanceM": None,
-                "azimuthDeg": None,
+                "azimuthDeg": self._compute_azimuth_from_meta(frame, top),
                 "summary": f"{cls} detected in front",
                 "reason": "det_semantic_risk",
             },
@@ -332,3 +333,43 @@ class FusionEngine:
                 "reason": "policy_planner_v0",
             },
         )
+
+    def _compute_azimuth_from_meta(self, frame: FrameInput, det: dict[str, object]) -> float | None:
+        frame_meta = frame.meta.get("frameMeta")
+        if not isinstance(frame_meta, dict):
+            return None
+        intrinsics = frame_meta.get("intrinsics")
+        if not isinstance(intrinsics, dict):
+            return None
+
+        bbox = det.get("bbox")
+        if not isinstance(bbox, list) or len(bbox) < 4:
+            return None
+
+        try:
+            fx = float(intrinsics.get("fx"))
+            cx = float(intrinsics.get("cx"))
+        except (TypeError, ValueError):
+            return None
+        if fx == 0:
+            return None
+
+        try:
+            x1 = float(bbox[0])
+            x2 = float(bbox[2])
+            center_x = (x1 + x2) * 0.5
+        except (TypeError, ValueError):
+            return None
+
+        width_raw = intrinsics.get("width")
+        try:
+            width = float(width_raw)
+        except (TypeError, ValueError):
+            width = 0.0
+
+        # Accept either normalized bbox [0,1] or pixel-space bbox.
+        if width > 1.0 and -1.5 <= center_x <= 1.5:
+            center_x = center_x * width
+
+        azimuth_rad = math.atan((center_x - cx) / fx)
+        return math.degrees(azimuth_rad)

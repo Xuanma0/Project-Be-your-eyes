@@ -14,6 +14,42 @@ def iter_images(folder: Path) -> list[Path]:
     return sorted([p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in exts])
 
 
+def load_meta_templates(path: Path) -> list[dict[str, object]] | dict[str, object]:
+    raw_text = path.read_text(encoding="utf-8-sig").strip()
+    if not raw_text:
+        return {}
+
+    if path.suffix.lower() == ".jsonl":
+        templates: list[dict[str, object]] = []
+        for line in raw_text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parsed = json.loads(line)
+            if isinstance(parsed, dict):
+                templates.append(parsed)
+        return templates
+
+    parsed = json.loads(raw_text)
+    if isinstance(parsed, list):
+        return [item for item in parsed if isinstance(item, dict)]
+    if isinstance(parsed, dict):
+        return parsed
+    return {}
+
+
+def pick_meta_template(
+    templates: list[dict[str, object]] | dict[str, object],
+    index: int,
+) -> dict[str, object]:
+    if isinstance(templates, dict):
+        return dict(templates)
+    if not templates:
+        return {}
+    chosen = templates[min(index, len(templates) - 1)]
+    return dict(chosen)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Replay frames to /api/frame")
     parser.add_argument("--dir", required=True, help="folder containing image files")
@@ -22,6 +58,7 @@ def main() -> int:
     parser.add_argument("--ttl-ms", type=int, default=3000)
     parser.add_argument("--repeat-first", type=int, default=0, help="repeat first image N times")
     parser.add_argument("--preserve-old", action="store_true", help="set preserveOld=true in frame meta")
+    parser.add_argument("--meta-json", default=None, help="single JSON/JSONL meta template file")
     args = parser.parse_args()
 
     folder = Path(args.dir)
@@ -36,6 +73,16 @@ def main() -> int:
     if args.repeat_first > 0:
         images = [images[0]] * int(args.repeat_first)
 
+    meta_templates: list[dict[str, object]] | dict[str, object] = {}
+    if args.meta_json:
+        meta_path = Path(args.meta_json)
+        if not meta_path.is_absolute():
+            meta_path = (Path.cwd() / meta_path).resolve()
+        if not meta_path.exists():
+            print(f"meta file not found: {meta_path}")
+            return 1
+        meta_templates = load_meta_templates(meta_path)
+
     endpoint = args.base_url.rstrip("/") + "/api/frame"
     print(f"sending {len(images)} frames -> {endpoint}")
 
@@ -49,6 +96,9 @@ def main() -> int:
                 "source": "replay_send_frames",
                 "preserveOld": bool(args.preserve_old),
             }
+            template_meta = pick_meta_template(meta_templates, seq - 1)
+            if template_meta:
+                meta.update(template_meta)
             files = {
                 "image": (image_path.name, image_path.read_bytes(), "image/jpeg"),
             }

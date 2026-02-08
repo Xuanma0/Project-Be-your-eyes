@@ -70,6 +70,23 @@ def wait_completed_delta(client: TestClient, before: dict[SeriesKey, float], exp
     return parse_metrics(client.get("/metrics").text)
 
 
+def wait_metric_delta_positive(
+    client: TestClient,
+    before: dict[SeriesKey, float],
+    metric_name: str,
+    labels: dict[str, str],
+    timeout_sec: float = 8.0,
+) -> dict[SeriesKey, float]:
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        current = parse_metrics(client.get("/metrics").text)
+        delta = metric_with_labels(current, metric_name, labels) - metric_with_labels(before, metric_name, labels)
+        if delta > 0:
+            return current
+        time.sleep(0.1)
+    return parse_metrics(client.get("/metrics").text)
+
+
 def send_frames(client: TestClient, n: int) -> None:
     meta = json.dumps({"ttlMs": 5000, "preserveOld": True})
     for _ in range(n):
@@ -143,7 +160,13 @@ def test_v12_timeout_fault_frame_completion_and_skips() -> None:
             capture.messages.clear()
 
             send_frames(client, 50)
-            after = wait_completed_delta(client, before, expected=50)
+            _ = wait_completed_delta(client, before, expected=50)
+            after = wait_metric_delta_positive(
+                client,
+                before,
+                "byes_tool_skipped_total",
+                {"tool": "mock_ocr", "reason": "safe_mode"},
+            )
         finally:
             client.post("/api/fault/clear")
             gateway.connections = original_connections  # type: ignore[assignment]

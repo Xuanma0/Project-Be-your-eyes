@@ -143,6 +143,23 @@ def _wait_completed(client: TestClient, before: dict[SeriesKey, float], expected
     return _parse_metrics(client.get("/metrics").text)
 
 
+def _wait_metric_delta_positive(
+    client: TestClient,
+    before: dict[SeriesKey, float],
+    metric_name: str,
+    labels: dict[str, str],
+    timeout_sec: float = 8.0,
+) -> dict[SeriesKey, float]:
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        current = _parse_metrics(client.get("/metrics").text)
+        delta = _metric_with_labels(current, metric_name, labels) - _metric_with_labels(before, metric_name, labels)
+        if delta > 0:
+            return current
+        time.sleep(0.1)
+    return _parse_metrics(client.get("/metrics").text)
+
+
 def test_real_ocr_scan_intent_gates_invocation_and_emits_perception_actionplan() -> None:
     with TestClient(app) as client:
         _speedup_mock_tools()
@@ -170,7 +187,13 @@ def test_real_ocr_scan_intent_gates_invocation_and_emits_perception_actionplan()
 
             scan_before = _parse_metrics(client.get("/metrics").text)
             _send_frames(client, 20)
-            scan_after = _wait_completed(client, scan_before, 20)
+            _ = _wait_completed(client, scan_before, 20)
+            scan_after = _wait_metric_delta_positive(
+                client,
+                scan_before,
+                "byes_tool_invoked_total",
+                {"tool": "real_ocr"},
+            )
         finally:
             gateway.connections = original_connections  # type: ignore[assignment]
 

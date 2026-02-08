@@ -288,6 +288,9 @@ def build_report(
     for metric_name in [
         "byes_frame_received_total",
         "byes_frame_completed_total",
+        "byes_frame_meta_present_total",
+        "byes_frame_meta_missing_total",
+        "byes_frame_meta_parse_error_total",
         "byes_tool_invoked_total",
         "byes_tool_timeout_total",
         "byes_tool_skipped_total",
@@ -342,6 +345,9 @@ def build_report(
         for metric_name in [
             "byes_frame_received_total",
             "byes_frame_completed_total",
+            "byes_frame_meta_present_total",
+            "byes_frame_meta_missing_total",
+            "byes_frame_meta_parse_error_total",
             "byes_tool_invoked_total",
             "byes_tool_timeout_total",
             "byes_tool_skipped_total",

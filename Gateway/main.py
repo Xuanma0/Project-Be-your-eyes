@@ -8,7 +8,7 @@ import time
 from typing import Any, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from byes.config import GatewayConfig, load_config
 from byes.degradation import DegradationManager, DegradationState
@@ -21,7 +21,7 @@ from byes.observability import Observability
 from byes.planner import PolicyPlannerV0
 from byes.safety import SafetyKernel
 from byes.scheduler import Scheduler
-from byes.schema import CoordFrame, EventEnvelope, EventType
+from byes.schema import CoordFrame, EventEnvelope, EventType, FrameMeta
 from byes.tool_registry import ToolRegistry
 from byes.tools import MockOcrTool, MockRiskTool, RealDetTool, RealOcrTool
 from byes.tools.base import FrameInput, ToolLane
@@ -129,6 +129,7 @@ class GatewayApp:
         self._degrade_watchdog_task: asyncio.Task[None] | None = None
         self._last_safe_mode_pulse_ms = -1
         self._safe_mode_pulse_interval_ms = 1000
+        self._last_meta_warn_ms: dict[str, int] = {"meta_missing": -1, "meta_parse_error": -1}
 
     async def startup(self) -> None:
         self.registry.register(MockRiskTool(self.config))
@@ -152,7 +153,13 @@ class GatewayApp:
         await self.scheduler.stop()
         await self.faults.shutdown()
 
-    async def submit_frame(self, frame_bytes: bytes, meta: dict[str, Any], request: Request) -> int:
+    async def submit_frame(
+        self,
+        frame_bytes: bytes,
+        meta: dict[str, Any],
+        request: Request,
+        frame_meta: FrameMeta | None = None,
+    ) -> int:
         request_start_ms = _now_ms()
         trace = self.observability.extract_trace(request.headers)
         enriched_meta = dict(meta)
@@ -170,7 +177,7 @@ class GatewayApp:
         ttl_ms = int(enriched_meta.get("ttlMs", self.config.default_ttl_ms))
         if ttl_ms <= 0:
             ttl_ms = self.config.default_ttl_ms
-        self.frame_tracker.start_frame(seq, request_start_ms, ttl_ms)
+        self.frame_tracker.start_frame(seq, request_start_ms, ttl_ms, frame_meta=frame_meta)
         return seq
 
     async def reset_runtime(self) -> dict[str, Any]:
@@ -180,6 +187,7 @@ class GatewayApp:
         self.intent.reset_runtime()
         self.scheduler.reset_runtime()
         self._last_safe_mode_pulse_ms = -1
+        self._last_meta_warn_ms = {"meta_missing": -1, "meta_parse_error": -1}
         client_count = await self.connections.count()
         self.degradation.set_ws_client_count(client_count)
         return {
@@ -193,6 +201,70 @@ class GatewayApp:
 
     def _on_frame_terminal(self, frame: FrameInput, outcome: str) -> None:
         self.frame_tracker.complete_frame(frame.seq, outcome, _now_ms())
+
+    def parse_optional_frame_meta(self, raw_meta: str | None) -> tuple[dict[str, Any], FrameMeta | None, str]:
+        if raw_meta is None or not raw_meta.strip():
+            return {}, None, "missing"
+
+        try:
+            payload = json.loads(raw_meta)
+        except json.JSONDecodeError:
+            return {}, None, "parse_error"
+
+        if not isinstance(payload, dict):
+            return {}, None, "parse_error"
+
+        meta_payload = dict(payload)
+        frame_meta_candidate = meta_payload.get("frameMeta", meta_payload)
+        if frame_meta_candidate is None:
+            return meta_payload, None, "missing"
+        if not isinstance(frame_meta_candidate, dict):
+            return meta_payload, None, "parse_error"
+
+        try:
+            frame_meta = FrameMeta.model_validate(frame_meta_candidate)
+        except ValidationError:
+            return meta_payload, None, "parse_error"
+
+        if frame_meta.is_empty():
+            return meta_payload, None, "missing"
+
+        meta_payload["frameMeta"] = frame_meta.model_dump(mode="json", exclude_none=True)
+        if frame_meta.deviceTsMs is not None and "tsCaptureMs" not in meta_payload:
+            meta_payload["tsCaptureMs"] = int(frame_meta.deviceTsMs)
+        if frame_meta.frameSeq is not None and "clientSeq" not in meta_payload:
+            meta_payload["clientSeq"] = int(frame_meta.frameSeq)
+        if frame_meta.coordFrame is not None and "coordFrame" not in meta_payload:
+            meta_payload["coordFrame"] = frame_meta.coordFrame.value
+        return meta_payload, frame_meta, "present"
+
+    async def emit_meta_health_warn(self, status: str, reason: str, min_interval_ms: int = 5000) -> None:
+        now_ms = _now_ms()
+        last_ms = self._last_meta_warn_ms.get(status, -1)
+        if last_ms >= 0 and now_ms - last_ms < min_interval_ms:
+            return
+        self._last_meta_warn_ms[status] = now_ms
+
+        await self._emit_event(
+            EventEnvelope(
+                type=EventType.HEALTH,
+                traceId="0" * 32,
+                spanId="0" * 16,
+                seq=0,
+                tsCaptureMs=now_ms,
+                ttlMs=self.config.default_ttl_ms,
+                coordFrame=CoordFrame.WORLD,
+                confidence=1.0,
+                priority=self.config.health_priority,
+                source="frame_meta@v1.3",
+                payload={
+                    "status": status,
+                    "reason": reason,
+                    "summary": f"{status} ({reason})",
+                    "level": "warn",
+                },
+            )
+        )
 
     async def emit_degradation_changes(
         self,
@@ -401,16 +473,41 @@ def list_tools() -> dict[str, Any]:
 @app.post("/api/frame")
 async def frame(
     request: Request,
-    image: UploadFile = File(...),
+    image: UploadFile | None = File(default=None),
     meta: str | None = Form(None),
 ) -> dict[str, Any]:
-    frame_bytes = await image.read()
-    meta_json: dict[str, Any] = {}
-    if meta:
-        with contextlib.suppress(json.JSONDecodeError):
-            meta_json = json.loads(meta)
+    content_type = str(request.headers.get("content-type", "")).lower()
+    frame_bytes: bytes | None = None
+    raw_meta: str | None = None
 
-    seq = await gateway.submit_frame(frame_bytes=frame_bytes, meta=meta_json, request=request)
+    if "multipart/form-data" in content_type:
+        if image is None:
+            raise HTTPException(status_code=400, detail="image is required")
+        frame_bytes = await image.read()
+        raw_meta = meta
+    elif content_type.startswith("image/") or "application/octet-stream" in content_type:
+        frame_bytes = await request.body()
+    else:
+        if image is not None:
+            frame_bytes = await image.read()
+            raw_meta = meta
+        else:
+            frame_bytes = await request.body()
+
+    if frame_bytes is None or len(frame_bytes) == 0:
+        raise HTTPException(status_code=400, detail="image is empty")
+
+    meta_json, frame_meta, meta_state = gateway.parse_optional_frame_meta(raw_meta)
+    if meta_state == "present":
+        gateway.metrics.inc_frame_meta_present()
+    elif meta_state == "parse_error":
+        gateway.metrics.inc_frame_meta_parse_error()
+        await gateway.emit_meta_health_warn("meta_parse_error", "frame_meta_invalid_json_or_schema")
+    else:
+        gateway.metrics.inc_frame_meta_missing()
+        await gateway.emit_meta_health_warn("meta_missing", "frame_meta_not_provided")
+
+    seq = await gateway.submit_frame(frame_bytes=frame_bytes, meta=meta_json, request=request, frame_meta=frame_meta)
     return {"ok": True, "bytes": len(frame_bytes), "seq": seq}
 
 

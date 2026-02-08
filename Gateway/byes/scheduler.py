@@ -99,6 +99,10 @@ class Scheduler:
         self._set_queue_depth_metrics()
 
     def reset_runtime(self) -> None:
+        for tasks in self._active_by_seq.values():
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
         self._active_by_seq.clear()
         self._frame_by_seq.clear()
         self._plan_by_seq.clear()
@@ -106,6 +110,9 @@ class Scheduler:
         self._recent_summaries.clear()
         self._frame_gate.reset_runtime()
         self._tool_cache.reset_runtime()
+        self._drain_queue(self._fast_q)
+        self._drain_queue(self._slow_q)
+        self._set_queue_depth_metrics()
 
     async def stop(self) -> None:
         if not self._running:
@@ -588,6 +595,13 @@ class Scheduler:
     def _set_queue_depth_metrics(self) -> None:
         self._metric_call("set_queue_depth", ToolLane.FAST.value, self._fast_q.qsize())
         self._metric_call("set_queue_depth", ToolLane.SLOW.value, self._slow_q.qsize())
+
+    @staticmethod
+    def _drain_queue(queue: asyncio.Queue[_QueuedTask]) -> None:
+        with contextlib.suppress(asyncio.QueueEmpty):
+            while True:
+                queue.get_nowait()
+                queue.task_done()
 
     def _build_plan(self, frame: FrameInput) -> ToolInvocationPlan:
         if self._planner is None:

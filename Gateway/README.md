@@ -36,6 +36,8 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8000
 
 Default remains legacy WS JSON for Unity (`GATEWAY_SEND_ENVELOPE=0`).
 Legacy WS event types now include: `risk`, `perception`, `health`, `action_plan`.
+`FrameMeta` is optional; when Unity does not send meta, gateway behavior remains compatible.
+Gateway never injects `FrameMeta` into legacy WS JSON payloads.
 
 ## RealDet Tool (v1.2 mainline start)
 
@@ -119,6 +121,45 @@ curl -X POST http://127.0.0.1:8000/api/dev/intent ^
 
 Without `scan_text`, planner does not schedule `real_ocr`.
 
+## FrameMeta v1.3
+
+Gateway accepts optional frame alignment metadata (`FrameMeta`) for space/time alignment.
+When metadata is missing or invalid, frame processing continues without 500.
+
+Schema (Pydantic v2):
+
+- `intrinsics`: `fx`, `fy`, `cx`, `cy`, `width`, `height`
+- `pose.position`: `x`, `y`, `z`
+- `pose.rotation`: `x`, `y`, `z`, `w`
+- `frameSeq`, `deviceTsMs`, `unityTsMs`, `coordFrame`, `intrinsics`, `pose`, `note`
+
+`/api/frame` input compatibility:
+
+- `image/jpeg` or `application/octet-stream`: raw image bytes (legacy)
+- `multipart/form-data`: `image` + optional `meta` JSON string
+
+Meta parse failures:
+
+- never trigger SAFE_MODE
+- increment `byes_frame_meta_parse_error_total`
+- emit throttled health warn (`meta_parse_error`)
+
+Missing meta:
+
+- increment `byes_frame_meta_missing_total`
+- emit throttled health warn (`meta_missing`)
+
+Valid meta:
+
+- increment `byes_frame_meta_present_total`
+- stored in `FrameTracker` runtime table (TTL + capacity bounded)
+
+Azimuth alignment (minimal v1):
+
+- when `intrinsics` exist and detection bbox exists:
+- `azimuthDeg = atan((center_x - cx) / fx) * 180 / pi`
+- otherwise fallback path remains unchanged.
+
 ## Fault Injection
 
 Set fault:
@@ -166,6 +207,9 @@ Modes:
 - `byes_tool_cache_miss_total{tool}`
 - `byes_tool_rate_limited_total{tool}`
 - `byes_frame_gate_skip_total{tool,reason}`
+- `byes_frame_meta_present_total`
+- `byes_frame_meta_missing_total`
+- `byes_frame_meta_parse_error_total`
 
 `byes_frame_gate_skip_total.reason` is constrained to:
 `intent_off`, `rate_limit`, `safe_mode`, `unchanged`, `ttl_risk`, `policy`.
@@ -189,7 +233,13 @@ python scripts/ws_record_events.py --ws-url ws://127.0.0.1:8000/ws/events --outp
 2. Replay frame directory:
 
 ```bash
-python scripts/replay_send_frames.py --dir fixtures/frames --base-url http://127.0.0.1:8000 --interval-ms 500
+python scripts/replay_send_frames.py --dir frames --base-url http://127.0.0.1:8000 --interval-ms 500
+```
+
+Replay with meta template (`--meta-json` supports JSON/JSONL):
+
+```bash
+python scripts/replay_send_frames.py --dir frames --base-url http://127.0.0.1:8000 --interval-ms 500 --meta-json scripts/meta_sample.json
 ```
 
 3. Record candidate run:
@@ -260,6 +310,40 @@ How to read cache scenario report:
 - `real_det invoked` should be much smaller than `50`.
 - `real_ocr invoked` should be `0` when intent is off.
 - `byes_tool_cache_hit_total{tool=real_det}` should grow.
+
+Meta baseline (optional FrameMeta on all frames):
+
+1. Example `scripts/meta_sample.json`:
+
+```json
+{
+  "frameMeta": {
+    "coordFrame": "World",
+    "deviceTsMs": 1700000000000,
+    "intrinsics": {
+      "fx": 560.0,
+      "fy": 560.0,
+      "cx": 320.0,
+      "cy": 180.0,
+      "width": 640,
+      "height": 360
+    }
+  },
+  "preserveOld": true,
+  "ttlMs": 5000
+}
+```
+
+2. Run:
+
+```bash
+python scripts/replay_send_frames.py --dir frames --base-url http://127.0.0.1:8000 --interval-ms 500 --repeat-first 50 --meta-json scripts/meta_sample.json --preserve-old
+```
+
+3. Expect:
+
+- `frame_received=50`, `frame_completed=50`, `e2e_count=50`
+- `byes_frame_meta_present_total` delta `=50`
 
 ## Tests
 

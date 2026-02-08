@@ -6,7 +6,7 @@ import uuid
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def now_ms() -> int:
@@ -28,6 +28,81 @@ class CoordFrame(str, Enum):
     WORLD = "World"
     MAP = "Map"
     ANCHOR = "Anchor"
+
+
+class Intrinsics(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    width: int
+    height: int
+
+
+class Position3(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    x: float
+    y: float
+    z: float
+
+
+class RotationQuat(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    x: float
+    y: float
+    z: float
+    w: float
+
+
+class Pose(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    position: Position3 | None = None
+    rotation: RotationQuat | None = None
+
+
+class FrameMeta(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    frameSeq: int | None = None
+    deviceTsMs: int | None = None
+    unityTsMs: int | None = None
+    coordFrame: CoordFrame | None = None
+    intrinsics: Intrinsics | None = None
+    pose: Pose | None = None
+    note: str | None = None
+
+    @field_validator("coordFrame", mode="before")
+    @classmethod
+    def _normalize_coord_frame(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, CoordFrame):
+            return value
+        raw = str(value).strip()
+        if not raw:
+            return None
+        for coord in CoordFrame:
+            if raw.lower() == coord.value.lower() or raw.lower() == coord.name.lower():
+                return coord
+        raise ValueError(f"invalid coordFrame: {value}")
+
+    def is_empty(self) -> bool:
+        return not any(
+            [
+                self.frameSeq is not None,
+                self.deviceTsMs is not None,
+                self.unityTsMs is not None,
+                self.coordFrame is not None,
+                self.intrinsics is not None,
+                self.pose is not None,
+                bool(self.note),
+            ]
+        )
 
 
 class EventEnvelope(BaseModel):
