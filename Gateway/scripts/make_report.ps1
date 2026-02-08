@@ -18,6 +18,7 @@
     [switch]$CriticalPreemptScenario,
     [switch]$PlannerV1CrossCheck,
     [switch]$PlannerV1ThrottledAsk,
+    [switch]$ActiveConfirmScenario,
     [switch]$ExternalReadinessSmoke,
     [switch]$TimeoutScenario
 )
@@ -241,6 +242,39 @@ function Set-DevCrossCheck {
     }
 }
 
+function Resolve-PendingConfirm {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BaseUrl,
+        [string]$SessionId = "default",
+        [int]$TimeoutSec = 20,
+        [string]$Answer = "yes"
+    )
+
+    $pendingUrl = "{0}/api/confirm/pending?sessionId={1}" -f $BaseUrl.TrimEnd('/'), [uri]::EscapeDataString($SessionId)
+    $submitUrl = "{0}/api/confirm" -f $BaseUrl.TrimEnd('/')
+    $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSec))
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $pendingResp = Invoke-RestMethod -Uri $pendingUrl -Method Get -TimeoutSec 10
+            $pending = $pendingResp.pending
+            if ($null -ne $pending -and $null -ne $pending.confirmId -and -not [string]::IsNullOrWhiteSpace([string]$pending.confirmId)) {
+                $body = @{
+                    confirmId = [string]$pending.confirmId
+                    answer = $Answer
+                    source = "make_report"
+                } | ConvertTo-Json
+                $submitResp = Invoke-RestMethod -Uri $submitUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 10
+                return ($null -ne $submitResp -and $submitResp.ok -and $submitResp.resolved)
+            }
+        } catch {
+            # keep polling
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    return $false
+}
+
 function Set-DevPerformance {
     param(
         [Parameter(Mandatory = $true)]
@@ -328,6 +362,8 @@ if ($RealDetActionPlan -and $RunName -eq "run_baseline") {
     $RunName = "run_evidence_critical_v26"
 } elseif ($CriticalPreemptScenario -and $RunName -eq "run_baseline") {
     $RunName = "run_critical_preempt_v24"
+} elseif ($ActiveConfirmScenario -and $RunName -eq "run_baseline") {
+    $RunName = "run_active_confirm_v27"
 } elseif ($RealDepthBaseline -and $RunName -eq "run_baseline") {
     $RunName = "run_real_depth_baseline"
 } elseif ($RealOcrScan -and $RunName -eq "run_baseline") {
@@ -424,6 +460,11 @@ if ($EvidenceCriticalScenario) {
     Write-Host "Inject short slow fault -> mock_ocr (+700ms for 6000ms)"
     Set-SlowFault -BaseUrl $BaseUrl -ToolName "mock_ocr" -DelayMs 700 -DurationMs 6000
 }
+if ($ActiveConfirmScenario) {
+    $overrideDurationMs = [Math]::Max(8000, ($RecordDurationSec + 5) * 1000)
+    Write-Host "Set dev crosscheck override -> vision_without_depth (${overrideDurationMs}ms)"
+    Set-DevCrossCheck -BaseUrl $BaseUrl -Kind "vision_without_depth" -DurationMs $overrideDurationMs
+}
 
 Write-Host "[1/4] Start WS record -> $wsJsonl"
 Save-MetricsSnapshot -MetricsUrl $metricsUrl -OutputPath $metricsBefore
@@ -457,6 +498,7 @@ if ($PreemptWindowScenario) {
 }
 
 $evidenceCriticalJob = $null
+$activeConfirmJob = $null
 if ($EvidenceCriticalScenario) {
     Write-Host "Schedule delayed crosscheck evidence injection -> vision_without_depth (delay=300ms, duration=8000ms)"
     $evidenceCriticalJob = Start-Job -ArgumentList $BaseUrl -ScriptBlock {
@@ -468,6 +510,36 @@ if ($EvidenceCriticalScenario) {
             durationMs = 8000
         } | ConvertTo-Json
         Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/json" -TimeoutSec 20 | Out-Null
+    }
+}
+if ($ActiveConfirmScenario) {
+    Write-Host "Start confirm resolver job (answer=yes)"
+    $activeConfirmJob = Start-Job -ArgumentList $BaseUrl -ScriptBlock {
+        param($baseUrlInner)
+        $pendingUrl = "{0}/api/confirm/pending?sessionId=default" -f $baseUrlInner.TrimEnd('/')
+        $submitUrl = "{0}/api/confirm" -f $baseUrlInner.TrimEnd('/')
+        $deadline = (Get-Date).AddSeconds(20)
+        while ((Get-Date) -lt $deadline) {
+            try {
+                $pendingResp = Invoke-RestMethod -Uri $pendingUrl -Method Get -TimeoutSec 10
+                $pending = $pendingResp.pending
+                if ($null -ne $pending -and $null -ne $pending.confirmId -and -not [string]::IsNullOrWhiteSpace([string]$pending.confirmId)) {
+                    $body = @{
+                        confirmId = [string]$pending.confirmId
+                        answer = "yes"
+                        source = "make_report_job"
+                    } | ConvertTo-Json
+                    $submitResp = Invoke-RestMethod -Uri $submitUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 10
+                    if ($null -ne $submitResp -and $submitResp.ok -and $submitResp.resolved) {
+                        Write-Output "resolved"
+                        return
+                    }
+                }
+            } catch {
+            }
+            Start-Sleep -Milliseconds 250
+        }
+        Write-Output "timeout"
     }
 }
 
@@ -529,6 +601,14 @@ if ($null -ne $evidenceCriticalJob) {
     Receive-Job -Job $evidenceCriticalJob -ErrorAction SilentlyContinue | Out-Null
     Remove-Job -Job $evidenceCriticalJob -Force -ErrorAction SilentlyContinue
 }
+if ($null -ne $activeConfirmJob) {
+    Wait-Job -Job $activeConfirmJob -Timeout 25 | Out-Null
+    $confirmResult = Receive-Job -Job $activeConfirmJob -ErrorAction SilentlyContinue
+    Remove-Job -Job $activeConfirmJob -Force -ErrorAction SilentlyContinue
+    if ($confirmResult -notcontains "resolved") {
+        throw "active confirm scenario failed: pending confirm was not resolved"
+    }
+}
 
 Write-Host "[4/4] Generate report -> $reportMd"
 Save-MetricsSnapshot -MetricsUrl $metricsUrl -OutputPath $metricsAfter
@@ -537,7 +617,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "report_run.py failed with code $LASTEXITCODE"
 }
 
-if ($TimeoutScenario -or $QueuePressureScenario -or $CriticalPreemptScenario -or $PreemptWindowScenario -or $EvidenceCriticalScenario) {
+if ($TimeoutScenario -or $QueuePressureScenario -or $CriticalPreemptScenario -or $PreemptWindowScenario -or $EvidenceCriticalScenario -or $ActiveConfirmScenario) {
     $null = Invoke-RestMethod -Uri ("{0}/api/fault/clear" -f $BaseUrl.TrimEnd('/')) -Method Post -TimeoutSec 20
 }
 

@@ -123,6 +123,10 @@ class GatewayConfig:
     planner_crosscheck_cooldown_ms: int = 2500
     planner_ask_guidance_cooldown_ms: int = 5000
     planner_text_object_aliases_csv: str = "sign,label,screen,panel,text"
+    confirm_default_ttl_ms: int = 5000
+    confirm_dedup_cooldown_ms: int = 4000
+    confirm_yes_ttl_ms: int = 5000
+    confirm_no_suppress_ms: int = 8000
     fast_budget_ms: int = 500
     slow_budget_ms: int = 1200
     slo_e2e_p95_ms: int = 400
@@ -239,6 +243,10 @@ def load_config() -> GatewayConfig:
             "BYES_PLANNER_TEXT_OBJECT_ALIASES",
             "sign,label,screen,panel,text",
         ),
+        confirm_default_ttl_ms=_env_int("BYES_CONFIRM_DEFAULT_TTL_MS", 5000),
+        confirm_dedup_cooldown_ms=_env_int("BYES_CONFIRM_DEDUP_COOLDOWN_MS", 4000),
+        confirm_yes_ttl_ms=_env_int("BYES_CONFIRM_YES_TTL_MS", 5000),
+        confirm_no_suppress_ms=_env_int("BYES_CONFIRM_NO_SUPPRESS_MS", 8000),
         fast_budget_ms=_env_int("BYES_FAST_BUDGET_MS", 500),
         slow_budget_ms=_env_int("BYES_SLOW_BUDGET_MS", 1200),
         slo_e2e_p95_ms=_env_int("BYES_SLO_E2E_P95_MS", 400),

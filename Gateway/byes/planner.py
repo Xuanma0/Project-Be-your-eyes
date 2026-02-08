@@ -243,8 +243,20 @@ class PolicyPlannerV1:
                 critical_until_ms=-1,
                 critical_reason=None,
                 critical_last_set_ms=-1,
+                confirm_confirmed_kinds=[],
+                confirm_suppressed_kinds=[],
             )
         )
+        confirmed_kinds = {
+            str(item).strip().lower()
+            for item in snapshot.confirm_confirmed_kinds
+            if str(item).strip()
+        }
+        suppressed_kinds = {
+            str(item).strip().lower()
+            for item in snapshot.confirm_suppressed_kinds
+            if str(item).strip()
+        }
 
         invocations: list[ToolInvocation] = []
         selected_tools: list[dict[str, str]] = []
@@ -293,6 +305,8 @@ class PolicyPlannerV1:
             )
 
         if degradation_state == DegradationState.SAFE_MODE or normalized_health == "SAFE_MODE":
+            if _has_confirm_crosscheck_request(frame.meta):
+                _metric_call(self._metrics, "inc_confirm_suppressed", "safe_mode")
             for tool in slow_tools:
                 _record_skip(self._metrics, skipped_tools, tool.name, REASON_SAFE_MODE_SKIP)
             return self._build_plan(
@@ -325,6 +339,10 @@ class PolicyPlannerV1:
         forced_tool, forced_kind = (None, None)
         if working_world_state is not None:
             forced_tool, forced_kind = working_world_state.peek_forced_tool(session_id=session_id, now_ms=now_ms)
+        if forced_kind == "vision_without_depth" and "transparent_obstacle" in suppressed_kinds:
+            forced_tool, forced_kind = (None, None)
+        if forced_kind == "depth_without_vision" and "dropoff" in suppressed_kinds:
+            forced_tool, forced_kind = (None, None)
 
         need_det = True
         need_depth = True
@@ -356,6 +374,10 @@ class PolicyPlannerV1:
                 performance_mode=performance_mode,
                 question=question,
             )
+        if "transparent_obstacle" in confirmed_kinds:
+            need_det = True
+        if "dropoff" in confirmed_kinds:
+            need_depth = True
 
         missing_expected = _missing_expected_tools(
             self._config,
@@ -509,6 +531,17 @@ class PolicyPlannerV1:
                 ):
                     action_hints.append(_ask_guidance_hint(REASON_BUDGET_SKIP))
 
+        if confirmed_kinds and normalized_health != "SAFE_MODE":
+            should_hint = True
+            if working_world_state is not None:
+                should_hint = working_world_state.should_emit_ask_guidance(
+                    session_id=session_id,
+                    now_ms=now_ms,
+                )
+            if should_hint:
+                for kind in sorted(confirmed_kinds):
+                    action_hints.append(_confirmed_hazard_hint(kind))
+
         if forced_kind is not None and invocations:
             for item in selected_tools:
                 if item["reason"] == REASON_CROSSCHECK:
@@ -618,6 +651,14 @@ def _record_skip(metrics: object | None, bucket: list[dict[str, str]], tool: str
         fn(tool, normalized_reason)
 
 
+def _metric_call(metrics: object | None, method: str, *args: object) -> None:
+    if metrics is None:
+        return
+    fn = getattr(metrics, method, None)
+    if callable(fn):
+        fn(*args)
+
+
 def _normalize_reason(reason: str) -> str:
     normalized = str(reason or "").strip().lower().replace("-", "_")
     if normalized in _ALLOWED_REASON_TOKENS:
@@ -628,6 +669,11 @@ def _normalize_reason(reason: str) -> str:
 def _session_id_from_meta(meta: dict[str, Any]) -> str:
     session_id = str(meta.get("sessionId", "")).strip()
     return session_id or "default"
+
+
+def _has_confirm_crosscheck_request(meta: dict[str, Any]) -> bool:
+    token = str(meta.get("forceCrosscheckKind", "")).strip().lower()
+    return token in {"vision_without_depth", "depth_without_vision"}
 
 
 def _priority_for(tool: ToolDescriptor) -> int:
@@ -767,4 +813,29 @@ def _ask_guidance_hint(reason: str) -> dict[str, Any]:
             {"action": "confirm", "text": "Confirm before moving."},
         ],
         "fallback": "scan",
+    }
+
+
+def _confirmed_hazard_hint(kind: str) -> dict[str, Any]:
+    normalized_kind = str(kind or "").strip().lower() or "hazard"
+    summary = "User confirmed nearby hazard. Stop and scan before moving."
+    if normalized_kind == "dropoff":
+        summary = "Confirmed drop-off risk. Stop and scan the ground before any movement."
+    elif normalized_kind == "transparent_obstacle":
+        summary = "Confirmed transparent obstacle. Stop and scan left and right before moving."
+    return {
+        "type": "action_plan",
+        "reason": "confirmed_hazard",
+        "actionCategory": "confirm_followup",
+        "summary": summary,
+        "speech": summary,
+        "hud": "Confirmed hazard: stop + scan",
+        "mode": "planner_hint",
+        "steps": [
+            {"action": "stop", "text": "Stop immediately."},
+            {"action": "scan", "text": "Scan surroundings carefully."},
+            {"action": "confirm", "text": "Confirm route is clear before moving."},
+        ],
+        "fallback": "scan",
+        "confirmKind": normalized_kind,
     }

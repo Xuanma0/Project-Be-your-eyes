@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from byes.confirm_manager import ConfirmManager
 from byes.config import GatewayConfig
 from byes.crosscheck import CrossCheckActionPatch, CrossCheckEngine
 from byes.hazard_memory import HazardMemory
@@ -40,12 +41,14 @@ class FusionEngine:
         config: GatewayConfig,
         metrics: object | None = None,
         world_state: WorldState | None = None,
+        confirm_manager: ConfirmManager | None = None,
     ) -> None:
         self._config = config
         self._metrics = metrics
         self._crosscheck = CrossCheckEngine(config)
         self._hazard_memory = HazardMemory(config, metrics=metrics)
         self._world_state = world_state
+        self._confirm_manager = confirm_manager
         self._critical_latch_ms = max(1, int(config.critical_latch_ms))
         self._critical_near_m = max(0.0, float(config.critical_near_m))
         self._critical_crosscheck_kinds = {
@@ -53,6 +56,7 @@ class FusionEngine:
             for item in str(config.critical_from_crosscheck_kinds_csv).split(",")
             if item.strip()
         }
+        self._confirm_ttl_ms = max(500, int(config.confirm_default_ttl_ms))
 
     def reset_runtime(self) -> None:
         self._crosscheck.reset_runtime()
@@ -189,6 +193,7 @@ class FusionEngine:
             return FusionOutput(stage1_events=events)
 
         events: list[EventEnvelope] = []
+        stage1_events: list[EventEnvelope] = []
         diagnostics: list[dict[str, object]] = []
         perception_payload = self._build_perception_payload(ok_results)
         perception_event: EventEnvelope | None = None
@@ -229,6 +234,18 @@ class FusionEngine:
                     "details": dict(item.details),
                 }
             )
+        confirm_event = self._maybe_build_confirm_request_event(
+            frame=frame,
+            trace_id=trace_id,
+            span_id=span_id,
+            health_status=normalized_health,
+            crosscheck_diagnostics=crosscheck.diagnostics,
+            crosscheck_patch=crosscheck.action_patch,
+            crosscheck_risks=crosscheck.risks,
+            session_id=session_id,
+        )
+        if confirm_event is not None:
+            stage1_events.append(confirm_event)
         crosscheck_risk: EventEnvelope | None = None
         if crosscheck.risks:
             crosscheck_risk = self._risk_event_from_payload(
@@ -272,14 +289,15 @@ class FusionEngine:
         if action_plan is not None:
             events.append(action_plan)
         events = self._tag_stage(self._apply_hazard_memory(frame, events), "stage2")
+        stage1_events = self._tag_stage(stage1_events, "stage1")
         self._update_world_state(
             frame=frame,
             session_id=session_id,
             results=ok_results,
             diagnostics=diagnostics,
-            emitted_events=events,
+            emitted_events=[*stage1_events, *events],
         )
-        return FusionOutput(stage2_events=events, diagnostics=diagnostics)
+        return FusionOutput(stage1_events=stage1_events, stage2_events=events, diagnostics=diagnostics)
 
     @staticmethod
     def to_legacy_event(event: EventEnvelope) -> dict[str, object | None]:
@@ -351,6 +369,10 @@ class FusionEngine:
                 "actionCategory": payload.get("actionCategory", payload.get("reason")),
                 "activeConfirm": payload.get("activeConfirm"),
                 "crosscheckKind": payload.get("crosscheckKind"),
+                "confirmId": payload.get("confirmId"),
+                "confirmKind": payload.get("confirmKind"),
+                "confirmPrompt": payload.get("confirmPrompt"),
+                "confirmOptions": payload.get("confirmOptions"),
                 "riskText": None,
                 "distanceM": None,
                 "azimuthDeg": None,
@@ -905,6 +927,145 @@ class FusionEngine:
         payload["activeConfirm"] = bool(patch.active_confirm)
         payload["crosscheckKind"] = patch.kind
         event.payload = payload
+
+    def _maybe_build_confirm_request_event(
+        self,
+        *,
+        frame: FrameInput,
+        trace_id: str,
+        span_id: str,
+        health_status: str,
+        crosscheck_diagnostics: list[Any],
+        crosscheck_patch: CrossCheckActionPatch | None,
+        crosscheck_risks: list[dict[str, object]],
+        session_id: str,
+    ) -> EventEnvelope | None:
+        if self._confirm_manager is None:
+            return None
+
+        confirm_kind = self._extract_confirm_kind(
+            crosscheck_diagnostics=crosscheck_diagnostics,
+            crosscheck_patch=crosscheck_patch,
+            crosscheck_risks=crosscheck_risks,
+        )
+        if confirm_kind is None:
+            return None
+
+        if health_status.upper() == "SAFE_MODE":
+            self._metric_call("inc_confirm_suppressed", "safe_mode")
+            return None
+
+        if self._world_state is not None and self._world_state.is_confirm_suppressed(
+            session_id=session_id,
+            kind=confirm_kind,
+            now_ms=frame.ts_capture_ms,
+        ):
+            self._metric_call("inc_confirm_suppressed", "world_state_suppressed")
+            return None
+
+        prompt = self._confirm_prompt(confirm_kind)
+        request = self._confirm_manager.create(
+            confirm_kind,
+            prompt,
+            ["yes", "no", "unknown"],
+            self._confirm_ttl_ms,
+            frame.ts_capture_ms,
+            session_id,
+        )
+        if request is None:
+            return None
+
+        plan = ActionPlan(
+            traceId=trace_id,
+            expiresMs=frame.ts_capture_ms + frame.ttl_ms,
+            mode="active_confirm",
+            overallConfidence=0.9,
+            steps=[
+                ActionStep(action=ActionType.STOP, text="Stop and hold position."),
+                ActionStep(action=ActionType.CONFIRM, text=request.prompt),
+                ActionStep(action=ActionType.SCAN, text="Small scan before moving."),
+            ],
+            fallback=ActionType.SCAN.value,
+        )
+        return EventEnvelope(
+            type=EventType.ACTION_PLAN,
+            traceId=trace_id,
+            spanId=span_id,
+            seq=frame.seq,
+            tsCaptureMs=frame.ts_capture_ms,
+            ttlMs=frame.ttl_ms,
+            coordFrame=CoordFrame.WORLD,
+            confidence=0.9,
+            priority=self._config.navigation_priority,
+            source="confirm_manager@v2.7",
+            payload={
+                "summary": request.prompt,
+                "speech": request.prompt,
+                "hud": "Confirm yes/no",
+                "plan": plan.model_dump(mode="json"),
+                "reason": "active_confirm",
+                "actionCategory": "confirm",
+                "activeConfirm": True,
+                "crosscheckKind": self._confirm_to_crosscheck_kind(confirm_kind),
+                "confirmId": request.confirmId,
+                "confirmKind": request.kind,
+                "confirmPrompt": request.prompt,
+                "confirmOptions": list(request.options),
+            },
+        )
+
+    def _extract_confirm_kind(
+        self,
+        *,
+        crosscheck_diagnostics: list[Any],
+        crosscheck_patch: CrossCheckActionPatch | None,
+        crosscheck_risks: list[dict[str, object]],
+    ) -> str | None:
+        if crosscheck_patch is not None:
+            kind = self._crosscheck_to_confirm_kind(crosscheck_patch.kind)
+            if kind is not None:
+                return kind
+
+        for item in crosscheck_diagnostics:
+            if not getattr(item, "active_confirm", False):
+                continue
+            kind = self._crosscheck_to_confirm_kind(getattr(item, "kind", ""))
+            if kind is not None:
+                return kind
+
+        for payload in crosscheck_risks:
+            if not bool(payload.get("activeConfirm", False)):
+                continue
+            kind = self._crosscheck_to_confirm_kind(payload.get("crosscheckKind"))
+            if kind is not None:
+                return kind
+        return None
+
+    @staticmethod
+    def _crosscheck_to_confirm_kind(kind: object) -> str | None:
+        token = str(kind or "").strip().lower()
+        mapping = {
+            "vision_without_depth": "transparent_obstacle",
+            "depth_without_vision": "dropoff",
+            "transparent_obstacle": "transparent_obstacle",
+            "dropoff": "dropoff",
+        }
+        return mapping.get(token)
+
+    @staticmethod
+    def _confirm_to_crosscheck_kind(confirm_kind: str) -> str:
+        mapping = {
+            "transparent_obstacle": "vision_without_depth",
+            "dropoff": "depth_without_vision",
+        }
+        return mapping.get(str(confirm_kind).strip().lower(), "vision_without_depth")
+
+    @staticmethod
+    def _confirm_prompt(confirm_kind: str) -> str:
+        token = str(confirm_kind or "").strip().lower()
+        if token == "dropoff":
+            return "前方可能有台阶或落差。请确认：脚下是否有明显落差？(是/否)"
+        return "前方可能是玻璃或透明障碍。请确认：你是否感觉前方有阻挡？(是/否)"
 
     def _apply_hazard_memory(self, frame: FrameInput, events: list[EventEnvelope]) -> list[EventEnvelope]:
         if not events:

@@ -165,7 +165,9 @@ def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     safe_mode_active = False
     perception_after_safe_mode = 0
     action_plan_after_safe_mode = 0
+    confirm_request_after_safe_mode = 0
     active_confirm_events = 0
+    confirm_request_events = 0
     hazard_events = 0
     unique_hazard_ids: set[str] = set()
 
@@ -200,6 +202,10 @@ def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         elif event_type == "action_plan" and safe_mode_active:
             action_plan_after_safe_mode += 1
         if event_type == "action_plan":
+            if event.get("confirmId"):
+                confirm_request_events += 1
+                if safe_mode_active:
+                    confirm_request_after_safe_mode += 1
             category = str(
                 event.get("actionCategory")
                 or event.get("reason")
@@ -224,7 +230,9 @@ def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "safe_mode_first_ms": first_safe_mode_ms,
         "safe_mode_perception_violations": perception_after_safe_mode,
         "safe_mode_actionplan_violations": action_plan_after_safe_mode,
+        "safe_mode_confirm_request_violations": confirm_request_after_safe_mode,
         "active_confirm_events": active_confirm_events,
+        "confirm_request_events": confirm_request_events,
         "hazard_events": hazard_events,
         "unique_hazards": len(unique_hazard_ids),
         "action_plan_categories": dict(sorted(action_plan_category_counter.items(), key=lambda item: item[0])),
@@ -375,7 +383,10 @@ def build_report(
     lines.append(f"  - `perception_after_safe_mode`: `{ws_stats['safe_mode_perception_violations']}`")
     lines.append("- safe-mode action-plan violations:")
     lines.append(f"  - `action_plan_after_safe_mode`: `{ws_stats['safe_mode_actionplan_violations']}`")
+    lines.append("- safe-mode confirm-request violations:")
+    lines.append(f"  - `confirm_request_after_safe_mode`: `{ws_stats['safe_mode_confirm_request_violations']}`")
     lines.append(f"- active_confirm_events: `{ws_stats['active_confirm_events']}`")
+    lines.append(f"- confirm_request_events: `{ws_stats['confirm_request_events']}`")
     lines.append(f"- hazard_events: `{ws_stats['hazard_events']}`")
     lines.append(f"- unique_hazards: `{ws_stats['unique_hazards']}`")
     lines.append(f"- action-plan events: `{ws_stats['event_types'].get('action_plan', 0)}`")
@@ -429,6 +440,11 @@ def build_report(
         "byes_crosscheck_conflict_total",
         "byes_active_confirm_total",
         "byes_actionplan_patched_total",
+        "byes_confirm_request_total",
+        "byes_confirm_response_total",
+        "byes_confirm_timeout_total",
+        "byes_confirm_pending_gauge",
+        "byes_confirm_suppressed_total",
         "byes_actiongate_block_total",
         "byes_actiongate_patch_total",
         "byes_hazard_emit_total",
@@ -486,6 +502,11 @@ def build_report(
     append_metric_details(lines, after_samples, "byes_crosscheck_conflict_total", ["kind"], "count")
     append_metric_details(lines, after_samples, "byes_active_confirm_total", ["kind"], "count")
     append_metric_details(lines, after_samples, "byes_actionplan_patched_total", ["reason"], "count")
+    append_metric_details(lines, after_samples, "byes_confirm_request_total", ["kind"], "count")
+    append_metric_details(lines, after_samples, "byes_confirm_response_total", ["kind", "answer"], "count")
+    append_metric_details(lines, after_samples, "byes_confirm_timeout_total", ["kind"], "count")
+    append_metric_details(lines, after_samples, "byes_confirm_pending_gauge", [], "count")
+    append_metric_details(lines, after_samples, "byes_confirm_suppressed_total", ["reason"], "count")
     append_metric_details(lines, after_samples, "byes_actiongate_block_total", ["reason"], "count")
     append_metric_details(lines, after_samples, "byes_actiongate_patch_total", ["reason"], "count")
     append_metric_details(lines, after_samples, "byes_ttfa_count_total", ["outcome", "kind"], "count")
@@ -561,6 +582,11 @@ def build_report(
             "byes_crosscheck_conflict_total",
             "byes_active_confirm_total",
             "byes_actionplan_patched_total",
+            "byes_confirm_request_total",
+            "byes_confirm_response_total",
+            "byes_confirm_timeout_total",
+            "byes_confirm_pending_gauge",
+            "byes_confirm_suppressed_total",
             "byes_actiongate_block_total",
             "byes_actiongate_patch_total",
             "byes_hazard_emit_total",
@@ -624,6 +650,11 @@ def build_report(
         append_metric_details(lines, delta_samples, "byes_crosscheck_conflict_total", ["kind"], "delta")
         append_metric_details(lines, delta_samples, "byes_active_confirm_total", ["kind"], "delta")
         append_metric_details(lines, delta_samples, "byes_actionplan_patched_total", ["reason"], "delta")
+        append_metric_details(lines, delta_samples, "byes_confirm_request_total", ["kind"], "delta")
+        append_metric_details(lines, delta_samples, "byes_confirm_response_total", ["kind", "answer"], "delta")
+        append_metric_details(lines, delta_samples, "byes_confirm_timeout_total", ["kind"], "delta")
+        append_metric_details(lines, delta_samples, "byes_confirm_pending_gauge", [], "delta")
+        append_metric_details(lines, delta_samples, "byes_confirm_suppressed_total", ["reason"], "delta")
         append_metric_details(lines, delta_samples, "byes_actiongate_block_total", ["reason"], "delta")
         append_metric_details(lines, delta_samples, "byes_actiongate_patch_total", ["reason"], "delta")
         append_metric_details(lines, delta_samples, "byes_ttfa_count_total", ["outcome", "kind"], "delta")

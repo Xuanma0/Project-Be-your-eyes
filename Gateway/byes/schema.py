@@ -255,3 +255,24 @@ class LegacyEvent(BaseModel):
     crosscheckKind: str | None = None
     healthStatus: HealthStatus | None = None
     healthReason: str | None = None
+    confirmId: str | None = None
+    confirmKind: str | None = None
+    confirmPrompt: str | None = None
+    confirmOptions: list[str] | None = None
+
+
+class ConfirmRequest(BaseModel):
+    confirmId: str
+    kind: str
+    prompt: str
+    options: list[str] = Field(default_factory=list)
+    ttlMs: int
+    createdAtMs: int
+    sessionId: str = "default"
+
+
+class ConfirmResponse(BaseModel):
+    confirmId: str
+    answer: Literal["yes", "no", "unknown"]
+    respondedAtMs: int
+    source: str = "unknown"

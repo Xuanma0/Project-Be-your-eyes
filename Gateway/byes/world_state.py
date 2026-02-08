@@ -41,6 +41,11 @@ class _SessionWorldState:
     critical_until_ms: int = -1
     critical_reason: str | None = None
     critical_last_set_ms: int = -1
+    confirm_last_response_ms: int = -1
+    confirm_last_kind: str | None = None
+    confirm_last_answer: str | None = None
+    confirm_confirmed_until_by_kind: dict[str, int] = field(default_factory=dict)
+    confirm_suppressed_until_by_kind: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,8 @@ class WorldStateSnapshot:
     critical_until_ms: int
     critical_reason: str | None
     critical_last_set_ms: int
+    confirm_confirmed_kinds: list[str]
+    confirm_suppressed_kinds: list[str]
 
     def has_forced_tool(self, now_ms: int) -> bool:
         return bool(self.crosscheck_force_tool) and self.crosscheck_force_expires_ms > now_ms
@@ -77,6 +84,7 @@ class WorldState:
         "depth_near",
         "hazard_persist",
         "dev_inject",
+        "confirmed_hazard",
     }
 
     def __init__(self, config: GatewayConfig, metrics: object | None = None) -> None:
@@ -215,6 +223,75 @@ class WorldState:
         session.crosscheck_force_expires_ms = current_ms + self._crosscheck_force_ms
         session.last_updated_ms = current_ms
         self._compact(current_ms)
+
+    def record_confirm_response(
+        self,
+        *,
+        session_id: str,
+        kind: str,
+        answer: str,
+        now_ms: int,
+        confirmed_ttl_ms: int = 5000,
+        suppress_ttl_ms: int = 8000,
+    ) -> None:
+        current_ms = int(now_ms)
+        normalized_kind = str(kind or "").strip().lower()
+        normalized_answer = str(answer or "").strip().lower()
+        if not normalized_kind:
+            return
+        session = self._session(session_id, current_ms)
+        session.confirm_last_response_ms = current_ms
+        session.confirm_last_kind = normalized_kind
+        session.confirm_last_answer = normalized_answer
+        if normalized_answer == "yes":
+            session.confirm_confirmed_until_by_kind[normalized_kind] = current_ms + max(500, int(confirmed_ttl_ms))
+            session.confirm_suppressed_until_by_kind.pop(normalized_kind, None)
+            self.set_critical(
+                current_ms,
+                self._critical_latch_ms,
+                "confirmed_hazard",
+                session_id=session_id,
+            )
+        elif normalized_answer in {"no", "unknown"}:
+            session.confirm_suppressed_until_by_kind[normalized_kind] = current_ms + max(500, int(suppress_ttl_ms))
+            session.confirm_confirmed_until_by_kind.pop(normalized_kind, None)
+        session.last_updated_ms = current_ms
+        self._purge_confirm_maps(session, current_ms)
+        self._compact(current_ms)
+
+    def is_confirm_suppressed(
+        self,
+        *,
+        session_id: str,
+        kind: str,
+        now_ms: int | None = None,
+    ) -> bool:
+        current_ms = int(now_ms) if now_ms is not None else _now_ms()
+        session = self._sessions.get(_safe_session_id(session_id))
+        if session is None:
+            return False
+        self._purge_confirm_maps(session, current_ms)
+        normalized_kind = str(kind or "").strip().lower()
+        if not normalized_kind:
+            return False
+        return session.confirm_suppressed_until_by_kind.get(normalized_kind, -1) > current_ms
+
+    def is_confirmed_hazard(
+        self,
+        *,
+        session_id: str,
+        kind: str,
+        now_ms: int | None = None,
+    ) -> bool:
+        current_ms = int(now_ms) if now_ms is not None else _now_ms()
+        session = self._sessions.get(_safe_session_id(session_id))
+        if session is None:
+            return False
+        self._purge_confirm_maps(session, current_ms)
+        normalized_kind = str(kind or "").strip().lower()
+        if not normalized_kind:
+            return False
+        return session.confirm_confirmed_until_by_kind.get(normalized_kind, -1) > current_ms
 
     def peek_forced_tool(
         self,
@@ -373,7 +450,10 @@ class WorldState:
                 critical_until_ms=-1,
                 critical_reason=None,
                 critical_last_set_ms=-1,
+                confirm_confirmed_kinds=[],
+                confirm_suppressed_kinds=[],
             )
+        self._purge_confirm_maps(session, current_ms)
         return WorldStateSnapshot(
             session_id=sid,
             last_det=_evidence_to_dict(session.last_det),
@@ -387,6 +467,12 @@ class WorldState:
             critical_until_ms=session.critical_until_ms,
             critical_reason=session.critical_reason,
             critical_last_set_ms=session.critical_last_set_ms,
+            confirm_confirmed_kinds=sorted(
+                [key for key, until_ms in session.confirm_confirmed_until_by_kind.items() if until_ms > current_ms]
+            ),
+            confirm_suppressed_kinds=sorted(
+                [key for key, until_ms in session.confirm_suppressed_until_by_kind.items() if until_ms > current_ms]
+            ),
         )
 
     def _session(self, session_id: str, now_ms: int) -> _SessionWorldState:
@@ -429,6 +515,15 @@ class WorldState:
         if token in self._CRITICAL_REASON_TOKENS:
             return token
         return "crosscheck"
+
+    @staticmethod
+    def _purge_confirm_maps(session: _SessionWorldState, now_ms: int) -> None:
+        stale_confirmed = [key for key, until_ms in session.confirm_confirmed_until_by_kind.items() if until_ms <= now_ms]
+        for key in stale_confirmed:
+            session.confirm_confirmed_until_by_kind.pop(key, None)
+        stale_suppressed = [key for key, until_ms in session.confirm_suppressed_until_by_kind.items() if until_ms <= now_ms]
+        for key in stale_suppressed:
+            session.confirm_suppressed_until_by_kind.pop(key, None)
 
     def _metric_call(self, method: str, *args: Any) -> None:
         if self._metrics is None:

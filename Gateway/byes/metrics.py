@@ -260,6 +260,35 @@ class GatewayMetrics:
             labelnames=("kind",),
             registry=self._registry,
         )
+        self.byes_confirm_request_total = Counter(
+            "byes_confirm_request_total",
+            "Confirm requests emitted by kind",
+            labelnames=("kind",),
+            registry=self._registry,
+        )
+        self.byes_confirm_response_total = Counter(
+            "byes_confirm_response_total",
+            "Confirm responses received by kind and answer",
+            labelnames=("kind", "answer"),
+            registry=self._registry,
+        )
+        self.byes_confirm_timeout_total = Counter(
+            "byes_confirm_timeout_total",
+            "Expired confirm requests by kind",
+            labelnames=("kind",),
+            registry=self._registry,
+        )
+        self.byes_confirm_pending_gauge = Gauge(
+            "byes_confirm_pending_gauge",
+            "Number of pending confirm requests",
+            registry=self._registry,
+        )
+        self.byes_confirm_suppressed_total = Counter(
+            "byes_confirm_suppressed_total",
+            "Suppressed confirm requests by reason",
+            labelnames=("reason",),
+            registry=self._registry,
+        )
         self.byes_actionplan_patched_total = Counter(
             "byes_actionplan_patched_total",
             "Action plan patch count",
@@ -319,6 +348,7 @@ class GatewayMetrics:
             registry=self._registry,
         )
         self.byes_hazard_active_gauge.set(0)
+        self.byes_confirm_pending_gauge.set(0)
         self.byes_throttle_state_gauge.labels(state="NORMAL").set(1)
         self.byes_throttle_state_gauge.labels(state="THROTTLED").set(0)
         self.byes_preempt_window_active_gauge.set(0)
@@ -457,6 +487,21 @@ class GatewayMetrics:
 
     def inc_active_confirm(self, kind: str) -> None:
         self.byes_active_confirm_total.labels(kind=kind).inc()
+
+    def inc_confirm_request(self, kind: str) -> None:
+        self.byes_confirm_request_total.labels(kind=kind).inc()
+
+    def inc_confirm_response(self, kind: str, answer: str) -> None:
+        self.byes_confirm_response_total.labels(kind=kind, answer=answer).inc()
+
+    def inc_confirm_timeout(self, kind: str) -> None:
+        self.byes_confirm_timeout_total.labels(kind=kind).inc()
+
+    def set_confirm_pending(self, value: int) -> None:
+        self.byes_confirm_pending_gauge.set(max(0, int(value)))
+
+    def inc_confirm_suppressed(self, reason: str) -> None:
+        self.byes_confirm_suppressed_total.labels(reason=reason).inc()
 
     def inc_actionplan_patched(self, reason: str) -> None:
         self.byes_actionplan_patched_total.labels(reason=reason).inc()

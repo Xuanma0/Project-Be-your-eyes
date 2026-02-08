@@ -13,6 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, Response, Uploa
 from pydantic import BaseModel, ValidationError, model_validator
 
 from byes.config import GatewayConfig, load_config
+from byes.confirm_manager import ConfirmManager
 from byes.degradation import DegradationManager, DegradationState
 from byes.action_gate import ActionPlanGate
 from byes.faults import FaultManager
@@ -96,6 +97,12 @@ class PerformanceRequest(BaseModel):
     durationMs: int | None = 10000
 
 
+class ConfirmSubmitRequest(BaseModel):
+    confirmId: str
+    answer: Literal["yes", "no", "unknown"]
+    source: str | None = "api"
+
+
 class ConnectionManager:
     def __init__(self) -> None:
         self.active: set[WebSocket] = set()
@@ -146,6 +153,11 @@ class GatewayApp:
         self.governor = SloGovernor(self.config, metrics=self.metrics)
         self.faults = FaultManager(self.metrics)
         self.intent = IntentManager()
+        self.confirm = ConfirmManager(
+            metrics=self.metrics,
+            default_ttl_ms=self.config.confirm_default_ttl_ms,
+            dedup_cooldown_ms=self.config.confirm_dedup_cooldown_ms,
+        )
         self.world_state = WorldState(self.config, metrics=self.metrics)
         self.preempt_window = PreemptWindow()
         self.runtime_stats = RuntimeStats(window_size=50, ema_alpha=0.2)
@@ -156,7 +168,12 @@ class GatewayApp:
             governor=self.governor,
         )
         self.preprocessor = FramePreprocessor(self.config)
-        self.fusion = FusionEngine(self.config, metrics=self.metrics, world_state=self.world_state)
+        self.fusion = FusionEngine(
+            self.config,
+            metrics=self.metrics,
+            world_state=self.world_state,
+            confirm_manager=self.confirm,
+        )
         self.action_gate = ActionPlanGate(metrics=self.metrics)
         if self.config.planner_v1_enabled:
             self.planner = PolicyPlannerV1(
@@ -296,6 +313,7 @@ class GatewayApp:
         self.governor.reset_runtime()
         self.preempt_window.reset_runtime()
         self.intent.reset_runtime()
+        self.confirm.reset_runtime()
         self.world_state.reset_runtime()
         self.runtime_stats.reset_runtime()
         self.fusion.reset_runtime()
@@ -316,6 +334,7 @@ class GatewayApp:
             "frameTrackerRecords": self.frame_tracker.record_count,
             "intent": self.intent.active_intent(),
             "intentQuestion": self.intent.active_question(),
+            "confirmPending": self.confirm.pending_count,
             "performanceMode": self.governor.mode,
             "performanceReason": self.governor.reason,
             "forcedCrosscheckKind": self._forced_crosscheck_kind,
@@ -582,6 +601,7 @@ class GatewayApp:
         while True:
             await asyncio.sleep(1.0)
             now_ms = _now_ms()
+            self.confirm.expire(now_ms)
             self.degradation.tick()
             queue_depth = self.scheduler.queue_depth_snapshot()
             max_depth = max(queue_depth.values()) if queue_depth else 0
@@ -706,6 +726,8 @@ class GatewayApp:
         if self.degradation.is_safe_mode() and event.type in {EventType.PERCEPTION, EventType.ACTION_PLAN}:
             tool_name = str(event.source).split("@", 1)[0] if event.source else "unknown"
             self.metrics.inc_tool_skipped(tool_name, "safe_mode")
+            if event.type == EventType.ACTION_PLAN and bool(event.payload.get("confirmId")):
+                self.metrics.inc_confirm_suppressed("safe_mode")
             blocked_kind = "action_plan" if event.type == EventType.ACTION_PLAN else "none"
             self.frame_tracker.note_ttfa_block(event.seq, "safe_mode", blocked_kind)
             return False
@@ -905,6 +927,47 @@ async def dev_performance(request: PerformanceRequest) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, **snapshot}
+
+
+@app.get("/api/confirm/pending")
+async def confirm_pending(sessionId: str = "default") -> dict[str, Any]:
+    now_ms = _now_ms()
+    gateway.confirm.expire(now_ms)
+    pending = gateway.confirm.get_pending(sessionId)
+    if pending is None:
+        return {"ok": True, "pending": None}
+    return {"ok": True, "pending": pending.model_dump(mode="json")}
+
+
+@app.post("/api/confirm")
+async def confirm_submit(request: ConfirmSubmitRequest) -> dict[str, Any]:
+    now_ms = _now_ms()
+    gateway.confirm.expire(now_ms)
+    resolved = gateway.confirm.resolve(
+        request.confirmId,
+        request.answer,
+        now_ms,
+        source=str(request.source or "api"),
+    )
+    if not resolved:
+        return {"ok": False, "resolved": False, "reason": "not_found"}
+
+    pending_req, pending_resp = gateway.confirm.pop_last_resolution()
+    if pending_req is not None and pending_resp is not None:
+        gateway.world_state.record_confirm_response(
+            session_id=pending_req.sessionId,
+            kind=pending_req.kind,
+            answer=pending_resp.answer,
+            now_ms=now_ms,
+            confirmed_ttl_ms=gateway.config.confirm_yes_ttl_ms,
+            suppress_ttl_ms=gateway.config.confirm_no_suppress_ms,
+        )
+    return {
+        "ok": True,
+        "resolved": True,
+        "confirmId": request.confirmId,
+        "answer": request.answer,
+    }
 
 
 @app.get("/metrics")
