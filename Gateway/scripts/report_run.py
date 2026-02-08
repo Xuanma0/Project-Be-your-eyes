@@ -200,6 +200,13 @@ def metric_details(samples: dict[SeriesKey, float], metric_name: str) -> list[tu
     return out
 
 
+def metric_value_with_labels(samples: dict[SeriesKey, float], metric_name: str, labels: dict[str, str]) -> float | None:
+    key = make_series_key(metric_name, labels)
+    if key not in samples:
+        return None
+    return samples[key]
+
+
 def append_metric_details(
     lines: list[str],
     samples: dict[SeriesKey, float],
@@ -293,6 +300,7 @@ def build_report(
     append_metric_details(lines, after_samples, "byes_tool_invoked_total", ["tool"], "count")
     append_metric_details(lines, after_samples, "byes_tool_timeout_total", ["tool"], "count")
     append_metric_details(lines, after_samples, "byes_tool_skipped_total", ["tool", "reason"], "count")
+    _append_real_det_focus(lines, after_samples, delta=False)
 
     raw_changes = metric_details(after_samples, "byes_degradation_state_change_total")
     if raw_changes:
@@ -340,6 +348,7 @@ def build_report(
         append_metric_details(lines, delta_samples, "byes_tool_invoked_total", ["tool"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_timeout_total", ["tool"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_skipped_total", ["tool", "reason"], "delta")
+        _append_real_det_focus(lines, delta_samples, delta=True)
 
         delta_changes = metric_details(delta_samples, "byes_degradation_state_change_total")
         if delta_changes:
@@ -356,6 +365,35 @@ def build_report(
     lines.append("")
 
     return "\n".join(lines)
+
+
+def _append_real_det_focus(lines: list[str], samples: dict[SeriesKey, float], delta: bool) -> None:
+    suffix = "delta" if delta else "count"
+    invoked = metric_value_with_labels(samples, "byes_tool_invoked_total", {"tool": "real_det"})
+    timeout = metric_value_with_labels(samples, "byes_tool_timeout_total", {"tool": "real_det"})
+    skipped_total = 0.0
+    skipped_found = False
+    for labels, value in metric_details(samples, "byes_tool_skipped_total"):
+        if labels.get("tool") == "real_det":
+            skipped_total += value
+            skipped_found = True
+
+    if invoked is None and timeout is None and not skipped_found:
+        return
+
+    lines.append("- real_det focus:")
+    lines.append(
+        f"  - `byes_tool_invoked_total{{tool=real_det}}` {suffix}: "
+        f"`{format_float(invoked if invoked is not None else 0.0)}`"
+    )
+    lines.append(
+        f"  - `byes_tool_timeout_total{{tool=real_det}}` {suffix}: "
+        f"`{format_float(timeout if timeout is not None else 0.0)}`"
+    )
+    lines.append(
+        f"  - `byes_tool_skipped_total{{tool=real_det,*}}` {suffix}: "
+        f"`{format_float(skipped_total if skipped_found else 0.0)}`"
+    )
 
 
 def derive_output_path(ws_jsonl: Path, output: str | None) -> Path:

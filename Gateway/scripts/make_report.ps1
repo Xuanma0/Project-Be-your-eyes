@@ -5,7 +5,8 @@
     [int]$IntervalMs = 500,
     [int]$RecordDurationSec = 20,
     [string]$OutDir = "artifacts",
-    [string]$RunName = "run_baseline"
+    [string]$RunName = "run_baseline",
+    [switch]$RealDetBaseline
 )
 
 $ErrorActionPreference = "Stop"
@@ -80,10 +81,38 @@ function Reset-GatewayRuntime {
     }
 }
 
+function Assert-RealDetEnabled {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BaseUrl
+    )
+
+    $toolsUrl = "{0}/api/tools" -f $BaseUrl.TrimEnd('/')
+    $resp = Invoke-RestMethod -Uri $toolsUrl -Method Get -TimeoutSec 20
+    $tools = @()
+    if ($null -ne $resp -and $null -ne $resp.tools) {
+        $tools = @($resp.tools)
+    }
+    $hasRealDet = $false
+    foreach ($tool in $tools) {
+        if ($null -ne $tool.name -and [string]$tool.name -eq "real_det") {
+            $hasRealDet = $true
+            break
+        }
+    }
+    if (-not $hasRealDet) {
+        throw "real_det tool is not enabled. Start gateway with BYES_ENABLE_REAL_DET=1."
+    }
+}
+
 $scriptsDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $gatewayDir = Split-Path -Parent $scriptsDir
 $outDirAbs = if ([System.IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $gatewayDir $OutDir }
 $framesDirAbs = if ([System.IO.Path]::IsPathRooted($FramesDir)) { $FramesDir } else { Join-Path $gatewayDir $FramesDir }
+
+if ($RealDetBaseline -and $RunName -eq "run_baseline") {
+    $RunName = "run_real_det_baseline"
+}
 
 if (-not (Test-Path $framesDirAbs)) {
     throw "FramesDir not found: $framesDirAbs"
@@ -99,6 +128,10 @@ $metricsUrl = "{0}/metrics" -f $BaseUrl.TrimEnd('/')
 
 Write-Host "Reset gateway runtime state -> $BaseUrl"
 Reset-GatewayRuntime -BaseUrl $BaseUrl
+if ($RealDetBaseline) {
+    Write-Host "Validate tool availability -> real_det"
+    Assert-RealDetEnabled -BaseUrl $BaseUrl
+}
 
 Write-Host "[1/4] Start WS record -> $wsJsonl"
 Save-MetricsSnapshot -MetricsUrl $metricsUrl -OutputPath $metricsBefore

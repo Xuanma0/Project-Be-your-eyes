@@ -17,6 +17,7 @@ Gateway keeps Unity legacy WS protocol by default and adds hardening:
 - `GET /api/tools`
 - `POST /api/fault/set`
 - `POST /api/fault/clear`
+- `POST /api/dev/reset`
 - `GET /metrics`
 - `WS /ws/events`
 
@@ -33,6 +34,44 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
 Default remains legacy WS JSON for Unity (`GATEWAY_SEND_ENVELOPE=0`).
+
+## RealDet Tool (v1.2 mainline start)
+
+`real_det` is a real-model integration slot tool on SLOW lane. It must run through
+`ToolRegistry -> Scheduler -> Fusion -> SafetyKernel -> Degradation -> FrameTracker`.
+
+Enable in gateway environment:
+
+```bash
+set BYES_ENABLE_REAL_DET=1
+set BYES_REAL_DET_ENDPOINT=http://127.0.0.1:9001/infer
+set BYES_REAL_DET_TIMEOUT_MS=600
+set BYES_REAL_DET_MAX_INFLIGHT=2
+set BYES_REAL_DET_QUEUE_POLICY=drop
+```
+
+Low-cardinality skip reasons used by scheduler/report include:
+`safe_mode`, `degraded`, `disconnect`, `ttl_expired`, `max_inflight`, `policy`.
+
+## External Inference Service (Minimal)
+
+Run local mock service (returns bbox/class/conf, configurable delay):
+
+```bash
+cd Gateway/external/real_det_service
+python -m venv .venv
+. .venv/Scripts/activate
+pip install -r requirements.txt
+python -m uvicorn main:app --host 127.0.0.1 --port 9001
+```
+
+Optional Docker:
+
+```bash
+cd Gateway/external/real_det_service
+docker build -t byes-real-det:dev .
+docker run --rm -p 9001:9001 byes-real-det:dev
+```
 
 ## Fault Injection
 
@@ -109,6 +148,31 @@ Checks:
 - Risk event count consistency
 - SAFE_MODE enter count consistency
 - Candidate expired-event emission (`receivedAtMs - timestampMs > ttlMs`) must be zero
+
+## One-Click Report
+
+Before each run, `scripts/make_report.ps1` now calls `POST /api/dev/reset`
+to clear runtime state (faults/degradation/frame tracker) without resetting Prometheus counters.
+
+Baseline:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RunName run_baseline
+```
+
+RealDet baseline (requires gateway started with `BYES_ENABLE_REAL_DET=1` and det service up):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RealDetBaseline
+```
+
+Timeout regression example:
+
+```powershell
+curl -X POST http://127.0.0.1:8000/api/fault/set -H "Content-Type: application/json" -d "{\"tool\":\"mock_risk\",\"mode\":\"timeout\",\"value\":true}"
+powershell -ExecutionPolicy Bypass -File scripts/make_report.ps1 -RunName run_timeout
+curl -X POST http://127.0.0.1:8000/api/fault/clear
+```
 
 ## Tests
 
