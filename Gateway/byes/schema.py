@@ -235,5 +235,10 @@ class LegacyEvent(BaseModel):
     summary: str | None = None
     distanceM: float | None = None
     azimuthDeg: float | None = None
+    hazardId: str | None = None
+    hazardKind: str | None = None
+    hazardState: Literal["new", "active", "persisted"] | None = None
+    activeConfirm: bool | None = None
+    crosscheckKind: str | None = None
     healthStatus: HealthStatus | None = None
     healthReason: str | None = None

@@ -161,6 +161,9 @@ def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     safe_mode_active = False
     perception_after_safe_mode = 0
     action_plan_after_safe_mode = 0
+    active_confirm_events = 0
+    hazard_events = 0
+    unique_hazard_ids: set[str] = set()
 
     for row in rows:
         event = row.get("event")
@@ -169,6 +172,14 @@ def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
         event_type = str(event.get("type", "unknown"))
         event_type_counter[event_type] += 1
+        if bool(event.get("activeConfirm")):
+            active_confirm_events += 1
+        hazard_kind = event.get("hazardKind")
+        hazard_id = event.get("hazardId")
+        if event_type == "risk" and isinstance(hazard_kind, str) and hazard_kind.strip():
+            hazard_events += 1
+        if isinstance(hazard_id, str) and hazard_id.strip():
+            unique_hazard_ids.add(hazard_id.strip())
 
         if event_type == "health":
             health_state = pick_health_status(event)
@@ -201,6 +212,9 @@ def collect_ws_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "safe_mode_first_ms": first_safe_mode_ms,
         "safe_mode_perception_violations": perception_after_safe_mode,
         "safe_mode_actionplan_violations": action_plan_after_safe_mode,
+        "active_confirm_events": active_confirm_events,
+        "hazard_events": hazard_events,
+        "unique_hazards": len(unique_hazard_ids),
     }
 
 
@@ -324,6 +338,9 @@ def build_report(
     lines.append(f"  - `perception_after_safe_mode`: `{ws_stats['safe_mode_perception_violations']}`")
     lines.append("- safe-mode action-plan violations:")
     lines.append(f"  - `action_plan_after_safe_mode`: `{ws_stats['safe_mode_actionplan_violations']}`")
+    lines.append(f"- active_confirm_events: `{ws_stats['active_confirm_events']}`")
+    lines.append(f"- hazard_events: `{ws_stats['hazard_events']}`")
+    lines.append(f"- unique_hazards: `{ws_stats['unique_hazards']}`")
     lines.append(f"- action-plan events: `{ws_stats['event_types'].get('action_plan', 0)}`")
     lines.append("")
 
@@ -347,6 +364,13 @@ def build_report(
         "byes_fault_set_total",
         "byes_fault_trigger_total",
         "byes_health_warn_total",
+        "byes_crosscheck_conflict_total",
+        "byes_active_confirm_total",
+        "byes_actionplan_patched_total",
+        "byes_hazard_emit_total",
+        "byes_hazard_suppressed_total",
+        "byes_hazard_active_gauge",
+        "byes_hazard_persist_total",
     ]:
         lines.append(render_metric_sum(after_samples, metric_name))
 
@@ -364,6 +388,12 @@ def build_report(
     append_metric_details(lines, after_samples, "byes_tool_cache_miss_total", ["tool"], "count")
     append_metric_details(lines, after_samples, "byes_tool_rate_limited_total", ["tool"], "count")
     append_metric_details(lines, after_samples, "byes_frame_gate_skip_total", ["tool", "reason"], "count")
+    append_metric_details(lines, after_samples, "byes_crosscheck_conflict_total", ["kind"], "count")
+    append_metric_details(lines, after_samples, "byes_active_confirm_total", ["kind"], "count")
+    append_metric_details(lines, after_samples, "byes_actionplan_patched_total", ["reason"], "count")
+    append_metric_details(lines, after_samples, "byes_hazard_emit_total", ["kind"], "count")
+    append_metric_details(lines, after_samples, "byes_hazard_suppressed_total", ["reason"], "count")
+    append_metric_details(lines, after_samples, "byes_hazard_persist_total", ["kind"], "count")
     _append_tool_focus(lines, after_samples, tool="real_det", delta=False)
     _append_tool_focus(lines, after_samples, tool="real_ocr", delta=False)
     _append_tool_focus(lines, after_samples, tool="real_depth", delta=False)
@@ -405,6 +435,13 @@ def build_report(
             "byes_fault_set_total",
             "byes_fault_trigger_total",
             "byes_health_warn_total",
+            "byes_crosscheck_conflict_total",
+            "byes_active_confirm_total",
+            "byes_actionplan_patched_total",
+            "byes_hazard_emit_total",
+            "byes_hazard_suppressed_total",
+            "byes_hazard_active_gauge",
+            "byes_hazard_persist_total",
         ]:
             lines.append(render_metric_sum(delta_samples, metric_name, delta=True))
 
@@ -425,6 +462,12 @@ def build_report(
         append_metric_details(lines, delta_samples, "byes_tool_cache_miss_total", ["tool"], "delta")
         append_metric_details(lines, delta_samples, "byes_tool_rate_limited_total", ["tool"], "delta")
         append_metric_details(lines, delta_samples, "byes_frame_gate_skip_total", ["tool", "reason"], "delta")
+        append_metric_details(lines, delta_samples, "byes_crosscheck_conflict_total", ["kind"], "delta")
+        append_metric_details(lines, delta_samples, "byes_active_confirm_total", ["kind"], "delta")
+        append_metric_details(lines, delta_samples, "byes_actionplan_patched_total", ["reason"], "delta")
+        append_metric_details(lines, delta_samples, "byes_hazard_emit_total", ["kind"], "delta")
+        append_metric_details(lines, delta_samples, "byes_hazard_suppressed_total", ["reason"], "delta")
+        append_metric_details(lines, delta_samples, "byes_hazard_persist_total", ["kind"], "delta")
         _append_tool_focus(lines, delta_samples, tool="real_det", delta=True)
         _append_tool_focus(lines, delta_samples, tool="real_ocr", delta=True)
         _append_tool_focus(lines, delta_samples, tool="real_depth", delta=True)

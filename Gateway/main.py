@@ -21,7 +21,7 @@ from byes.observability import Observability
 from byes.planner import PolicyPlannerV0
 from byes.safety import SafetyKernel
 from byes.scheduler import Scheduler
-from byes.schema import CoordFrame, EventEnvelope, EventType, FrameMeta, HealthStatus
+from byes.schema import CoordFrame, EventEnvelope, EventType, FrameMeta, HealthStatus, ToolStatus
 from byes.tool_registry import ToolRegistry
 from byes.tools import MockOcrTool, MockRiskTool, RealDepthTool, RealDetTool, RealOcrTool
 from byes.tools.base import FrameInput, ToolLane
@@ -110,7 +110,7 @@ class GatewayApp:
             retention_ms=self.config.frame_tracker_retention_ms,
             max_entries=self.config.frame_tracker_max_entries,
         )
-        self.fusion = FusionEngine(self.config)
+        self.fusion = FusionEngine(self.config, metrics=self.metrics)
         self.planner = PolicyPlannerV0(self.config)
         self.safety = SafetyKernel(self.config, self.degradation)
         self.connections = ConnectionManager()
@@ -192,6 +192,7 @@ class GatewayApp:
         self.degradation.reset_runtime()
         self.frame_tracker.reset_runtime()
         self.intent.reset_runtime()
+        self.fusion.reset_runtime()
         self.scheduler.reset_runtime()
         self._last_safe_mode_pulse_ms = -1
         self._last_meta_warn_ms = {"meta_missing": -1, "meta_parse_error": -1}
@@ -390,7 +391,16 @@ class GatewayApp:
     async def _on_lane_results(self, frame: FrameInput, lane: ToolLane, results: list[Any]) -> None:
         trace_id = str(frame.meta.get("traceId", "0" * 32))
         span_id = str(frame.meta.get("spanId", "0" * 16))
-        fused = self.fusion.fuse_lane(frame=frame, lane=lane, results=results, trace_id=trace_id, span_id=span_id)
+        health_status, _ = self.degradation.get_health(status_only=True)
+        fused = self.fusion.fuse_lane(
+            frame=frame,
+            lane=lane,
+            results=results,
+            trace_id=trace_id,
+            span_id=span_id,
+            health_status=health_status,
+        )
+        self._record_crosscheck_metrics(fused.diagnostics)
 
         now = _now_ms()
         decision = self.safety.adjudicate(fused.events, now_ms=now)
@@ -405,8 +415,17 @@ class GatewayApp:
         if emitted_count > 0:
             self.frame_tracker.complete_frame(frame.seq, "ok", now)
         elif lane == ToolLane.FAST:
-            # No final event from fast lane. In safe mode this is expected suppression.
-            outcome = "safemode_suppressed" if self.degradation.is_safe_mode() else "error"
+            # No final event from fast lane.
+            # - Safe mode: suppression is expected.
+            # - Normal/degraded with at least one OK tool result: treat as handled (e.g., hazard dedup).
+            # - Otherwise keep error for full tool failures/timeouts.
+            has_ok_result = any(getattr(item, "status", None) == ToolStatus.OK for item in results)
+            if self.degradation.is_safe_mode():
+                outcome = "safemode_suppressed"
+            elif has_ok_result:
+                outcome = "ok"
+            else:
+                outcome = "error"
             self.frame_tracker.complete_frame(frame.seq, outcome, now)
 
         await self.emit_degradation_changes(
@@ -416,6 +435,18 @@ class GatewayApp:
             trace_id=trace_id,
             span_id=span_id,
         )
+
+    def _record_crosscheck_metrics(self, diagnostics: list[dict[str, object]]) -> None:
+        for item in diagnostics:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind", "")).strip()
+            if kind:
+                self.metrics.inc_crosscheck_conflict(kind)
+            if bool(item.get("activeConfirm", False)) and kind:
+                self.metrics.inc_active_confirm(kind)
+            if bool(item.get("patched", False)):
+                self.metrics.inc_actionplan_patched("crosscheck")
 
     async def _emit_event(self, event: EventEnvelope) -> None:
         if self.degradation.is_safe_mode() and event.type in {EventType.PERCEPTION, EventType.ACTION_PLAN}:

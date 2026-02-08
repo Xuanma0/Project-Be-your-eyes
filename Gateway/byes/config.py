@@ -88,6 +88,16 @@ class GatewayConfig:
     real_depth_cache_max_age_ms: int = 1800
     real_depth_hazard_distance_threshold_m: float = 1.5
     real_depth_hazard_azimuth_threshold_deg: float = 30.0
+    crosscheck_depth_far_threshold_m: float = 3.0
+    crosscheck_depth_near_threshold_m: float = 1.5
+    crosscheck_det_low_conf_threshold: float = 0.45
+    crosscheck_cooldown_ms: int = 8000
+    crosscheck_transparent_aliases_csv: str = "door,glass door,glass,window,mirror,barrier"
+    hazard_memory_grace_ms: int = 2500
+    hazard_memory_emit_cooldown_ms: int = 1800
+    hazard_memory_critical_dist_m: float = 1.0
+    hazard_memory_max_active: int = 64
+    hazard_memory_decay_ms: int = 12000
     critical_tools_csv: str = "mock_risk"
     enabled_tools_csv: str = ""
     tool_cache_max_entries: int = 1024
@@ -154,6 +164,19 @@ def load_config() -> GatewayConfig:
         real_depth_cache_max_age_ms=_env_int("BYES_REAL_DEPTH_CACHE_MAX_AGE_MS", 1800),
         real_depth_hazard_distance_threshold_m=_env_float("BYES_REAL_DEPTH_HAZARD_DISTANCE_M", 1.5),
         real_depth_hazard_azimuth_threshold_deg=_env_float("BYES_REAL_DEPTH_HAZARD_AZIMUTH_DEG", 30.0),
+        crosscheck_depth_far_threshold_m=_env_float("BYES_CROSSCHECK_DEPTH_FAR_THRESHOLD_M", 3.0),
+        crosscheck_depth_near_threshold_m=_env_float("BYES_CROSSCHECK_DEPTH_NEAR_THRESHOLD_M", 1.5),
+        crosscheck_det_low_conf_threshold=_env_float("BYES_CROSSCHECK_DET_LOW_CONF", 0.45),
+        crosscheck_cooldown_ms=_env_int("BYES_CROSSCHECK_COOLDOWN_MS", 8000),
+        crosscheck_transparent_aliases_csv=os.getenv(
+            "BYES_CROSSCHECK_TRANSPARENT_ALIASES",
+            "door,glass door,glass,window,mirror,barrier",
+        ),
+        hazard_memory_grace_ms=_env_int("BYES_HAZARD_GRACE_MS", 2500),
+        hazard_memory_emit_cooldown_ms=_env_int("BYES_HAZARD_EMIT_COOLDOWN_MS", 1800),
+        hazard_memory_critical_dist_m=_env_float("BYES_HAZARD_CRITICAL_DIST_M", 1.0),
+        hazard_memory_max_active=_env_int("BYES_HAZARD_MAX_ACTIVE", 64),
+        hazard_memory_decay_ms=_env_int("BYES_HAZARD_DECAY_MS", 12000),
         critical_tools_csv=os.getenv("BYES_CRITICAL_TOOLS", "mock_risk"),
         enabled_tools_csv=os.getenv("BYES_ENABLED_TOOLS", ""),
         tool_cache_max_entries=_env_int("BYES_TOOL_CACHE_MAX_ENTRIES", 1024),

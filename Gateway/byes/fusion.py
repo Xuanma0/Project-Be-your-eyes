@@ -1,9 +1,11 @@
 ﻿from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from byes.config import GatewayConfig
+from byes.crosscheck import CrossCheckActionPatch, CrossCheckEngine
+from byes.hazard_memory import HazardMemory
 from byes.schema import ActionPlan, ActionStep, ActionType, CoordFrame, EventEnvelope, EventType, ToolResult, ToolStatus
 from byes.tools.base import FrameInput, ToolLane
 
@@ -11,11 +13,18 @@ from byes.tools.base import FrameInput, ToolLane
 @dataclass
 class FusionOutput:
     events: list[EventEnvelope]
+    diagnostics: list[dict[str, object]] = field(default_factory=list)
 
 
 class FusionEngine:
-    def __init__(self, config: GatewayConfig) -> None:
+    def __init__(self, config: GatewayConfig, metrics: object | None = None) -> None:
         self._config = config
+        self._crosscheck = CrossCheckEngine(config)
+        self._hazard_memory = HazardMemory(config, metrics=metrics)
+
+    def reset_runtime(self) -> None:
+        self._crosscheck.reset_runtime()
+        self._hazard_memory.reset_runtime()
 
     def fuse_lane(
         self,
@@ -24,6 +33,7 @@ class FusionEngine:
         results: list[ToolResult],
         trace_id: str,
         span_id: str,
+        health_status: str = "NORMAL",
     ) -> FusionOutput:
         ok_results = [result for result in results if result.status == ToolStatus.OK]
         if not ok_results:
@@ -50,11 +60,15 @@ class FusionEngine:
                     "azimuthDeg": risk.payload.get("azimuthDeg"),
                     "summary": risk.payload.get("summary", risk.payload.get("riskText", "Obstacle ahead")),
                     "reason": "risk_lane",
+                    "activeConfirm": bool(risk.payload.get("activeConfirm", False)),
+                    "crosscheckKind": risk.payload.get("crosscheckKind"),
                 },
             )
-            return FusionOutput(events=[event])
+            events = self._apply_hazard_memory(frame, [event])
+            return FusionOutput(events=events)
 
         events: list[EventEnvelope] = []
+        diagnostics: list[dict[str, object]] = []
         perception_payload = self._build_perception_payload(ok_results)
         perception_event: EventEnvelope | None = None
         if perception_payload is not None:
@@ -74,26 +88,61 @@ class FusionEngine:
             events.append(perception_event)
 
         depth = self._pick_depth(ok_results)
-        risk_from_depth = self._risk_from_depth(depth, frame, trace_id, span_id)
-        if risk_from_depth is not None:
-            events.append(risk_from_depth)
-
         det = self._pick_det(ok_results)
+
+        crosscheck = self._crosscheck.evaluate(
+            det_result=det,
+            depth_result=depth,
+            frame_meta=frame.meta.get("frameMeta") if isinstance(frame.meta, dict) else None,
+            health_status=health_status,
+            session_id=str(frame.meta.get("sessionId", "default")),
+            now_ms=frame.ts_capture_ms,
+        )
+        for item in crosscheck.diagnostics:
+            diagnostics.append(
+                {
+                    "kind": item.kind,
+                    "activeConfirm": item.active_confirm,
+                    "patched": False,
+                    "details": dict(item.details),
+                }
+            )
+        crosscheck_risk: EventEnvelope | None = None
+        if crosscheck.risks:
+            crosscheck_risk = self._risk_event_from_payload(
+                frame=frame,
+                trace_id=trace_id,
+                span_id=span_id,
+                payload=crosscheck.risks[0],
+            )
+            events.append(crosscheck_risk)
+
+        risk_from_depth = self._risk_from_depth(depth, frame, trace_id, span_id)
         risk_semantic = self._risk_from_det(det, frame, trace_id, span_id)
-        if risk_semantic is not None:
+        if crosscheck_risk is None and risk_from_depth is not None:
+            events.append(risk_from_depth)
+        if crosscheck_risk is None and risk_semantic is not None:
             events.append(risk_semantic)
 
+        risk_for_plan = crosscheck_risk or risk_from_depth or risk_semantic
         action_plan = self._action_plan_from_semantics(
             frame=frame,
             trace_id=trace_id,
             span_id=span_id,
             perception=perception_event,
-            risk=risk_from_depth or risk_semantic,
+            risk=risk_for_plan,
             depth=depth,
         )
+        if action_plan is not None and crosscheck.action_patch is not None and health_status.upper() != "SAFE_MODE":
+            self._apply_crosscheck_patch(action_plan, crosscheck.action_patch)
+            for item in diagnostics:
+                if item.get("kind") == crosscheck.action_patch.kind:
+                    item["patched"] = True
+                    break
         if action_plan is not None:
             events.append(action_plan)
-        return FusionOutput(events=events)
+        events = self._apply_hazard_memory(frame, events)
+        return FusionOutput(events=events, diagnostics=diagnostics)
 
     @staticmethod
     def to_legacy_event(event: EventEnvelope) -> dict[str, object | None]:
@@ -110,6 +159,11 @@ class FusionEngine:
                 "summary": payload.get("summary"),
                 "distanceM": payload.get("distanceM"),
                 "azimuthDeg": payload.get("azimuthDeg"),
+                "activeConfirm": payload.get("activeConfirm"),
+                "crosscheckKind": payload.get("crosscheckKind"),
+                "hazardId": payload.get("hazardId"),
+                "hazardKind": payload.get("hazardKind"),
+                "hazardState": payload.get("hazardState"),
             }
 
         if event.type == EventType.PERCEPTION:
@@ -138,6 +192,8 @@ class FusionEngine:
                 "actionPlan": payload.get("plan"),
                 "speech": payload.get("speech"),
                 "hud": payload.get("hud"),
+                "activeConfirm": payload.get("activeConfirm"),
+                "crosscheckKind": payload.get("crosscheckKind"),
                 "riskText": None,
                 "distanceM": None,
                 "azimuthDeg": None,
@@ -495,3 +551,86 @@ class FusionEngine:
 
         azimuth_rad = math.atan((center_x - cx) / fx)
         return math.degrees(azimuth_rad)
+
+    def _risk_event_from_payload(
+        self,
+        *,
+        frame: FrameInput,
+        trace_id: str,
+        span_id: str,
+        payload: dict[str, object],
+    ) -> EventEnvelope:
+        confidence = payload.get("confidence", 0.85)
+        try:
+            risk_conf = float(confidence)
+        except (TypeError, ValueError):
+            risk_conf = 0.85
+        return EventEnvelope(
+            type=EventType.RISK,
+            traceId=trace_id,
+            spanId=span_id,
+            seq=frame.seq,
+            tsCaptureMs=frame.ts_capture_ms,
+            ttlMs=frame.ttl_ms,
+            coordFrame=CoordFrame.WORLD,
+            confidence=max(0.0, min(1.0, risk_conf)),
+            priority=self._config.risk_priority,
+            source="crosscheck@v1.4",
+            payload={
+                "riskText": payload.get("riskText", "Cross-check hazard"),
+                "distanceM": payload.get("distanceM"),
+                "azimuthDeg": payload.get("azimuthDeg"),
+                "summary": payload.get("summary", payload.get("riskText", "Cross-check hazard")),
+                "reason": "crosscheck",
+                "severity": payload.get("severity", "warning"),
+                "activeConfirm": bool(payload.get("activeConfirm", True)),
+                "crosscheckKind": payload.get("crosscheckKind"),
+            },
+        )
+
+    def _apply_crosscheck_patch(self, event: EventEnvelope, patch: CrossCheckActionPatch) -> None:
+        payload = dict(event.payload)
+        plan = payload.get("plan")
+        if not isinstance(plan, dict):
+            return
+        steps = []
+        for step in patch.steps:
+            if not isinstance(step, dict):
+                continue
+            steps.append(dict(step))
+        if not steps:
+            return
+        plan["steps"] = steps
+        plan["mode"] = "active_confirm"
+        plan["fallback"] = ActionType.SCAN.value
+        payload["plan"] = plan
+        payload["summary"] = patch.summary
+        payload["speech"] = patch.speech
+        payload["hud"] = patch.hud
+        payload["reason"] = "crosscheck_patch"
+        payload["activeConfirm"] = bool(patch.active_confirm)
+        payload["crosscheckKind"] = patch.kind
+        event.payload = payload
+
+    def _apply_hazard_memory(self, frame: FrameInput, events: list[EventEnvelope]) -> list[EventEnvelope]:
+        if not events:
+            return events
+        risk_candidates = [item for item in events if item.type == EventType.RISK]
+        if not risk_candidates:
+            return events
+        session_id = "default"
+        if isinstance(frame.meta, dict):
+            raw_session = frame.meta.get("sessionId")
+            if raw_session is not None and str(raw_session).strip():
+                session_id = str(raw_session).strip()
+        filtered = self._hazard_memory.update_and_filter(
+            session_id=session_id,
+            risks=risk_candidates,
+            now_ms=frame.ts_capture_ms,
+        )
+        allowed = {item.id for item in filtered}
+        ordered: list[EventEnvelope] = []
+        for event in events:
+            if event.type != EventType.RISK or event.id in allowed:
+                ordered.append(event)
+        return ordered

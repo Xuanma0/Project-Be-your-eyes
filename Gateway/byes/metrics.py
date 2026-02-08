@@ -142,6 +142,48 @@ class GatewayMetrics:
             "FrameMeta parse failures",
             registry=self._registry,
         )
+        self.byes_crosscheck_conflict_total = Counter(
+            "byes_crosscheck_conflict_total",
+            "Cross-check conflict detections",
+            labelnames=("kind",),
+            registry=self._registry,
+        )
+        self.byes_active_confirm_total = Counter(
+            "byes_active_confirm_total",
+            "Active confirm strategy events",
+            labelnames=("kind",),
+            registry=self._registry,
+        )
+        self.byes_actionplan_patched_total = Counter(
+            "byes_actionplan_patched_total",
+            "Action plan patch count",
+            labelnames=("reason",),
+            registry=self._registry,
+        )
+        self.byes_hazard_emit_total = Counter(
+            "byes_hazard_emit_total",
+            "Risk events emitted after hazard-memory filtering",
+            labelnames=("kind",),
+            registry=self._registry,
+        )
+        self.byes_hazard_suppressed_total = Counter(
+            "byes_hazard_suppressed_total",
+            "Risk hazards suppressed by hazard-memory policy",
+            labelnames=("reason",),
+            registry=self._registry,
+        )
+        self.byes_hazard_active_gauge = Gauge(
+            "byes_hazard_active_gauge",
+            "Current active hazards tracked in memory",
+            registry=self._registry,
+        )
+        self.byes_hazard_persist_total = Counter(
+            "byes_hazard_persist_total",
+            "Hazards kept active by grace window",
+            labelnames=("kind",),
+            registry=self._registry,
+        )
+        self.byes_hazard_active_gauge.set(0)
 
     def observe_e2e_latency(self, latency_ms: int) -> None:
         self.byes_e2e_latency_ms.observe(max(0, latency_ms))
@@ -212,6 +254,27 @@ class GatewayMetrics:
 
     def inc_frame_meta_parse_error(self) -> None:
         self.byes_frame_meta_parse_error_total.inc()
+
+    def inc_crosscheck_conflict(self, kind: str) -> None:
+        self.byes_crosscheck_conflict_total.labels(kind=kind).inc()
+
+    def inc_active_confirm(self, kind: str) -> None:
+        self.byes_active_confirm_total.labels(kind=kind).inc()
+
+    def inc_actionplan_patched(self, reason: str) -> None:
+        self.byes_actionplan_patched_total.labels(reason=reason).inc()
+
+    def inc_hazard_emit(self, kind: str) -> None:
+        self.byes_hazard_emit_total.labels(kind=kind).inc()
+
+    def inc_hazard_suppressed(self, reason: str) -> None:
+        self.byes_hazard_suppressed_total.labels(reason=reason).inc()
+
+    def set_hazard_active(self, value: int) -> None:
+        self.byes_hazard_active_gauge.set(max(0, int(value)))
+
+    def inc_hazard_persist(self, kind: str) -> None:
+        self.byes_hazard_persist_total.labels(kind=kind).inc()
 
     def render(self) -> MetricsResponse:
         return MetricsResponse(

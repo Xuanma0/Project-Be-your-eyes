@@ -246,6 +246,41 @@ Stable degradation reason tokens:
 - `rate_limit:<tool_or_lane>`
 - `waiting_client` (health warn only, does not change state)
 
+## CrossCheck & Active Confirm (v1.4)
+
+CrossCheckEngine runs in fusion/planner rule layer only (no extra tool calls):
+
+- `vision_without_depth`: vision sees transparent-like obstacle while depth is empty/far
+- `depth_without_vision`: depth sees near hazard while vision cannot explain it
+
+When triggered:
+
+- emits a conservative risk with `activeConfirm=true`
+- patches ActionPlan to `stop/scan/confirm` in `NORMAL/DEGRADED`
+- in `SAFE_MODE`, ActionPlan is still blocked by SafetyKernel (risk/health only)
+
+New metrics:
+
+- `byes_crosscheck_conflict_total{kind}`
+- `byes_active_confirm_total{kind}`
+- `byes_actionplan_patched_total{reason="crosscheck"}`
+
+## HazardMemory & Risk Dedup (v1.5)
+
+HazardMemory is a fusion-layer postprocess for risk events only (no extra tool calls):
+
+- session-scoped active hazard table (`sessionId`, fallback `default`)
+- dedup/cooldown suppression to avoid repeated risk spam
+- grace retention (`grace_ms`) for short detection gaps
+- critical bypass (for `dropoff` or near distance) to avoid over-suppression
+- capacity + stale cleanup, runtime reset via `POST /api/dev/reset`
+
+Legacy risk events remain backward compatible and now may include optional fields:
+
+- `hazardId`
+- `hazardKind`
+- `hazardState` (`new|active|persisted`)
+
 ## Metrics
 
 `GET /metrics` includes:
@@ -267,6 +302,10 @@ Stable degradation reason tokens:
 - `byes_frame_meta_present_total`
 - `byes_frame_meta_missing_total`
 - `byes_frame_meta_parse_error_total`
+- `byes_hazard_emit_total{kind}`
+- `byes_hazard_suppressed_total{reason}`
+- `byes_hazard_active_gauge`
+- `byes_hazard_persist_total{kind}`
 
 `byes_frame_gate_skip_total.reason` is constrained to:
 `intent_off`, `rate_limit`, `safe_mode`, `unchanged`, `ttl_risk`, `policy`.
