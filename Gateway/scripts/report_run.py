@@ -362,6 +362,7 @@ def build_report(
         "byes_tool_cache_miss_total",
         "byes_tool_rate_limited_total",
         "byes_frame_gate_skip_total",
+        "byes_ttfa_count_total",
         "byes_safemode_enter_total",
         "byes_deadline_miss_total",
         "byes_backpressure_drop_total",
@@ -371,6 +372,8 @@ def build_report(
         "byes_crosscheck_conflict_total",
         "byes_active_confirm_total",
         "byes_actionplan_patched_total",
+        "byes_actiongate_block_total",
+        "byes_actiongate_patch_total",
         "byes_hazard_emit_total",
         "byes_hazard_suppressed_total",
         "byes_hazard_active_gauge",
@@ -383,6 +386,11 @@ def build_report(
     lines.append(f"- `byes_e2e_latency_ms_count`: `{format_float(e2e_after_count)}`")
     lines.append(f"- `byes_e2e_latency_ms_sum`: `{format_float(e2e_after_sum)}`")
     lines.append(f"- `byes_e2e_latency_ms_bucket` sum: `{format_float(aggregate_metric_sum(after_samples, 'byes_e2e_latency_ms_bucket'))}`")
+    ttfa_after_count = aggregate_metric_sum(after_samples, "byes_ttfa_ms_count")
+    ttfa_after_sum = aggregate_metric_sum(after_samples, "byes_ttfa_ms_sum")
+    lines.append(f"- `byes_ttfa_ms_count`: `{format_float(ttfa_after_count)}`")
+    lines.append(f"- `byes_ttfa_ms_sum`: `{format_float(ttfa_after_sum)}`")
+    lines.append(f"- `byes_ttfa_ms_bucket` sum: `{format_float(aggregate_metric_sum(after_samples, 'byes_ttfa_ms_bucket'))}`")
     preprocess_after_count = aggregate_metric_sum(after_samples, "byes_preprocess_latency_ms_count")
     preprocess_after_sum = aggregate_metric_sum(after_samples, "byes_preprocess_latency_ms_sum")
     lines.append(f"- `byes_preprocess_latency_ms_count`: `{format_float(preprocess_after_count)}`")
@@ -404,6 +412,9 @@ def build_report(
     append_metric_details(lines, after_samples, "byes_crosscheck_conflict_total", ["kind"], "count")
     append_metric_details(lines, after_samples, "byes_active_confirm_total", ["kind"], "count")
     append_metric_details(lines, after_samples, "byes_actionplan_patched_total", ["reason"], "count")
+    append_metric_details(lines, after_samples, "byes_actiongate_block_total", ["reason"], "count")
+    append_metric_details(lines, after_samples, "byes_actiongate_patch_total", ["reason"], "count")
+    append_metric_details(lines, after_samples, "byes_ttfa_count_total", ["outcome", "kind"], "count")
     append_metric_details(lines, after_samples, "byes_hazard_emit_total", ["kind"], "count")
     append_metric_details(lines, after_samples, "byes_hazard_suppressed_total", ["reason"], "count")
     append_metric_details(lines, after_samples, "byes_hazard_persist_total", ["kind"], "count")
@@ -446,6 +457,7 @@ def build_report(
             "byes_tool_cache_miss_total",
             "byes_tool_rate_limited_total",
             "byes_frame_gate_skip_total",
+            "byes_ttfa_count_total",
             "byes_safemode_enter_total",
             "byes_deadline_miss_total",
             "byes_backpressure_drop_total",
@@ -455,6 +467,8 @@ def build_report(
             "byes_crosscheck_conflict_total",
             "byes_active_confirm_total",
             "byes_actionplan_patched_total",
+            "byes_actiongate_block_total",
+            "byes_actiongate_patch_total",
             "byes_hazard_emit_total",
             "byes_hazard_suppressed_total",
             "byes_hazard_active_gauge",
@@ -469,6 +483,14 @@ def build_report(
         lines.append(
             f"- `byes_e2e_latency_ms_bucket` delta sum: "
             f"`{format_float(aggregate_metric_sum(delta_samples, 'byes_e2e_latency_ms_bucket'))}`"
+        )
+        ttfa_delta_count = aggregate_metric_sum(delta_samples, "byes_ttfa_ms_count")
+        ttfa_delta_sum = aggregate_metric_sum(delta_samples, "byes_ttfa_ms_sum")
+        lines.append(f"- `byes_ttfa_ms_count` delta: `{format_float(ttfa_delta_count)}`")
+        lines.append(f"- `byes_ttfa_ms_sum` delta: `{format_float(ttfa_delta_sum)}`")
+        lines.append(
+            f"- `byes_ttfa_ms_bucket` delta sum: "
+            f"`{format_float(aggregate_metric_sum(delta_samples, 'byes_ttfa_ms_bucket'))}`"
         )
         preprocess_delta_count = aggregate_metric_sum(delta_samples, "byes_preprocess_latency_ms_count")
         preprocess_delta_sum = aggregate_metric_sum(delta_samples, "byes_preprocess_latency_ms_sum")
@@ -491,6 +513,9 @@ def build_report(
         append_metric_details(lines, delta_samples, "byes_crosscheck_conflict_total", ["kind"], "delta")
         append_metric_details(lines, delta_samples, "byes_active_confirm_total", ["kind"], "delta")
         append_metric_details(lines, delta_samples, "byes_actionplan_patched_total", ["reason"], "delta")
+        append_metric_details(lines, delta_samples, "byes_actiongate_block_total", ["reason"], "delta")
+        append_metric_details(lines, delta_samples, "byes_actiongate_patch_total", ["reason"], "delta")
+        append_metric_details(lines, delta_samples, "byes_ttfa_count_total", ["outcome", "kind"], "delta")
         append_metric_details(lines, delta_samples, "byes_hazard_emit_total", ["kind"], "delta")
         append_metric_details(lines, delta_samples, "byes_hazard_suppressed_total", ["reason"], "delta")
         append_metric_details(lines, delta_samples, "byes_hazard_persist_total", ["kind"], "delta")
@@ -498,6 +523,12 @@ def build_report(
         _append_tool_focus(lines, delta_samples, tool="real_ocr", delta=True)
         _append_tool_focus(lines, delta_samples, tool="real_depth", delta=True)
         _append_tool_focus(lines, delta_samples, tool="real_vlm", delta=True)
+        completed_delta_total = aggregate_metric_sum(delta_samples, "byes_frame_completed_total")
+        ttfa_consistent = ttfa_delta_count <= completed_delta_total + 1e-9
+        lines.append(
+            f"- `ttfa_count_le_frame_completed`: `{ttfa_consistent}` "
+            f"(ttfa_count_delta=`{format_float(ttfa_delta_count)}`, frame_completed_delta=`{format_float(completed_delta_total)}`)"
+        )
 
         delta_changes = metric_details(delta_samples, "byes_degradation_state_change_total")
         if delta_changes:

@@ -19,6 +19,9 @@ class _FrameRecord:
     completed: bool = False
     completed_ms: int | None = None
     outcome: str | None = None
+    first_action_emitted_at_ms: int | None = None
+    first_action_kind: str | None = None
+    ttfa_observed: bool = False
 
 
 class FrameTracker:
@@ -140,10 +143,39 @@ class FrameTracker:
         record.outcome = outcome
         self._records.move_to_end(seq)
 
+        self._observe_ttfa_terminal(record, outcome)
         latency_ms = max(0, now_ms - record.received_at_ms)
         self._metric_call("observe_e2e_latency", latency_ms)
         self._metric_call("inc_frame_completed", outcome)
         self._enforce_capacity()
+        return True
+
+    def mark_first_action(self, seq: int, emitted_at_ms: int, kind: str) -> bool:
+        now_ms = int(emitted_at_ms)
+        self._cleanup(now_ms)
+        normalized_kind = self._normalize_ttfa_kind(kind)
+
+        record = self._records.get(seq)
+        if record is None:
+            record = _FrameRecord(
+                received_at_ms=now_ms,
+                ttl_ms=1,
+                deadline_ms=now_ms + 1,
+                received_counted=False,
+            )
+            self._records[seq] = record
+
+        if record.ttfa_observed:
+            return False
+
+        record.first_action_emitted_at_ms = now_ms
+        record.first_action_kind = normalized_kind
+        record.ttfa_observed = True
+        self._records.move_to_end(seq)
+
+        ttfa_ms = max(0, now_ms - record.received_at_ms)
+        self._metric_call("observe_ttfa", ttfa_ms)
+        self._metric_call("inc_ttfa_count", "ttfa_ok", normalized_kind)
         return True
 
     def reset_runtime(self) -> None:
@@ -185,3 +217,31 @@ class FrameTracker:
         fn = getattr(self._metrics, method, None)
         if callable(fn):
             fn(*args)
+
+    def _observe_ttfa_terminal(self, record: _FrameRecord, outcome: str) -> None:
+        if record.ttfa_observed:
+            return
+        ttfa_outcome = self._map_ttfa_outcome(outcome)
+        ttfa_kind = record.first_action_kind or "risk"
+        self._metric_call("inc_ttfa_count", ttfa_outcome, ttfa_kind)
+        record.ttfa_observed = True
+
+    @staticmethod
+    def _normalize_ttfa_kind(kind: str) -> str:
+        normalized = str(kind).strip().lower()
+        if normalized in {"risk", "action_plan"}:
+            return normalized
+        return "risk"
+
+    @staticmethod
+    def _map_ttfa_outcome(outcome: str) -> str:
+        normalized = str(outcome).strip().lower()
+        if normalized == "ttl_drop":
+            return "ttfa_timeout"
+        if normalized in {"error", "canceled"}:
+            return "ttfa_error"
+        if normalized in {"safemode_suppressed", "suppressed"}:
+            return "ttfa_suppressed"
+        if normalized == "ok":
+            return "ttfa_suppressed"
+        return "ttfa_error"

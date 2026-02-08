@@ -20,6 +20,18 @@ class GatewayMetrics:
             buckets=(20, 50, 100, 200, 350, 500, 800, 1200, 2000, 3000, 5000),
             registry=self._registry,
         )
+        self.byes_ttfa_ms = Histogram(
+            "byes_ttfa_ms",
+            "Gateway time-to-first-action in milliseconds",
+            buckets=(5, 10, 20, 35, 50, 80, 120, 200, 350, 500, 800, 1200, 2000),
+            registry=self._registry,
+        )
+        self.byes_ttfa_count_total = Counter(
+            "byes_ttfa_count_total",
+            "TTFA accounting by outcome and action kind",
+            labelnames=("outcome", "kind"),
+            registry=self._registry,
+        )
         self.byes_tool_latency_ms = Histogram(
             "byes_tool_latency_ms",
             "Tool latency in milliseconds",
@@ -182,6 +194,18 @@ class GatewayMetrics:
             labelnames=("reason",),
             registry=self._registry,
         )
+        self.byes_actiongate_block_total = Counter(
+            "byes_actiongate_block_total",
+            "Action-plan gate block count",
+            labelnames=("reason",),
+            registry=self._registry,
+        )
+        self.byes_actiongate_patch_total = Counter(
+            "byes_actiongate_patch_total",
+            "Action-plan gate patch count",
+            labelnames=("reason",),
+            registry=self._registry,
+        )
         self.byes_hazard_emit_total = Counter(
             "byes_hazard_emit_total",
             "Risk events emitted after hazard-memory filtering",
@@ -209,6 +233,12 @@ class GatewayMetrics:
 
     def observe_e2e_latency(self, latency_ms: int) -> None:
         self.byes_e2e_latency_ms.observe(max(0, latency_ms))
+
+    def observe_ttfa(self, latency_ms: int) -> None:
+        self.byes_ttfa_ms.observe(max(0, latency_ms))
+
+    def inc_ttfa_count(self, outcome: str, kind: str) -> None:
+        self.byes_ttfa_count_total.labels(outcome=outcome, kind=kind).inc()
 
     def observe_tool_latency(self, tool: str, latency_ms: int) -> None:
         self.byes_tool_latency_ms.labels(tool=tool).observe(max(0, latency_ms))
@@ -297,6 +327,12 @@ class GatewayMetrics:
 
     def inc_actionplan_patched(self, reason: str) -> None:
         self.byes_actionplan_patched_total.labels(reason=reason).inc()
+
+    def inc_actiongate_block(self, reason: str) -> None:
+        self.byes_actiongate_block_total.labels(reason=reason).inc()
+
+    def inc_actiongate_patch(self, reason: str) -> None:
+        self.byes_actiongate_patch_total.labels(reason=reason).inc()
 
     def inc_hazard_emit(self, kind: str) -> None:
         self.byes_hazard_emit_total.labels(kind=kind).inc()

@@ -12,6 +12,7 @@ from pydantic import BaseModel, ValidationError, model_validator
 
 from byes.config import GatewayConfig, load_config
 from byes.degradation import DegradationManager, DegradationState
+from byes.action_gate import ActionPlanGate
 from byes.faults import FaultManager
 from byes.frame_tracker import FrameTracker
 from byes.fusion import FusionEngine
@@ -134,6 +135,7 @@ class GatewayApp:
         )
         self.preprocessor = FramePreprocessor(self.config)
         self.fusion = FusionEngine(self.config, metrics=self.metrics)
+        self.action_gate = ActionPlanGate(metrics=self.metrics)
         self.planner = PolicyPlannerV0(self.config)
         self.safety = SafetyKernel(self.config, self.degradation)
         self.connections = ConnectionManager()
@@ -423,7 +425,8 @@ class GatewayApp:
     async def _on_lane_results(self, frame: FrameInput, lane: ToolLane, results: list[Any]) -> None:
         trace_id = str(frame.meta.get("traceId", "0" * 32))
         span_id = str(frame.meta.get("spanId", "0" * 16))
-        health_status, _ = self.degradation.get_health(status_only=True)
+        _reported_status, health_reason = self.degradation.get_health()
+        health_status = self.degradation.state.value
         fused = self.fusion.fuse_lane(
             frame=frame,
             lane=lane,
@@ -434,16 +437,25 @@ class GatewayApp:
         )
         self._record_crosscheck_metrics(fused.diagnostics)
 
-        now = _now_ms()
-        decision = self.safety.adjudicate(fused.events, now_ms=now)
         emitted_count = 0
-        for event in decision.events:
-            if event.is_expired(now):
-                self.metrics.inc_deadline_miss(lane.value)
+        for stage_events in (fused.stage1_events, fused.stage2_events):
+            if not stage_events:
                 continue
-            await self._emit_event(event)
-            emitted_count += 1
+            now = _now_ms()
+            gated = self.action_gate.gate_events(
+                stage_events,
+                health_status=health_status,
+                health_reason=health_reason,
+            )
+            decision = self.safety.adjudicate(gated, now_ms=now)
+            for event in decision.events:
+                if event.is_expired(now):
+                    self.metrics.inc_deadline_miss(lane.value)
+                    continue
+                if await self._emit_event(event):
+                    emitted_count += 1
 
+        now = _now_ms()
         if emitted_count > 0:
             self.frame_tracker.complete_frame(frame.seq, "ok", now)
         elif lane == ToolLane.FAST:
@@ -480,15 +492,20 @@ class GatewayApp:
             if bool(item.get("patched", False)):
                 self.metrics.inc_actionplan_patched("crosscheck")
 
-    async def _emit_event(self, event: EventEnvelope) -> None:
+    async def _emit_event(self, event: EventEnvelope) -> bool:
         if self.degradation.is_safe_mode() and event.type in {EventType.PERCEPTION, EventType.ACTION_PLAN}:
             tool_name = str(event.source).split("@", 1)[0] if event.source else "unknown"
             self.metrics.inc_tool_skipped(tool_name, "safe_mode")
-            return
+            return False
         if self.config.send_envelope:
             await self.connections.broadcast_json(event.model_dump(mode="json"))
-            return
-        await self.connections.broadcast_json(self.fusion.to_legacy_event(event))
+        else:
+            await self.connections.broadcast_json(self.fusion.to_legacy_event(event))
+
+        if event.seq > 0 and event.type in {EventType.RISK, EventType.ACTION_PLAN}:
+            ttfa_kind = "risk" if event.type == EventType.RISK else "action_plan"
+            self.frame_tracker.mark_first_action(event.seq, _now_ms(), ttfa_kind)
+        return True
 
     def build_mock_event(self) -> MockEvent:
         self._mock_flip = not self._mock_flip

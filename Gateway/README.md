@@ -321,6 +321,19 @@ Legacy risk events remain backward compatible and now may include optional field
 - `hazardKind`
 - `hazardState` (`new|active|persisted`)
 
+## v1.8 TTFA + Two-Stage + ActionGate
+
+- TTFA (Time-to-first-action) is measured once per frame from `start_frame` to first emitted `risk` or `action_plan`.
+- Two-stage output is enabled in fusion:
+- `stage1`: earliest conservative action (`risk` or guard `action_plan`)
+- `stage2`: richer slow-lane events (`perception`/richer `action_plan`)
+- ActionPlan hard gate runs before final safety adjudication:
+- `SAFE_MODE`: block all `action_plan`
+- `DEGRADED`/`NORMAL`: patch `move`/`turn` to conservative `stop/scan/confirm`
+- Legacy WS remains compatible. New optional fields:
+- `seq`
+- `stage` (`stage1`/`stage2`)
+
 ## Metrics
 
 `GET /metrics` includes:
@@ -346,6 +359,10 @@ Legacy risk events remain backward compatible and now may include optional field
 - `byes_hazard_suppressed_total{reason}`
 - `byes_hazard_active_gauge`
 - `byes_hazard_persist_total{kind}`
+- `byes_ttfa_ms`
+- `byes_ttfa_count_total{outcome,kind}`
+- `byes_actiongate_block_total{reason}`
+- `byes_actiongate_patch_total{reason}`
 
 `byes_frame_gate_skip_total.reason` is constrained to:
 `intent_off`, `rate_limit`, `safe_mode`, `unchanged`, `ttl_risk`, `policy`.

@@ -226,11 +226,13 @@ LegacyEventType = Literal["risk", "perception", "health", "action_plan"]
 
 class LegacyEvent(BaseModel):
     type: LegacyEventType
+    seq: int | None = None
     timestampMs: int
     coordFrame: str = "World"
     confidence: float
     ttlMs: int
     source: str
+    stage: str | None = None
     riskText: str | None = None
     summary: str | None = None
     distanceM: float | None = None

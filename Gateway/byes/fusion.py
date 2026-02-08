@@ -12,8 +12,13 @@ from byes.tools.base import FrameInput, ToolLane
 
 @dataclass
 class FusionOutput:
-    events: list[EventEnvelope]
+    stage1_events: list[EventEnvelope] = field(default_factory=list)
+    stage2_events: list[EventEnvelope] = field(default_factory=list)
     diagnostics: list[dict[str, object]] = field(default_factory=list)
+
+    @property
+    def events(self) -> list[EventEnvelope]:
+        return [*self.stage1_events, *self.stage2_events]
 
 
 class FusionEngine:
@@ -36,13 +41,26 @@ class FusionEngine:
         health_status: str = "NORMAL",
     ) -> FusionOutput:
         ok_results = [result for result in results if result.status == ToolStatus.OK]
+        normalized_health = str(health_status).strip().upper()
         if not ok_results:
-            return FusionOutput(events=[])
+            if lane == ToolLane.FAST and normalized_health in {"DEGRADED", "SAFE_MODE"}:
+                stage1 = self._tag_stage(
+                    [self._conservative_stage1_action_plan(frame, trace_id, span_id, normalized_health)],
+                    "stage1",
+                )
+                return FusionOutput(stage1_events=stage1)
+            return FusionOutput()
 
         if lane == ToolLane.FAST:
             risk = self._pick_risk(ok_results)
             if risk is None:
-                return FusionOutput(events=[])
+                if normalized_health in {"DEGRADED", "SAFE_MODE"}:
+                    stage1 = self._tag_stage(
+                        [self._conservative_stage1_action_plan(frame, trace_id, span_id, normalized_health)],
+                        "stage1",
+                    )
+                    return FusionOutput(stage1_events=stage1)
+                return FusionOutput()
             event = EventEnvelope(
                 type=EventType.RISK,
                 traceId=trace_id,
@@ -64,8 +82,8 @@ class FusionEngine:
                     "crosscheckKind": risk.payload.get("crosscheckKind"),
                 },
             )
-            events = self._apply_hazard_memory(frame, [event])
-            return FusionOutput(events=events)
+            events = self._tag_stage(self._apply_hazard_memory(frame, [event]), "stage1")
+            return FusionOutput(stage1_events=events)
 
         events: list[EventEnvelope] = []
         diagnostics: list[dict[str, object]] = []
@@ -150,8 +168,8 @@ class FusionEngine:
                     break
         if action_plan is not None:
             events.append(action_plan)
-        events = self._apply_hazard_memory(frame, events)
-        return FusionOutput(events=events, diagnostics=diagnostics)
+        events = self._tag_stage(self._apply_hazard_memory(frame, events), "stage2")
+        return FusionOutput(stage2_events=events, diagnostics=diagnostics)
 
     @staticmethod
     def to_legacy_event(event: EventEnvelope) -> dict[str, object | None]:
@@ -159,11 +177,13 @@ class FusionEngine:
         if event.type == EventType.RISK:
             return {
                 "type": "risk",
+                "seq": event.seq,
                 "timestampMs": event.tsEmitMs,
                 "coordFrame": event.coordFrame.value,
                 "confidence": event.confidence,
                 "ttlMs": event.ttlMs,
                 "source": event.source,
+                "stage": payload.get("stage"),
                 "riskText": payload.get("riskText"),
                 "summary": payload.get("summary"),
                 "distanceM": payload.get("distanceM"),
@@ -178,11 +198,13 @@ class FusionEngine:
         if event.type == EventType.PERCEPTION:
             return {
                 "type": "perception",
+                "seq": event.seq,
                 "timestampMs": event.tsEmitMs,
                 "coordFrame": event.coordFrame.value,
                 "confidence": event.confidence,
                 "ttlMs": event.ttlMs,
                 "source": event.source,
+                "stage": payload.get("stage"),
                 "summary": payload.get("summary"),
                 "riskText": None,
                 "distanceM": None,
@@ -192,11 +214,13 @@ class FusionEngine:
         if event.type == EventType.ACTION_PLAN:
             return {
                 "type": "action_plan",
+                "seq": event.seq,
                 "timestampMs": event.tsEmitMs,
                 "coordFrame": event.coordFrame.value,
                 "confidence": event.confidence,
                 "ttlMs": event.ttlMs,
                 "source": event.source,
+                "stage": payload.get("stage"),
                 "summary": payload.get("summary"),
                 "actionPlan": payload.get("plan"),
                 "speech": payload.get("speech"),
@@ -211,11 +235,13 @@ class FusionEngine:
         if event.type == EventType.DIALOG:
             return {
                 "type": "dialog",
+                "seq": event.seq,
                 "timestampMs": event.tsEmitMs,
                 "coordFrame": event.coordFrame.value,
                 "confidence": event.confidence,
                 "ttlMs": event.ttlMs,
                 "source": event.source,
+                "stage": payload.get("stage"),
                 "summary": payload.get("summary", payload.get("text", "")),
                 "text": payload.get("text"),
                 "riskText": None,
@@ -225,11 +251,13 @@ class FusionEngine:
 
         return {
             "type": "health",
+            "seq": event.seq,
             "timestampMs": event.tsEmitMs,
             "coordFrame": event.coordFrame.value,
             "confidence": event.confidence,
             "ttlMs": event.ttlMs,
             "source": event.source,
+            "stage": payload.get("stage"),
             "summary": payload.get("summary", payload.get("status", "health")),
             "healthStatus": (
                 event.healthStatus.value
@@ -757,6 +785,59 @@ class FusionEngine:
             if event.type != EventType.RISK or event.id in allowed:
                 ordered.append(event)
         return ordered
+
+    def _conservative_stage1_action_plan(
+        self,
+        frame: FrameInput,
+        trace_id: str,
+        span_id: str,
+        health_status: str,
+    ) -> EventEnvelope:
+        summary = "System degraded. Stop and scan before any movement."
+        if health_status == "SAFE_MODE":
+            summary = "Safe mode active. Stop and wait for risk guidance."
+        plan = ActionPlan(
+            traceId=trace_id,
+            expiresMs=frame.ts_capture_ms + frame.ttl_ms,
+            mode="stage1_guard",
+            overallConfidence=0.99,
+            steps=[
+                ActionStep(action=ActionType.STOP, text="Stop immediately."),
+                ActionStep(action=ActionType.SCAN, text="Scan surroundings slowly."),
+                ActionStep(action=ActionType.CONFIRM, text="Confirm it is safe before moving."),
+            ],
+            fallback=ActionType.SCAN.value,
+        )
+        return EventEnvelope(
+            type=EventType.ACTION_PLAN,
+            traceId=trace_id,
+            spanId=span_id,
+            seq=frame.seq,
+            tsCaptureMs=frame.ts_capture_ms,
+            ttlMs=frame.ttl_ms,
+            coordFrame=CoordFrame.WORLD,
+            confidence=0.99,
+            priority=self._config.navigation_priority,
+            source="stage1_guard@v1.8",
+            payload={
+                "summary": summary,
+                "speech": summary,
+                "hud": "Stop and scan",
+                "plan": plan.model_dump(mode="json"),
+                "reason": "stage1_guard",
+            },
+        )
+
+    @staticmethod
+    def _tag_stage(events: list[EventEnvelope], stage: str) -> list[EventEnvelope]:
+        tagged: list[EventEnvelope] = []
+        for event in events:
+            payload = dict(event.payload)
+            payload["stage"] = stage
+            patched = event.model_copy(deep=True)
+            patched.payload = payload
+            tagged.append(patched)
+        return tagged
 
 
 def _optional_float(value: object) -> float | None:
