@@ -29,6 +29,9 @@ def test_regression_suite_runner_outputs_json(tmp_path: Path) -> None:
     assert "qualityScore" in first
     assert "safetyBehavior" in first
     assert "eventSchema" in first
+    assert "inference" in first
+    assert "ocr" in first["inference"]
+    assert "risk" in first["inference"]
     assert "confirmTimeouts" in first["safetyBehavior"]
 
 

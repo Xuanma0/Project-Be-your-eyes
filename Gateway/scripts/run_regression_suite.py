@@ -37,6 +37,10 @@ class RunSummary:
     event_schema_normalized_events: int
     event_schema_warnings_count: int
     top_findings: list[dict[str, Any]]
+    ocr_backend: str | None = None
+    risk_backend: str | None = None
+    ocr_model: str | None = None
+    risk_model: str | None = None
     score_delta: float | None = None
     baseline_score: float | None = None
 
@@ -65,6 +69,16 @@ class RunSummary:
                 "source": self.event_schema_source,
                 "normalizedEvents": self.event_schema_normalized_events,
                 "warningsCount": self.event_schema_warnings_count,
+            },
+            "inference": {
+                "ocr": {
+                    "backend": self.ocr_backend,
+                    "model": self.ocr_model,
+                },
+                "risk": {
+                    "backend": self.risk_backend,
+                    "model": self.risk_model,
+                },
             },
             "topFindings": self.top_findings,
             "baselineScore": self.baseline_score,
@@ -135,6 +149,12 @@ def _extract_run_summary(
     confirm = confirm if isinstance(confirm, dict) else {}
     event_schema = quality.get("eventSchema")
     event_schema = event_schema if isinstance(event_schema, dict) else {}
+    inference = report_payload.get("inference")
+    inference = inference if isinstance(inference, dict) else {}
+    inference_ocr = inference.get("ocr")
+    inference_ocr = inference_ocr if isinstance(inference_ocr, dict) else {}
+    inference_risk = inference.get("risk")
+    inference_risk = inference_risk if isinstance(inference_risk, dict) else {}
     top_findings = quality.get("topFindings")
     if not isinstance(top_findings, list):
         top_findings = []
@@ -163,6 +183,10 @@ def _extract_run_summary(
         event_schema_source=str(event_schema.get("source", "")),
         event_schema_normalized_events=int(event_schema.get("normalizedEvents", 0) or 0),
         event_schema_warnings_count=int(event_schema.get("warningsCount", 0) or 0),
+        ocr_backend=str(inference_ocr.get("backend", "")).strip() or None,
+        risk_backend=str(inference_risk.get("backend", "")).strip() or None,
+        ocr_model=str(inference_ocr.get("model", "")).strip() or None,
+        risk_model=str(inference_risk.get("model", "")).strip() or None,
         top_findings=[item for item in top_findings if isinstance(item, dict)],
     )
 
@@ -341,8 +365,28 @@ def _print_summary(result: dict[str, Any]) -> None:
             delta = row.get("scoreDelta")
             confirm_timeouts = row.get("safetyBehavior", {}).get("confirmTimeouts", 0)
             schema_src = row.get("eventSchema", {}).get("source", "")
+            inference = row.get("inference", {}) if isinstance(row.get("inference"), dict) else {}
+            inference_ocr = inference.get("ocr", {}) if isinstance(inference.get("ocr"), dict) else {}
+            inference_risk = inference.get("risk", {}) if isinstance(inference.get("risk"), dict) else {}
+            ocr_backend = inference_ocr.get("backend", "")
+            risk_backend = inference_risk.get("backend", "")
+            ocr_model = inference_ocr.get("model", "")
+            risk_model = inference_risk.get("model", "")
             print(
-                f"[run] {run_id}: score={score} baseline={baseline} delta={delta} confirmTimeouts={confirm_timeouts} source={schema_src}"
+                "[run] {run_id}: score={score} baseline={baseline} delta={delta} "
+                "confirmTimeouts={confirm_timeouts} source={schema_src} "
+                "ocr={ocr_backend}/{ocr_model} risk={risk_backend}/{risk_model}".format(
+                    run_id=run_id,
+                    score=score,
+                    baseline=baseline,
+                    delta=delta,
+                    confirm_timeouts=confirm_timeouts,
+                    schema_src=schema_src,
+                    ocr_backend=ocr_backend,
+                    ocr_model=ocr_model,
+                    risk_backend=risk_backend,
+                    risk_model=risk_model,
+                )
             )
     failures = result.get("failures", [])
     if isinstance(failures, list) and failures:

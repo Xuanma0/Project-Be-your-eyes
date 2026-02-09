@@ -439,6 +439,9 @@ class GatewayApp:
                 sink=self._emit_inference_event,
                 run_id=run_id,
                 component=component,
+                backend=getattr(self.ocr_backend, "name", None),
+                model=getattr(self.ocr_backend, "model_id", None),
+                endpoint=getattr(self.ocr_backend, "endpoint", None),
             )
 
         if self.config.inference_enable_risk:
@@ -456,9 +459,13 @@ class GatewayApp:
                 risk_result,
                 frame_seq=seq,
                 ts_ms=_now_ms(),
+                started_ts_ms=risk_started_ms,
                 sink=self._emit_inference_event,
                 run_id=run_id,
                 component=component,
+                backend=getattr(self.risk_backend, "name", None),
+                model=getattr(self.risk_backend, "model_id", None),
+                endpoint=getattr(self.risk_backend, "endpoint", None),
             )
 
     async def submit_frame(

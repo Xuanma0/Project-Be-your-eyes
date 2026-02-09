@@ -1317,3 +1317,67 @@ def extract_event_schema_stats(ws_events_jsonl_path: Path) -> dict[str, Any]:
         "droppedEvents": int(summary.get("droppedEvents", 0) or 0),
         "warningsCount": int(summary.get("warningsCount", 0) or 0),
     }
+
+
+def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict[str, dict[str, str | None]]:
+    summary: dict[str, dict[str, str | None]] = {
+        "ocr": {"backend": None, "model": None, "endpoint": None},
+        "risk": {"backend": None, "model": None, "endpoint": None},
+    }
+
+    normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
+    normalized_events = normalized_summary.get("events", [])
+    for event in normalized_events:
+        if not isinstance(event, dict):
+            continue
+        name = str(event.get("name", "")).strip().lower()
+        if name == "ocr.scan_text":
+            bucket = summary["ocr"]
+        elif name in {"risk.hazards", "risk.depth"}:
+            bucket = summary["risk"]
+        else:
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        _merge_inference_fields(bucket, payload)
+
+    if _has_any_inference(summary):
+        return summary
+
+    for row in _iter_jsonl(ws_events_jsonl_path):
+        event = row.get("event") if isinstance(row, dict) else None
+        if not isinstance(event, dict):
+            if isinstance(row, dict):
+                event = row
+            else:
+                continue
+        blob = _event_text_blob(event)
+        if "ocr" in blob or "scan_text" in blob:
+            _merge_inference_fields(summary["ocr"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
+        if "risk" in blob or "hazard" in blob or "depth" in blob:
+            _merge_inference_fields(summary["risk"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
+
+    return summary
+
+
+def _merge_inference_fields(target: dict[str, str | None], payload: dict[str, Any]) -> None:
+    backend = str(payload.get("backend", "")).strip().lower()
+    model = str(payload.get("model", "")).strip()
+    endpoint = str(payload.get("endpoint", "")).strip()
+    if backend:
+        target["backend"] = backend
+    if model:
+        target["model"] = model
+    if endpoint:
+        target["endpoint"] = endpoint
+
+
+def _has_any_inference(summary: dict[str, dict[str, str | None]]) -> bool:
+    for tool in ("ocr", "risk"):
+        bucket = summary.get(tool, {})
+        if not isinstance(bucket, dict):
+            continue
+        if any(str(bucket.get(key, "")).strip() for key in ("backend", "model", "endpoint")):
+            return True
+    return False

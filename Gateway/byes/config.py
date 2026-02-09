@@ -150,6 +150,8 @@ class GatewayConfig:
     inference_risk_http_url: str = "http://127.0.0.1:9002/risk"
     inference_ocr_timeout_ms: int = 1500
     inference_risk_timeout_ms: int = 1200
+    inference_ocr_model_id: str = "mock-ocr"
+    inference_risk_model_id: str = "mock-risk"
     inference_emit_ws_events_v1: bool = False
     inference_event_component: str = "gateway"
 
@@ -283,6 +285,8 @@ def load_config() -> GatewayConfig:
         inference_risk_http_url=os.getenv("BYES_RISK_HTTP_URL", "http://127.0.0.1:9002/risk"),
         inference_ocr_timeout_ms=_env_int("BYES_OCR_HTTP_TIMEOUT_MS", 1500),
         inference_risk_timeout_ms=_env_int("BYES_RISK_HTTP_TIMEOUT_MS", 1200),
+        inference_ocr_model_id=os.getenv("BYES_OCR_MODEL_ID", "mock-ocr"),
+        inference_risk_model_id=os.getenv("BYES_RISK_MODEL_ID", "mock-risk"),
         inference_emit_ws_events_v1=_env_bool("BYES_INFERENCE_EMIT_WS_V1", False),
         inference_event_component=os.getenv("BYES_INFERENCE_EVENT_COMPONENT", "gateway"),
     )

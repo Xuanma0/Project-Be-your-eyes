@@ -21,6 +21,8 @@ def test_emitters_generate_schema_v1_rows() -> None:
             sink=_sink,
             run_id="run-1",
             component="gateway",
+            backend="mock",
+            model="mock-ocr",
         )
         await emit_risk_events(
             RiskResult(
@@ -31,9 +33,12 @@ def test_emitters_generate_schema_v1_rows() -> None:
             ),
             frame_seq=7,
             ts_ms=123457,
+            started_ts_ms=123449,
             sink=_sink,
             run_id="run-1",
             component="gateway",
+            backend="mock",
+            model="mock-risk",
         )
 
     asyncio.run(_run())
@@ -50,3 +55,19 @@ def test_emitters_generate_schema_v1_rows() -> None:
     assert rows[0]["phase"] == "start"
     assert rows[1]["phase"] == "result"
     assert rows[2]["phase"] == "result"
+    assert rows[0]["latencyMs"] is None
+    assert isinstance(rows[1]["latencyMs"], int)
+    assert isinstance(rows[2]["latencyMs"], int)
+    assert rows[1]["status"] == "ok"
+    assert rows[2]["status"] == "ok"
+
+    ocr_payload = rows[1]["payload"]
+    risk_payload = rows[2]["payload"]
+    assert isinstance(ocr_payload, dict)
+    assert isinstance(risk_payload, dict)
+    assert ocr_payload.get("backend") == "mock"
+    assert ocr_payload.get("model") == "mock-ocr"
+    assert risk_payload.get("backend") == "mock"
+    assert risk_payload.get("model") == "mock-risk"
+    assert "latencyMs" not in ocr_payload
+    assert "latencyMs" not in risk_payload

@@ -13,6 +13,10 @@
 - `status`: optional normalized status (`ok|timeout|cancel|error`).
 - `latencyMs`: optional latency in ms.
 - `payload`: normalized payload object.
+  - recommended tool metadata keys inside payload:
+    - `backend`: `mock|http|local`
+    - `model`: model identifier (optional)
+    - `endpoint`: sanitized endpoint URL/path (optional)
 - `raw`: optional raw event (debug use only).
 
 ## Examples
@@ -45,7 +49,7 @@
   "phase": "result",
   "status": "ok",
   "latencyMs": 110,
-  "payload": {"text": "EXIT"}
+  "payload": {"text": "EXIT", "backend": "http", "model": "paddleocr-v4", "endpoint": "http://127.0.0.1:9001/ocr"}
 }
 ```
 
@@ -60,8 +64,8 @@
   "name": "risk.hazards",
   "phase": "result",
   "status": "ok",
-  "latencyMs": null,
-  "payload": {"hazards": [{"hazardKind": "stair_down", "severity": "critical"}]}
+  "latencyMs": 88,
+  "payload": {"hazards": [{"hazardKind": "stair_down", "severity": "critical"}], "backend": "http", "model": "depth-anything-v2-small", "endpoint": "http://127.0.0.1:9002/risk"}
 }
 ```
 

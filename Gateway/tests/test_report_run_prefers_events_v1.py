@@ -38,9 +38,16 @@ def test_report_run_prefers_events_v1(tmp_path: Path) -> None:
     event_schema = quality.get("eventSchema", {})
     safety = quality.get("safetyBehavior", {})
     confirm = safety.get("confirm", {})
+    inference = payload.get("inference", {})
+    inference_ocr = inference.get("ocr", {})
+    inference_risk = inference.get("risk", {})
 
     assert event_schema.get("source") == "eventsV1Jsonl"
     assert str(event_schema.get("eventsV1Path", "")) == "events/events_v1.jsonl"
     assert int(event_schema.get("normalizedEvents", 0)) > 0
     assert int(confirm.get("timeouts", 0)) == 1
     assert int(confirm.get("missingResponseCount", 0)) == 1
+    assert isinstance(inference_ocr, dict)
+    assert isinstance(inference_risk, dict)
+    assert "backend" in inference_ocr
+    assert "backend" in inference_risk

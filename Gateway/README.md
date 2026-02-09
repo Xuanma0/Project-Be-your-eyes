@@ -262,6 +262,8 @@ Environment controls:
 - `BYES_RISK_HTTP_URL=http://127.0.0.1:9002/risk`
 - `BYES_OCR_HTTP_TIMEOUT_MS=1500`
 - `BYES_RISK_HTTP_TIMEOUT_MS=1200`
+- `BYES_OCR_MODEL_ID=<model-id>` (optional metadata tag)
+- `BYES_RISK_MODEL_ID=<model-id>` (optional metadata tag)
 - `BYES_INFERENCE_EMIT_WS_V1=1|0` (default `0`; when `1`, BYES v1 tool events are pushed on `/ws/events`)
 
 HTTP protocol for optional external backends:
@@ -279,6 +281,20 @@ Local demo servers (no extra deps):
 python Gateway/scripts/dev_mock_ocr_service.py --host 127.0.0.1 --port 9001
 python Gateway/scripts/dev_mock_risk_service.py --host 127.0.0.1 --port 9002
 ```
+
+Reference service template (optional, local/server-side only):
+
+```bash
+cd Gateway/services/inference_service
+python -m venv .venv
+. .venv/Scripts/activate
+pip install -r requirements.txt
+python -m uvicorn app:app --host 127.0.0.1 --port 9001
+```
+
+After replay/live run, inspect:
+- `events/events_v1.jsonl`: `event.latencyMs` is authoritative, payload has no `latencyMs`
+- `report.json`: top-level `inference = {"ocr": {...}, "risk": {...}}`
 
 Common readiness env for all external services:
 

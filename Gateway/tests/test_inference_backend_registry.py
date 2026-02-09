@@ -25,6 +25,8 @@ def test_backend_registry_selects_http(monkeypatch) -> None:
     monkeypatch.setenv("BYES_RISK_BACKEND", "http")
     monkeypatch.setenv("BYES_RISK_HTTP_URL", "http://127.0.0.1:9002/risk")
     monkeypatch.setenv("BYES_RISK_HTTP_TIMEOUT_MS", "3333")
+    monkeypatch.setenv("BYES_OCR_MODEL_ID", "ocr-v1")
+    monkeypatch.setenv("BYES_RISK_MODEL_ID", "risk-v1")
     config = load_config()
 
     ocr_backend = get_ocr_backend(config)
@@ -34,5 +36,9 @@ def test_backend_registry_selects_http(monkeypatch) -> None:
     assert isinstance(risk_backend, HttpRiskBackend)
     assert ocr_backend.url == "http://127.0.0.1:9001/ocr"
     assert ocr_backend.timeout_ms == 2222
+    assert ocr_backend.endpoint == "http://127.0.0.1:9001/ocr"
+    assert ocr_backend.model_id == "ocr-v1"
     assert risk_backend.url == "http://127.0.0.1:9002/risk"
     assert risk_backend.timeout_ms == 3333
+    assert risk_backend.endpoint == "http://127.0.0.1:9002/risk"
+    assert risk_backend.model_id == "risk-v1"

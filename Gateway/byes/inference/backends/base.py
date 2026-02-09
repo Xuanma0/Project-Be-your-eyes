@@ -24,6 +24,8 @@ class RiskResult:
 
 class OCRBackend(Protocol):
     name: str
+    model_id: str | None
+    endpoint: str | None
 
     async def infer(self, image_bytes: bytes, frame_seq: int | None, ts_ms: int) -> OCRResult:
         ...
@@ -31,6 +33,8 @@ class OCRBackend(Protocol):
 
 class RiskBackend(Protocol):
     name: str
+    model_id: str | None
+    endpoint: str | None
 
     async def infer(self, image_bytes: bytes, frame_seq: int | None, ts_ms: int) -> RiskResult:
         ...

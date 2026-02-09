@@ -24,6 +24,7 @@ from byes.quality_metrics import (  # noqa: E402
     compute_ocr_metrics,
     compute_quality_score,
     extract_event_schema_stats,
+    extract_inference_summary_from_ws_events,
     extract_safety_behavior_from_ws_events,
     extract_ocr_intent_frames_from_ws_events,
     extract_pred_hazards_from_ws_events,
@@ -888,6 +889,7 @@ def generate_report_outputs(
     output.write_text(report_text + "\n", encoding="utf-8")
 
     summary = build_summary_payload(ws_stats, after_samples, delta_samples, run_package_summary)
+    summary["inference"] = extract_inference_summary_from_ws_events(event_source_path)
     event_schema_stats = extract_event_schema_stats(event_source_path)
     event_schema_stats["source"] = event_schema_source
     event_schema_stats["eventsV1Path"] = events_v1_rel if event_schema_source == "eventsV1Jsonl" else None
