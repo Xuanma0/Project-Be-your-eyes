@@ -647,3 +647,31 @@ Includes requested regressions:
 - `test_real_depth_baseline_invoked`
 - `test_real_depth_timeout_noncritical_no_safemode`
 - `test_critical_timeout_enters_safemode`
+
+## Unity Skeleton v2.8
+
+Unity-side minimal closed loop scripts were added under `Assets/BeYourEyes`:
+
+- `Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs`
+- `Assets/BeYourEyes/Unity/Capture/FrameCapture.cs`
+- `Assets/BeYourEyes/Presenters/DebugHUD/GatewayHUD.cs`
+- `Assets/BeYourEyes/Presenters/DebugHUD/DevIntentPanel.cs`
+
+UPM dependency added in `Packages/manifest.json`:
+
+- `com.endel.nativewebsocket` (`https://github.com/endel/NativeWebSocket.git#upm`)
+- `com.unity.nuget.newtonsoft-json` (already present, used for `JObject` parsing)
+
+Editor smoke checklist:
+
+1. Add `GatewayClient`, `FrameCapture`, `GatewayHUD`, `DevIntentPanel` to one scene object.
+2. Set Gateway URLs (`BaseUrl`, `WsUrl`) and click `Apply Gateway`.
+3. Start play mode and verify console:
+- `WS connected`
+- recurrent `type=health` logs from WS
+4. Enable frame capture (`FrameCapture autoStart=true`) and verify:
+- repeated `/api/frame` HTTP 200 (client logs every N successes)
+- WS receives at least one of `risk/perception/action_plan`
+5. Trigger active confirm (e.g. `make_report.ps1 -ActiveConfirmScenario` or dev crosscheck override):
+- WS receives `action_plan` with `confirmId`
+- click option button in HUD, verify `/api/confirm` 200 and behavior update in subsequent events.
