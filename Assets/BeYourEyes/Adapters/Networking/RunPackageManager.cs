@@ -40,6 +40,8 @@ namespace BeYourEyes.Adapters.Networking
         private JObject currentScenarioPayload;
         private readonly List<string> runErrors = new List<string>();
         private readonly Dictionary<string, int> healthStatusCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        private readonly object wsWriteLock = new object();
+        private StreamWriter wsEventsWriter;
 
         private long startMs;
         private long endMs;
@@ -51,6 +53,10 @@ namespace BeYourEyes.Adapters.Networking
         private long startFramesDroppedNoConn;
         private string metricsBeforePath = string.Empty;
         private string metricsAfterPath = string.Empty;
+
+        private const string WsJsonlFileName = "ws_events.jsonl";
+        private const string MetricsBeforeFileName = "metrics_before.txt";
+        private const string MetricsAfterFileName = "metrics_after.txt";
 
         public bool IsRunActive => runActive || runFinishing;
         public string CurrentScenarioTag => currentScenarioTag ?? string.Empty;
@@ -147,10 +153,11 @@ namespace BeYourEyes.Adapters.Networking
         private IEnumerator RunLifecycleCoroutine()
         {
             Directory.CreateDirectory(currentRunDirectory);
+            OpenWsEventsWriter();
 
             if (saveMetricsSnapshot)
             {
-                yield return CaptureMetricsSnapshot("metrics_before.txt", path => metricsBeforePath = path);
+                yield return CaptureMetricsSnapshot(MetricsBeforeFileName, path => metricsBeforePath = path);
             }
 
             runRecorder.SetScenarioTag(currentScenarioTag);
@@ -216,10 +223,11 @@ namespace BeYourEyes.Adapters.Networking
 
             if (saveMetricsSnapshot)
             {
-                yield return CaptureMetricsSnapshot("metrics_after.txt", path => metricsAfterPath = path);
+                yield return CaptureMetricsSnapshot(MetricsAfterFileName, path => metricsAfterPath = path);
             }
 
             endMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            CloseWsEventsWriter();
             WriteManifest(reason);
             UnbindRuntimeEvents();
 
@@ -247,6 +255,9 @@ namespace BeYourEyes.Adapters.Networking
                 ["baseUrl"] = gatewayClient != null ? gatewayClient.BaseUrl : string.Empty,
                 ["wsUrl"] = gatewayClient != null ? gatewayClient.WsUrl : string.Empty,
                 ["sessionId"] = gatewayClient != null ? gatewayClient.SessionId : string.Empty,
+                ["wsJsonl"] = WsJsonlFileName,
+                ["metricsBefore"] = MetricsBeforeFileName,
+                ["metricsAfter"] = MetricsAfterFileName,
                 ["frameCountSent"] = frameSentDelta,
                 ["frameCountCaptured"] = frameCapturedDelta,
                 ["frameDroppedBusy"] = dropBusyDelta,
@@ -389,6 +400,7 @@ namespace BeYourEyes.Adapters.Networking
             }
 
             eventCountAccepted++;
+            WriteWsEventRow(evt);
             var type = ReadString(evt, "type");
             if (!string.Equals(type, "health", StringComparison.OrdinalIgnoreCase))
             {
@@ -485,6 +497,99 @@ namespace BeYourEyes.Adapters.Networking
             }
 
             return string.Empty;
+        }
+
+        private void OpenWsEventsWriter()
+        {
+            CloseWsEventsWriter();
+            var wsEventsPath = Path.Combine(currentRunDirectory, WsJsonlFileName);
+            try
+            {
+                wsEventsWriter = new StreamWriter(wsEventsPath, false, new UTF8Encoding(false))
+                {
+                    AutoFlush = true,
+                };
+            }
+            catch (Exception ex)
+            {
+                wsEventsWriter = null;
+                runErrors.Add($"ws_events_open_failed:{ex.Message}");
+            }
+        }
+
+        private void CloseWsEventsWriter()
+        {
+            try
+            {
+                lock (wsWriteLock)
+                {
+                    wsEventsWriter?.Flush();
+                    wsEventsWriter?.Dispose();
+                    wsEventsWriter = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                runErrors.Add($"ws_events_close_failed:{ex.Message}");
+            }
+        }
+
+        private void WriteWsEventRow(JObject evt)
+        {
+            if (wsEventsWriter == null || evt == null)
+            {
+                return;
+            }
+
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var receivedAtMs = ReadLong(evt, "_receivedAtMs", nowMs);
+            var ttlMs = ReadInt(evt, "_eventTtlMs", ReadInt(evt, "ttlMs", 1500));
+            var row = new JObject
+            {
+                ["receivedAtMs"] = receivedAtMs,
+                ["ttlMs"] = ttlMs,
+                ["event"] = evt.DeepClone(),
+            };
+
+            try
+            {
+                lock (wsWriteLock)
+                {
+                    wsEventsWriter.WriteLine(row.ToString(Formatting.None));
+                }
+            }
+            catch (Exception ex)
+            {
+                runErrors.Add($"ws_events_write_failed:{ex.Message}");
+            }
+        }
+
+        private static long ReadLong(JObject obj, string key, long defaultValue)
+        {
+            var token = obj?[key];
+            if (token == null)
+            {
+                return defaultValue;
+            }
+            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+            {
+                return token.Value<long>();
+            }
+            return long.TryParse(token.ToString(), out var parsed) ? parsed : defaultValue;
+        }
+
+        private static int ReadInt(JObject obj, string key, int defaultValue)
+        {
+            var token = obj?[key];
+            if (token == null)
+            {
+                return defaultValue;
+            }
+            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+            {
+                return token.Value<int>();
+            }
+            return int.TryParse(token.ToString(), out var parsed) ? parsed : defaultValue;
         }
     }
 }

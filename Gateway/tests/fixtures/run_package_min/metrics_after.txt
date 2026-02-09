@@ -1,0 +1,13 @@
+# HELP byes_frame_received_total total frames received
+# TYPE byes_frame_received_total counter
+byes_frame_received_total 12
+# HELP byes_frame_completed_total completed frames
+# TYPE byes_frame_completed_total counter
+byes_frame_completed_total{outcome="ok"} 12
+# HELP byes_e2e_latency_ms e2e latency
+# TYPE byes_e2e_latency_ms histogram
+byes_e2e_latency_ms_count 12
+byes_e2e_latency_ms_sum 1500
+byes_e2e_latency_ms_bucket{le="100"} 3
+byes_e2e_latency_ms_bucket{le="200"} 12
+byes_e2e_latency_ms_bucket{le="+Inf"} 12

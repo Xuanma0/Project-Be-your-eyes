@@ -334,6 +334,7 @@ def build_report(
     after_samples: dict[SeriesKey, float],
     delta_samples: dict[SeriesKey, float] | None,
     external_readiness: dict[str, Any] | None,
+    run_package_summary: dict[str, Any] | None,
 ) -> str:
     lines: list[str] = []
     lines.append(f"# {markdown_title}")
@@ -342,6 +343,23 @@ def build_report(
     lines.append(f"- ws jsonl: `{ws_jsonl}`")
     lines.append(f"- metrics source: `{metrics_source}`")
     lines.append("")
+    if run_package_summary is not None:
+        lines.append("## Run Package Summary")
+        lines.append(f"- run package: `{run_package_summary.get('runPackageDir', '')}`")
+        lines.append(f"- scenarioTag: `{run_package_summary.get('scenarioTag', '')}`")
+        lines.append(f"- startMs: `{run_package_summary.get('startMs', '')}`")
+        lines.append(f"- endMs: `{run_package_summary.get('endMs', '')}`")
+        lines.append(f"- frameCountSent: `{run_package_summary.get('frameCountSent', '')}`")
+        lines.append(f"- eventCountAccepted: `{run_package_summary.get('eventCountAccepted', '')}`")
+        lines.append(f"- localSafetyFallbackEnterCount: `{run_package_summary.get('localSafetyFallbackEnterCount', '')}`")
+        health_counts = run_package_summary.get("healthStatusCounts", {})
+        if isinstance(health_counts, dict):
+            lines.append(f"- healthStatusCounts: `{json.dumps(health_counts, ensure_ascii=False)}`")
+        errors = run_package_summary.get("errors", [])
+        if isinstance(errors, list):
+            lines.append(f"- errors: `{json.dumps(errors, ensure_ascii=False)}`")
+        lines.append("")
+
     lines.append("## External Readiness")
     if not external_readiness:
         lines.append("- unavailable")
@@ -722,14 +740,65 @@ def _append_tool_focus(lines: list[str], samples: dict[SeriesKey, float], tool: 
     )
 
 
-def derive_output_path(ws_jsonl: Path, output: str | None) -> Path:
+def derive_output_path(ws_jsonl: Path, output: str | None, run_package_dir: Path | None) -> Path:
     if output:
         return Path(output)
+    if run_package_dir is not None:
+        return run_package_dir / "report.md"
     return Path(f"report_{ws_jsonl.stem}.md")
 
 
 def load_text(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
+
+
+def load_run_package(run_package_dir: Path) -> tuple[Path, Path | None, Path | None, dict[str, Any]]:
+    manifest_path = run_package_dir / "manifest.json"
+    if not manifest_path.exists():
+        manifest_path = run_package_dir / "run_manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"manifest not found in run package: {run_package_dir}")
+
+    manifest_raw = json.loads(load_text(manifest_path))
+    if not isinstance(manifest_raw, dict):
+        raise ValueError("run package manifest must be an object")
+    manifest = manifest_raw
+
+    ws_relative = str(manifest.get("wsJsonl", "")).strip() or "ws_events.jsonl"
+    ws_jsonl = run_package_dir / ws_relative
+    if not ws_jsonl.exists():
+        fallback_ui_events = run_package_dir / "ui_events.jsonl"
+        if fallback_ui_events.exists():
+            ws_jsonl = fallback_ui_events
+        else:
+            raise FileNotFoundError(f"ws jsonl not found: {ws_jsonl}")
+
+    metrics_before_path: Path | None = None
+    metrics_after_path: Path | None = None
+    before_relative = str(manifest.get("metricsBefore", "")).strip()
+    after_relative = str(manifest.get("metricsAfter", "")).strip()
+    if before_relative:
+        candidate = run_package_dir / before_relative
+        if candidate.exists():
+            metrics_before_path = candidate
+    if after_relative:
+        candidate = run_package_dir / after_relative
+        if candidate.exists():
+            metrics_after_path = candidate
+
+    summary = {
+        "runPackageDir": str(run_package_dir),
+        "scenarioTag": manifest.get("scenarioTag", ""),
+        "startMs": manifest.get("startMs", ""),
+        "endMs": manifest.get("endMs", ""),
+        "frameCountSent": manifest.get("frameCountSent", ""),
+        "eventCountAccepted": manifest.get("eventCountAccepted", ""),
+        "localSafetyFallbackEnterCount": manifest.get("localSafetyFallbackEnterCount", ""),
+        "healthStatusCounts": manifest.get("healthStatusCounts", {}),
+        "errors": manifest.get("errors", []),
+    }
+
+    return ws_jsonl, metrics_before_path, metrics_after_path, summary
 
 
 def main() -> int:
@@ -738,23 +807,43 @@ def main() -> int:
     parser.add_argument("--metrics-before", default=None)
     parser.add_argument("--metrics-after", default=None)
     parser.add_argument("--external-readiness-url", default=None)
-    parser.add_argument("--ws-jsonl", required=True)
+    parser.add_argument("--ws-jsonl", default=None)
+    parser.add_argument("--run-package", default=None)
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
-    ws_jsonl = Path(args.ws_jsonl)
-    if not ws_jsonl.exists():
-        print(f"ws jsonl not found: {ws_jsonl}")
-        return 1
+    run_package_dir: Path | None = None
+    run_package_summary: dict[str, Any] | None = None
 
-    metrics_before_path = Path(args.metrics_before) if args.metrics_before else None
-    metrics_after_path = Path(args.metrics_after) if args.metrics_after else None
+    if args.run_package:
+        run_package_dir = Path(args.run_package)
+        if not run_package_dir.exists() or not run_package_dir.is_dir():
+            print(f"run package dir not found: {run_package_dir}")
+            return 1
+        try:
+            ws_jsonl, pkg_before, pkg_after, run_package_summary = load_run_package(run_package_dir)
+        except Exception as ex:
+            print(str(ex))
+            return 1
+    else:
+        if not args.ws_jsonl:
+            print("either --ws-jsonl or --run-package is required")
+            return 1
+        ws_jsonl = Path(args.ws_jsonl)
+        pkg_before = None
+        pkg_after = None
+        if not ws_jsonl.exists():
+            print(f"ws jsonl not found: {ws_jsonl}")
+            return 1
+
+    metrics_before_path = Path(args.metrics_before) if args.metrics_before else pkg_before
+    metrics_after_path = Path(args.metrics_after) if args.metrics_after else pkg_after
 
     if (metrics_before_path is None) != (metrics_after_path is None):
         print("must provide both --metrics-before and --metrics-after, or neither")
         return 1
 
-    output = derive_output_path(ws_jsonl, args.output)
+    output = derive_output_path(ws_jsonl, args.output, run_package_dir)
     output.parent.mkdir(parents=True, exist_ok=True)
 
     ws_rows = load_jsonl(ws_jsonl)
@@ -807,6 +896,7 @@ def main() -> int:
         after_samples,
         delta_samples,
         external_readiness,
+        run_package_summary,
     )
     output.write_text(report_text + "\n", encoding="utf-8")
     print(f"report generated -> {output}")

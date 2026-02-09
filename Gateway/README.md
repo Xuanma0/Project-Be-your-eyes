@@ -598,6 +598,17 @@ v2.3 runtime latency metrics:
 - `byes_tool_exec_ms{tool,lane}`
 - planner adaptive skip reason: `latency_pred_exceeds_budget`
 
+Run-package report mode (consume Unity-exported run package directly):
+
+```bash
+python scripts/report_run.py --run-package /path/to/RunPackageDir
+```
+
+Notes:
+- The script reads `manifest.json` (or `run_manifest.json`) in the package dir.
+- It auto-loads `wsJsonl`, `metricsBefore`, `metricsAfter` from manifest.
+- Default output is `<run-package>/report.md` (override via `--output`).
+
 Meta baseline (optional FrameMeta on all frames):
 
 1. Example `scripts/meta_sample.json`:
