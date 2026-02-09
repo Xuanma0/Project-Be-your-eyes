@@ -27,6 +27,9 @@ from byes.frame_tracker import FrameTracker
 from byes.fusion import FusionEngine
 from byes.governor import SloGovernor
 from byes.intent import IntentManager
+from byes.inference.event_emitters import emit_ocr_events, emit_risk_events
+from byes.inference.registry import get_ocr_backend, get_risk_backend
+from byes.inference.backends.base import OCRResult, RiskResult
 from byes.metrics import GatewayMetrics
 from byes.observability import Observability
 from byes.planner import PolicyPlannerV0, PolicyPlannerV1
@@ -230,6 +233,10 @@ class GatewayApp:
             self.planner = PolicyPlannerV0(self.config)
         self.safety = SafetyKernel(self.config, self.degradation)
         self.connections = ConnectionManager()
+        self.ocr_backend = get_ocr_backend(self.config)
+        self.risk_backend = get_risk_backend(self.config)
+        self._inference_events: list[dict[str, Any]] = []
+        self._inference_events_limit = 2048
         self.scheduler = Scheduler(
             config=self.config,
             registry=self.registry,
@@ -264,6 +271,9 @@ class GatewayApp:
 
     async def startup(self) -> None:
         self.run_packages_root.mkdir(parents=True, exist_ok=True)
+        self.ocr_backend = get_ocr_backend(self.config)
+        self.risk_backend = get_risk_backend(self.config)
+        self._inference_events.clear()
         self._external_readiness = {}
         self.registry.clear()
         startup_unavailable_tools: list[str] = []
@@ -387,6 +397,70 @@ class GatewayApp:
         await self.scheduler.stop()
         await self.faults.shutdown()
 
+    def drain_inference_events(self) -> list[dict[str, Any]]:
+        snapshot = list(self._inference_events)
+        self._inference_events.clear()
+        return snapshot
+
+    async def _emit_inference_event(self, event: dict[str, Any]) -> None:
+        if not isinstance(event, dict):
+            return
+        self._inference_events.append(dict(event))
+        if len(self._inference_events) > self._inference_events_limit:
+            self._inference_events = self._inference_events[-self._inference_events_limit :]
+        if self.config.inference_emit_ws_events_v1:
+            await self.connections.broadcast_json(event)
+
+    @staticmethod
+    def _extract_run_id(meta: dict[str, Any]) -> str | None:
+        for key in ("runId", "sessionId", "session_id"):
+            value = meta.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+        return None
+
+    async def _run_inference_for_frame(self, frame_bytes: bytes, seq: int, ts_ms: int, meta: dict[str, Any]) -> None:
+        run_id = self._extract_run_id(meta)
+        component = str(self.config.inference_event_component or "gateway")
+        if self.config.inference_enable_ocr:
+            ocr_started_ms = _now_ms()
+            try:
+                ocr_result = await self.ocr_backend.infer(frame_bytes, seq, ts_ms)
+            except Exception as exc:  # noqa: BLE001
+                ocr_result = OCRResult(status="error", error=exc.__class__.__name__, payload={"reason": exc.__class__.__name__})
+            await emit_ocr_events(
+                ocr_result,
+                frame_seq=seq,
+                ts_ms=_now_ms(),
+                started_ts_ms=ocr_started_ms,
+                sink=self._emit_inference_event,
+                run_id=run_id,
+                component=component,
+            )
+
+        if self.config.inference_enable_risk:
+            risk_started_ms = _now_ms()
+            try:
+                risk_result = await self.risk_backend.infer(frame_bytes, seq, ts_ms)
+            except Exception as exc:  # noqa: BLE001
+                risk_result = RiskResult(
+                    status="error",
+                    error=exc.__class__.__name__,
+                    payload={"reason": exc.__class__.__name__},
+                    latency_ms=max(0, _now_ms() - risk_started_ms),
+                )
+            await emit_risk_events(
+                risk_result,
+                frame_seq=seq,
+                ts_ms=_now_ms(),
+                sink=self._emit_inference_event,
+                run_id=run_id,
+                component=component,
+            )
+
     async def submit_frame(
         self,
         frame_bytes: bytes,
@@ -428,6 +502,7 @@ class GatewayApp:
         if ttl_ms <= 0:
             ttl_ms = self.config.default_ttl_ms
         self.frame_tracker.start_frame(seq, request_start_ms, ttl_ms, frame_meta=frame_meta)
+        await self._run_inference_for_frame(frame_bytes, seq, request_start_ms, enriched_meta)
         return seq
 
     async def reset_runtime(self) -> dict[str, Any]:
@@ -442,6 +517,7 @@ class GatewayApp:
         self.runtime_stats.reset_runtime()
         self.fusion.reset_runtime()
         self.scheduler.reset_runtime()
+        self._inference_events.clear()
         self._last_safe_mode_pulse_ms = -1
         self._last_meta_warn_ms = {"meta_missing": -1, "meta_parse_error": -1}
         self._forced_crosscheck_kind = "none"

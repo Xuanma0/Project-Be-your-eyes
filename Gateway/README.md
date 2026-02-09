@@ -240,6 +240,46 @@ Dev knobs for VLM service:
 - `VLM_SLEEP_MS`
 - `VLM_FAIL_PROB`
 
+## Pluggable OCR/Risk Backends (v4.16)
+
+Gateway now supports a lightweight inference backend registry for OCR + risk-hazards:
+
+- backend interface modules:
+  - `byes/inference/backends/base.py`
+  - `byes/inference/backends/mock.py`
+  - `byes/inference/backends/http.py`
+  - `byes/inference/registry.py`
+- event emitters:
+  - `byes/inference/event_emitters.py`
+
+Environment controls:
+
+- `BYES_ENABLE_OCR=1|0` (default `1`)
+- `BYES_ENABLE_RISK=1|0` (default `1`)
+- `BYES_OCR_BACKEND=mock|http` (default `mock`)
+- `BYES_RISK_BACKEND=mock|http` (default `mock`)
+- `BYES_OCR_HTTP_URL=http://127.0.0.1:9001/ocr`
+- `BYES_RISK_HTTP_URL=http://127.0.0.1:9002/risk`
+- `BYES_OCR_HTTP_TIMEOUT_MS=1500`
+- `BYES_RISK_HTTP_TIMEOUT_MS=1200`
+- `BYES_INFERENCE_EMIT_WS_V1=1|0` (default `0`; when `1`, BYES v1 tool events are pushed on `/ws/events`)
+
+HTTP protocol for optional external backends:
+
+- OCR `POST /ocr`
+  - input: `{"image_b64":"...","frameSeq":1,"tsMs":...}`
+  - output: `{"text":"EXIT","latencyMs":120}`
+- Risk `POST /risk`
+  - input: `{"image_b64":"...","frameSeq":1,"tsMs":...}`
+  - output: `{"hazards":[{"hazardKind":"stair_down","severity":"critical"}],"latencyMs":80}`
+
+Local demo servers (no extra deps):
+
+```bash
+python Gateway/scripts/dev_mock_ocr_service.py --host 127.0.0.1 --port 9001
+python Gateway/scripts/dev_mock_risk_service.py --host 127.0.0.1 --port 9002
+```
+
 Common readiness env for all external services:
 
 - `BYES_BACKEND=mock|torch|onnx` (default `mock`)
