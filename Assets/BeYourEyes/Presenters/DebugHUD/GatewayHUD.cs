@@ -14,6 +14,7 @@ namespace BeYourEyes.Presenters.DebugHUD
         [SerializeField] private BeYourEyes.Unity.Capture.FrameCapture frameCapture;
         [SerializeField] private LocalSafetyFallback localSafetyFallback;
         [SerializeField] private float confirmPollIntervalSec = 1.5f;
+        [SerializeField] private bool showDebugCounters = true;
 
         private Text statusText;
         private Text confirmPromptText;
@@ -34,6 +35,13 @@ namespace BeYourEyes.Presenters.DebugHUD
         private string pendingConfirmKind;
         private bool confirmSubmitting;
         private readonly HashSet<string> resolvedConfirmIds = new HashSet<string>();
+        private readonly HashSet<string> expiredConfirmIds = new HashSet<string>();
+        private readonly Dictionary<string, long> confirmFirstSeenAtMs = new Dictionary<string, long>();
+        private readonly Dictionary<string, int> confirmTtlById = new Dictionary<string, int>();
+        private long latestContentSeq = -1;
+        private long displayedEventSeq = -1;
+        private long displayedEventReceivedAtMs = -1;
+        private int displayedEventTtlMs = 1500;
 
         private float nextClientLookupAt;
         private Coroutine confirmPollRoutine;
@@ -71,6 +79,11 @@ namespace BeYourEyes.Presenters.DebugHUD
             if (statusText != null)
             {
                 var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                if (IsDisplayedEventExpired(nowMs))
+                {
+                    ClearDisplayedContent();
+                }
+
                 var lastMsgAgeText = gatewayClient != null && gatewayClient.LastMessageAtMs > 0
                     ? $"{Mathf.Max(0f, (float)(nowMs - gatewayClient.LastMessageAtMs) / 1000f):0.0}s ago"
                     : "-";
@@ -94,9 +107,22 @@ namespace BeYourEyes.Presenters.DebugHUD
                 {
                     fallbackSinceText = $"{Mathf.Max(0f, (float)(nowMs - localSafetyFallback.StateEnteredAtMs) / 1000f):0.0}s";
                 }
+                if (localSafetyFallback != null && !localSafetyFallback.IsOk)
+                {
+                    ClearDisplayedContent();
+                }
+
+                var lastEventAgeMs = displayedEventReceivedAtMs > 0 ? Math.Max(0, nowMs - displayedEventReceivedAtMs) : -1;
                 var safeBanner = string.Equals(healthStatus, "SAFE_MODE", StringComparison.OrdinalIgnoreCase)
                     ? "\nSAFE MODE: STOP / RISK ONLY"
                     : string.Empty;
+                var debugLines = string.Empty;
+                if (showDebugCounters && gatewayClient != null)
+                {
+                    debugLines =
+                        $"\nGuard: acc={gatewayClient.EventAcceptedCount} exp={gatewayClient.EventDroppedExpiredCount} ooo={gatewayClient.EventDroppedOutOfOrderCount} fb={gatewayClient.EventDroppedByFallbackCount}" +
+                        $"\nlastSeqSeen={gatewayClient.EventLastSeqSeen} displayedSeq={displayedEventSeq} lastEventAgeMs={(lastEventAgeMs >= 0 ? lastEventAgeMs.ToString() : "-")}";
+                }
 
                 statusText.text =
                     "Gateway HUD\n" +
@@ -117,6 +143,7 @@ namespace BeYourEyes.Presenters.DebugHUD
                     $"Keyframe: {keyframeReasonText}\n" +
                     $"Fallback: {fallbackStateText} since={fallbackSinceText} reason={fallbackReasonText}\n" +
                     $"PendingConfirm: {(string.IsNullOrWhiteSpace(pendingConfirmId) ? "-" : pendingConfirmKind)}" +
+                    debugLines +
                     safeBanner;
             }
         }
@@ -164,13 +191,25 @@ namespace BeYourEyes.Presenters.DebugHUD
             {
                 summary = ReadString(evt, "riskText");
             }
-            lastEventType = string.IsNullOrWhiteSpace(type) ? "-" : type;
-            lastEventSummary = string.IsNullOrWhiteSpace(summary) ? "-" : summary;
+            if (string.IsNullOrWhiteSpace(type))
+            {
+                return;
+            }
             lastEventStage = ReadString(evt, "stage");
             if (string.IsNullOrWhiteSpace(lastEventStage))
             {
                 lastEventStage = "-";
             }
+
+            if (!ShouldApplyEventBySeq(type, evt))
+            {
+                return;
+            }
+
+            lastEventType = type;
+            lastEventSummary = string.IsNullOrWhiteSpace(summary) ? "-" : summary;
+            displayedEventReceivedAtMs = ReadLong(evt, "_receivedAtMs");
+            displayedEventTtlMs = ReadInt(evt, "_eventTtlMs", gatewayClient != null ? gatewayClient.EventDefaultTtlMs : 1500);
             switch (type)
             {
                 case "health":
@@ -200,6 +239,7 @@ namespace BeYourEyes.Presenters.DebugHUD
                     {
                         riskLevel = "warn";
                     }
+                    actionSummary = "-";
                     break;
                 case "action_plan":
                     actionSummary = summary;
@@ -207,15 +247,34 @@ namespace BeYourEyes.Presenters.DebugHUD
                     break;
                 case "perception":
                     actionSummary = summary;
+                    riskText = "-";
+                    riskLevel = "-";
                     break;
             }
         }
 
         private void HandleConfirmPayload(JObject evt)
         {
+            if (localSafetyFallback != null && !localSafetyFallback.IsOk)
+            {
+                return;
+            }
+
             var confirmId = ReadString(evt, "confirmId");
             if (string.IsNullOrWhiteSpace(confirmId))
             {
+                return;
+            }
+            if (expiredConfirmIds.Contains(confirmId))
+            {
+                return;
+            }
+
+            RegisterConfirmFreshness(confirmId, evt);
+            ApplyConfirmFreshness(confirmId, evt);
+            if (IsEventExpired(evt, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
+            {
+                expiredConfirmIds.Add(confirmId);
                 return;
             }
             if (resolvedConfirmIds.Contains(confirmId))
@@ -328,6 +387,8 @@ namespace BeYourEyes.Presenters.DebugHUD
                 if (success)
                 {
                     resolvedConfirmIds.Add(confirmId);
+                    confirmFirstSeenAtMs.Remove(confirmId);
+                    confirmTtlById.Remove(confirmId);
                     Debug.Log($"[GatewayHUD] confirm submitted: id={confirmId} choice={choice}");
                     HideConfirmPanel();
                 }
@@ -391,7 +452,23 @@ namespace BeYourEyes.Presenters.DebugHUD
                         }
 
                         var confirmId = ReadString(pendingObj, "confirmId");
-                        if (string.IsNullOrWhiteSpace(confirmId) || resolvedConfirmIds.Contains(confirmId))
+                        if (string.IsNullOrWhiteSpace(confirmId) || expiredConfirmIds.Contains(confirmId))
+                        {
+                            return;
+                        }
+
+                        RegisterConfirmFreshness(confirmId, pendingObj);
+                        ApplyConfirmFreshness(confirmId, pendingObj);
+                        if (!gatewayClient.TryAcceptUiEvent(pendingObj, "action_plan", out _, out _, out var rejectReason))
+                        {
+                            if (string.Equals(rejectReason, "expired", StringComparison.OrdinalIgnoreCase))
+                            {
+                                expiredConfirmIds.Add(confirmId);
+                            }
+                            return;
+                        }
+
+                        if (resolvedConfirmIds.Contains(confirmId))
                         {
                             return;
                         }
@@ -529,6 +606,132 @@ namespace BeYourEyes.Presenters.DebugHUD
             text.rectTransform.offsetMin = new Vector2(4f, 4f);
             text.rectTransform.offsetMax = new Vector2(-4f, -4f);
             return button;
+        }
+
+        private bool ShouldApplyEventBySeq(string type, JObject evt)
+        {
+            if (string.Equals(type, "health", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (!string.Equals(type, "risk", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(type, "perception", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(type, "action_plan", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (ReadLong(evt, "seq") is long seq && seq > 0)
+            {
+                if (latestContentSeq > 0 && seq < latestContentSeq)
+                {
+                    return false;
+                }
+
+                latestContentSeq = seq;
+                displayedEventSeq = seq;
+                return true;
+            }
+
+            return latestContentSeq <= 0;
+        }
+
+        private bool IsDisplayedEventExpired(long nowMs)
+        {
+            if (displayedEventReceivedAtMs <= 0)
+            {
+                return false;
+            }
+
+            var ttlMs = Math.Max(100, displayedEventTtlMs);
+            return nowMs - displayedEventReceivedAtMs > ttlMs;
+        }
+
+        private void ClearDisplayedContent()
+        {
+            riskText = "-";
+            riskLevel = "-";
+            actionSummary = "-";
+            lastEventType = "-";
+            lastEventSummary = "-";
+            lastEventStage = "-";
+            displayedEventReceivedAtMs = -1;
+            displayedEventTtlMs = gatewayClient != null ? gatewayClient.EventDefaultTtlMs : 1500;
+            displayedEventSeq = -1;
+            HideConfirmPanel();
+        }
+
+        private bool IsEventExpired(JObject evt, long nowMs)
+        {
+            var receivedAt = ReadLong(evt, "_receivedAtMs") ?? nowMs;
+            var ttlMs = ReadInt(evt, "_eventTtlMs", gatewayClient != null ? gatewayClient.EventDefaultTtlMs : 1500);
+            return nowMs - receivedAt > Math.Max(100, ttlMs);
+        }
+
+        private void RegisterConfirmFreshness(string confirmId, JObject evt)
+        {
+            if (string.IsNullOrWhiteSpace(confirmId))
+            {
+                return;
+            }
+
+            var ttlMs = ReadInt(evt, "_eventTtlMs", gatewayClient != null ? gatewayClient.EventDefaultTtlMs : 1500);
+            confirmTtlById[confirmId] = Math.Max(100, ttlMs);
+            if (!confirmFirstSeenAtMs.ContainsKey(confirmId))
+            {
+                confirmFirstSeenAtMs[confirmId] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            }
+        }
+
+        private void ApplyConfirmFreshness(string confirmId, JObject evt)
+        {
+            if (string.IsNullOrWhiteSpace(confirmId))
+            {
+                return;
+            }
+
+            if (confirmFirstSeenAtMs.TryGetValue(confirmId, out var firstSeen))
+            {
+                evt["_receivedAtMs"] = firstSeen;
+            }
+
+            if (confirmTtlById.TryGetValue(confirmId, out var ttl))
+            {
+                evt["_eventTtlMs"] = ttl;
+            }
+        }
+
+        private static long? ReadLong(JObject obj, string key)
+        {
+            var token = obj[key];
+            if (token == null)
+            {
+                return null;
+            }
+
+            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+            {
+                return token.Value<long>();
+            }
+
+            return long.TryParse(token.ToString(), out var parsed) ? parsed : (long?)null;
+        }
+
+        private static int ReadInt(JObject obj, string key, int defaultValue)
+        {
+            var token = obj[key];
+            if (token == null)
+            {
+                return defaultValue;
+            }
+
+            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+            {
+                return token.Value<int>();
+            }
+
+            return int.TryParse(token.ToString(), out var parsed) ? parsed : defaultValue;
         }
 
         private static string ReadString(JObject obj, string key)

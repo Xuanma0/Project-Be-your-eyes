@@ -40,6 +40,10 @@ namespace BeYourEyes.Adapters.Networking
         [SerializeField] private float healthProbeIntervalSec = 1f;
         [SerializeField] private int healthProbeStaleThresholdMs = 1500;
 
+        [Header("Event Guard")]
+        [SerializeField] private EventGuard eventGuard = new EventGuard();
+        [SerializeField] private BeYourEyes.Unity.Interaction.LocalSafetyFallback localSafetyFallback;
+
         private WebSocket webSocket;
         private bool wsConnecting;
         private bool frameRequestInFlight;
@@ -87,10 +91,17 @@ namespace BeYourEyes.Adapters.Networking
         public string LastHealthReason => lastHealthReason;
         public int LastHealthRttMs => lastHealthRttMs;
         public string ActiveIntent => activeIntent;
+        public long EventAcceptedCount => eventGuard != null ? eventGuard.Accepted : 0;
+        public long EventDroppedExpiredCount => eventGuard != null ? eventGuard.DroppedExpired : 0;
+        public long EventDroppedOutOfOrderCount => eventGuard != null ? eventGuard.DroppedOutOfOrder : 0;
+        public long EventDroppedByFallbackCount => eventGuard != null ? eventGuard.DroppedByFallback : 0;
+        public long EventLastSeqSeen => eventGuard != null ? eventGuard.LastSeqSeen : -1;
+        public int EventDefaultTtlMs => eventGuard != null ? eventGuard.DefaultEventTtlMs : 1500;
 
         private void OnEnable()
         {
             shuttingDown = false;
+            eventGuard?.ResetRuntime();
             if (connectOnEnable)
             {
                 ConnectWebSocket();
@@ -476,6 +487,11 @@ namespace BeYourEyes.Adapters.Networking
                 return;
             }
 
+            if (!TryAcceptUiEvent(evt, defaultType: string.Empty, out var receivedAtMs, out var ttlMs, out _))
+            {
+                return;
+            }
+
             var type = ReadString(evt, "type");
             var summary = ReadString(evt, "summary");
             if (string.IsNullOrEmpty(summary))
@@ -510,6 +526,9 @@ namespace BeYourEyes.Adapters.Networking
                 $"[GatewayClient] WS event type={type} summary={summary} healthStatus={healthStatus} riskLevel={riskLevel} stage={stage} confirmId={confirmId}"
             );
 
+            evt["_receivedAtMs"] = receivedAtMs;
+            evt["_eventTtlMs"] = ttlMs;
+
             MaybeRecordTtfa(evt, nowMs);
             OnGatewayEvent?.Invoke(evt);
         }
@@ -517,6 +536,82 @@ namespace BeYourEyes.Adapters.Networking
         private string BuildApiUrl(string path)
         {
             return $"{BaseUrl.TrimEnd('/')}{path}";
+        }
+
+        public bool TryAcceptUiEvent(JObject evt, string defaultType, out long receivedAtMs, out int ttlMs, out string rejectReason)
+        {
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            receivedAtMs = nowMs;
+            ttlMs = EventDefaultTtlMs;
+            rejectReason = string.Empty;
+
+            if (evt == null)
+            {
+                rejectReason = "null_event";
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(defaultType) && string.IsNullOrWhiteSpace(ReadString(evt, "type")))
+            {
+                evt["type"] = defaultType;
+            }
+
+            if (IsFallbackBlockingEvent(evt))
+            {
+                eventGuard?.MarkFallbackDrop();
+                rejectReason = "fallback_non_ok";
+                return false;
+            }
+
+            if (eventGuard == null)
+            {
+                if (!TryReadLong(evt, "_receivedAtMs", out var existingReceivedAt) || existingReceivedAt <= 0)
+                {
+                    evt["_receivedAtMs"] = receivedAtMs;
+                }
+                else
+                {
+                    receivedAtMs = existingReceivedAt;
+                }
+                evt["_eventTtlMs"] = ttlMs;
+                return true;
+            }
+
+            ttlMs = eventGuard.ResolveEventTtlMs(evt);
+            if (!TryReadLong(evt, "_receivedAtMs", out var preservedReceivedAt) || preservedReceivedAt <= 0)
+            {
+                evt["_receivedAtMs"] = receivedAtMs;
+            }
+            else
+            {
+                receivedAtMs = preservedReceivedAt;
+            }
+            evt["_eventTtlMs"] = ttlMs;
+
+            if (!eventGuard.ShouldAccept(evt, nowMs))
+            {
+                rejectReason = eventGuard.LastRejectReason;
+                return false;
+            }
+
+            rejectReason = string.Empty;
+            return true;
+        }
+
+        private bool IsFallbackBlockingEvent(JObject evt)
+        {
+            if (localSafetyFallback == null)
+            {
+                localSafetyFallback = FindFirstObjectByType<BeYourEyes.Unity.Interaction.LocalSafetyFallback>();
+            }
+
+            if (localSafetyFallback == null || localSafetyFallback.IsOk)
+            {
+                return false;
+            }
+
+            var type = ReadString(evt, "type");
+            return !string.Equals(type, "health", StringComparison.OrdinalIgnoreCase);
         }
 
         private void StartHealthProbeLoop()
