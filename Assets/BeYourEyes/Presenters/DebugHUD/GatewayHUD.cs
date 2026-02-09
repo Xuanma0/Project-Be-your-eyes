@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.UI;
+using BeYourEyes.Unity.Interaction;
 
 namespace BeYourEyes.Presenters.DebugHUD
 {
@@ -11,6 +12,7 @@ namespace BeYourEyes.Presenters.DebugHUD
     {
         [SerializeField] private BeYourEyes.Adapters.Networking.GatewayClient gatewayClient;
         [SerializeField] private BeYourEyes.Unity.Capture.FrameCapture frameCapture;
+        [SerializeField] private LocalSafetyFallback localSafetyFallback;
         [SerializeField] private float confirmPollIntervalSec = 1.5f;
 
         private Text statusText;
@@ -61,6 +63,10 @@ namespace BeYourEyes.Presenters.DebugHUD
             {
                 frameCapture = FindFirstObjectByType<BeYourEyes.Unity.Capture.FrameCapture>();
             }
+            if (localSafetyFallback == null)
+            {
+                localSafetyFallback = FindFirstObjectByType<LocalSafetyFallback>();
+            }
 
             if (statusText != null)
             {
@@ -81,6 +87,13 @@ namespace BeYourEyes.Presenters.DebugHUD
                     ? $"{frameCapture.BytesEma:0}"
                     : "-";
                 var keyframeReasonText = frameCapture == null ? "-" : frameCapture.LastKeyframeReason;
+                var fallbackStateText = localSafetyFallback == null ? "OK" : localSafetyFallback.CurrentState.ToString();
+                var fallbackSinceText = "-";
+                var fallbackReasonText = localSafetyFallback == null ? "-" : localSafetyFallback.LastReason;
+                if (localSafetyFallback != null && localSafetyFallback.StateEnteredAtMs > 0)
+                {
+                    fallbackSinceText = $"{Mathf.Max(0f, (float)(nowMs - localSafetyFallback.StateEnteredAtMs) / 1000f):0.0}s";
+                }
                 var safeBanner = string.Equals(healthStatus, "SAFE_MODE", StringComparison.OrdinalIgnoreCase)
                     ? "\nSAFE MODE: STOP / RISK ONLY"
                     : string.Empty;
@@ -102,6 +115,7 @@ namespace BeYourEyes.Presenters.DebugHUD
                     $"Frames: {captureStats}\n" +
                     $"BytesEMA: {bytesEmaText}\n" +
                     $"Keyframe: {keyframeReasonText}\n" +
+                    $"Fallback: {fallbackStateText} since={fallbackSinceText} reason={fallbackReasonText}\n" +
                     $"PendingConfirm: {(string.IsNullOrWhiteSpace(pendingConfirmId) ? "-" : pendingConfirmKind)}" +
                     safeBanner;
             }
@@ -350,6 +364,17 @@ namespace BeYourEyes.Presenters.DebugHUD
         {
             while (true)
             {
+                if (localSafetyFallback == null)
+                {
+                    localSafetyFallback = FindFirstObjectByType<LocalSafetyFallback>();
+                }
+
+                if (localSafetyFallback != null && !localSafetyFallback.IsOk)
+                {
+                    yield return new WaitForSecondsRealtime(Mathf.Max(0.5f, confirmPollIntervalSec));
+                    continue;
+                }
+
                 if (gatewayClient != null)
                 {
                     gatewayClient.FetchPendingConfirm((ok, payload) =>

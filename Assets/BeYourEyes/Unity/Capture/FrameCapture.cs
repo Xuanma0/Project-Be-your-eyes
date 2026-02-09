@@ -4,6 +4,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 using Object = UnityEngine.Object;
+using BeYourEyes.Unity.Interaction;
 
 namespace BeYourEyes.Unity.Capture
 {
@@ -11,6 +12,7 @@ namespace BeYourEyes.Unity.Capture
     {
         [SerializeField] private Camera captureCamera;
         [SerializeField] private BeYourEyes.Adapters.Networking.GatewayClient gatewayClient;
+        [SerializeField] private LocalSafetyFallback localSafetyFallback;
         [SerializeField] private int captureWidth = 640;
         [SerializeField] private int captureHeight = 360;
 
@@ -60,6 +62,7 @@ namespace BeYourEyes.Unity.Capture
         private double bytesEma = -1;
         private const double BytesEmaAlpha = 0.2;
         private string lastKeyframeReason = "-";
+        private long lastFallbackAttemptAtMs = -1;
 
         public long FramesCaptured => framesCaptured;
         public long FramesSent => framesSent;
@@ -139,8 +142,17 @@ namespace BeYourEyes.Unity.Capture
                     return;
                 }
             }
+            if (localSafetyFallback == null)
+            {
+                localSafetyFallback = FindFirstObjectByType<LocalSafetyFallback>();
+            }
 
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (!AllowByFallback(nowMs))
+            {
+                return;
+            }
+
             var policy = ResolvePolicy();
             var healthStatus = ResolveHealthStatus();
             var pose = cameraToUse.transform;
@@ -192,6 +204,30 @@ namespace BeYourEyes.Unity.Capture
                     consecutiveBusyDrops = 0;
                     break;
             }
+        }
+
+        private bool AllowByFallback(long nowMs)
+        {
+            if (localSafetyFallback == null || localSafetyFallback.IsOk)
+            {
+                return true;
+            }
+
+            if (localSafetyFallback.CaptureMode == FallbackCaptureMode.Pause)
+            {
+                lastKeyframeReason = "fallback_pause";
+                return false;
+            }
+
+            var minIntervalMs = Math.Max(200, localSafetyFallback.FallbackMinIntervalMs);
+            if (lastFallbackAttemptAtMs > 0 && nowMs - lastFallbackAttemptAtMs < minIntervalMs)
+            {
+                lastKeyframeReason = "fallback_lowrate_wait";
+                return false;
+            }
+
+            lastFallbackAttemptAtMs = nowMs;
+            return true;
         }
 
         private JObject BuildMeta(Camera cameraToUse, long nowMs, int effectiveTtlMs, CaptureResult capture, string keyReason)
