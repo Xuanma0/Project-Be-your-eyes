@@ -2,6 +2,9 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
+using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -42,6 +45,12 @@ namespace BeYourEyes.Adapters.Networking
         private readonly Dictionary<string, int> healthStatusCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         private readonly object wsWriteLock = new object();
         private StreamWriter wsEventsWriter;
+        private string lastFinishReason = "not_started";
+        private string lastExportZipPath = string.Empty;
+        private string lastExportSha256 = string.Empty;
+        private long lastExportedAtMs = -1;
+        private readonly List<string> lastExportErrors = new List<string>();
+        private readonly List<ExportFileStat> lastExportFiles = new List<ExportFileStat>();
 
         private long startMs;
         private long endMs;
@@ -64,6 +73,9 @@ namespace BeYourEyes.Adapters.Networking
         public string CurrentManifestPath => currentManifestPath ?? string.Empty;
         public string CurrentRunSummary => currentRunSummary ?? string.Empty;
         public long CurrentEventCountAccepted => eventCountAccepted;
+        public string LastExportZipPath => lastExportZipPath ?? string.Empty;
+        public string LastExportError => lastExportErrors.Count == 0 ? string.Empty : lastExportErrors[lastExportErrors.Count - 1];
+        public long LastExportedAtMs => lastExportedAtMs;
 
         public event Action<string, string> OnRunCompleted;
 
@@ -121,6 +133,12 @@ namespace BeYourEyes.Adapters.Networking
             endMs = -1;
             metricsBeforePath = string.Empty;
             metricsAfterPath = string.Empty;
+            lastFinishReason = "running";
+            lastExportZipPath = string.Empty;
+            lastExportSha256 = string.Empty;
+            lastExportedAtMs = -1;
+            lastExportErrors.Clear();
+            lastExportFiles.Clear();
             startFramesCaptured = frameCapture.FramesCaptured;
             startFramesSent = frameCapture.FramesSent;
             startFramesDroppedBusy = frameCapture.FramesDroppedBusy;
@@ -228,6 +246,7 @@ namespace BeYourEyes.Adapters.Networking
 
             endMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             CloseWsEventsWriter();
+            lastFinishReason = reason;
             WriteManifest(reason);
             UnbindRuntimeEvents();
 
@@ -279,6 +298,7 @@ namespace BeYourEyes.Adapters.Networking
                 },
                 ["scenarioPayload"] = currentScenarioPayload ?? new JObject(),
                 ["errors"] = new JArray(runErrors),
+                ["export"] = BuildExportObject(),
             };
 
             try
@@ -308,6 +328,36 @@ namespace BeYourEyes.Adapters.Networking
                     ["maxFrames"] = forceWindowMaxFrames,
                     ["minIntervalMs"] = forceWindowMinIntervalMs,
                 },
+            };
+        }
+
+        private JObject BuildExportObject()
+        {
+            var files = new JArray();
+            for (var i = 0; i < lastExportFiles.Count; i++)
+            {
+                var stat = lastExportFiles[i];
+                files.Add(new JObject
+                {
+                    ["path"] = stat.RelativePath,
+                    ["bytes"] = stat.Bytes,
+                    ["sha256"] = stat.Sha256,
+                });
+            }
+
+            var errors = new JArray();
+            for (var i = 0; i < lastExportErrors.Count; i++)
+            {
+                errors.Add(lastExportErrors[i]);
+            }
+
+            return new JObject
+            {
+                ["zipPath"] = lastExportZipPath ?? string.Empty,
+                ["zipSha256"] = lastExportSha256 ?? string.Empty,
+                ["exportedAtMs"] = lastExportedAtMs,
+                ["files"] = files,
+                ["errors"] = errors,
             };
         }
 
@@ -438,6 +488,39 @@ namespace BeYourEyes.Adapters.Networking
             }
         }
 
+        public bool ExportLastRunZip(out string zipPath, out string error)
+        {
+            zipPath = string.Empty;
+            error = string.Empty;
+            EnsureDependencies();
+
+            if (runActive || runFinishing)
+            {
+                error = "run_active";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(currentRunDirectory) || !Directory.Exists(currentRunDirectory))
+            {
+                error = "no_last_run";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(currentManifestPath) || !File.Exists(currentManifestPath))
+            {
+                error = "manifest_missing";
+                return false;
+            }
+
+            var success = TryExportRunZip(currentRunDirectory, currentManifestPath, out zipPath, out error);
+            if (success)
+            {
+                WriteManifest(string.IsNullOrWhiteSpace(lastFinishReason) ? "exported" : lastFinishReason);
+            }
+
+            return success;
+        }
+
         private static string BuildRunDirectory(string scenarioTag)
         {
             var tag = string.IsNullOrWhiteSpace(scenarioTag) ? "scenario" : scenarioTag.Trim();
@@ -449,6 +532,190 @@ namespace BeYourEyes.Adapters.Networking
             var root = Path.Combine(Application.persistentDataPath, "BeYourEyesRunPackages");
             Directory.CreateDirectory(root);
             return Path.Combine(root, $"{DateTime.Now:yyyyMMdd_HHmmss}_{tag}");
+        }
+
+        private bool TryExportRunZip(string runDirectory, string manifestPath, out string zipPath, out string error)
+        {
+            zipPath = string.Empty;
+            error = string.Empty;
+            lastExportErrors.Clear();
+            lastExportFiles.Clear();
+            lastExportZipPath = string.Empty;
+            lastExportSha256 = string.Empty;
+            lastExportedAtMs = -1;
+
+            try
+            {
+                if (!Directory.Exists(runDirectory))
+                {
+                    error = "run_dir_missing";
+                    lastExportErrors.Add(error);
+                    return false;
+                }
+
+                if (!File.Exists(manifestPath))
+                {
+                    error = "manifest_missing";
+                    lastExportErrors.Add(error);
+                    return false;
+                }
+
+                var runRoot = Path.GetDirectoryName(runDirectory) ?? runDirectory;
+                var exportsRoot = Path.Combine(runRoot, "exports");
+                Directory.CreateDirectory(exportsRoot);
+
+                var runName = Path.GetFileName(runDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                var zipAbsPath = Path.Combine(exportsRoot, $"{runName}.zip");
+                if (File.Exists(zipAbsPath))
+                {
+                    File.Delete(zipAbsPath);
+                }
+
+                var filesToZip = CollectExportFiles(runDirectory, manifestPath);
+                using (var fs = new FileStream(zipAbsPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                using (var archive = new ZipArchive(fs, ZipArchiveMode.Create))
+                {
+                    for (var i = 0; i < filesToZip.Count; i++)
+                    {
+                        var item = filesToZip[i];
+                        if (!File.Exists(item.SourcePath))
+                        {
+                            lastExportErrors.Add($"missing_file:{item.RelativePath}");
+                            continue;
+                        }
+
+                        var entry = archive.CreateEntry(item.RelativePath, CompressionLevel.Optimal);
+                        using (var inStream = new FileStream(item.SourcePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                        using (var outStream = entry.Open())
+                        {
+                            inStream.CopyTo(outStream);
+                        }
+
+                        var bytes = new FileInfo(item.SourcePath).Length;
+                        var fileSha = ComputeFileSha256(item.SourcePath);
+                        lastExportFiles.Add(new ExportFileStat(item.RelativePath, bytes, fileSha));
+                    }
+                }
+
+                lastExportSha256 = ComputeFileSha256(zipAbsPath);
+                lastExportedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                lastExportZipPath = MakeStableExportPath(runRoot, zipAbsPath);
+                zipPath = zipAbsPath;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                lastExportErrors.Add($"zip_export_failed:{ex.Message}");
+                return false;
+            }
+        }
+
+        private List<ExportFilePath> CollectExportFiles(string runDirectory, string manifestPath)
+        {
+            var results = new List<ExportFilePath>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            AddDirectoryFiles(runDirectory, string.Empty, results, seen);
+            if (!seen.Contains(Path.GetFullPath(manifestPath)))
+            {
+                var rel = Path.GetFileName(manifestPath);
+                results.Add(new ExportFilePath(Path.GetFullPath(manifestPath), NormalizeArchivePath(rel)));
+                seen.Add(Path.GetFullPath(manifestPath));
+            }
+
+            try
+            {
+                var manifest = JObject.Parse(File.ReadAllText(manifestPath, Encoding.UTF8));
+                var recorderDir = ReadString(manifest["runRecorder"] as JObject, "runDirectory");
+                if (!string.IsNullOrWhiteSpace(recorderDir) && Directory.Exists(recorderDir))
+                {
+                    var runDirFull = Path.GetFullPath(runDirectory)
+                        .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    var recorderFull = Path.GetFullPath(recorderDir)
+                        .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    if (!string.Equals(runDirFull, recorderFull, StringComparison.OrdinalIgnoreCase))
+                    {
+                        AddDirectoryFiles(recorderDir, "recorder", results, seen);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                lastExportErrors.Add($"recorder_files_scan_failed:{ex.Message}");
+            }
+
+            results.Sort((a, b) => string.CompareOrdinal(a.RelativePath, b.RelativePath));
+            return results;
+        }
+
+        private static void AddDirectoryFiles(
+            string directory,
+            string archivePrefix,
+            List<ExportFilePath> output,
+            HashSet<string> seen)
+        {
+            var baseDir = Path.GetFullPath(directory)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var prefix = string.IsNullOrWhiteSpace(archivePrefix) ? string.Empty : NormalizeArchivePath(archivePrefix).TrimEnd('/');
+            var files = Directory.GetFiles(baseDir, "*", SearchOption.AllDirectories);
+            for (var i = 0; i < files.Length; i++)
+            {
+                var fullPath = Path.GetFullPath(files[i]);
+                if (seen.Contains(fullPath))
+                {
+                    continue;
+                }
+
+                var relative = fullPath.Substring(baseDir.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                relative = NormalizeArchivePath(relative);
+                if (!string.IsNullOrWhiteSpace(prefix))
+                {
+                    relative = $"{prefix}/{relative}";
+                }
+
+                output.Add(new ExportFilePath(fullPath, relative));
+                seen.Add(fullPath);
+            }
+        }
+
+        private static string MakeStableExportPath(string rootDir, string absolutePath)
+        {
+            try
+            {
+                var root = Path.GetFullPath(rootDir)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                var full = Path.GetFullPath(absolutePath);
+                if (full.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                {
+                    var relative = full.Substring(root.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    return NormalizeArchivePath(relative);
+                }
+            }
+            catch
+            {
+            }
+
+            return absolutePath;
+        }
+
+        private static string NormalizeArchivePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return string.Empty;
+            }
+            return path.Replace('\\', '/');
+        }
+
+        private static string ComputeFileSha256(string path)
+        {
+            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (var sha = SHA256.Create())
+            {
+                var hash = sha.ComputeHash(stream);
+                return string.Concat(hash.Select(b => b.ToString("x2")));
+            }
         }
 
         private static string SanitizeTag(string tag)
@@ -590,6 +857,32 @@ namespace BeYourEyes.Adapters.Networking
                 return token.Value<int>();
             }
             return int.TryParse(token.ToString(), out var parsed) ? parsed : defaultValue;
+        }
+
+        private readonly struct ExportFilePath
+        {
+            public ExportFilePath(string sourcePath, string relativePath)
+            {
+                SourcePath = sourcePath;
+                RelativePath = relativePath;
+            }
+
+            public string SourcePath { get; }
+            public string RelativePath { get; }
+        }
+
+        private readonly struct ExportFileStat
+        {
+            public ExportFileStat(string relativePath, long bytes, string sha256)
+            {
+                RelativePath = relativePath;
+                Bytes = bytes;
+                Sha256 = sha256;
+            }
+
+            public string RelativePath { get; }
+            public long Bytes { get; }
+            public string Sha256 { get; }
         }
     }
 }

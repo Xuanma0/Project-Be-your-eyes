@@ -39,6 +39,8 @@ namespace BeYourEyes.Presenters.DebugHUD
         private string lastMethodPath = "-";
         private string lastRunManifestPath = string.Empty;
         private string lastRunSummary = string.Empty;
+        private string lastZipPath = string.Empty;
+        private string lastZipError = string.Empty;
         private Vector2 historyScroll;
         private float nextLookupAt;
 
@@ -195,6 +197,11 @@ namespace BeYourEyes.Presenters.DebugHUD
                 StartCoroutine(RunSinglePost("/api/dev/performance", perfPayload));
             }
             GUILayout.EndHorizontal();
+
+            if (GUILayout.Button("Export Last Run Zip"))
+            {
+                ExportLastRunZip();
+            }
         }
 
         private void DrawIntentOps()
@@ -284,6 +291,8 @@ namespace BeYourEyes.Presenters.DebugHUD
             GUILayout.Label($"status={lastStatusCode} latency={lastLatencyMs}ms error={lastError}");
             GUILayout.Label($"RunManifest: {Truncate(lastRunManifestPath, 100)}");
             GUILayout.Label($"RunSummary: {Truncate(lastRunSummary, 120)}");
+            GUILayout.Label($"LastZipPath: {Truncate(lastZipPath, 100)}");
+            GUILayout.Label($"LastZipError: {Truncate(lastZipError, 120)}");
             GUILayout.Label("Response:");
             GUILayout.TextArea(Truncate(lastResponseBody, maxBodyChars), GUILayout.Height(80f));
         }
@@ -382,6 +391,33 @@ namespace BeYourEyes.Presenters.DebugHUD
             lastError = "-";
             lastResponseBody = summary ?? string.Empty;
             RecordHistory("RUN", "package", 0, 0, true, "-");
+        }
+
+        private void ExportLastRunZip()
+        {
+            EnsureDependencies();
+            if (runPackageManager == null)
+            {
+                PushUiError("run_package_manager_missing");
+                return;
+            }
+
+            if (runPackageManager.ExportLastRunZip(out var zipPath, out var error))
+            {
+                lastZipPath = zipPath ?? string.Empty;
+                lastZipError = string.Empty;
+                lastMethodPath = "EXPORT ZIP";
+                lastStatusCode = 0;
+                lastLatencyMs = 0;
+                lastError = "-";
+                lastResponseBody = zipPath ?? string.Empty;
+                RecordHistory("LOCAL", "export_zip", 0, 0, true, "-");
+                return;
+            }
+
+            lastZipPath = string.Empty;
+            lastZipError = string.IsNullOrWhiteSpace(error) ? "export_failed" : error;
+            PushUiError($"export_zip_failed:{lastZipError}");
         }
 
         private IEnumerator RunSingleGet(string path)

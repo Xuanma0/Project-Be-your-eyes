@@ -21,6 +21,7 @@ namespace BeYourEyes.Presenters.DebugHUD
         [SerializeField] private DevScenarioPanel devScenarioPanel;
         [SerializeField] private BeYourEyes.Adapters.Networking.RunRecorder runRecorder;
         [SerializeField] private BeYourEyes.Adapters.Networking.RunReplayer runReplayer;
+        [SerializeField] private BeYourEyes.Adapters.Networking.RunPackageManager runPackageManager;
         [SerializeField] private float confirmPollIntervalSec = 1.5f;
         [SerializeField] private float limitedConfirmPollIntervalSec = 2.0f;
         [SerializeField] private int capabilityHintCooldownMs = 1200;
@@ -35,6 +36,7 @@ namespace BeYourEyes.Presenters.DebugHUD
         private Button replayRunButton;
         private Button stopReplayButton;
         private Button recordFramesButton;
+        private Button exportZipButton;
         private readonly List<Button> confirmButtons = new List<Button>();
 
         private string wsState = "Disconnected";
@@ -165,6 +167,8 @@ namespace BeYourEyes.Presenters.DebugHUD
                 var capabilityText = gatewayClient == null ? capabilityState : gatewayClient.CurrentCapabilityState.ToString();
                 var runIdText = runRecorder == null || string.IsNullOrWhiteSpace(runRecorder.CurrentRunId) ? "-" : runRecorder.CurrentRunId;
                 var runPathText = runRecorder == null || string.IsNullOrWhiteSpace(runRecorder.CurrentRunDirectory) ? "-" : runRecorder.CurrentRunDirectory;
+                var lastZipPathText = runPackageManager == null || string.IsNullOrWhiteSpace(runPackageManager.LastExportZipPath) ? "-" : runPackageManager.LastExportZipPath;
+                var lastZipErrorText = runPackageManager == null || string.IsNullOrWhiteSpace(runPackageManager.LastExportError) ? "-" : runPackageManager.LastExportError;
                 var recStateText = runRecorder == null ? "n/a" : (runRecorder.IsRecording ? "REC" : "IDLE");
                 var replayStateText = runReplayer == null ? "n/a" : (runReplayer.IsReplaying ? "REPLAY" : "IDLE");
                 var replayProgressText = runReplayer == null || !runReplayer.IsReplaying
@@ -258,6 +262,8 @@ namespace BeYourEyes.Presenters.DebugHUD
                     $"Run: {recStateText} id={runIdText}\n" +
                     $"Replay: {replayStateText} mode={replayModeText} progress={replayProgressText}\n" +
                     $"RunPath: {Truncate(runPathText, 60)}\n" +
+                    $"RunZip: {Truncate(lastZipPathText, 60)}\n" +
+                    $"RunZipErr: {Truncate(lastZipErrorText, 60)}\n" +
                     $"CapHint: {(string.IsNullOrWhiteSpace(capabilityHintText) ? "-" : capabilityHintText)}\n" +
                     $"PendingConfirm: {(string.IsNullOrWhiteSpace(pendingConfirmId) ? "-" : pendingConfirmKind)}" +
                     debugLines +
@@ -920,6 +926,15 @@ namespace BeYourEyes.Presenters.DebugHUD
                     runReplayer = gameObject.AddComponent<BeYourEyes.Adapters.Networking.RunReplayer>();
                 }
             }
+
+            if (runPackageManager == null)
+            {
+                runPackageManager = GetComponent<BeYourEyes.Adapters.Networking.RunPackageManager>();
+                if (runPackageManager == null)
+                {
+                    runPackageManager = gameObject.AddComponent<BeYourEyes.Adapters.Networking.RunPackageManager>();
+                }
+            }
         }
 
         private void EnsureDevScenarioPanel()
@@ -973,6 +988,9 @@ namespace BeYourEyes.Presenters.DebugHUD
 
             recordFramesButton = CreateOptionButton(panel, "RecordFrames: OFF");
             SetupControlButton(recordFramesButton, new Vector2(10f, 46f), new Vector2(0f, 0f), new Vector2(170f, 30f), OnToggleRecordFramesClicked);
+
+            exportZipButton = CreateOptionButton(panel, "Export Run Zip");
+            SetupControlButton(exportZipButton, new Vector2(186f, 46f), new Vector2(0f, 0f), new Vector2(150f, 30f), OnExportRunZipClicked);
         }
 
         private static void SetupControlButton(Button button, Vector2 anchoredPosition, Vector2 pivot, Vector2 size, UnityEngine.Events.UnityAction callback)
@@ -1054,6 +1072,28 @@ namespace BeYourEyes.Presenters.DebugHUD
             }
 
             runRecorder.SetRecordFrames(!runRecorder.RecordFrames);
+        }
+
+        private void OnExportRunZipClicked()
+        {
+            EnsureRunTools();
+            if (runPackageManager == null)
+            {
+                capabilityHintText = "Export failed: run manager missing";
+                capabilityHintUntilMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 1800;
+                return;
+            }
+
+            if (runPackageManager.ExportLastRunZip(out var zipPath, out var error))
+            {
+                capabilityHintText = $"Exported: {Truncate(zipPath, 64)}";
+            }
+            else
+            {
+                capabilityHintText = $"Export failed: {error}";
+            }
+
+            capabilityHintUntilMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 1800;
         }
 
         private bool IsEventExpired(JObject evt, long nowMs)
