@@ -76,6 +76,7 @@ namespace BeYourEyes.Adapters.Networking
         private bool healthProbeInFlight;
 
         public event Action<JObject> OnGatewayEvent;
+        public event Action<JObject> OnUiEventAccepted;
         public event Action<bool, string> OnWebSocketStateChanged;
 
         public string BaseUrl => NormalizeBaseUrl(baseUrl);
@@ -541,7 +542,7 @@ namespace BeYourEyes.Adapters.Networking
             evt["_eventTtlMs"] = ttlMs;
 
             MaybeRecordTtfa(evt, nowMs);
-            OnGatewayEvent?.Invoke(evt);
+            PublishAcceptedUiEvent(evt);
         }
 
         private string BuildApiUrl(string path)
@@ -632,6 +633,17 @@ namespace BeYourEyes.Adapters.Networking
 
             rejectReason = string.Empty;
             return true;
+        }
+
+        public void PublishAcceptedUiEvent(JObject evt)
+        {
+            if (evt == null)
+            {
+                return;
+            }
+
+            OnUiEventAccepted?.Invoke(evt);
+            OnGatewayEvent?.Invoke(evt);
         }
 
         private string ResolveHealthStatusForEvent(JObject evt)

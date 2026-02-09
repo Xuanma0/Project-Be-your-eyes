@@ -5,6 +5,7 @@ using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.UI;
 using BeYourEyes.Unity.Interaction;
+using BeYourEyes.Presenters.Audio;
 
 namespace BeYourEyes.Presenters.DebugHUD
 {
@@ -15,12 +16,14 @@ namespace BeYourEyes.Presenters.DebugHUD
         [SerializeField] private LocalSafetyFallback localSafetyFallback;
         [SerializeField] private RiskFeedback riskFeedback;
         [SerializeField] private DirectionalGuidance directionalGuidance;
+        [SerializeField] private SpeechOrchestrator speechOrchestrator;
         [SerializeField] private float confirmPollIntervalSec = 1.5f;
         [SerializeField] private bool showDebugCounters = true;
 
         private Text statusText;
         private Text confirmPromptText;
         private RectTransform confirmOptionsRoot;
+        private Button replayButton;
         private readonly List<Button> confirmButtons = new List<Button>();
 
         private string wsState = "Disconnected";
@@ -53,6 +56,7 @@ namespace BeYourEyes.Presenters.DebugHUD
             EnsureUi();
             EnsureRiskFeedback();
             EnsureDirectionalGuidance();
+            EnsureSpeechOrchestrator();
             BindClient();
             StartConfirmPoller();
         }
@@ -86,6 +90,10 @@ namespace BeYourEyes.Presenters.DebugHUD
             if (directionalGuidance == null)
             {
                 directionalGuidance = FindFirstObjectByType<DirectionalGuidance>();
+            }
+            if (speechOrchestrator == null)
+            {
+                speechOrchestrator = FindFirstObjectByType<SpeechOrchestrator>();
             }
 
             if (statusText != null)
@@ -134,10 +142,14 @@ namespace BeYourEyes.Presenters.DebugHUD
                     var guidanceLine = directionalGuidance == null
                         ? "\nGuidance: n/a"
                         : $"\nGuidance: shown={directionalGuidance.GuidanceShownCount} cleared={directionalGuidance.GuidanceClearedCount} kind={directionalGuidance.LastGuidanceKind} az={directionalGuidance.LastAzimuthText} dist={directionalGuidance.LastDistanceText}";
+                    var speechLine = speechOrchestrator == null
+                        ? "\nSpeech: n/a"
+                        : $"\nSpeech: spoken={speechOrchestrator.SpokenCount} coolDrop={speechOrchestrator.DroppedByCooldownCount} policyDrop={speechOrchestrator.DroppedByPolicyCount} lastKind={speechOrchestrator.LastSpokenKind} lastAt={speechOrchestrator.LastSpokenAtMs}";
                     debugLines =
                         $"\nGuard: acc={gatewayClient.EventAcceptedCount} exp={gatewayClient.EventDroppedExpiredCount} ooo={gatewayClient.EventDroppedOutOfOrderCount} fb={gatewayClient.EventDroppedByFallbackCount}" +
                         $"\nGate: acc={gatewayClient.ActionPlanGateAcceptedCount} blk={gatewayClient.ActionPlanGateBlockedCount} pat={gatewayClient.ActionPlanGatePatchedCount} reason={gatewayClient.ActionPlanGateLastReason}" +
                         guidanceLine +
+                        speechLine +
                         $"\nlastSeqSeen={gatewayClient.EventLastSeqSeen} displayedSeq={displayedEventSeq} lastEventAgeMs={(lastEventAgeMs >= 0 ? lastEventAgeMs.ToString() : "-")}";
                 }
 
@@ -225,7 +237,7 @@ namespace BeYourEyes.Presenters.DebugHUD
 
             lastEventType = type;
             lastEventSummary = string.IsNullOrWhiteSpace(summary) ? "-" : summary;
-            displayedEventReceivedAtMs = ReadLong(evt, "_receivedAtMs");
+            displayedEventReceivedAtMs = ReadLong(evt, "_receivedAtMs") ?? -1;
             displayedEventTtlMs = ReadInt(evt, "_eventTtlMs", gatewayClient != null ? gatewayClient.EventDefaultTtlMs : 1500);
             switch (type)
             {
@@ -496,7 +508,7 @@ namespace BeYourEyes.Presenters.DebugHUD
                             return;
                         }
 
-                        HandleConfirmPayload(pendingObj);
+                        gatewayClient.PublishAcceptedUiEvent(pendingObj);
                     });
                 }
 
@@ -519,6 +531,7 @@ namespace BeYourEyes.Presenters.DebugHUD
         {
             if (statusText != null && confirmPromptText != null && confirmOptionsRoot != null)
             {
+                EnsureReplayButton();
                 return;
             }
 
@@ -677,6 +690,7 @@ namespace BeYourEyes.Presenters.DebugHUD
             displayedEventTtlMs = gatewayClient != null ? gatewayClient.EventDefaultTtlMs : 1500;
             displayedEventSeq = -1;
             HideConfirmPanel();
+            EnsureReplayButton();
         }
 
         private void EnsureRiskFeedback()
@@ -705,6 +719,53 @@ namespace BeYourEyes.Presenters.DebugHUD
             {
                 directionalGuidance = gameObject.AddComponent<DirectionalGuidance>();
             }
+        }
+
+        private void EnsureSpeechOrchestrator()
+        {
+            if (speechOrchestrator != null)
+            {
+                return;
+            }
+
+            speechOrchestrator = GetComponent<SpeechOrchestrator>();
+            if (speechOrchestrator == null)
+            {
+                speechOrchestrator = gameObject.AddComponent<SpeechOrchestrator>();
+            }
+        }
+
+        private void EnsureReplayButton()
+        {
+            if (replayButton != null || statusText == null)
+            {
+                return;
+            }
+
+            var panel = statusText.transform.parent;
+            if (panel == null)
+            {
+                return;
+            }
+
+            replayButton = CreateOptionButton(panel, "Replay");
+            var rect = replayButton.GetComponent<RectTransform>();
+            rect.anchorMin = new Vector2(1f, 1f);
+            rect.anchorMax = new Vector2(1f, 1f);
+            rect.pivot = new Vector2(1f, 1f);
+            rect.anchoredPosition = new Vector2(-10f, -10f);
+            rect.sizeDelta = new Vector2(96f, 34f);
+            replayButton.onClick.AddListener(OnReplayClicked);
+        }
+
+        private void OnReplayClicked()
+        {
+            if (speechOrchestrator == null)
+            {
+                EnsureSpeechOrchestrator();
+            }
+
+            speechOrchestrator?.ReplayLast();
         }
 
         private bool IsEventExpired(JObject evt, long nowMs)
