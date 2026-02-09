@@ -170,6 +170,7 @@ namespace BeYourEyes.Presenters.DebugHUD
                 var lastZipPathText = runPackageManager == null || string.IsNullOrWhiteSpace(runPackageManager.LastExportZipPath) ? "-" : runPackageManager.LastExportZipPath;
                 var lastZipErrorText = runPackageManager == null || string.IsNullOrWhiteSpace(runPackageManager.LastExportError) ? "-" : runPackageManager.LastExportError;
                 var uploadStatusText = runPackageManager == null ? "-" : runPackageManager.LastUploadStatus;
+                var uploadRunIdText = runPackageManager == null || string.IsNullOrWhiteSpace(runPackageManager.LastUploadRunId) ? "-" : runPackageManager.LastUploadRunId;
                 var uploadReportText = runPackageManager == null || string.IsNullOrWhiteSpace(runPackageManager.LastUploadReportPath) ? "-" : runPackageManager.LastUploadReportPath;
                 var uploadSummaryText = runPackageManager == null || string.IsNullOrWhiteSpace(runPackageManager.LastUploadSummary) ? "-" : runPackageManager.LastUploadSummary;
                 var recStateText = runRecorder == null ? "n/a" : (runRecorder.IsRecording ? "REC" : "IDLE");
@@ -268,6 +269,7 @@ namespace BeYourEyes.Presenters.DebugHUD
                     $"RunZip: {Truncate(lastZipPathText, 60)}\n" +
                     $"RunZipErr: {Truncate(lastZipErrorText, 60)}\n" +
                     $"Upload: {uploadStatusText}\n" +
+                    $"UploadRunId: {Truncate(uploadRunIdText, 60)}\n" +
                     $"Report: {Truncate(uploadReportText, 60)}\n" +
                     $"Summary: {Truncate(uploadSummaryText, 80)}\n" +
                     $"CapHint: {(string.IsNullOrWhiteSpace(capabilityHintText) ? "-" : capabilityHintText)}\n" +

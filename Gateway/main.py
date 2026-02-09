@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ValidationError, model_validator
 
 from byes.config import GatewayConfig, load_config
@@ -227,8 +228,12 @@ class GatewayApp:
         self._forced_performance_mode = "NORMAL"
         self._forced_performance_reason = "manual_override"
         self._forced_performance_expires_ms = -1
+        self.run_packages_root = Path(__file__).resolve().parent / "artifacts" / "run_packages"
+        self.run_packages_index_path = self.run_packages_root / "index.json"
+        self._run_packages_lock = asyncio.Lock()
 
     async def startup(self) -> None:
+        self.run_packages_root.mkdir(parents=True, exist_ok=True)
         self._external_readiness = {}
         self.registry.clear()
         startup_unavailable_tools: list[str] = []
@@ -264,6 +269,83 @@ class GatewayApp:
         await self.scheduler.start()
         self.degradation.set_ws_client_count(0)
         self._degrade_watchdog_task = asyncio.create_task(self._degradation_watchdog_loop())
+
+    def _to_run_packages_relative(self, path: Path) -> str:
+        root = self.run_packages_root.resolve()
+        resolved = path.resolve()
+        try:
+            relative = resolved.relative_to(root)
+        except ValueError:
+            return str(resolved)
+        return relative.as_posix()
+
+    def _resolve_run_packages_path(self, raw_path: str) -> Path:
+        candidate = Path(str(raw_path).strip())
+        if not candidate.is_absolute():
+            candidate = self.run_packages_root / candidate
+        resolved = candidate.resolve()
+        root = self.run_packages_root.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="path escapes run_packages root") from exc
+        return resolved
+
+    def _load_run_packages_index_unlocked(self) -> list[dict[str, Any]]:
+        if not self.run_packages_index_path.exists():
+            return []
+        try:
+            payload = json.loads(self.run_packages_index_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        if isinstance(payload, dict):
+            items = payload.get("items", [])
+        else:
+            items = payload
+        if not isinstance(items, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            run_id = str(item.get("run_id", "")).strip()
+            if not run_id:
+                continue
+            normalized.append(item)
+        normalized.sort(key=lambda row: int(row.get("createdAtMs", 0) or 0), reverse=True)
+        return normalized
+
+    def _save_run_packages_index_unlocked(self, entries: list[dict[str, Any]]) -> None:
+        self.run_packages_root.mkdir(parents=True, exist_ok=True)
+        payload = entries[:200]
+        temp_path = self.run_packages_index_path.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(self.run_packages_index_path)
+
+    async def register_run_package(self, entry: dict[str, Any]) -> None:
+        async with self._run_packages_lock:
+            entries = self._load_run_packages_index_unlocked()
+            run_id = str(entry.get("run_id", "")).strip()
+            entries = [row for row in entries if str(row.get("run_id", "")).strip() != run_id]
+            entries.insert(0, entry)
+            self._save_run_packages_index_unlocked(entries)
+
+    async def list_run_packages(self, limit: int) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(200, int(limit)))
+        async with self._run_packages_lock:
+            entries = self._load_run_packages_index_unlocked()
+            return entries[:safe_limit]
+
+    async def get_run_package(self, run_id: str) -> dict[str, Any] | None:
+        lookup = str(run_id or "").strip()
+        if not lookup:
+            return None
+        async with self._run_packages_lock:
+            entries = self._load_run_packages_index_unlocked()
+            for entry in entries:
+                if str(entry.get("run_id", "")).strip() == lookup:
+                    return entry
+        return None
 
     async def shutdown(self) -> None:
         if self._degrade_watchdog_task is not None:
@@ -997,7 +1079,7 @@ async def run_package_upload(
 
     timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
     scenario = _sanitize_file_tag(scenarioTag)
-    artifacts_root = Path(__file__).resolve().parent / "artifacts" / "run_packages"
+    artifacts_root = gateway.run_packages_root
     artifacts_root.mkdir(parents=True, exist_ok=True)
 
     zip_path = artifacts_root / f"{timestamp}_{scenario}.zip"
@@ -1031,8 +1113,22 @@ async def run_package_upload(
             output_json=report_json_path,
         )
 
+        run_id = package_dir.name
+        created_at_ms = _now_ms()
+        index_entry = {
+            "run_id": run_id,
+            "scenarioTag": run_pkg_summary.get("scenarioTag", scenario or "run"),
+            "createdAtMs": created_at_ms,
+            "zipPath": gateway._to_run_packages_relative(zip_path),  # noqa: SLF001
+            "reportMdPath": gateway._to_run_packages_relative(generated_md),  # noqa: SLF001
+            "reportJsonPath": gateway._to_run_packages_relative(generated_json or report_json_path),  # noqa: SLF001
+            "summary": summary,
+        }
+        await gateway.register_run_package(index_entry)
+
         return {
             "ok": True,
+            "runId": run_id,
             "runDir": str(package_dir),
             "reportMdPath": str(generated_md),
             "reportJsonPath": str(generated_json or report_json_path),
@@ -1042,6 +1138,51 @@ async def run_package_upload(
         raise
     except Exception as ex:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"run package processing failed: {ex}") from ex
+
+
+@app.get("/api/run_packages")
+async def run_packages_list(limit: int = 20) -> dict[str, Any]:
+    items = await gateway.list_run_packages(limit)
+    return {"ok": True, "items": items}
+
+
+@app.get("/api/run_packages/{run_id}/summary")
+async def run_package_summary(run_id: str) -> dict[str, Any]:
+    entry = await gateway.get_run_package(run_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="run_id not found")
+    report_path = gateway._resolve_run_packages_path(str(entry.get("reportJsonPath", "")))  # noqa: SLF001
+    if not report_path.exists():
+        raise HTTPException(status_code=404, detail="report json not found")
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    except Exception as ex:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"report json parse failed: {ex}") from ex
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=500, detail="report json invalid")
+    return payload
+
+
+@app.get("/api/run_packages/{run_id}/report")
+async def run_package_report(run_id: str) -> FileResponse:
+    entry = await gateway.get_run_package(run_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="run_id not found")
+    report_path = gateway._resolve_run_packages_path(str(entry.get("reportMdPath", "")))  # noqa: SLF001
+    if not report_path.exists():
+        raise HTTPException(status_code=404, detail="report md not found")
+    return FileResponse(path=report_path, media_type="text/markdown", filename=f"{run_id}.md")
+
+
+@app.get("/api/run_packages/{run_id}/zip")
+async def run_package_zip(run_id: str) -> FileResponse:
+    entry = await gateway.get_run_package(run_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="run_id not found")
+    zip_path = gateway._resolve_run_packages_path(str(entry.get("zipPath", "")))  # noqa: SLF001
+    if not zip_path.exists():
+        raise HTTPException(status_code=404, detail="zip not found")
+    return FileResponse(path=zip_path, media_type="application/zip", filename=f"{run_id}.zip")
 
 
 @app.get("/metrics")

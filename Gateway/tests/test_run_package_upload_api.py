@@ -31,6 +31,7 @@ def test_run_package_upload_api_generates_reports() -> None:
         assert response.status_code == 200, response.text
         body = response.json()
         assert body.get("ok") is True
+        assert isinstance(body.get("runId"), str) and body["runId"]
 
         run_dir = Path(body["runDir"])
         report_md = Path(body["reportMdPath"])
@@ -48,5 +49,4 @@ def test_run_package_upload_api_generates_reports() -> None:
         assert "preempt_enter" in summary
         assert "confirm_request" in summary
 
-        shutil.rmtree(run_dir.parent, ignore_errors=True)
-
+        shutil.rmtree(run_dir, ignore_errors=True)

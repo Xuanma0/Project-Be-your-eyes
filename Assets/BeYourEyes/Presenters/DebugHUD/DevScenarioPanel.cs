@@ -11,12 +11,14 @@ namespace BeYourEyes.Presenters.DebugHUD
     {
         [SerializeField] private GatewayClient gatewayClient;
         [SerializeField] private GatewayDevApi gatewayDevApi;
+        [SerializeField] private RunHistoryClient runHistoryClient;
         [SerializeField] private RunRecorder runRecorder;
         [SerializeField] private RunReplayer runReplayer;
         [SerializeField] private RunPackageManager runPackageManager;
         [SerializeField] private bool visible = true;
         [SerializeField] private int maxHistory = 30;
         [SerializeField] private int maxBodyChars = 800;
+        [SerializeField] private int runHistoryLimit = 10;
 
         private string baseUrlInput = "http://127.0.0.1:8000";
         private int intentIndex;
@@ -41,10 +43,17 @@ namespace BeYourEyes.Presenters.DebugHUD
         private string lastRunSummary = string.Empty;
         private string lastZipPath = string.Empty;
         private string lastZipError = string.Empty;
+        private string selectedRunId = string.Empty;
+        private string selectedRunScenario = string.Empty;
+        private string selectedRunSummaryText = string.Empty;
+        private string runHistoryError = string.Empty;
+        private bool runHistoryLoading;
+        private Vector2 runListScroll;
         private Vector2 historyScroll;
         private float nextLookupAt;
 
         private readonly List<HistoryRow> history = new List<HistoryRow>();
+        private readonly List<JObject> runHistoryItems = new List<JObject>();
 
         private static readonly string[] IntentOptions = { "normal", "scan_text", "ask", "qa" };
         private static readonly string[] FaultToolPresets = { "mock_risk", "mock_ocr", "real_det", "real_ocr", "real_depth", "real_vlm" };
@@ -106,6 +115,7 @@ namespace BeYourEyes.Presenters.DebugHUD
             DrawFaultOps();
             DrawScenarioOps();
             DrawResult();
+            DrawRunHistory();
             DrawHistory();
             GUILayout.EndArea();
         }
@@ -306,6 +316,51 @@ namespace BeYourEyes.Presenters.DebugHUD
             GUILayout.TextArea(Truncate(lastResponseBody, maxBodyChars), GUILayout.Height(80f));
         }
 
+        private void DrawRunHistory()
+        {
+            GUILayout.Space(4f);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Run History");
+            if (GUILayout.Button(runHistoryLoading ? "Refreshing..." : "Refresh History", GUILayout.Width(120f)))
+            {
+                if (!runHistoryLoading)
+                {
+                    StartCoroutine(RefreshRunHistoryRoutine());
+                }
+            }
+            if (GUILayout.Button("Open Report", GUILayout.Width(100f)))
+            {
+                OpenSelectedReport();
+            }
+            GUILayout.EndHorizontal();
+
+            if (!string.IsNullOrWhiteSpace(runHistoryError))
+            {
+                GUILayout.Label($"HistoryError: {Truncate(runHistoryError, 80)}");
+            }
+
+            runListScroll = GUILayout.BeginScrollView(runListScroll, GUILayout.Height(120f));
+            for (var i = 0; i < runHistoryItems.Count; i++)
+            {
+                var item = runHistoryItems[i];
+                var runId = ReadString(item, "run_id");
+                var tag = ReadString(item, "scenarioTag");
+                var createdAt = ReadLong(item, "createdAtMs", 0);
+                var label = $"{runId} | {tag} | {createdAt}";
+                if (GUILayout.Button(label))
+                {
+                    selectedRunId = runId;
+                    selectedRunScenario = tag;
+                    selectedRunSummaryText = "loading...";
+                    StartCoroutine(FetchSelectedRunSummaryRoutine(runId));
+                }
+            }
+            GUILayout.EndScrollView();
+
+            GUILayout.Label($"SelectedRun: {selectedRunId} ({selectedRunScenario})");
+            GUILayout.TextArea(Truncate(selectedRunSummaryText, 400), GUILayout.Height(72f));
+        }
+
         private void DrawHistory()
         {
             GUILayout.Space(4f);
@@ -360,10 +415,22 @@ namespace BeYourEyes.Presenters.DebugHUD
                     gatewayDevApi = gameObject.AddComponent<GatewayDevApi>();
                 }
             }
+            if (runHistoryClient == null)
+            {
+                runHistoryClient = GetComponent<RunHistoryClient>();
+                if (runHistoryClient == null)
+                {
+                    runHistoryClient = gameObject.AddComponent<RunHistoryClient>();
+                }
+            }
 
             if (gatewayDevApi != null)
             {
                 gatewayDevApi.SetBaseUrl(baseUrlInput);
+            }
+            if (runHistoryClient != null)
+            {
+                runHistoryClient.SetBaseUrl(baseUrlInput);
             }
 
             BindRunManager();
@@ -400,6 +467,10 @@ namespace BeYourEyes.Presenters.DebugHUD
             lastError = "-";
             lastResponseBody = summary ?? string.Empty;
             RecordHistory("RUN", "package", 0, 0, true, "-");
+            if (!runHistoryLoading)
+            {
+                StartCoroutine(RefreshRunHistoryRoutine());
+            }
         }
 
         private void ExportLastRunZip()
@@ -603,6 +674,127 @@ namespace BeYourEyes.Presenters.DebugHUD
             currentScenario = "-";
         }
 
+        private IEnumerator RefreshRunHistoryRoutine()
+        {
+            EnsureDependencies();
+            if (runHistoryClient == null)
+            {
+                runHistoryError = "run_history_client_missing";
+                yield break;
+            }
+
+            runHistoryLoading = true;
+            runHistoryError = string.Empty;
+            runHistoryClient.SetBaseUrl(baseUrlInput);
+
+            var done = false;
+            var ok = false;
+            var rows = new List<JObject>();
+            var error = string.Empty;
+            yield return StartCoroutine(runHistoryClient.ListRuns(runHistoryLimit, (success, items, err) =>
+            {
+                done = true;
+                ok = success;
+                rows = items ?? new List<JObject>();
+                error = err ?? string.Empty;
+            }));
+
+            runHistoryLoading = false;
+            if (!done || !ok)
+            {
+                runHistoryError = string.IsNullOrWhiteSpace(error) ? "history_fetch_failed" : error;
+                yield break;
+            }
+
+            runHistoryItems.Clear();
+            runHistoryItems.AddRange(rows);
+            if (runHistoryItems.Count == 0)
+            {
+                selectedRunId = string.Empty;
+                selectedRunScenario = string.Empty;
+                selectedRunSummaryText = "no runs";
+            }
+        }
+
+        private IEnumerator FetchSelectedRunSummaryRoutine(string runId)
+        {
+            EnsureDependencies();
+            if (runHistoryClient == null || string.IsNullOrWhiteSpace(runId))
+            {
+                selectedRunSummaryText = "summary unavailable";
+                yield break;
+            }
+
+            var done = false;
+            var ok = false;
+            var error = string.Empty;
+            JObject payload = null;
+            runHistoryClient.SetBaseUrl(baseUrlInput);
+            yield return StartCoroutine(runHistoryClient.GetSummary(runId, (success, summary, err) =>
+            {
+                done = true;
+                ok = success;
+                payload = summary;
+                error = err ?? string.Empty;
+            }));
+
+            if (!done || !ok || payload == null)
+            {
+                selectedRunSummaryText = string.IsNullOrWhiteSpace(error) ? "summary_fetch_failed" : error;
+                yield break;
+            }
+
+            selectedRunSummaryText = BuildSummaryText(payload);
+        }
+
+        private void OpenSelectedReport()
+        {
+            EnsureDependencies();
+            if (runHistoryClient == null)
+            {
+                PushUiError("run_history_client_missing");
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(selectedRunId))
+            {
+                PushUiError("run_not_selected");
+                return;
+            }
+            runHistoryClient.SetBaseUrl(baseUrlInput);
+            var url = runHistoryClient.GetReportUrl(selectedRunId);
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                PushUiError("report_url_empty");
+                return;
+            }
+            Application.OpenURL(url);
+        }
+
+        private static string BuildSummaryText(JObject payload)
+        {
+            if (payload == null)
+            {
+                return "summary: -";
+            }
+            var frameReceived = ReadLong(payload, "frame_received", -1);
+            var frameCompleted = ReadLong(payload, "frame_completed", -1);
+            var e2eCount = ReadLong(payload, "e2e_count", -1);
+            var e2eSum = ReadLong(payload, "e2e_sum", -1);
+            var ttfaCount = ReadLong(payload, "ttfa_count", -1);
+            var ttfaSum = ReadLong(payload, "ttfa_sum", -1);
+            var safe = ReadLong(payload, "safemode_enter", -1);
+            var throttle = ReadLong(payload, "throttle_enter", -1);
+            var preempt = ReadLong(payload, "preempt_enter", -1);
+            var confirmReq = ReadLong(payload, "confirm_request", -1);
+            var confirmResp = ReadLong(payload, "confirm_response", -1);
+            return
+                $"frame: {frameReceived}/{frameCompleted}\n" +
+                $"e2e: count={e2eCount} sum={e2eSum}\n" +
+                $"ttfa: count={ttfaCount} sum={ttfaSum}\n" +
+                $"safe={safe} throttle={throttle} preempt={preempt}\n" +
+                $"confirm req/resp={confirmReq}/{confirmResp}";
+        }
+
         private IEnumerator SendRequest(string method, string path, JObject payload)
         {
             EnsureDependencies();
@@ -719,6 +911,26 @@ namespace BeYourEyes.Presenters.DebugHUD
             }
 
             return trimmed.Substring(0, limit) + "...";
+        }
+
+        private static string ReadString(JObject obj, string key)
+        {
+            var token = obj?[key];
+            return token == null ? string.Empty : token.ToString().Trim();
+        }
+
+        private static long ReadLong(JObject obj, string key, long defaultValue)
+        {
+            var token = obj?[key];
+            if (token == null)
+            {
+                return defaultValue;
+            }
+            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+            {
+                return token.Value<long>();
+            }
+            return long.TryParse(token.ToString(), out var parsed) ? parsed : defaultValue;
         }
 
         private static string NextPreset(string current, IReadOnlyList<string> options)

@@ -59,6 +59,7 @@ namespace BeYourEyes.Adapters.Networking
         private string lastUploadError = string.Empty;
         private string lastUploadReportPath = string.Empty;
         private string lastUploadSummary = string.Empty;
+        private string lastUploadRunId = string.Empty;
         private long lastUploadAtMs = -1;
         private bool uploadInFlight;
 
@@ -96,6 +97,7 @@ namespace BeYourEyes.Adapters.Networking
         public string LastUploadError => lastUploadError ?? string.Empty;
         public string LastUploadReportPath => lastUploadReportPath ?? string.Empty;
         public string LastUploadSummary => lastUploadSummary ?? string.Empty;
+        public string LastUploadRunId => lastUploadRunId ?? string.Empty;
         public long LastUploadAtMs => lastUploadAtMs;
 
         public event Action<string, string> OnRunCompleted;
@@ -164,6 +166,7 @@ namespace BeYourEyes.Adapters.Networking
             lastUploadError = string.Empty;
             lastUploadReportPath = string.Empty;
             lastUploadSummary = string.Empty;
+            lastUploadRunId = string.Empty;
             lastUploadAtMs = -1;
             startFramesCaptured = frameCapture.FramesCaptured;
             startFramesSent = frameCapture.FramesSent;
@@ -638,7 +641,7 @@ namespace BeYourEyes.Adapters.Networking
                             continue;
                         }
 
-                        var entry = archive.CreateEntry(item.RelativePath, CompressionLevel.Optimal);
+                        var entry = archive.CreateEntry(item.RelativePath, System.IO.Compression.CompressionLevel.Optimal);
                         using (var inStream = new FileStream(item.SourcePath, FileMode.Open, FileAccess.Read, FileShare.Read))
                         using (var outStream = entry.Open())
                         {
@@ -672,6 +675,7 @@ namespace BeYourEyes.Adapters.Networking
             lastUploadError = string.Empty;
             lastUploadReportPath = string.Empty;
             lastUploadSummary = string.Empty;
+            lastUploadRunId = string.Empty;
             lastUploadAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
             var endpoint = $"{baseUrl}/api/run_package/upload";
@@ -727,6 +731,7 @@ namespace BeYourEyes.Adapters.Networking
 
                     lastUploadStatus = "ok";
                     lastUploadError = string.Empty;
+                    lastUploadRunId = ReadString(payload, "runId");
                     lastUploadReportPath = ReadString(payload, "reportMdPath");
                     lastUploadSummary = BuildUploadSummary(payload["summary"] as JObject);
                 }
@@ -734,6 +739,7 @@ namespace BeYourEyes.Adapters.Networking
                 {
                     lastUploadStatus = "error";
                     lastUploadError = $"upload_parse_failed:{ex.Message}";
+                    lastUploadRunId = string.Empty;
                 }
             }
         }

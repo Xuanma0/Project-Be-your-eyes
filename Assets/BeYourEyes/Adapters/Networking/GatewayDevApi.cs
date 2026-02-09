@@ -98,6 +98,20 @@ namespace BeYourEyes.Adapters.Networking
 
                 req.downloadHandler = new DownloadHandlerBuffer();
                 req.timeout = TimeoutSec;
+            }
+            catch (Exception ex)
+            {
+                var finishedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                result.latencyMs = Math.Max(0, finishedAtMs - startedAtMs);
+                result.statusCode = -1;
+                result.error = ex.Message;
+                result.ok = false;
+                onDone?.Invoke(result);
+                yield break;
+            }
+
+            try
+            {
                 yield return req.SendWebRequest();
 
                 var finishedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -107,17 +121,9 @@ namespace BeYourEyes.Adapters.Networking
                 result.error = req.error ?? string.Empty;
                 result.ok = req.responseCode >= 200 && req.responseCode < 300;
             }
-            catch (Exception ex)
-            {
-                var finishedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                result.latencyMs = Math.Max(0, finishedAtMs - startedAtMs);
-                result.statusCode = -1;
-                result.error = ex.Message;
-                result.ok = false;
-            }
             finally
             {
-                req?.Dispose();
+                req.Dispose();
             }
 
             onDone?.Invoke(result);
