@@ -11,21 +11,21 @@ models:
     sha256: null
     license_note: "YOLOv5n ONNX (GPLv3). Replace URL with your approved model source if needed."
   ocr:
-    model_id: byes-real-ocr-v1
-    backend: mock
-    file_name: model.bin
-    weights_path: byes-real-ocr-v1/model.bin
+    model_id: byes-real-ocr-onnx-cpu-v1
+    backend: onnxruntime
+    file_name: model.onnx
+    weights_path: byes-real-ocr-onnx-cpu-v1/model.onnx
     sha256: null
     url: null
-    license_note: "Placeholder model entry for OCR."
+    license_note: "ONNX OCR placeholder. Set url to your approved OCR ONNX source."
   depth:
-    model_id: byes-real-depth-v1
-    backend: mock
-    file_name: model.bin
-    weights_path: byes-real-depth-v1/model.bin
+    model_id: byes-real-depth-onnx-cpu-v1
+    backend: onnxruntime
+    file_name: model.onnx
+    weights_path: byes-real-depth-onnx-cpu-v1/model.onnx
     sha256: null
     url: null
-    license_note: "Placeholder model entry for depth hazards."
+    license_note: "ONNX depth placeholder. Set url to your approved depth ONNX source."
   vlm:
     model_id: byes-real-vlm-v1
     backend: mock

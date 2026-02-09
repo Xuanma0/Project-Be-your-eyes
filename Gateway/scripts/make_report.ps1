@@ -9,6 +9,8 @@
     [switch]$RealDetBaseline,
     [switch]$RealDepthBaseline,
     [switch]$RealOcrScan,
+    [switch]$RealDepthOnnxBaseline,
+    [switch]$RealOcrOnnxScan,
     [switch]$RealVlmAsk,
     [switch]$RealDetActionPlan,
     [switch]$CacheScenario,
@@ -348,6 +350,10 @@ $framesDirAbs = if ([System.IO.Path]::IsPathRooted($FramesDir)) { $FramesDir } e
 
 if ($RealDetActionPlan -and $RunName -eq "run_baseline") {
     $RunName = "run_realdet_actionplan"
+} elseif ($RealOcrOnnxScan -and $RunName -eq "run_baseline") {
+    $RunName = "run_realoocr_onnx_v48"
+} elseif ($RealDepthOnnxBaseline -and $RunName -eq "run_baseline") {
+    $RunName = "run_realdepth_onnx_v48"
 } elseif ($PlannerV1CrossCheck -and $RunName -eq "run_baseline") {
     $RunName = "run_planner_crosscheck"
 } elseif ($PlannerV1ThrottledAsk -and $RunName -eq "run_baseline") {
@@ -378,6 +384,15 @@ if ($RealDetActionPlan -and $RunName -eq "run_baseline") {
 
 if (-not (Test-Path $framesDirAbs)) {
     throw "FramesDir not found: $framesDirAbs"
+}
+
+if ($RealOcrOnnxScan) {
+    $RealOcrScan = $true
+    $ExternalReadinessSmoke = $true
+}
+if ($RealDepthOnnxBaseline) {
+    $RealDepthBaseline = $true
+    $ExternalReadinessSmoke = $true
 }
 
 New-Item -ItemType Directory -Force -Path $outDirAbs | Out-Null

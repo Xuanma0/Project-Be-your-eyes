@@ -667,6 +667,21 @@ Leaderboard + export APIs:
 - CSV columns include:
   - `runId,scenarioTag,startMs,endMs,frameCountSent,e2e_count,e2e_p50,ttfa_p50,safemode_enter,throttle_enter,preempt_enter,confirm_req,confirm_resp,confirm_timeout,safety_score,runUrl,reportUrl,summaryUrl,zipUrl`
 
+## v4.8 ONNX readiness (OCR + Depth)
+
+- `external/real_ocr_service` and `external/real_depth_service` now support `BYES_BACKEND=onnxruntime`.
+- Both services expose `GET /healthz` with:
+  - `ready`, `model_id`, `backend`, `version`, `warmed_up`, `reason`
+- If weights are missing or model load fails:
+  - `ready=false`
+  - inference endpoint returns `503` (`service_not_ready`)
+- `external/modelpack/manifest.yaml` includes ONNX entries for:
+  - `ocr` (`byes-real-ocr-onnx-cpu-v1/model.onnx`)
+  - `depth` (`byes-real-depth-onnx-cpu-v1/model.onnx`)
+- `scripts/make_report.ps1` adds:
+  - `-RealOcrOnnxScan` (aliases `-RealOcrScan`, enables external readiness smoke)
+  - `-RealDepthOnnxBaseline` (aliases `-RealDepthBaseline`, enables external readiness smoke)
+
 Unity integration:
 
 - `DevScenarioPanel` adds `Open Runs Dashboard` button (`{BaseUrl}/runs`).
