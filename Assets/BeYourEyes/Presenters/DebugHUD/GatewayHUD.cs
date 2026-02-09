@@ -18,6 +18,7 @@ namespace BeYourEyes.Presenters.DebugHUD
         [SerializeField] private DirectionalGuidance directionalGuidance;
         [SerializeField] private SpeechOrchestrator speechOrchestrator;
         [SerializeField] private LocalIntentController localIntentController;
+        [SerializeField] private DevScenarioPanel devScenarioPanel;
         [SerializeField] private BeYourEyes.Adapters.Networking.RunRecorder runRecorder;
         [SerializeField] private BeYourEyes.Adapters.Networking.RunReplayer runReplayer;
         [SerializeField] private float confirmPollIntervalSec = 1.5f;
@@ -75,6 +76,7 @@ namespace BeYourEyes.Presenters.DebugHUD
             EnsureSpeechOrchestrator();
             EnsureLocalIntentController();
             EnsureRunTools();
+            EnsureDevScenarioPanel();
             BindClient();
             StartConfirmPoller();
         }
@@ -124,6 +126,10 @@ namespace BeYourEyes.Presenters.DebugHUD
             if (runReplayer == null)
             {
                 runReplayer = FindFirstObjectByType<BeYourEyes.Adapters.Networking.RunReplayer>();
+            }
+            if (devScenarioPanel == null)
+            {
+                devScenarioPanel = FindFirstObjectByType<DevScenarioPanel>();
             }
 
             if (statusText != null)
@@ -913,6 +919,20 @@ namespace BeYourEyes.Presenters.DebugHUD
                 {
                     runReplayer = gameObject.AddComponent<BeYourEyes.Adapters.Networking.RunReplayer>();
                 }
+            }
+        }
+
+        private void EnsureDevScenarioPanel()
+        {
+            if (devScenarioPanel != null)
+            {
+                return;
+            }
+
+            devScenarioPanel = GetComponent<DevScenarioPanel>();
+            if (devScenarioPanel == null)
+            {
+                devScenarioPanel = gameObject.AddComponent<DevScenarioPanel>();
             }
         }
 

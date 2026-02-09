@@ -16,6 +16,7 @@ namespace BeYourEyes.Adapters.Networking
         [SerializeField] private bool recordFrames;
         [SerializeField] private float telemetrySnapshotIntervalSec = 1.0f;
         [SerializeField] private int maxMetaPreviewChars = 240;
+        [SerializeField] private string scenarioTag = string.Empty;
 
         private readonly object writeLock = new object();
         private StreamWriter uiEventsWriter;
@@ -24,11 +25,13 @@ namespace BeYourEyes.Adapters.Networking
         private float nextLookupAt;
         private string runsRootPath;
         private string framesDirectory;
+        private string manifestPath;
 
         public bool IsRecording { get; private set; }
         public string CurrentRunId { get; private set; } = string.Empty;
         public string CurrentRunDirectory { get; private set; } = string.Empty;
         public bool RecordFrames => recordFrames;
+        public string ScenarioTag => scenarioTag ?? string.Empty;
 
         private void OnEnable()
         {
@@ -59,6 +62,15 @@ namespace BeYourEyes.Adapters.Networking
             recordFrames = enabled;
         }
 
+        public void SetScenarioTag(string tag)
+        {
+            scenarioTag = string.IsNullOrWhiteSpace(tag) ? string.Empty : tag.Trim();
+            if (IsRecording)
+            {
+                WriteManifest();
+            }
+        }
+
         public bool StartRecording(out string message)
         {
             if (IsRecording)
@@ -75,6 +87,7 @@ namespace BeYourEyes.Adapters.Networking
                 CurrentRunId = DateTime.Now.ToString("yyyyMMdd_HHmmss");
                 CurrentRunDirectory = Path.Combine(runsRootPath, CurrentRunId);
                 Directory.CreateDirectory(CurrentRunDirectory);
+                manifestPath = Path.Combine(CurrentRunDirectory, "run_manifest.json");
 
                 framesDirectory = Path.Combine(CurrentRunDirectory, "frames");
                 if (recordFrames)
@@ -130,6 +143,8 @@ namespace BeYourEyes.Adapters.Networking
                 StopCoroutine(snapshotRoutine);
                 snapshotRoutine = null;
             }
+
+            manifestPath = string.Empty;
 
             lock (writeLock)
             {
@@ -415,11 +430,15 @@ namespace BeYourEyes.Adapters.Networking
                 ["sessionId"] = gatewayClient != null ? gatewayClient.SessionId : string.Empty,
                 ["recordFrames"] = recordFrames,
                 ["isOnlineAtStart"] = gatewayClient != null && gatewayClient.IsConnected,
+                ["scenarioTag"] = string.IsNullOrWhiteSpace(scenarioTag) ? string.Empty : scenarioTag,
             };
 
             try
             {
-                var manifestPath = Path.Combine(CurrentRunDirectory, "run_manifest.json");
+                if (string.IsNullOrWhiteSpace(manifestPath))
+                {
+                    manifestPath = Path.Combine(CurrentRunDirectory, "run_manifest.json");
+                }
                 File.WriteAllText(manifestPath, manifest.ToString(), new UTF8Encoding(false));
             }
             catch (Exception ex)
