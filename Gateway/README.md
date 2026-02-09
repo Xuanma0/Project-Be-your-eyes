@@ -656,6 +656,17 @@ Compare usage:
 2. Select exactly two runs with checkboxes
 3. Click `Compare Selected (2)` to open `/runs/compare?ids=...`
 
+Leaderboard + export APIs:
+
+- `GET /api/run_packages` supports filters/sort:
+  - `scenario`, `run_id`, `start_from_ms`, `start_to_ms`
+  - `sort` (`createdAtMs|startMs|safety_score|e2e_count|ttfa_count|frameCountSent`)
+  - `order` (`asc|desc`), `limit` (max 200)
+- `GET /api/run_packages/export.csv` returns leaderboard CSV.
+- `GET /api/run_packages/export.json` returns leaderboard JSON.
+- CSV columns include:
+  - `runId,scenarioTag,startMs,endMs,frameCountSent,e2e_count,e2e_p50,ttfa_p50,safemode_enter,throttle_enter,preempt_enter,confirm_req,confirm_resp,confirm_timeout,safety_score,runUrl,reportUrl,summaryUrl,zipUrl`
+
 Unity integration:
 
 - `DevScenarioPanel` adds `Open Runs Dashboard` button (`{BaseUrl}/runs`).

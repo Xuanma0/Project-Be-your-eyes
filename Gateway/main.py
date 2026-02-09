@@ -2,8 +2,10 @@
 
 import asyncio
 import contextlib
+import csv
 import hashlib
 import html
+import io
 import json
 import re
 import time
@@ -1178,9 +1180,123 @@ async def run_package_upload(
 
 
 @app.get("/api/run_packages")
-async def run_packages_list(limit: int = 20) -> dict[str, Any]:
-    items = await gateway.list_run_packages(limit)
-    return {"ok": True, "items": items}
+async def run_packages_list(
+    request: Request,
+    limit: int = 20,
+    scenario: str | None = None,
+    run_id: str | None = None,
+    start_from_ms: int | None = None,
+    start_to_ms: int | None = None,
+    sort: str = "createdAtMs",
+    order: str = "desc",
+) -> dict[str, Any]:
+    items = await _query_run_package_rows(
+        request,
+        limit=limit,
+        scenario=scenario,
+        run_id=run_id,
+        start_from_ms=start_from_ms,
+        start_to_ms=start_to_ms,
+        sort=sort,
+        order=order,
+    )
+    return {
+        "ok": True,
+        "items": items,
+        "filters": {
+            "scenario": scenario or "",
+            "run_id": run_id or "",
+            "start_from_ms": start_from_ms,
+            "start_to_ms": start_to_ms,
+            "sort": sort,
+            "order": order,
+            "limit": limit,
+        },
+    }
+
+
+@app.get("/api/run_packages/export.json")
+async def run_packages_export_json(
+    request: Request,
+    limit: int = 200,
+    scenario: str | None = None,
+    run_id: str | None = None,
+    start_from_ms: int | None = None,
+    start_to_ms: int | None = None,
+    sort: str = "createdAtMs",
+    order: str = "desc",
+) -> dict[str, Any]:
+    items = await _query_run_package_rows(
+        request,
+        limit=limit,
+        scenario=scenario,
+        run_id=run_id,
+        start_from_ms=start_from_ms,
+        start_to_ms=start_to_ms,
+        sort=sort,
+        order=order,
+    )
+    return {
+        "ok": True,
+        "items": items,
+    }
+
+
+@app.get("/api/run_packages/export.csv")
+async def run_packages_export_csv(
+    request: Request,
+    limit: int = 200,
+    scenario: str | None = None,
+    run_id: str | None = None,
+    start_from_ms: int | None = None,
+    start_to_ms: int | None = None,
+    sort: str = "createdAtMs",
+    order: str = "desc",
+) -> Response:
+    items = await _query_run_package_rows(
+        request,
+        limit=limit,
+        scenario=scenario,
+        run_id=run_id,
+        start_from_ms=start_from_ms,
+        start_to_ms=start_to_ms,
+        sort=sort,
+        order=order,
+    )
+
+    fields = [
+        "runId",
+        "scenarioTag",
+        "startMs",
+        "endMs",
+        "frameCountSent",
+        "e2e_count",
+        "e2e_p50",
+        "ttfa_p50",
+        "safemode_enter",
+        "throttle_enter",
+        "preempt_enter",
+        "confirm_req",
+        "confirm_resp",
+        "confirm_timeout",
+        "safety_score",
+        "runUrl",
+        "reportUrl",
+        "summaryUrl",
+        "zipUrl",
+    ]
+
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fields)
+    writer.writeheader()
+    for row in items:
+        writer.writerow({key: row.get(key) for key in fields})
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=run_packages.csv"},
+    )
 
 
 def _load_run_summary_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
@@ -1204,6 +1320,199 @@ def _load_run_report_md_from_entry(entry: dict[str, Any]) -> str:
         return report_path.read_text(encoding="utf-8-sig")
     except Exception as ex:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"report md read failed: {ex}") from ex
+
+
+def _load_run_manifest_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    report_path = gateway._resolve_run_packages_path(str(entry.get("reportMdPath", "")))  # noqa: SLF001
+    package_dir = report_path.parent
+    candidates = [package_dir / "manifest.json", package_dir / "run_manifest.json"]
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8-sig"))
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _read_float(payload: dict[str, Any], key: str) -> float | None:
+    raw = payload.get(key)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_p50(summary: dict[str, Any], candidates: list[str]) -> float | None:
+    for key in candidates:
+        value = _read_float(summary, key)
+        if value is not None:
+            return value
+    return None
+
+
+def _compute_safety_score(summary: dict[str, Any]) -> float:
+    safemode_enter = _read_float(summary, "safemode_enter") or 0.0
+    throttle_enter = _read_float(summary, "throttle_enter") or 0.0
+    preempt_enter = _read_float(summary, "preempt_enter") or 0.0
+    confirm_timeout = _read_float(summary, "confirm_timeout") or 0.0
+    confirm_request = _read_float(summary, "confirm_request") or 0.0
+    confirm_response = _read_float(summary, "confirm_response") or 0.0
+    perception_violation = _read_float(summary, "perception_after_safe_mode") or 0.0
+    action_violation = _read_float(summary, "action_plan_after_safe_mode") or 0.0
+    missed_confirm = max(0.0, confirm_request - confirm_response)
+
+    score = 100.0
+    score -= safemode_enter * 35.0
+    score -= throttle_enter * 10.0
+    score -= preempt_enter * 8.0
+    score -= confirm_timeout * 6.0
+    score -= missed_confirm * 2.0
+    score -= (perception_violation + action_violation) * 3.0
+    if score < 0.0:
+        return 0.0
+    if score > 100.0:
+        return 100.0
+    return round(score, 2)
+
+
+def _build_run_urls(base_url: str, run_id: str) -> dict[str, str]:
+    normalized_base = str(base_url or "").rstrip("/")
+    run_url = f"{normalized_base}/runs/{run_id}"
+    return {
+        "runUrl": run_url,
+        "reportUrl": f"{run_url}#report",
+        "summaryUrl": f"{normalized_base}/api/run_packages/{run_id}/summary",
+        "zipUrl": f"{normalized_base}/api/run_packages/{run_id}/zip",
+    }
+
+
+def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, Any] | None:
+    run_id = str(entry.get("run_id", "")).strip()
+    if not run_id:
+        return None
+    try:
+        summary = _load_run_summary_from_entry(entry)
+    except HTTPException:
+        return None
+    manifest = _load_run_manifest_from_entry(entry)
+    urls = _build_run_urls(base_url, run_id)
+    created_at_ms = int(entry.get("createdAtMs", 0) or 0)
+    frame_count_sent = int(manifest.get("frameCountSent", 0) or 0)
+    frame_count_sent = frame_count_sent or int((_read_float(summary, "frame_received") or 0.0))
+
+    row = {
+        "run_id": run_id,
+        "runId": run_id,
+        "scenarioTag": str(entry.get("scenarioTag", "") or manifest.get("scenarioTag", "")),
+        "createdAtMs": created_at_ms,
+        "startMs": int(manifest.get("startMs", 0) or 0),
+        "endMs": int(manifest.get("endMs", 0) or 0),
+        "frameCountSent": frame_count_sent,
+        "e2e_count": int((_read_float(summary, "e2e_count") or 0.0)),
+        "e2e_sum": _read_float(summary, "e2e_sum") or 0.0,
+        "e2e_p50": _extract_p50(summary, ["e2e_p50", "e2eP50"]),
+        "ttfa_count": int((_read_float(summary, "ttfa_count") or 0.0)),
+        "ttfa_sum": _read_float(summary, "ttfa_sum") or 0.0,
+        "ttfa_p50": _extract_p50(summary, ["ttfa_p50", "ttfaP50"]),
+        "safemode_enter": int((_read_float(summary, "safemode_enter") or 0.0)),
+        "throttle_enter": int((_read_float(summary, "throttle_enter") or 0.0)),
+        "preempt_enter": int((_read_float(summary, "preempt_enter") or 0.0)),
+        "confirm_req": int((_read_float(summary, "confirm_request") or 0.0)),
+        "confirm_resp": int((_read_float(summary, "confirm_response") or 0.0)),
+        "confirm_timeout": int((_read_float(summary, "confirm_timeout") or 0.0)),
+        "safety_score": _compute_safety_score(summary),
+        "summary": summary,
+    }
+    row.update(urls)
+    return row
+
+
+def _matches_run_filters(
+    row: dict[str, Any],
+    *,
+    scenario: str | None,
+    run_id: str | None,
+    start_from_ms: int | None,
+    start_to_ms: int | None,
+) -> bool:
+    if scenario:
+        if scenario.lower() not in str(row.get("scenarioTag", "")).lower():
+            return False
+    if run_id:
+        if run_id.lower() not in str(row.get("runId", "")).lower():
+            return False
+    if start_from_ms is not None:
+        if int(row.get("startMs", 0) or 0) < start_from_ms:
+            return False
+    if start_to_ms is not None:
+        if int(row.get("startMs", 0) or 0) > start_to_ms:
+            return False
+    return True
+
+
+def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[dict[str, Any]]:
+    sort_key = str(sort or "createdAtMs")
+    allowed = {
+        "createdAtMs",
+        "startMs",
+        "scenarioTag",
+        "frameCountSent",
+        "e2e_count",
+        "ttfa_count",
+        "safety_score",
+        "safemode_enter",
+        "throttle_enter",
+        "preempt_enter",
+    }
+    if sort_key not in allowed:
+        sort_key = "createdAtMs"
+    reverse = str(order or "desc").lower() != "asc"
+
+    def key_fn(row: dict[str, Any]) -> Any:
+        value = row.get(sort_key)
+        if value is None:
+            return -1 if reverse else 1
+        return value
+
+    return sorted(rows, key=key_fn, reverse=reverse)
+
+
+async def _query_run_package_rows(
+    request: Request,
+    *,
+    limit: int,
+    scenario: str | None,
+    run_id: str | None,
+    start_from_ms: int | None,
+    start_to_ms: int | None,
+    sort: str,
+    order: str,
+) -> list[dict[str, Any]]:
+    base_url = str(request.base_url).rstrip("/")
+    entries = await gateway.list_run_packages(200)
+    rows: list[dict[str, Any]] = []
+    for entry in entries:
+        row = _build_leaderboard_row(entry, base_url)
+        if row is None:
+            continue
+        if not _matches_run_filters(
+            row,
+            scenario=scenario,
+            run_id=run_id,
+            start_from_ms=start_from_ms,
+            start_to_ms=start_to_ms,
+        ):
+            continue
+        rows.append(row)
+    rows = _sort_run_rows(rows, sort, order)
+    safe_limit = max(1, min(200, int(limit)))
+    return rows[:safe_limit]
 
 
 @app.get("/api/run_packages/{run_id}/summary")
@@ -1237,8 +1546,48 @@ async def run_package_zip(run_id: str) -> FileResponse:
 
 
 @app.get("/runs", response_class=HTMLResponse)
-async def runs_dashboard(request: Request) -> HTMLResponse:
+async def runs_dashboard(
+    request: Request,
+    limit: int = 50,
+    scenario: str | None = None,
+    run_id: str | None = None,
+    sort: str = "createdAtMs",
+    order: str = "desc",
+) -> HTMLResponse:
     base_url = str(request.base_url).rstrip("/")
+    rows = await _query_run_package_rows(
+        request,
+        limit=limit,
+        scenario=scenario,
+        run_id=run_id,
+        start_from_ms=None,
+        start_to_ms=None,
+        sort=sort,
+        order=order,
+    )
+    rows_html = ""
+    for row in rows:
+        run_val = html.escape(str(row.get("runId", "")))
+        tag = html.escape(str(row.get("scenarioTag", "")))
+        created = html.escape(str(row.get("createdAtMs", 0)))
+        safety = html.escape(f"{float(row.get('safety_score', 0.0)):.2f}")
+        rows_html += (
+            "<tr>"
+            f"<td><input type='checkbox' data-run-id='{run_val}' /></td>"
+            f"<td><a href='{base_url}/runs/{run_val}'>{run_val}</a></td>"
+            f"<td>{tag}</td>"
+            f"<td>{created}</td>"
+            f"<td>{safety}</td>"
+            "</tr>"
+        )
+    if not rows_html:
+        rows_html = "<tr><td colspan='5' class='muted'>no runs</td></tr>"
+
+    scenario_value = html.escape(scenario or "")
+    run_id_value = html.escape(run_id or "")
+    sort_value = html.escape(sort or "createdAtMs")
+    order_value = html.escape(order or "desc")
+    limit_value = html.escape(str(limit))
     html_page = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1261,7 +1610,29 @@ async def runs_dashboard(request: Request) -> HTMLResponse:
   <h1>Run Packages</h1>
   <div class="muted">Source: <code>{html.escape(base_url)}</code></div>
   <div class="panel">
-    <button id="refresh">Refresh</button>
+    <form method="get" action="{base_url}/runs">
+      <label>scenario: <input type="text" name="scenario" value="{scenario_value}" /></label>
+      <label>run_id: <input type="text" name="run_id" value="{run_id_value}" /></label>
+      <label>sort:
+        <select name="sort">
+          <option value="createdAtMs" {"selected" if sort_value == "createdAtMs" else ""}>createdAtMs</option>
+          <option value="safety_score" {"selected" if sort_value == "safety_score" else ""}>safety_score</option>
+          <option value="e2e_count" {"selected" if sort_value == "e2e_count" else ""}>e2e_count</option>
+          <option value="ttfa_count" {"selected" if sort_value == "ttfa_count" else ""}>ttfa_count</option>
+          <option value="frameCountSent" {"selected" if sort_value == "frameCountSent" else ""}>frameCountSent</option>
+        </select>
+      </label>
+      <label>order:
+        <select name="order">
+          <option value="desc" {"selected" if order_value == "desc" else ""}>desc</option>
+          <option value="asc" {"selected" if order_value == "asc" else ""}>asc</option>
+        </select>
+      </label>
+      <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
+      <button type="submit">Apply</button>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+    </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
       <thead>
@@ -1270,13 +1641,14 @@ async def runs_dashboard(request: Request) -> HTMLResponse:
           <th>Run</th>
           <th>Scenario</th>
           <th>Created</th>
+          <th>Safety Score</th>
         </tr>
       </thead>
-      <tbody id="runs"></tbody>
+      <tbody id="runs">{rows_html}</tbody>
     </table>
   </div>
   <script>
-    let selected = [];
+    const selected = [];
     function toggleSelected(runId, checked) {{
       if (checked) {{
         if (!selected.includes(runId)) {{
@@ -1294,53 +1666,9 @@ async def runs_dashboard(request: Request) -> HTMLResponse:
         cb.checked = selected.includes(runIdValue);
       }});
     }}
-    async function loadRuns() {{
-      const list = document.getElementById("runs");
-      list.innerHTML = "<tr><td colspan='4' class='muted'>loading...</td></tr>";
-      try {{
-        const res = await fetch("{base_url}/api/run_packages?limit=50");
-        if (!res.ok) {{
-          list.innerHTML = "<tr><td colspan='4'>failed: HTTP " + res.status + "</td></tr>";
-          return;
-        }}
-        const payload = await res.json();
-        const items = Array.isArray(payload.items) ? payload.items : [];
-        if (items.length === 0) {{
-          list.innerHTML = "<tr><td colspan='4' class='muted'>no runs</td></tr>";
-          return;
-        }}
-        list.innerHTML = "";
-        for (const item of items) {{
-          const runId = item.run_id || "";
-          const tag = item.scenarioTag || "";
-          const created = item.createdAtMs || 0;
-          const row = document.createElement("tr");
-          const pick = document.createElement("td");
-          const checkbox = document.createElement("input");
-          checkbox.type = "checkbox";
-          checkbox.setAttribute("data-run-id", runId);
-          checkbox.checked = selected.includes(runId);
-          checkbox.addEventListener("change", (ev) => toggleSelected(runId, ev.target.checked));
-          pick.appendChild(checkbox);
-          row.appendChild(pick);
-          const runCell = document.createElement("td");
-          const a = document.createElement("a");
-          a.href = "{base_url}/runs/" + encodeURIComponent(runId);
-          a.textContent = runId;
-          runCell.appendChild(a);
-          row.appendChild(runCell);
-          const tagCell = document.createElement("td");
-          tagCell.textContent = tag;
-          row.appendChild(tagCell);
-          const createdCell = document.createElement("td");
-          createdCell.textContent = String(created);
-          row.appendChild(createdCell);
-          list.appendChild(row);
-        }}
-      }} catch (err) {{
-        list.innerHTML = "<tr><td colspan='4'>error: " + String(err) + "</td></tr>";
-      }}
-    }}
+    document.querySelectorAll("input[data-run-id]").forEach(cb => {{
+      cb.addEventListener("change", ev => toggleSelected(cb.getAttribute("data-run-id"), ev.target.checked));
+    }});
     document.getElementById("compare").addEventListener("click", () => {{
       if (selected.length !== 2) {{
         alert("Select exactly 2 runs to compare.");
@@ -1349,8 +1677,6 @@ async def runs_dashboard(request: Request) -> HTMLResponse:
       const qs = encodeURIComponent(selected[0]) + "," + encodeURIComponent(selected[1]);
       window.location.href = "{base_url}/runs/compare?ids=" + qs;
     }});
-    document.getElementById("refresh").addEventListener("click", loadRuns);
-    loadRuns();
   </script>
 </body>
 </html>"""
