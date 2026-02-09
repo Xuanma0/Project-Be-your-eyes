@@ -3,7 +3,8 @@
   "rootNamespace": "BeYourEyes.Unity",
   "references": [
     "BeYourEyes.Core",
-    "Unity.InputSystem"
+    "Unity.InputSystem",
+    "endel.nativewebsocket"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],

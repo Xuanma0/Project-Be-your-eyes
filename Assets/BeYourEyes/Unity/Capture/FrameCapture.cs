@@ -11,17 +11,40 @@ namespace BeYourEyes.Unity.Capture
     {
         [SerializeField] private Camera captureCamera;
         [SerializeField] private BeYourEyes.Adapters.Networking.GatewayClient gatewayClient;
-        [SerializeField] private int targetFps = 5;
         [SerializeField] private int captureWidth = 640;
         [SerializeField] private int captureHeight = 360;
-        [SerializeField, Range(1, 100)] private int jpegQuality = 70;
+
+        [Header("Adaptive Policy")]
+        [SerializeField] private int normalFps = 5;
+        [SerializeField] private int degradedFps = 3;
+        [SerializeField] private int throttledFps = 1;
+        [SerializeField] private int safeModeFps = 1;
+        [SerializeField, Range(1, 100)] private int normalJpegQuality = 70;
+        [SerializeField, Range(1, 100)] private int degradedJpegQuality = 60;
+        [SerializeField, Range(1, 100)] private int throttledJpegQuality = 50;
+        [SerializeField, Range(1, 100)] private int safeModeJpegQuality = 40;
         [SerializeField] private int ttlMs = 3000;
+
+        [Header("Backpressure")]
+        [SerializeField] private int busyDropThreshold = 8;
+        [SerializeField, Range(0.2f, 1f)] private float busyDropFpsScale = 0.5f;
         [SerializeField] private bool includePose = true;
         [SerializeField] private bool autoStart = true;
 
         private readonly WaitForEndOfFrame waitForEndOfFrame = new WaitForEndOfFrame();
         private Coroutine captureRoutine;
         private int frameSeq;
+        private int consecutiveBusyDrops;
+
+        private long framesCaptured;
+        private long framesSent;
+        private long framesDroppedBusy;
+        private long framesDroppedNoConn;
+
+        public long FramesCaptured => framesCaptured;
+        public long FramesSent => framesSent;
+        public long FramesDroppedBusy => framesDroppedBusy;
+        public long FramesDroppedNoConn => framesDroppedNoConn;
 
         private void OnEnable()
         {
@@ -66,13 +89,16 @@ namespace BeYourEyes.Unity.Capture
                 yield return waitForEndOfFrame;
                 CaptureAndSendOnce();
 
-                var interval = 1f / Mathf.Max(1, targetFps);
+                var policy = ResolvePolicy();
+                var fps = Mathf.Max(0.5f, policy.fps * ResolveBusyScale());
+                var interval = 1f / fps;
                 yield return new WaitForSeconds(interval);
             }
         }
 
         private void CaptureAndSendOnce()
         {
+            framesCaptured++;
             var cameraToUse = captureCamera != null ? captureCamera : Camera.main;
             if (cameraToUse == null)
             {
@@ -90,7 +116,8 @@ namespace BeYourEyes.Unity.Capture
                 }
             }
 
-            var jpg = CaptureCameraJpg(cameraToUse, captureWidth, captureHeight, jpegQuality);
+            var policy = ResolvePolicy();
+            var jpg = CaptureCameraJpg(cameraToUse, captureWidth, captureHeight, policy.jpegQuality);
             if (jpg == null || jpg.Length == 0)
             {
                 Debug.LogWarning("[FrameCapture] failed to capture jpg");
@@ -99,15 +126,29 @@ namespace BeYourEyes.Unity.Capture
 
             frameSeq++;
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var meta = BuildMeta(cameraToUse, nowMs);
-            var accepted = gatewayClient.TrySendFrame(jpg, meta.ToString(Formatting.None));
-            if (!accepted)
+            var meta = BuildMeta(cameraToUse, nowMs, policy.ttlMs);
+            var result = gatewayClient.TrySendFrameDetailed(jpg, meta.ToString(Formatting.None), frameSeq, nowMs);
+            switch (result)
             {
-                Debug.Log("[FrameCapture] frame dropped by client (in-flight limit)");
+                case BeYourEyes.Adapters.Networking.FrameSendResult.Accepted:
+                    framesSent++;
+                    consecutiveBusyDrops = 0;
+                    break;
+                case BeYourEyes.Adapters.Networking.FrameSendResult.DroppedBusy:
+                    framesDroppedBusy++;
+                    consecutiveBusyDrops++;
+                    break;
+                case BeYourEyes.Adapters.Networking.FrameSendResult.DroppedNoConnection:
+                    framesDroppedNoConn++;
+                    consecutiveBusyDrops = 0;
+                    break;
+                default:
+                    consecutiveBusyDrops = 0;
+                    break;
             }
         }
 
-        private JObject BuildMeta(Camera cameraToUse, long nowMs)
+        private JObject BuildMeta(Camera cameraToUse, long nowMs, int effectiveTtlMs)
         {
             var width = Mathf.Max(32, captureWidth);
             var height = Mathf.Max(32, captureHeight);
@@ -119,7 +160,7 @@ namespace BeYourEyes.Unity.Capture
                 ["seq"] = frameSeq,
                 ["timestampMs"] = nowMs,
                 ["tsCaptureMs"] = nowMs,
-                ["ttlMs"] = Mathf.Max(200, ttlMs),
+                ["ttlMs"] = Mathf.Max(200, effectiveTtlMs),
                 ["width"] = width,
                 ["height"] = height,
                 ["coordFrame"] = "World",
@@ -149,6 +190,32 @@ namespace BeYourEyes.Unity.Capture
             }
 
             return meta;
+        }
+
+        private float ResolveBusyScale()
+        {
+            if (consecutiveBusyDrops >= Mathf.Max(1, busyDropThreshold))
+            {
+                return Mathf.Clamp(busyDropFpsScale, 0.2f, 1f);
+            }
+
+            return 1f;
+        }
+
+        private CapturePolicy ResolvePolicy()
+        {
+            var status = gatewayClient != null ? (gatewayClient.LastHealthStatus ?? string.Empty).Trim().ToUpperInvariant() : string.Empty;
+            switch (status)
+            {
+                case "SAFE_MODE":
+                    return new CapturePolicy(Mathf.Max(1, safeModeFps), Mathf.Clamp(safeModeJpegQuality, 1, 100), ttlMs);
+                case "THROTTLED":
+                    return new CapturePolicy(Mathf.Max(1, throttledFps), Mathf.Clamp(throttledJpegQuality, 1, 100), ttlMs);
+                case "DEGRADED":
+                    return new CapturePolicy(Mathf.Max(1, degradedFps), Mathf.Clamp(degradedJpegQuality, 1, 100), ttlMs);
+                default:
+                    return new CapturePolicy(Mathf.Max(1, normalFps), Mathf.Clamp(normalJpegQuality, 1, 100), ttlMs);
+            }
         }
 
         private static JObject EstimateIntrinsics(Camera cameraToUse, int width, int height)
@@ -213,6 +280,20 @@ namespace BeYourEyes.Unity.Capture
                     Object.Destroy(tex);
                 }
             }
+        }
+
+        private readonly struct CapturePolicy
+        {
+            public CapturePolicy(int fps, int jpegQuality, int ttlMs)
+            {
+                this.fps = fps;
+                this.jpegQuality = jpegQuality;
+                this.ttlMs = ttlMs;
+            }
+
+            public readonly int fps;
+            public readonly int jpegQuality;
+            public readonly int ttlMs;
         }
     }
 }

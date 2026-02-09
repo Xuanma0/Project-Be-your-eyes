@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
@@ -9,6 +10,8 @@ namespace BeYourEyes.Presenters.DebugHUD
     public sealed class GatewayHUD : MonoBehaviour
     {
         [SerializeField] private BeYourEyes.Adapters.Networking.GatewayClient gatewayClient;
+        [SerializeField] private BeYourEyes.Unity.Capture.FrameCapture frameCapture;
+        [SerializeField] private float confirmPollIntervalSec = 1.5f;
 
         private Text statusText;
         private Text confirmPromptText;
@@ -21,20 +24,28 @@ namespace BeYourEyes.Presenters.DebugHUD
         private string riskText = "-";
         private string riskLevel = "-";
         private string actionSummary = "-";
+        private string lastEventType = "-";
+        private string lastEventSummary = "-";
+        private string lastEventStage = "-";
 
         private string pendingConfirmId;
         private string pendingConfirmKind;
+        private bool confirmSubmitting;
+        private readonly HashSet<string> resolvedConfirmIds = new HashSet<string>();
 
         private float nextClientLookupAt;
+        private Coroutine confirmPollRoutine;
 
         private void OnEnable()
         {
             EnsureUi();
             BindClient();
+            StartConfirmPoller();
         }
 
         private void OnDisable()
         {
+            StopConfirmPoller();
             UnbindClient();
         }
 
@@ -46,17 +57,43 @@ namespace BeYourEyes.Presenters.DebugHUD
                 BindClient();
             }
 
+            if (frameCapture == null)
+            {
+                frameCapture = FindFirstObjectByType<BeYourEyes.Unity.Capture.FrameCapture>();
+            }
+
             if (statusText != null)
             {
+                var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var lastMsgAgeText = gatewayClient != null && gatewayClient.LastMessageAtMs > 0
+                    ? $"{Mathf.Max(0f, (float)(nowMs - gatewayClient.LastMessageAtMs) / 1000f):0.0}s ago"
+                    : "-";
+                var reconnectText = gatewayClient != null ? gatewayClient.ReconnectAttempt.ToString() : "-";
+                var ttfaText = gatewayClient != null && gatewayClient.LastTtfaMs >= 0 ? $"{gatewayClient.LastTtfaMs} ms" : "-";
+                var ttfaEmaText = gatewayClient != null && gatewayClient.TtfaEmaMs >= 0 ? $"{gatewayClient.TtfaEmaMs:0.0} ms" : "-";
+                var captureStats = frameCapture == null
+                    ? "-"
+                    : $"cap={frameCapture.FramesCaptured} sent={frameCapture.FramesSent} dropBusy={frameCapture.FramesDroppedBusy} dropNoConn={frameCapture.FramesDroppedNoConn}";
+                var safeBanner = string.Equals(healthStatus, "SAFE_MODE", StringComparison.OrdinalIgnoreCase)
+                    ? "\nSAFE MODE: STOP / RISK ONLY"
+                    : string.Empty;
+
                 statusText.text =
                     "Gateway HUD\n" +
                     $"WS: {wsState}\n" +
+                    $"Reconnects: {reconnectText}\n" +
+                    $"LastMsg: {lastMsgAgeText}\n" +
                     $"Health: {healthStatus}\n" +
                     $"Reason: {healthReason}\n" +
                     $"Risk: {riskText}\n" +
                     $"RiskLevel: {riskLevel}\n" +
                     $"Action: {actionSummary}\n" +
-                    $"PendingConfirm: {(string.IsNullOrWhiteSpace(pendingConfirmId) ? "-" : pendingConfirmKind)}";
+                    $"Event: {lastEventType} stage={lastEventStage}\n" +
+                    $"Summary: {lastEventSummary}\n" +
+                    $"TTFA: {ttfaText} | EMA: {ttfaEmaText}\n" +
+                    $"Frames: {captureStats}\n" +
+                    $"PendingConfirm: {(string.IsNullOrWhiteSpace(pendingConfirmId) ? "-" : pendingConfirmKind)}" +
+                    safeBanner;
             }
         }
 
@@ -98,14 +135,34 @@ namespace BeYourEyes.Presenters.DebugHUD
         private void HandleGatewayEvent(JObject evt)
         {
             var type = ReadString(evt, "type");
+            var summary = ReadString(evt, "summary");
+            if (string.IsNullOrWhiteSpace(summary))
+            {
+                summary = ReadString(evt, "riskText");
+            }
+            lastEventType = string.IsNullOrWhiteSpace(type) ? "-" : type;
+            lastEventSummary = string.IsNullOrWhiteSpace(summary) ? "-" : summary;
+            lastEventStage = ReadString(evt, "stage");
+            if (string.IsNullOrWhiteSpace(lastEventStage))
+            {
+                lastEventStage = "-";
+            }
             switch (type)
             {
                 case "health":
                     healthStatus = ReadString(evt, "healthStatus");
+                    if (string.IsNullOrWhiteSpace(healthStatus))
+                    {
+                        healthStatus = ParseHealthStatusFromSummary(summary);
+                    }
                     healthReason = ReadString(evt, "healthReason");
                     if (string.IsNullOrEmpty(healthReason))
                     {
-                        healthReason = ReadString(evt, "summary");
+                        healthReason = ParseHealthReasonFromSummary(summary);
+                    }
+                    if (string.IsNullOrEmpty(healthReason))
+                    {
+                        healthReason = summary;
                     }
                     break;
                 case "risk":
@@ -121,11 +178,11 @@ namespace BeYourEyes.Presenters.DebugHUD
                     }
                     break;
                 case "action_plan":
-                    actionSummary = ReadString(evt, "summary");
+                    actionSummary = summary;
                     HandleConfirmPayload(evt);
                     break;
                 case "perception":
-                    actionSummary = ReadString(evt, "summary");
+                    actionSummary = summary;
                     break;
             }
         }
@@ -135,7 +192,14 @@ namespace BeYourEyes.Presenters.DebugHUD
             var confirmId = ReadString(evt, "confirmId");
             if (string.IsNullOrWhiteSpace(confirmId))
             {
-                HideConfirmPanel();
+                return;
+            }
+            if (resolvedConfirmIds.Contains(confirmId))
+            {
+                return;
+            }
+            if (!string.IsNullOrWhiteSpace(pendingConfirmId) && string.Equals(pendingConfirmId, confirmId, StringComparison.Ordinal))
+            {
                 return;
             }
 
@@ -198,6 +262,8 @@ namespace BeYourEyes.Presenters.DebugHUD
                 confirmButtons.Add(button);
             }
 
+            confirmSubmitting = false;
+            SetConfirmButtonsInteractable(true);
             confirmPromptText.gameObject.SetActive(true);
             confirmOptionsRoot.gameObject.SetActive(true);
         }
@@ -211,6 +277,7 @@ namespace BeYourEyes.Presenters.DebugHUD
                 confirmPromptText.text = string.Empty;
                 confirmPromptText.gameObject.SetActive(false);
             }
+            confirmSubmitting = false;
 
             if (confirmOptionsRoot != null)
             {
@@ -224,10 +291,99 @@ namespace BeYourEyes.Presenters.DebugHUD
             {
                 return;
             }
+            if (confirmSubmitting)
+            {
+                return;
+            }
 
-            gatewayClient.SendConfirm(pendingConfirmId, choice, "unity_hud");
-            Debug.Log($"[GatewayHUD] confirm submitted: id={pendingConfirmId} choice={choice}");
-            HideConfirmPanel();
+            confirmSubmitting = true;
+            SetConfirmButtonsInteractable(false);
+            var confirmId = pendingConfirmId;
+            gatewayClient.SendConfirm(confirmId, choice, "unity_hud", success =>
+            {
+                if (success)
+                {
+                    resolvedConfirmIds.Add(confirmId);
+                    Debug.Log($"[GatewayHUD] confirm submitted: id={confirmId} choice={choice}");
+                    HideConfirmPanel();
+                }
+                else
+                {
+                    confirmSubmitting = false;
+                    SetConfirmButtonsInteractable(true);
+                }
+            });
+        }
+
+        private void StartConfirmPoller()
+        {
+            if (confirmPollRoutine != null)
+            {
+                return;
+            }
+
+            confirmPollRoutine = StartCoroutine(ConfirmPollLoop());
+        }
+
+        private void StopConfirmPoller()
+        {
+            if (confirmPollRoutine == null)
+            {
+                return;
+            }
+
+            StopCoroutine(confirmPollRoutine);
+            confirmPollRoutine = null;
+        }
+
+        private IEnumerator ConfirmPollLoop()
+        {
+            while (true)
+            {
+                if (gatewayClient != null)
+                {
+                    gatewayClient.FetchPendingConfirm((ok, payload) =>
+                    {
+                        if (!ok || payload == null)
+                        {
+                            return;
+                        }
+
+                        var pendingToken = payload["pending"];
+                        if (!(pendingToken is JObject pendingObj))
+                        {
+                            return;
+                        }
+
+                        var confirmId = ReadString(pendingObj, "confirmId");
+                        if (string.IsNullOrWhiteSpace(confirmId) || resolvedConfirmIds.Contains(confirmId))
+                        {
+                            return;
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(pendingConfirmId) &&
+                            string.Equals(confirmId, pendingConfirmId, StringComparison.Ordinal))
+                        {
+                            return;
+                        }
+
+                        HandleConfirmPayload(pendingObj);
+                    });
+                }
+
+                yield return new WaitForSecondsRealtime(Mathf.Max(0.5f, confirmPollIntervalSec));
+            }
+        }
+
+        private void SetConfirmButtonsInteractable(bool interactable)
+        {
+            foreach (var button in confirmButtons)
+            {
+                if (button != null)
+                {
+                    button.interactable = interactable;
+                }
+            }
         }
 
         private void EnsureUi()
@@ -248,7 +404,7 @@ namespace BeYourEyes.Presenters.DebugHUD
             scaler.referenceResolution = new Vector2(1920f, 1080f);
 
             var panel = CreatePanel(canvasObj.transform, new Vector2(12f, -12f), new Vector2(0f, 1f), new Vector2(520f, 360f));
-            statusText = CreateText(panel, "StatusText", 18, TextAnchor.UpperLeft);
+            statusText = CreateText(panel.transform, "StatusText", 18, TextAnchor.UpperLeft);
             statusText.rectTransform.anchorMin = new Vector2(0f, 0.45f);
             statusText.rectTransform.anchorMax = new Vector2(1f, 1f);
             statusText.rectTransform.offsetMin = new Vector2(8f, 8f);
@@ -344,6 +500,55 @@ namespace BeYourEyes.Presenters.DebugHUD
         {
             var token = obj[key];
             return token == null ? string.Empty : token.ToString().Trim();
+        }
+
+        private static string ParseHealthStatusFromSummary(string summary)
+        {
+            if (string.IsNullOrWhiteSpace(summary))
+            {
+                return string.Empty;
+            }
+
+            var normalized = summary.Trim().ToLowerInvariant();
+            if (normalized.StartsWith("gateway_safe_mode"))
+            {
+                return "SAFE_MODE";
+            }
+            if (normalized.StartsWith("gateway_throttled"))
+            {
+                return "THROTTLED";
+            }
+            if (normalized.StartsWith("gateway_degraded"))
+            {
+                return "DEGRADED";
+            }
+            if (normalized.StartsWith("gateway_waiting_client"))
+            {
+                return "WAITING_CLIENT";
+            }
+            if (normalized.StartsWith("gateway_normal"))
+            {
+                return "NORMAL";
+            }
+
+            return string.Empty;
+        }
+
+        private static string ParseHealthReasonFromSummary(string summary)
+        {
+            if (string.IsNullOrWhiteSpace(summary))
+            {
+                return string.Empty;
+            }
+
+            var open = summary.IndexOf('(');
+            var close = summary.LastIndexOf(')');
+            if (open >= 0 && close > open)
+            {
+                return summary.Substring(open + 1, close - open - 1).Trim();
+            }
+
+            return string.Empty;
         }
     }
 }
