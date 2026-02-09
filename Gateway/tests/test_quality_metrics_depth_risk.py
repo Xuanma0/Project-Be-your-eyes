@@ -9,9 +9,9 @@ def test_compute_depth_risk_metrics_window_match() -> None:
         5: [{"hazardKind": "obstacle", "severity": "warning"}],
     }
     pred_map = {
-        2: [{"hazardKind": "stair_down"}],
+        3: [{"hazardKind": "stair_down"}],
         5: [{"hazardKind": "glass"}],
-        9: [{"hazardKind": "obstacle"}],
+        7: [{"hazardKind": "obstacle"}],
     }
 
     metrics = compute_depth_risk_metrics(gt_map, pred_map, window_frames=2)
@@ -23,20 +23,28 @@ def test_compute_depth_risk_metrics_window_match() -> None:
     assert by_kind["stair_down"]["fp"] == 0
     assert by_kind["stair_down"]["fn"] == 0
 
-    assert by_kind["obstacle"]["tp"] == 0
-    assert by_kind["obstacle"]["fp"] == 1
-    assert by_kind["obstacle"]["fn"] == 1
+    assert by_kind["obstacle"]["tp"] == 1
+    assert by_kind["obstacle"]["fp"] == 0
+    assert by_kind["obstacle"]["fn"] == 0
 
     assert by_kind["glass"]["tp"] == 0
     assert by_kind["glass"]["fp"] == 1
     assert by_kind["glass"]["fn"] == 0
 
     overall = metrics["overall"]
-    assert overall["tp"] == 1
-    assert overall["fp"] == 2
-    assert overall["fn"] == 1
+    assert overall["tp"] == 2
+    assert overall["fp"] == 1
+    assert overall["fn"] == 0
 
     critical = metrics["critical"]
     assert critical["gtCriticalCount"] == 1
     assert critical["hitCriticalCount"] == 1
     assert critical["missCriticalCount"] == 0
+    delay = metrics["detectionDelayFrames"]
+    assert delay["count"] == 2
+    assert delay["p50"] == 2
+    assert delay["p90"] == 2
+    assert delay["max"] == 2
+    assert delay["valuesSample"] == [2, 2]
+    misses = metrics["topMisses"]
+    assert misses == []

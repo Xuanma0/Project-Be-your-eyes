@@ -682,6 +682,26 @@ v4.10 optional Ground Truth quality metrics:
 - Without GT, report stays backward compatible:
   - `quality = { "hasGroundTruth": false }`
 
+v4.11 GT attach helper + diagnostics:
+
+- Attach GT to an existing run package directory or zip:
+
+```bash
+python scripts/attach_ground_truth.py \
+  --run-package /path/to/run_package_or_zip \
+  --ocr /path/to/ocr.jsonl \
+  --risk /path/to/depth_risk.jsonl \
+  --match-window-frames 2
+```
+
+- For zip input, default output is `<input_stem>_gt.zip`.
+- Script updates `manifest.groundTruth` and copies GT into `ground_truth/`.
+- If a sha/hash list file exists in run package root, script attempts to update entries for
+  `manifest.json` and `ground_truth/*` without breaking existing file format.
+- Quality diagnostics in `report.json` now include:
+  - OCR split coverage: `intentCoverage`, `resultCoverage`, `gtHitRate`, `falsePositiveRate`, `topMismatches`
+  - Depth-risk timing/errors: `detectionDelayFrames`, `topMisses`
+
 ## v4.8 ONNX readiness (OCR + Depth)
 
 - `external/real_ocr_service` and `external/real_depth_service` now support `BYES_BACKEND=onnxruntime`.

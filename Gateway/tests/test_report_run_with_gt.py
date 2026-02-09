@@ -44,10 +44,17 @@ def test_report_run_includes_quality_when_ground_truth_exists(tmp_path: Path) ->
     ocr = quality.get("ocr")
     assert isinstance(ocr, dict)
     assert ocr.get("framesWithGt") == 2
+    assert "intentCoverage" in ocr
+    assert "resultCoverage" in ocr
+    assert "gtHitRate" in ocr
+    assert "falsePositiveRate" in ocr
+    assert isinstance(ocr.get("topMismatches"), list)
 
     depth_risk = quality.get("depthRisk")
     assert isinstance(depth_risk, dict)
     assert isinstance(depth_risk.get("overall"), dict)
+    assert isinstance(depth_risk.get("detectionDelayFrames"), dict)
+    assert isinstance(depth_risk.get("topMisses"), list)
 
     score = quality.get("qualityScore")
     assert isinstance(score, (int, float))

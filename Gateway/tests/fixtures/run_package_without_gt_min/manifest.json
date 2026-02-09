@@ -1,0 +1,16 @@
+﻿{
+  "scenarioTag": "fixture_without_gt",
+  "startMs": 1703000000000,
+  "endMs": 1703000001600,
+  "baseUrl": "http://127.0.0.1:8000",
+  "wsUrl": "ws://127.0.0.1:8000/ws/events",
+  "sessionId": "fixture-without-gt",
+  "wsJsonl": "ws_events.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "frameCountSent": 2,
+  "eventCountAccepted": 4,
+  "localSafetyFallbackEnterCount": 0,
+  "healthStatusCounts": {"NORMAL": 1},
+  "errors": []
+}

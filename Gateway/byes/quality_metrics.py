@@ -97,6 +97,23 @@ def extract_pred_hazards_from_ws_events(ws_events_jsonl_path: Path) -> dict[int,
     return compact
 
 
+def extract_ocr_intent_frames_from_ws_events(ws_events_jsonl_path: Path) -> set[int]:
+    intent_frames: set[int] = set()
+    for row in _iter_jsonl(ws_events_jsonl_path):
+        event = row.get("event") if isinstance(row, dict) else None
+        if not isinstance(event, dict):
+            if isinstance(row, dict):
+                event = row
+            else:
+                continue
+        seq = _extract_frame_seq(event)
+        if seq is None:
+            continue
+        if _looks_like_ocr_intent_event(event):
+            intent_frames.add(seq)
+    return intent_frames
+
+
 def levenshtein(a: Sequence[Any] | str, b: Sequence[Any] | str) -> int:
     if isinstance(a, str):
         a_seq: Sequence[Any] = list(a)
@@ -134,11 +151,14 @@ def compute_ocr_metrics(
     gt_map: dict[int, str],
     pred_map: dict[int, dict[str, Any]],
     frames_total: int,
+    intent_frames: set[int] | None = None,
 ) -> dict[str, Any]:
     frames_total_safe = max(0, int(frames_total))
     frames_with_gt = len(gt_map)
     frames_with_pred = len(pred_map)
     coverage = (frames_with_pred / frames_total_safe) if frames_total_safe > 0 else 0.0
+    intent_frames_count = len(intent_frames or set())
+    intent_coverage = (intent_frames_count / frames_total_safe) if frames_total_safe > 0 else 0.0
 
     exact_matches = 0
     char_distance = 0
@@ -146,11 +166,26 @@ def compute_ocr_metrics(
     word_distance = 0
     word_total = 0
     latencies: list[int] = []
+    frames_with_gt_and_pred = 0
+    frames_pred_but_gt_empty = 0
+    mismatch_rows: list[dict[str, Any]] = []
 
     for seq, gt_text in gt_map.items():
         pred_text = str(pred_map.get(seq, {}).get("text", ""))
+        if seq in pred_map:
+            frames_with_gt_and_pred += 1
         if _normalize_text(gt_text) == _normalize_text(pred_text):
             exact_matches += 1
+        elif seq in pred_map:
+            mismatch_rows.append(
+                {
+                    "frameSeq": seq,
+                    "gtText": gt_text,
+                    "predText": pred_text,
+                    "cer": _normalized_distance(list(gt_text or ""), list(pred_text or "")),
+                    "wer": _normalized_distance(_tokenize(gt_text), _tokenize(pred_text)),
+                }
+            )
 
         gt_chars = list(gt_text or "")
         pred_chars = list(pred_text or "")
@@ -169,11 +204,26 @@ def compute_ocr_metrics(
         if isinstance(latency, (int, float)) and latency >= 0:
             latencies.append(int(latency))
 
+    for seq in pred_map.keys():
+        gt_text = gt_map.get(seq, "")
+        if not str(gt_text or "").strip():
+            frames_pred_but_gt_empty += 1
+
+    mismatch_rows.sort(key=lambda row: (-float(row.get("cer", 0.0)), -float(row.get("wer", 0.0)), int(row.get("frameSeq", 0))))
+
     metrics: dict[str, Any] = {
         "framesTotal": frames_total_safe,
         "framesWithGt": frames_with_gt,
         "framesWithPred": frames_with_pred,
         "coverage": coverage,
+        "resultCoverage": coverage,
+        "intentCoverage": intent_coverage,
+        "framesWithOcrIntent": intent_frames_count,
+        "framesWithGtAndPred": frames_with_gt_and_pred,
+        "gtHitRate": _safe_ratio(frames_with_gt_and_pred, frames_with_gt),
+        "framesPredButGtEmpty": frames_pred_but_gt_empty,
+        "falsePositiveRate": _safe_ratio(frames_pred_but_gt_empty, frames_with_pred),
+        "topMismatches": mismatch_rows[:5],
         "exactMatchRate": (exact_matches / frames_with_gt) if frames_with_gt > 0 else 0.0,
         "cer": (char_distance / char_total) if char_total > 0 else 0.0,
         "wer": (word_distance / word_total) if word_total > 0 else 0.0,
@@ -212,6 +262,8 @@ def compute_depth_risk_metrics(
     gt_critical_count = 0
     hit_critical_count = 0
     miss_critical_count = 0
+    detection_delays: list[int] = []
+    top_misses: list[dict[str, Any]] = []
 
     for gt_seq, hazards in gt_map.items():
         for hazard in hazards:
@@ -240,10 +292,22 @@ def compute_depth_risk_metrics(
             if best_idx >= 0:
                 pred_entries[best_idx]["used"] = True
                 by_kind_counts[kind]["tp"] += 1
+                delay = max(0, int(pred_entries[best_idx]["seq"]) - int(gt_seq))
+                detection_delays.append(delay)
                 if is_critical:
                     hit_critical_count += 1
             else:
                 by_kind_counts[kind]["fn"] += 1
+                if len(top_misses) < 5:
+                    top_misses.append(
+                        {
+                            "frameSeq": int(gt_seq),
+                            "hazardKind": kind,
+                            "severity": severity or None,
+                            "window": window,
+                            "note": "no_prediction_in_window",
+                        }
+                    )
                 if is_critical:
                     miss_critical_count += 1
 
@@ -288,6 +352,14 @@ def compute_depth_risk_metrics(
             "hitCriticalCount": hit_critical_count,
             "missCriticalCount": miss_critical_count,
         },
+        "detectionDelayFrames": {
+            "count": len(detection_delays),
+            "p50": _percentile(detection_delays, 50),
+            "p90": _percentile(detection_delays, 90),
+            "max": max(detection_delays) if detection_delays else 0,
+            "valuesSample": detection_delays[:10],
+        },
+        "topMisses": top_misses,
     }
 
 
@@ -335,6 +407,17 @@ def compute_quality_score(
         if exact < 0.5:
             penalty += 5.0
             breakdown.append({"reason": "ocr_low_exact_match", "value": 5.0, "details": {"exactMatchRate": exact}})
+
+    if risk_metrics:
+        delay_metrics = risk_metrics.get("detectionDelayFrames", {})
+        delay_max = int(delay_metrics.get("max", 0) or 0)
+        delay_p90 = int(delay_metrics.get("p90", 0) or 0)
+        if delay_max >= 2:
+            penalty += 5.0
+            breakdown.append({"reason": "risk_detection_delay_max", "value": 5.0, "details": {"max": delay_max}})
+        if delay_p90 >= 2:
+            penalty += 3.0
+            breakdown.append({"reason": "risk_detection_delay_p90", "value": 3.0, "details": {"p90": delay_p90}})
 
     score = max(0.0, min(100.0, float(safety_score) - penalty))
     return round(score, 3), breakdown
@@ -426,6 +509,36 @@ def _looks_like_ocr_event(event: dict[str, Any]) -> bool:
         ).lower()
         if any(keyword in payload_blob for keyword in ("ocr", "scan_text", "read_text")):
             return True
+    return False
+
+
+def _looks_like_ocr_intent_event(event: dict[str, Any]) -> bool:
+    probes = [
+        str(event.get("type", "")),
+        str(event.get("name", "")),
+        str(event.get("tool", "")),
+        str(event.get("toolName", "")),
+        str(event.get("source", "")),
+        str(event.get("category", "")),
+        str(event.get("summary", "")),
+        str(event.get("event", "")),
+    ]
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        probes.extend(
+            [
+                str(payload.get("type", "")),
+                str(payload.get("name", "")),
+                str(payload.get("tool", "")),
+                str(payload.get("toolName", "")),
+                str(payload.get("source", "")),
+                str(payload.get("category", "")),
+                str(payload.get("summary", "")),
+            ]
+        )
+    blob = " ".join(probes).lower()
+    if any(token in blob for token in ("ocr", "scan_text", "read_text", "text_reader", "text")):
+        return True
     return False
 
 
@@ -564,3 +677,10 @@ def _percentile(values: list[int], p: int) -> int:
     idx = int(math.ceil(rank * len(sorted_values)) - 1)
     idx = max(0, min(len(sorted_values) - 1, idx))
     return sorted_values[idx]
+
+
+def _normalized_distance(left: Sequence[Any], right: Sequence[Any]) -> float:
+    den = len(left)
+    if den <= 0:
+        return 0.0
+    return levenshtein(left, right) / den

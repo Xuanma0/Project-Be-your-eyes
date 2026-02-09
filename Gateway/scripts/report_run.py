@@ -23,6 +23,7 @@ from byes.quality_metrics import (  # noqa: E402
     compute_depth_risk_metrics,
     compute_ocr_metrics,
     compute_quality_score,
+    extract_ocr_intent_frames_from_ws_events,
     extract_pred_hazards_from_ws_events,
     extract_pred_ocr_from_ws_events,
     load_gt_ocr_jsonl,
@@ -888,8 +889,9 @@ def generate_report_outputs(
         ocr_gt = load_gt_ocr_jsonl(Path(ocr_path_raw)) if ocr_path_raw else {}
         risk_gt = load_gt_risk_jsonl(Path(risk_path_raw)) if risk_path_raw else {}
         pred_ocr = extract_pred_ocr_from_ws_events(ws_jsonl)
+        ocr_intent_frames = extract_ocr_intent_frames_from_ws_events(ws_jsonl)
         pred_hazards = extract_pred_hazards_from_ws_events(ws_jsonl)
-        ocr_metrics = compute_ocr_metrics(ocr_gt, pred_ocr, frames_total) if ocr_gt else None
+        ocr_metrics = compute_ocr_metrics(ocr_gt, pred_ocr, frames_total, intent_frames=ocr_intent_frames) if ocr_gt else None
         risk_metrics = None
         if risk_gt:
             window = int(gt_cfg.get("matchWindowFrames", 2) or 2)
