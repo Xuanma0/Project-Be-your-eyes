@@ -17,6 +17,7 @@ namespace BeYourEyes.Presenters.DebugHUD
         [SerializeField] private RiskFeedback riskFeedback;
         [SerializeField] private DirectionalGuidance directionalGuidance;
         [SerializeField] private SpeechOrchestrator speechOrchestrator;
+        [SerializeField] private LocalIntentController localIntentController;
         [SerializeField] private float confirmPollIntervalSec = 1.5f;
         [SerializeField] private bool showDebugCounters = true;
 
@@ -57,6 +58,7 @@ namespace BeYourEyes.Presenters.DebugHUD
             EnsureRiskFeedback();
             EnsureDirectionalGuidance();
             EnsureSpeechOrchestrator();
+            EnsureLocalIntentController();
             BindClient();
             StartConfirmPoller();
         }
@@ -95,6 +97,10 @@ namespace BeYourEyes.Presenters.DebugHUD
             {
                 speechOrchestrator = FindFirstObjectByType<SpeechOrchestrator>();
             }
+            if (localIntentController == null)
+            {
+                localIntentController = FindFirstObjectByType<LocalIntentController>();
+            }
 
             if (statusText != null)
             {
@@ -123,6 +129,9 @@ namespace BeYourEyes.Presenters.DebugHUD
                 var fallbackStateText = localSafetyFallback == null ? "OK" : localSafetyFallback.CurrentState.ToString();
                 var fallbackSinceText = "-";
                 var fallbackReasonText = localSafetyFallback == null ? "-" : localSafetyFallback.LastReason;
+                var intentText = gatewayClient == null ? "none" : gatewayClient.CurrentIntentKind;
+                var questionText = gatewayClient == null ? "-" : Truncate(gatewayClient.CurrentQuestion, 40);
+                var localIntentHint = localIntentController == null ? "-" : localIntentController.HintText;
                 if (localSafetyFallback != null && localSafetyFallback.StateEnteredAtMs > 0)
                 {
                     fallbackSinceText = $"{Mathf.Max(0f, (float)(nowMs - localSafetyFallback.StateEnteredAtMs) / 1000f):0.0}s";
@@ -145,11 +154,15 @@ namespace BeYourEyes.Presenters.DebugHUD
                     var speechLine = speechOrchestrator == null
                         ? "\nSpeech: n/a"
                         : $"\nSpeech: spoken={speechOrchestrator.SpokenCount} coolDrop={speechOrchestrator.DroppedByCooldownCount} policyDrop={speechOrchestrator.DroppedByPolicyCount} lastKind={speechOrchestrator.LastSpokenKind} lastAt={speechOrchestrator.LastSpokenAtMs}";
+                    var intentLine = localIntentController == null
+                        ? "\nIntentCtl: n/a"
+                        : $"\nIntentCtl: enter={localIntentController.ScanEnterCount} exit={localIntentController.ScanExitCount} ask={localIntentController.AskTriggerCount} blocked={localIntentController.BlockedCount} reason={localIntentController.LastBlockedReason}";
                     debugLines =
                         $"\nGuard: acc={gatewayClient.EventAcceptedCount} exp={gatewayClient.EventDroppedExpiredCount} ooo={gatewayClient.EventDroppedOutOfOrderCount} fb={gatewayClient.EventDroppedByFallbackCount}" +
                         $"\nGate: acc={gatewayClient.ActionPlanGateAcceptedCount} blk={gatewayClient.ActionPlanGateBlockedCount} pat={gatewayClient.ActionPlanGatePatchedCount} reason={gatewayClient.ActionPlanGateLastReason}" +
                         guidanceLine +
                         speechLine +
+                        intentLine +
                         $"\nlastSeqSeen={gatewayClient.EventLastSeqSeen} displayedSeq={displayedEventSeq} lastEventAgeMs={(lastEventAgeMs >= 0 ? lastEventAgeMs.ToString() : "-")}";
                 }
 
@@ -171,6 +184,8 @@ namespace BeYourEyes.Presenters.DebugHUD
                     $"BytesEMA: {bytesEmaText}\n" +
                     $"Keyframe: {keyframeReasonText}\n" +
                     $"Fallback: {fallbackStateText} since={fallbackSinceText} reason={fallbackReasonText}\n" +
+                    $"Intent: {intentText} | Question: {questionText}\n" +
+                    $"IntentHint: {localIntentHint}\n" +
                     $"PendingConfirm: {(string.IsNullOrWhiteSpace(pendingConfirmId) ? "-" : pendingConfirmKind)}" +
                     debugLines +
                     safeBanner;
@@ -735,6 +750,20 @@ namespace BeYourEyes.Presenters.DebugHUD
             }
         }
 
+        private void EnsureLocalIntentController()
+        {
+            if (localIntentController != null)
+            {
+                return;
+            }
+
+            localIntentController = GetComponent<LocalIntentController>();
+            if (localIntentController == null)
+            {
+                localIntentController = gameObject.AddComponent<LocalIntentController>();
+            }
+        }
+
         private void EnsureReplayButton()
         {
             if (replayButton != null || statusText == null)
@@ -844,6 +873,22 @@ namespace BeYourEyes.Presenters.DebugHUD
         {
             var token = obj[key];
             return token == null ? string.Empty : token.ToString().Trim();
+        }
+
+        private static string Truncate(string value, int maxChars)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return "-";
+            }
+
+            var trimmed = value.Trim();
+            if (trimmed.Length <= Math.Max(8, maxChars))
+            {
+                return trimmed;
+            }
+
+            return trimmed.Substring(0, Math.Max(8, maxChars)) + "...";
         }
 
         private static string ParseHealthStatusFromSummary(string summary)

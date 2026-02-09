@@ -9,6 +9,7 @@ using Newtonsoft.Json.Linq;
 using NativeWebSocket;
 using UnityEngine;
 using UnityEngine.Networking;
+using BeYourEyes.Presenters.DebugHUD;
 
 namespace BeYourEyes.Adapters.Networking
 {
@@ -72,6 +73,8 @@ namespace BeYourEyes.Adapters.Networking
         private string lastRiskLevel = "warn";
         private int lastHealthRttMs = -1;
         private string activeIntent = "none";
+        [SerializeField] private string defaultAskQuestion = "What is in front of me?";
+        private string currentQuestion = "What is in front of me?";
         private Coroutine healthProbeRoutine;
         private bool healthProbeInFlight;
 
@@ -94,6 +97,8 @@ namespace BeYourEyes.Adapters.Networking
         public string LastHealthReason => lastHealthReason;
         public int LastHealthRttMs => lastHealthRttMs;
         public string ActiveIntent => activeIntent;
+        public string CurrentIntentKind => activeIntent;
+        public string CurrentQuestion => string.IsNullOrWhiteSpace(currentQuestion) ? ResolveDefaultAskQuestion() : currentQuestion;
         public long EventAcceptedCount => eventGuard != null ? eventGuard.Accepted : 0;
         public long EventDroppedExpiredCount => eventGuard != null ? eventGuard.DroppedExpired : 0;
         public long EventDroppedOutOfOrderCount => eventGuard != null ? eventGuard.DroppedOutOfOrder : 0;
@@ -251,14 +256,15 @@ namespace BeYourEyes.Adapters.Networking
         public void SendDevIntent(string intent, string question, Action<bool, string> onDone = null)
         {
             var normalized = NormalizeIntent(intent);
+            var resolvedQuestion = string.IsNullOrWhiteSpace(question) ? ResolveDefaultAskQuestion() : question.Trim();
             var payload = new JObject
             {
                 ["intent"] = normalized,
             };
 
-            if ((normalized == "ask" || normalized == "qa") && !string.IsNullOrWhiteSpace(question))
+            if ((normalized == "ask" || normalized == "qa") && !string.IsNullOrWhiteSpace(resolvedQuestion))
             {
-                payload["question"] = question.Trim();
+                payload["question"] = resolvedQuestion;
             }
 
             StartCoroutine(PostJsonRoutine(
@@ -269,11 +275,27 @@ namespace BeYourEyes.Adapters.Networking
                     if (success)
                     {
                         activeIntent = normalized;
+                        if ((normalized == "ask" || normalized == "qa") && !string.IsNullOrWhiteSpace(resolvedQuestion))
+                        {
+                            currentQuestion = resolvedQuestion;
+                        }
                     }
                     var message = success ? "ok" : "error";
                     onDone?.Invoke(success, message);
                 }
             ));
+        }
+
+        public void SetIntentScanText(bool enabled, Action<bool, string> onDone = null)
+        {
+            var target = enabled ? "scan_text" : "none";
+            SendDevIntent(target, string.Empty, onDone);
+        }
+
+        public void TriggerAskOnce(string question, Action<bool, string> onDone = null)
+        {
+            var resolvedQuestion = string.IsNullOrWhiteSpace(question) ? ResolveDefaultAskQuestion() : question.Trim();
+            SendDevIntent("ask", resolvedQuestion, onDone);
         }
 
         public void FetchPendingConfirm(Action<bool, JObject> onDone)
@@ -1063,6 +1085,17 @@ namespace BeYourEyes.Adapters.Networking
                 default:
                     return "none";
             }
+        }
+
+        private string ResolveDefaultAskQuestion()
+        {
+            var panel = FindFirstObjectByType<DevIntentPanel>();
+            if (panel != null && !string.IsNullOrWhiteSpace(panel.CurrentQuestion))
+            {
+                return panel.CurrentQuestion.Trim();
+            }
+
+            return string.IsNullOrWhiteSpace(defaultAskQuestion) ? "What is in front of me?" : defaultAskQuestion.Trim();
         }
 
         private static string ReadString(JObject obj, string key)

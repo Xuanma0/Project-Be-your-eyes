@@ -126,6 +126,12 @@ namespace BeYourEyes.Presenters.Audio
             ttsBackend?.Speak(record.Text, record.Flush);
         }
 
+        public void SpeakLocalHint(string text, bool flush = false)
+        {
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            TrySpeak("dialog", $"local_hint:{text}", text, flush, cooldownDialogMs, nowMs);
+        }
+
         private void HandleAcceptedUiEvent(JObject evt)
         {
             if (evt == null)

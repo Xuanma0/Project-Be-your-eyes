@@ -18,6 +18,8 @@ namespace BeYourEyes.Presenters.DebugHUD
         private readonly List<string> intentOptions = new List<string> { "normal", "scan_text", "ask", "qa" };
         private float nextClientLookupAt;
 
+        public string CurrentQuestion => questionInput != null ? (questionInput.text ?? string.Empty) : string.Empty;
+
         private void OnEnable()
         {
             EnsureUi();

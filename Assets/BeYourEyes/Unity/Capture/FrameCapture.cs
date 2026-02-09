@@ -42,6 +42,7 @@ namespace BeYourEyes.Unity.Capture
         [SerializeField, Range(0.2f, 0.9f)] private float scanTextRoiHeightRatio = 0.5f;
         [SerializeField, Range(1, 100)] private int scanTextRoiMinQuality = 75;
         [SerializeField, Range(1, 100)] private int safeModeScanTextRoiQuality = 60;
+        [SerializeField] private int scanTextStreamMinIntervalMs = 200;
 
         private readonly WaitForEndOfFrame waitForEndOfFrame = new WaitForEndOfFrame();
         private Coroutine captureRoutine;
@@ -63,6 +64,7 @@ namespace BeYourEyes.Unity.Capture
         private const double BytesEmaAlpha = 0.2;
         private string lastKeyframeReason = "-";
         private long lastFallbackAttemptAtMs = -1;
+        private long lastScanTextSentAtMs = -1;
 
         public long FramesCaptured => framesCaptured;
         public long FramesSent => framesSent;
@@ -156,14 +158,29 @@ namespace BeYourEyes.Unity.Capture
             var policy = ResolvePolicy();
             var healthStatus = ResolveHealthStatus();
             var pose = cameraToUse.transform;
-            var decision = keyframeSelector.Evaluate(nowMs, pose.position, pose.rotation, healthStatus, consecutiveBusyDrops);
-            lastKeyframeReason = decision.Reason;
-            if (!decision.ShouldSend)
-            {
-                return;
-            }
-
             var useScanTextRoi = ShouldUseScanTextRoi();
+            KeyframeDecision decision;
+            if (useScanTextRoi)
+            {
+                var minInterval = Math.Max(50, scanTextStreamMinIntervalMs);
+                if (lastScanTextSentAtMs > 0 && nowMs - lastScanTextSentAtMs < minInterval)
+                {
+                    lastKeyframeReason = "scan_text_min_interval";
+                    return;
+                }
+                decision = new KeyframeDecision(true, "scan_text_stream");
+            }
+            else
+            {
+                decision = keyframeSelector.Evaluate(nowMs, pose.position, pose.rotation, healthStatus, consecutiveBusyDrops);
+                if (!decision.ShouldSend)
+                {
+                    lastKeyframeReason = decision.Reason;
+                    return;
+                }
+            }
+            lastKeyframeReason = decision.Reason;
+
             var effectiveQuality = policy.jpegQuality;
             if (useScanTextRoi)
             {
@@ -191,6 +208,10 @@ namespace BeYourEyes.Unity.Capture
                     UpdateBytesEma(capture.bytes.Length);
                     consecutiveBusyDrops = 0;
                     keyframeSelector.NotifySendSucceeded(nowMs, pose.position, pose.rotation);
+                    if (useScanTextRoi)
+                    {
+                        lastScanTextSentAtMs = nowMs;
+                    }
                     break;
                 case BeYourEyes.Adapters.Networking.FrameSendResult.DroppedBusy:
                     framesDroppedBusy++;
@@ -313,7 +334,7 @@ namespace BeYourEyes.Unity.Capture
                 return false;
             }
 
-            return string.Equals(gatewayClient.ActiveIntent, "scan_text", StringComparison.OrdinalIgnoreCase);
+            return string.Equals(gatewayClient.CurrentIntentKind, "scan_text", StringComparison.OrdinalIgnoreCase);
         }
 
         private void EnsureCaptureTargets(int width, int height)
