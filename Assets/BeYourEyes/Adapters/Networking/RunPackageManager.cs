@@ -34,6 +34,7 @@ namespace BeYourEyes.Adapters.Networking
         [Header("Upload")]
         [SerializeField] private bool autoUploadAfterExport = false;
         [SerializeField] private int uploadTimeoutSec = 10;
+        [SerializeField] private bool recordFramesForReplay = false;
 
         private bool runActive;
         private bool runFinishing;
@@ -48,7 +49,10 @@ namespace BeYourEyes.Adapters.Networking
         private readonly List<string> runErrors = new List<string>();
         private readonly Dictionary<string, int> healthStatusCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         private readonly object wsWriteLock = new object();
+        private readonly object frameWriteLock = new object();
         private StreamWriter wsEventsWriter;
+        private StreamWriter framesMetaWriter;
+        private StreamWriter framesIndexWriter;
         private string lastFinishReason = "not_started";
         private string lastExportZipPath = string.Empty;
         private string lastExportSha256 = string.Empty;
@@ -77,10 +81,19 @@ namespace BeYourEyes.Adapters.Networking
         private long startFramesDroppedNoConn;
         private string metricsBeforePath = string.Empty;
         private string metricsAfterPath = string.Empty;
+        private string framesDirectoryPath = string.Empty;
+        private string framesMetaPath = string.Empty;
+        private string framesIndexPath = string.Empty;
+        private int framesCount;
+        private readonly List<JObject> pendingScenarioApiCalls = new List<JObject>();
+        private readonly List<JObject> scenarioApiCalls = new List<JObject>();
 
         private const string WsJsonlFileName = "ws_events.jsonl";
         private const string MetricsBeforeFileName = "metrics_before.txt";
         private const string MetricsAfterFileName = "metrics_after.txt";
+        private const string FramesDirName = "frames";
+        private const string FramesMetaFileName = "frames_meta.jsonl";
+        private const string FramesIndexFileName = "frames_index.jsonl";
 
         public bool IsRunActive => runActive || runFinishing;
         public string CurrentScenarioTag => currentScenarioTag ?? string.Empty;
@@ -107,6 +120,12 @@ namespace BeYourEyes.Adapters.Networking
         public string LastUploadSummaryUrl => lastUploadSummaryUrl ?? string.Empty;
         public string LastUploadZipUrl => lastUploadZipUrl ?? string.Empty;
         public long LastUploadAtMs => lastUploadAtMs;
+        public bool RecordFramesForReplay
+        {
+            get => recordFramesForReplay;
+            set => recordFramesForReplay = value;
+        }
+        public int CurrentFramesCount => framesCount;
 
         public event Action<string, string> OnRunCompleted;
 
@@ -184,6 +203,16 @@ namespace BeYourEyes.Adapters.Networking
             startFramesSent = frameCapture.FramesSent;
             startFramesDroppedBusy = frameCapture.FramesDroppedBusy;
             startFramesDroppedNoConn = frameCapture.FramesDroppedNoConn;
+            framesDirectoryPath = string.Empty;
+            framesMetaPath = string.Empty;
+            framesIndexPath = string.Empty;
+            framesCount = 0;
+            scenarioApiCalls.Clear();
+            for (var i = 0; i < pendingScenarioApiCalls.Count; i++)
+            {
+                scenarioApiCalls.Add((pendingScenarioApiCalls[i].DeepClone() as JObject) ?? new JObject());
+            }
+            pendingScenarioApiCalls.Clear();
 
             currentRunDirectory = BuildRunDirectory(currentScenarioTag);
             currentManifestPath = Path.Combine(currentRunDirectory, "manifest.json");
@@ -213,6 +242,7 @@ namespace BeYourEyes.Adapters.Networking
         {
             Directory.CreateDirectory(currentRunDirectory);
             OpenWsEventsWriter();
+            OpenFrameInputWriters();
 
             if (saveMetricsSnapshot)
             {
@@ -220,6 +250,7 @@ namespace BeYourEyes.Adapters.Networking
             }
 
             runRecorder.SetScenarioTag(currentScenarioTag);
+            runRecorder.SetRecordFrames(recordFramesForReplay);
             if (!runRecorder.IsRecording)
             {
                 if (runRecorder.StartRecording(out var recorderMessage))
@@ -287,6 +318,7 @@ namespace BeYourEyes.Adapters.Networking
 
             endMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             CloseWsEventsWriter();
+            CloseFrameInputWriters();
             lastFinishReason = reason;
             WriteManifest(reason);
             UnbindRuntimeEvents();
@@ -318,6 +350,10 @@ namespace BeYourEyes.Adapters.Networking
                 ["wsJsonl"] = WsJsonlFileName,
                 ["metricsBefore"] = MetricsBeforeFileName,
                 ["metricsAfter"] = MetricsAfterFileName,
+                ["framesDir"] = FramesDirName,
+                ["framesMetaJsonl"] = FramesMetaFileName,
+                ["framesIndexJsonl"] = FramesIndexFileName,
+                ["framesCount"] = framesCount,
                 ["frameCountSent"] = frameSentDelta,
                 ["frameCountCaptured"] = frameCapturedDelta,
                 ["frameDroppedBusy"] = dropBusyDelta,
@@ -338,6 +374,7 @@ namespace BeYourEyes.Adapters.Networking
                     ["afterPath"] = metricsAfterPath,
                 },
                 ["scenarioPayload"] = currentScenarioPayload ?? new JObject(),
+                ["scenarioApiCalls"] = BuildScenarioApiCallsArray(),
                 ["errors"] = new JArray(runErrors),
                 ["export"] = BuildExportObject(),
             };
@@ -464,6 +501,11 @@ namespace BeYourEyes.Adapters.Networking
                 gatewayClient.OnUiEventAccepted -= HandleUiEventAccepted;
                 gatewayClient.OnUiEventAccepted += HandleUiEventAccepted;
             }
+            if (frameCapture != null)
+            {
+                frameCapture.OnFrameAccepted -= HandleFrameAccepted;
+                frameCapture.OnFrameAccepted += HandleFrameAccepted;
+            }
             if (localSafetyFallback != null)
             {
                 localSafetyFallback.OnStateChanged -= HandleLocalSafetyStateChanged;
@@ -476,6 +518,10 @@ namespace BeYourEyes.Adapters.Networking
             if (gatewayClient != null)
             {
                 gatewayClient.OnUiEventAccepted -= HandleUiEventAccepted;
+            }
+            if (frameCapture != null)
+            {
+                frameCapture.OnFrameAccepted -= HandleFrameAccepted;
             }
             if (localSafetyFallback != null)
             {
@@ -526,6 +572,92 @@ namespace BeYourEyes.Adapters.Networking
             if (previous == LocalSafetyState.OK && next != LocalSafetyState.OK)
             {
                 localSafetyEnterCount++;
+            }
+        }
+
+        private void HandleFrameAccepted(FrameCapture.FrameAcceptedInfo info)
+        {
+            if (!runActive || runFinishing)
+            {
+                return;
+            }
+
+            var metaObj = ParseMetaObject(info.MetaJson);
+            var seq = info.Seq > 0 ? info.Seq : ReadLong(metaObj, "seq", framesCount + 1);
+            var frameFileRelative = $"{FramesDirName}/frame_{seq}.jpg";
+            var frameFileAbsolute = string.Empty;
+            var fileSha = string.Empty;
+            var bytes = info.JpgBytes != null ? info.JpgBytes.Length : 0;
+
+            if (recordFramesForReplay && info.JpgBytes != null && info.JpgBytes.Length > 0 && !string.IsNullOrWhiteSpace(framesDirectoryPath))
+            {
+                try
+                {
+                    Directory.CreateDirectory(framesDirectoryPath);
+                    frameFileAbsolute = Path.Combine(framesDirectoryPath, $"frame_{seq}.jpg");
+                    File.WriteAllBytes(frameFileAbsolute, info.JpgBytes);
+                    fileSha = ComputeBytesSha256(info.JpgBytes);
+                }
+                catch (Exception ex)
+                {
+                    runErrors.Add($"frame_write_failed:{seq}:{ex.Message}");
+                    frameFileAbsolute = string.Empty;
+                    fileSha = string.Empty;
+                }
+            }
+
+            var row = new JObject
+            {
+                ["seq"] = seq,
+                ["timestampMs"] = info.TimestampMs,
+                ["receivedAtMs"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ["framePath"] = recordFramesForReplay ? frameFileRelative : string.Empty,
+                ["bytes"] = bytes,
+                ["width"] = info.Width,
+                ["height"] = info.Height,
+                ["roiApplied"] = info.RoiApplied,
+                ["meta"] = metaObj,
+            };
+
+            WriteFrameMetaRow(row);
+            if (!string.IsNullOrWhiteSpace(frameFileAbsolute))
+            {
+                var indexRow = new JObject
+                {
+                    ["seq"] = seq,
+                    ["path"] = frameFileRelative,
+                    ["bytes"] = bytes,
+                    ["sha256"] = fileSha,
+                };
+                WriteFrameIndexRow(indexRow);
+            }
+
+            framesCount++;
+        }
+
+        public void ClearScenarioApiCalls()
+        {
+            pendingScenarioApiCalls.Clear();
+            if (!runActive)
+            {
+                scenarioApiCalls.Clear();
+            }
+        }
+
+        public void RecordScenarioApiCall(string method, string path, JObject body)
+        {
+            var row = new JObject
+            {
+                ["atMs"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ["method"] = string.IsNullOrWhiteSpace(method) ? "GET" : method.Trim().ToUpperInvariant(),
+                ["path"] = string.IsNullOrWhiteSpace(path) ? "/" : path.Trim(),
+                ["body"] = body != null ? body.DeepClone() : null,
+            };
+
+            pendingScenarioApiCalls.Add(row);
+            if (runActive && !runFinishing)
+            {
+                scenarioApiCalls.Add((row.DeepClone() as JObject) ?? new JObject());
             }
         }
 
@@ -601,6 +733,131 @@ namespace BeYourEyes.Adapters.Networking
             var root = Path.Combine(Application.persistentDataPath, "BeYourEyesRunPackages");
             Directory.CreateDirectory(root);
             return Path.Combine(root, $"{DateTime.Now:yyyyMMdd_HHmmss}_{tag}");
+        }
+
+        private void OpenFrameInputWriters()
+        {
+            CloseFrameInputWriters();
+            try
+            {
+                if (recordFramesForReplay)
+                {
+                    framesDirectoryPath = Path.Combine(currentRunDirectory, FramesDirName);
+                    Directory.CreateDirectory(framesDirectoryPath);
+                }
+                else
+                {
+                    framesDirectoryPath = string.Empty;
+                }
+
+                framesMetaPath = Path.Combine(currentRunDirectory, FramesMetaFileName);
+                framesMetaWriter = new StreamWriter(framesMetaPath, false, new UTF8Encoding(false))
+                {
+                    AutoFlush = true,
+                };
+
+                framesIndexPath = Path.Combine(currentRunDirectory, FramesIndexFileName);
+                framesIndexWriter = new StreamWriter(framesIndexPath, false, new UTF8Encoding(false))
+                {
+                    AutoFlush = true,
+                };
+            }
+            catch (Exception ex)
+            {
+                runErrors.Add($"frame_writer_open_failed:{ex.Message}");
+                CloseFrameInputWriters();
+            }
+        }
+
+        private void CloseFrameInputWriters()
+        {
+            try
+            {
+                lock (frameWriteLock)
+                {
+                    framesMetaWriter?.Flush();
+                    framesMetaWriter?.Dispose();
+                    framesMetaWriter = null;
+
+                    framesIndexWriter?.Flush();
+                    framesIndexWriter?.Dispose();
+                    framesIndexWriter = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                runErrors.Add($"frame_writer_close_failed:{ex.Message}");
+            }
+        }
+
+        private void WriteFrameMetaRow(JObject row)
+        {
+            if (row == null || framesMetaWriter == null)
+            {
+                return;
+            }
+
+            try
+            {
+                lock (frameWriteLock)
+                {
+                    framesMetaWriter.WriteLine(row.ToString(Formatting.None));
+                }
+            }
+            catch (Exception ex)
+            {
+                runErrors.Add($"frame_meta_write_failed:{ex.Message}");
+            }
+        }
+
+        private void WriteFrameIndexRow(JObject row)
+        {
+            if (row == null || framesIndexWriter == null)
+            {
+                return;
+            }
+
+            try
+            {
+                lock (frameWriteLock)
+                {
+                    framesIndexWriter.WriteLine(row.ToString(Formatting.None));
+                }
+            }
+            catch (Exception ex)
+            {
+                runErrors.Add($"frame_index_write_failed:{ex.Message}");
+            }
+        }
+
+        private JArray BuildScenarioApiCallsArray()
+        {
+            var rows = new JArray();
+            for (var i = 0; i < scenarioApiCalls.Count; i++)
+            {
+                rows.Add((scenarioApiCalls[i].DeepClone() as JObject) ?? new JObject());
+            }
+            return rows;
+        }
+
+        private static JObject ParseMetaObject(string metaJson)
+        {
+            if (string.IsNullOrWhiteSpace(metaJson))
+            {
+                return new JObject();
+            }
+
+            try
+            {
+                return JObject.Parse(metaJson);
+            }
+            catch
+            {
+                return new JObject
+                {
+                    ["raw"] = metaJson,
+                };
+            }
         }
 
         private bool TryExportRunZip(string runDirectory, string manifestPath, out string zipPath, out string error)
@@ -938,6 +1195,20 @@ namespace BeYourEyes.Adapters.Networking
             using (var sha = SHA256.Create())
             {
                 var hash = sha.ComputeHash(stream);
+                return string.Concat(hash.Select(b => b.ToString("x2")));
+            }
+        }
+
+        private static string ComputeBytesSha256(byte[] bytes)
+        {
+            if (bytes == null || bytes.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            using (var sha = SHA256.Create())
+            {
+                var hash = sha.ComputeHash(bytes);
                 return string.Concat(hash.Select(b => b.ToString("x2")));
             }
         }

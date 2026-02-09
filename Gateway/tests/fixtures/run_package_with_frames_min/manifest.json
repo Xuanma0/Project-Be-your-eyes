@@ -1,0 +1,17 @@
+﻿{
+  "scenarioTag": "fixture_replay",
+  "startMs": 1701000000000,
+  "endMs": 1701000000500,
+  "baseUrl": "http://127.0.0.1:8000",
+  "wsUrl": "ws://127.0.0.1:8000/ws/events",
+  "sessionId": "fixture-replay",
+  "framesDir": "frames",
+  "framesMetaJsonl": "frames_meta.jsonl",
+  "framesIndexJsonl": "frames_index.jsonl",
+  "framesCount": 2,
+  "scenarioApiCalls": [
+    {"method": "POST", "path": "/api/dev/intent", "body": {"intent": "scan_text"}},
+    {"method": "POST", "path": "/api/dev/crosscheck", "body": {"kind": "transparent_obstacle"}}
+  ],
+  "errors": []
+}

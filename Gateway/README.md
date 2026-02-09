@@ -765,3 +765,24 @@ Editor smoke checklist:
 5. Trigger active confirm (e.g. `make_report.ps1 -ActiveConfirmScenario` or dev crosscheck override):
 - WS receives `action_plan` with `confirmId`
 - click option button in HUD, verify `/api/confirm` 200 and behavior update in subsequent events.
+
+## Run Package Replay (v4.9)
+
+`scripts/replay_run_package.py` replays a Unity run package back into Gateway:
+
+```bash
+cd Gateway
+python scripts/replay_run_package.py ^
+  --run-package tests/fixtures/run_package_with_frames_min ^
+  --base-url http://127.0.0.1:8000 ^
+  --ws-url ws://127.0.0.1:8000/ws/events ^
+  --interval-ms 10
+```
+
+Key behavior:
+
+- Supports `--run-package` as directory or zip.
+- Optional `--reset` and `--apply-scenario-calls` execute `manifest.scenarioApiCalls` in-order.
+- Captures `metrics_before.txt`, `ws_events.jsonl`, replays frames via `/api/frame`, captures `metrics_after.txt`.
+- Generates `report.md` and `report.json` in replay output directory.
+- Optional `--auto-upload` posts replay zip to `/api/run_package/upload`.

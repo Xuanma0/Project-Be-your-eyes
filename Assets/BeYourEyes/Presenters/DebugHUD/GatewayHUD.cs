@@ -199,12 +199,12 @@ namespace BeYourEyes.Presenters.DebugHUD
                 {
                     ClearDisplayedContent();
                 }
-                if (recordFramesButton != null && runRecorder != null)
+                if (recordFramesButton != null && runPackageManager != null)
                 {
                     var text = recordFramesButton.GetComponentInChildren<Text>();
                     if (text != null)
                     {
-                        text.text = runRecorder.RecordFrames ? "RecordFrames: ON" : "RecordFrames: OFF";
+                        text.text = runPackageManager.RecordFramesForReplay ? "ReplayFrames: ON" : "ReplayFrames: OFF";
                     }
                 }
 
@@ -1074,12 +1074,17 @@ namespace BeYourEyes.Presenters.DebugHUD
         private void OnToggleRecordFramesClicked()
         {
             EnsureRunTools();
-            if (runRecorder == null)
+            if (runPackageManager == null)
             {
                 return;
             }
 
-            runRecorder.SetRecordFrames(!runRecorder.RecordFrames);
+            var next = !runPackageManager.RecordFramesForReplay;
+            runPackageManager.RecordFramesForReplay = next;
+            if (runRecorder != null)
+            {
+                runRecorder.SetRecordFrames(next);
+            }
         }
 
         private void OnExportRunZipClicked()

@@ -34,6 +34,7 @@ namespace BeYourEyes.Presenters.DebugHUD
 
         private bool scenarioRunning;
         private string currentScenario = "-";
+        private bool recordFramesForReplay;
         private long lastStatusCode = -1;
         private long lastLatencyMs = -1;
         private string lastResponseBody = string.Empty;
@@ -77,6 +78,10 @@ namespace BeYourEyes.Presenters.DebugHUD
             if (gatewayClient != null)
             {
                 baseUrlInput = gatewayClient.BaseUrl;
+            }
+            if (runPackageManager != null)
+            {
+                recordFramesForReplay = runPackageManager.RecordFramesForReplay;
             }
         }
 
@@ -225,6 +230,13 @@ namespace BeYourEyes.Presenters.DebugHUD
                 if (GUILayout.Button(label))
                 {
                     runPackageManager.AutoUploadAfterExport = !runPackageManager.AutoUploadAfterExport;
+                }
+
+                var replayLabel = recordFramesForReplay ? "Replay Frames: ON" : "Replay Frames: OFF";
+                if (GUILayout.Button(replayLabel))
+                {
+                    recordFramesForReplay = !recordFramesForReplay;
+                    runPackageManager.RecordFramesForReplay = recordFramesForReplay;
                 }
             }
         }
@@ -418,6 +430,10 @@ namespace BeYourEyes.Presenters.DebugHUD
                         runPackageManager = gameObject.AddComponent<RunPackageManager>();
                     }
                 }
+            }
+            if (runPackageManager != null)
+            {
+                recordFramesForReplay = runPackageManager.RecordFramesForReplay;
             }
             if (gatewayDevApi == null)
             {
@@ -640,6 +656,11 @@ namespace BeYourEyes.Presenters.DebugHUD
 
             scenarioRunning = true;
             currentScenario = scenarioName;
+            if (runPackageManager != null)
+            {
+                runPackageManager.RecordFramesForReplay = recordFramesForReplay;
+                runPackageManager.ClearScenarioApiCalls();
+            }
             if (runRecorder != null)
             {
                 runRecorder.SetScenarioTag(scenarioName);
@@ -841,6 +862,11 @@ namespace BeYourEyes.Presenters.DebugHUD
             {
                 PushUiError("GatewayDevApi missing");
                 yield break;
+            }
+
+            if (scenarioRunning && runPackageManager != null)
+            {
+                runPackageManager.RecordScenarioApiCall(method, path, payload);
             }
 
             DevApiResult result = default;
