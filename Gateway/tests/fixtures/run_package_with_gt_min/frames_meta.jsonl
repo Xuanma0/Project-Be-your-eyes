@@ -1,0 +1,2 @@
+﻿{"seq":1,"framePath":"frames/frame_1.jpg","meta":{"sessionId":"fixture-gt","seq":1,"timestampMs":1702000000001,"ttlMs":3000,"width":640,"height":360,"intrinsics":{"fx":300,"fy":300,"cx":320,"cy":180}}}
+{"seq":2,"framePath":"frames/frame_2.jpg","meta":{"sessionId":"fixture-gt","seq":2,"timestampMs":1702000000201,"ttlMs":3000,"width":640,"height":360,"intrinsics":{"fx":300,"fy":300,"cx":320,"cy":180}}}

@@ -1,0 +1,24 @@
+﻿{
+  "scenarioTag": "fixture_with_gt",
+  "startMs": 1702000000000,
+  "endMs": 1702000001500,
+  "baseUrl": "http://127.0.0.1:8000",
+  "wsUrl": "ws://127.0.0.1:8000/ws/events",
+  "sessionId": "fixture-gt",
+  "wsJsonl": "ws_events.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "framesDir": "frames",
+  "framesMetaJsonl": "frames_meta.jsonl",
+  "frameCountSent": 2,
+  "eventCountAccepted": 4,
+  "localSafetyFallbackEnterCount": 0,
+  "healthStatusCounts": {"NORMAL": 1},
+  "groundTruth": {
+    "version": 1,
+    "ocrJsonl": "ground_truth/ocr.jsonl",
+    "riskJsonl": "ground_truth/depth_risk.jsonl",
+    "matchWindowFrames": 2
+  },
+  "errors": []
+}

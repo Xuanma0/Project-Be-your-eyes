@@ -1,0 +1,13 @@
+﻿# TYPE byes_frame_received_total counter
+byes_frame_received_total 2
+byes_frame_completed_total{outcome="ok"} 2
+byes_e2e_latency_ms_count 2
+byes_e2e_latency_ms_sum 20
+byes_ttfa_ms_count 2
+byes_ttfa_ms_sum 8
+byes_safemode_enter_total 0
+byes_throttle_enter_total 0
+byes_preempt_enter_total 0
+byes_confirm_request_total 0
+byes_confirm_response_total 0
+byes_confirm_timeout_total 0

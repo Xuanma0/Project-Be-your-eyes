@@ -660,12 +660,27 @@ Leaderboard + export APIs:
 
 - `GET /api/run_packages` supports filters/sort:
   - `scenario`, `run_id`, `start_from_ms`, `start_to_ms`
-  - `sort` (`createdAtMs|startMs|safety_score|e2e_count|ttfa_count|frameCountSent`)
+  - `has_gt` (`true|false|any`)
+  - `min_quality` (optional float)
+  - `sort` (`createdAtMs|startMs|safety_score|quality|e2e_count|ttfa_count|frameCountSent`)
   - `order` (`asc|desc`), `limit` (max 200)
 - `GET /api/run_packages/export.csv` returns leaderboard CSV.
 - `GET /api/run_packages/export.json` returns leaderboard JSON.
 - CSV columns include:
-  - `runId,scenarioTag,startMs,endMs,frameCountSent,e2e_count,e2e_p50,ttfa_p50,safemode_enter,throttle_enter,preempt_enter,confirm_req,confirm_resp,confirm_timeout,safety_score,runUrl,reportUrl,summaryUrl,zipUrl`
+  - `runId,scenarioTag,startMs,endMs,frameCountSent,e2e_count,e2e_p50,ttfa_p50,safemode_enter,throttle_enter,preempt_enter,confirm_req,confirm_resp,confirm_timeout,safety_score,quality_has_gt,quality_score,runUrl,reportUrl,summaryUrl,zipUrl`
+
+v4.10 optional Ground Truth quality metrics:
+
+- `report_run.py` auto-detects GT from run package:
+  - `manifest.groundTruth.ocrJsonl` / `manifest.groundTruth.riskJsonl`
+  - fallback: `ground_truth/ocr.jsonl`, `ground_truth/depth_risk.jsonl`
+- When GT exists, `report.json` includes:
+  - `quality.hasGroundTruth=true`
+  - `quality.ocr` (coverage, exactMatchRate, CER, WER, latency stats if available)
+  - `quality.depthRisk` (windowed TP/FP/FN by kind + overall + critical hit/miss)
+  - `quality.qualityScore` and `quality.qualityScoreBreakdown`
+- Without GT, report stays backward compatible:
+  - `quality = { "hasGroundTruth": false }`
 
 ## v4.8 ONNX readiness (OCR + Depth)
 

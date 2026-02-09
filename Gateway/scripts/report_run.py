@@ -14,6 +14,21 @@ from urllib.parse import urlparse, urlunparse
 
 import httpx
 
+THIS_DIR = Path(__file__).resolve().parent
+GATEWAY_ROOT = THIS_DIR.parent
+if str(GATEWAY_ROOT) not in sys.path:
+    sys.path.insert(0, str(GATEWAY_ROOT))
+
+from byes.quality_metrics import (  # noqa: E402
+    compute_depth_risk_metrics,
+    compute_ocr_metrics,
+    compute_quality_score,
+    extract_pred_hazards_from_ws_events,
+    extract_pred_ocr_from_ws_events,
+    load_gt_ocr_jsonl,
+    load_gt_risk_jsonl,
+)
+
 _LABEL_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=\"((?:\\.|[^\"])*)\"")
 
 SeriesKey = tuple[str, tuple[tuple[str, str], ...]]
@@ -747,6 +762,16 @@ def build_summary_payload(
         key = f"{outcome}:{kind}"
         ttfa_outcomes[key] = value
 
+    confirm_missed = max(0.0, confirm_request - confirm_response)
+    safety_score = 100.0
+    safety_score -= safemode_enter * 35.0
+    safety_score -= throttle_enter * 10.0
+    safety_score -= preempt_enter * 8.0
+    safety_score -= confirm_timeout * 6.0
+    safety_score -= confirm_missed * 2.0
+    safety_score -= (ws_stats.get("safe_mode_perception_violations", 0) + ws_stats.get("safe_mode_actionplan_violations", 0)) * 3.0
+    safety_score = max(0.0, min(100.0, safety_score))
+
     payload: dict[str, Any] = {
         "frame_received": frame_received,
         "frame_completed": frame_completed,
@@ -771,6 +796,7 @@ def build_summary_payload(
         "perception_after_safe_mode": ws_stats.get("safe_mode_perception_violations", 0),
         "action_plan_after_safe_mode": ws_stats.get("safe_mode_actionplan_violations", 0),
         "confirm_request_after_safe_mode": ws_stats.get("safe_mode_confirm_request_violations", 0),
+        "safety_score": round(safety_score, 2),
     }
     if run_package_summary is not None:
         payload["scenarioTag"] = run_package_summary.get("scenarioTag", "")
@@ -844,6 +870,42 @@ def generate_report_outputs(
     output.write_text(report_text + "\n", encoding="utf-8")
 
     summary = build_summary_payload(ws_stats, after_samples, delta_samples, run_package_summary)
+    gt_cfg = (run_package_summary or {}).get("groundTruth", {})
+    quality_payload: dict[str, Any] = {"hasGroundTruth": False}
+    if isinstance(gt_cfg, dict) and bool(gt_cfg.get("hasGroundTruth")):
+        try:
+            frames_total = int(round(float(summary.get("frame_received", 0) or 0)))
+        except Exception:
+            frames_total = 0
+        if frames_total <= 0 and isinstance(run_package_summary, dict):
+            try:
+                frames_total = int(run_package_summary.get("frameCountSent", 0) or 0)
+            except Exception:
+                frames_total = 0
+
+        ocr_path_raw = str(gt_cfg.get("ocrPath", "")).strip()
+        risk_path_raw = str(gt_cfg.get("riskPath", "")).strip()
+        ocr_gt = load_gt_ocr_jsonl(Path(ocr_path_raw)) if ocr_path_raw else {}
+        risk_gt = load_gt_risk_jsonl(Path(risk_path_raw)) if risk_path_raw else {}
+        pred_ocr = extract_pred_ocr_from_ws_events(ws_jsonl)
+        pred_hazards = extract_pred_hazards_from_ws_events(ws_jsonl)
+        ocr_metrics = compute_ocr_metrics(ocr_gt, pred_ocr, frames_total) if ocr_gt else None
+        risk_metrics = None
+        if risk_gt:
+            window = int(gt_cfg.get("matchWindowFrames", 2) or 2)
+            risk_metrics = compute_depth_risk_metrics(risk_gt, pred_hazards, window)
+
+        safety_score = float(summary.get("safety_score", 100.0) or 100.0)
+        quality_score, breakdown = compute_quality_score(safety_score, ocr_metrics, risk_metrics)
+        quality_payload = {
+            "hasGroundTruth": True,
+            "ocr": ocr_metrics,
+            "depthRisk": risk_metrics,
+            "qualityScore": quality_score,
+            "qualityScoreBreakdown": breakdown,
+        }
+    summary["quality"] = quality_payload
+
     json_path: Path | None = output_json
     if json_path is None:
         json_path = output.with_suffix(".json")
@@ -893,6 +955,41 @@ def load_text(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
 
 
+def _resolve_ground_truth(run_package_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    default_ocr_rel = "ground_truth/ocr.jsonl"
+    default_risk_rel = "ground_truth/depth_risk.jsonl"
+    gt_raw = manifest.get("groundTruth")
+    gt_cfg = gt_raw if isinstance(gt_raw, dict) else {}
+
+    ocr_rel = str(gt_cfg.get("ocrJsonl", "")).strip()
+    risk_rel = str(gt_cfg.get("riskJsonl", "")).strip()
+    if not ocr_rel and (run_package_dir / default_ocr_rel).exists():
+        ocr_rel = default_ocr_rel
+    if not risk_rel and (run_package_dir / default_risk_rel).exists():
+        risk_rel = default_risk_rel
+
+    ocr_path = run_package_dir / ocr_rel if ocr_rel else None
+    risk_path = run_package_dir / risk_rel if risk_rel else None
+    if ocr_path is not None and not ocr_path.exists():
+        ocr_path = None
+    if risk_path is not None and not risk_path.exists():
+        risk_path = None
+
+    raw_window = gt_cfg.get("matchWindowFrames", 2)
+    try:
+        window = int(raw_window)
+    except (TypeError, ValueError):
+        window = 2
+    window = max(0, window)
+
+    return {
+        "hasGroundTruth": bool(ocr_path or risk_path),
+        "ocrPath": str(ocr_path) if ocr_path is not None else "",
+        "riskPath": str(risk_path) if risk_path is not None else "",
+        "matchWindowFrames": window,
+    }
+
+
 def load_run_package(run_package_dir: Path) -> tuple[Path, Path | None, Path | None, dict[str, Any]]:
     manifest_path = run_package_dir / "manifest.json"
     if not manifest_path.exists():
@@ -937,6 +1034,7 @@ def load_run_package(run_package_dir: Path) -> tuple[Path, Path | None, Path | N
         "localSafetyFallbackEnterCount": manifest.get("localSafetyFallbackEnterCount", ""),
         "healthStatusCounts": manifest.get("healthStatusCounts", {}),
         "errors": manifest.get("errors", []),
+        "groundTruth": _resolve_ground_truth(run_package_dir, manifest),
     }
 
     return ws_jsonl, metrics_before_path, metrics_after_path, summary

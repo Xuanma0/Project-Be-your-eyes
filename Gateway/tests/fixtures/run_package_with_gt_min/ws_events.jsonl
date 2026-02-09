@@ -1,0 +1,4 @@
+﻿{"receivedAtMs":1702000000100,"event":{"type":"health","summary":"gateway_normal (ok)","healthStatus":"NORMAL"}}
+{"receivedAtMs":1702000000200,"event":{"type":"perception","frameSeq":1,"tool":"real_ocr","summary":"EXIT","payload":{"text":"EXIT"},"latencyMs":110}}
+{"receivedAtMs":1702000000400,"event":{"type":"perception","frameSeq":2,"tool":"real_ocr","summary":"NO ENTRI","payload":{"text":"NO ENTRI"},"latencyMs":140}}
+{"receivedAtMs":1702000000500,"event":{"type":"risk","frameSeq":1,"riskText":"drop warning","payload":{"hazards":[{"hazardKind":"stair_down"}]}}}

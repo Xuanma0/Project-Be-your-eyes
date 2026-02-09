@@ -1187,6 +1187,8 @@ async def run_packages_list(
     run_id: str | None = None,
     start_from_ms: int | None = None,
     start_to_ms: int | None = None,
+    has_gt: str = "any",
+    min_quality: float | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> dict[str, Any]:
@@ -1197,6 +1199,8 @@ async def run_packages_list(
         run_id=run_id,
         start_from_ms=start_from_ms,
         start_to_ms=start_to_ms,
+        has_gt=has_gt,
+        min_quality=min_quality,
         sort=sort,
         order=order,
     )
@@ -1208,6 +1212,8 @@ async def run_packages_list(
             "run_id": run_id or "",
             "start_from_ms": start_from_ms,
             "start_to_ms": start_to_ms,
+            "has_gt": has_gt,
+            "min_quality": min_quality,
             "sort": sort,
             "order": order,
             "limit": limit,
@@ -1223,6 +1229,8 @@ async def run_packages_export_json(
     run_id: str | None = None,
     start_from_ms: int | None = None,
     start_to_ms: int | None = None,
+    has_gt: str = "any",
+    min_quality: float | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> dict[str, Any]:
@@ -1233,6 +1241,8 @@ async def run_packages_export_json(
         run_id=run_id,
         start_from_ms=start_from_ms,
         start_to_ms=start_to_ms,
+        has_gt=has_gt,
+        min_quality=min_quality,
         sort=sort,
         order=order,
     )
@@ -1250,6 +1260,8 @@ async def run_packages_export_csv(
     run_id: str | None = None,
     start_from_ms: int | None = None,
     start_to_ms: int | None = None,
+    has_gt: str = "any",
+    min_quality: float | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> Response:
@@ -1260,6 +1272,8 @@ async def run_packages_export_csv(
         run_id=run_id,
         start_from_ms=start_from_ms,
         start_to_ms=start_to_ms,
+        has_gt=has_gt,
+        min_quality=min_quality,
         sort=sort,
         order=order,
     )
@@ -1280,6 +1294,8 @@ async def run_packages_export_csv(
         "confirm_resp",
         "confirm_timeout",
         "safety_score",
+        "quality_has_gt",
+        "quality_score",
         "runUrl",
         "reportUrl",
         "summaryUrl",
@@ -1406,6 +1422,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     frame_count_sent = int(manifest.get("frameCountSent", 0) or 0)
     frame_count_sent = frame_count_sent or int((_read_float(summary, "frame_received") or 0.0))
 
+    quality_payload = summary.get("quality", {})
+    has_gt = bool(quality_payload.get("hasGroundTruth")) if isinstance(quality_payload, dict) else False
+    quality_score = _read_float(quality_payload, "qualityScore") if isinstance(quality_payload, dict) else None
+
     row = {
         "run_id": run_id,
         "runId": run_id,
@@ -1427,6 +1447,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "confirm_resp": int((_read_float(summary, "confirm_response") or 0.0)),
         "confirm_timeout": int((_read_float(summary, "confirm_timeout") or 0.0)),
         "safety_score": _compute_safety_score(summary),
+        "quality_has_gt": has_gt,
+        "quality_score": quality_score,
         "summary": summary,
     }
     row.update(urls)
@@ -1440,6 +1462,8 @@ def _matches_run_filters(
     run_id: str | None,
     start_from_ms: int | None,
     start_to_ms: int | None,
+    has_gt: str | None,
+    min_quality: float | None,
 ) -> bool:
     if scenario:
         if scenario.lower() not in str(row.get("scenarioTag", "")).lower():
@@ -1452,6 +1476,18 @@ def _matches_run_filters(
             return False
     if start_to_ms is not None:
         if int(row.get("startMs", 0) or 0) > start_to_ms:
+            return False
+    if has_gt:
+        normalized = has_gt.strip().lower()
+        if normalized in {"true", "1", "yes"} and not bool(row.get("quality_has_gt")):
+            return False
+        if normalized in {"false", "0", "no"} and bool(row.get("quality_has_gt")):
+            return False
+    if min_quality is not None:
+        quality = row.get("quality_score")
+        if quality is None:
+            return False
+        if float(quality) < float(min_quality):
             return False
     return True
 
@@ -1466,18 +1502,24 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "e2e_count",
         "ttfa_count",
         "safety_score",
+        "quality",
+        "quality_score",
         "safemode_enter",
         "throttle_enter",
         "preempt_enter",
     }
     if sort_key not in allowed:
         sort_key = "createdAtMs"
+    if sort_key == "quality":
+        sort_key = "quality_score"
     reverse = str(order or "desc").lower() != "asc"
 
     def key_fn(row: dict[str, Any]) -> Any:
         value = row.get(sort_key)
         if value is None:
-            return -1 if reverse else 1
+            if sort_key == "scenarioTag":
+                return "" if reverse else "~~~"
+            return float("-inf") if reverse else float("inf")
         return value
 
     return sorted(rows, key=key_fn, reverse=reverse)
@@ -1491,6 +1533,8 @@ async def _query_run_package_rows(
     run_id: str | None,
     start_from_ms: int | None,
     start_to_ms: int | None,
+    has_gt: str | None,
+    min_quality: float | None,
     sort: str,
     order: str,
 ) -> list[dict[str, Any]]:
@@ -1507,6 +1551,8 @@ async def _query_run_package_rows(
             run_id=run_id,
             start_from_ms=start_from_ms,
             start_to_ms=start_to_ms,
+            has_gt=has_gt,
+            min_quality=min_quality,
         ):
             continue
         rows.append(row)
@@ -1551,6 +1597,8 @@ async def runs_dashboard(
     limit: int = 50,
     scenario: str | None = None,
     run_id: str | None = None,
+    has_gt: str = "any",
+    min_quality: float | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> HTMLResponse:
@@ -1562,6 +1610,8 @@ async def runs_dashboard(
         run_id=run_id,
         start_from_ms=None,
         start_to_ms=None,
+        has_gt=has_gt,
+        min_quality=min_quality,
         sort=sort,
         order=order,
     )
@@ -1571,6 +1621,12 @@ async def runs_dashboard(
         tag = html.escape(str(row.get("scenarioTag", "")))
         created = html.escape(str(row.get("createdAtMs", 0)))
         safety = html.escape(f"{float(row.get('safety_score', 0.0)):.2f}")
+        quality_raw = row.get("quality_score")
+        quality = "—"
+        if quality_raw is not None:
+            quality = f"{float(quality_raw):.2f}"
+        if row.get("quality_has_gt"):
+            quality = f"{quality} (GT)" if quality != "—" else "GT"
         rows_html += (
             "<tr>"
             f"<td><input type='checkbox' data-run-id='{run_val}' /></td>"
@@ -1578,16 +1634,19 @@ async def runs_dashboard(
             f"<td>{tag}</td>"
             f"<td>{created}</td>"
             f"<td>{safety}</td>"
+            f"<td>{html.escape(quality)}</td>"
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='5' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='6' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
     sort_value = html.escape(sort or "createdAtMs")
     order_value = html.escape(order or "desc")
     limit_value = html.escape(str(limit))
+    has_gt_value = html.escape(has_gt or "any")
+    min_quality_value = html.escape("" if min_quality is None else str(min_quality))
     html_page = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1613,10 +1672,19 @@ async def runs_dashboard(
     <form method="get" action="{base_url}/runs">
       <label>scenario: <input type="text" name="scenario" value="{scenario_value}" /></label>
       <label>run_id: <input type="text" name="run_id" value="{run_id_value}" /></label>
+      <label>has_gt:
+        <select name="has_gt">
+          <option value="any" {"selected" if has_gt_value == "any" else ""}>any</option>
+          <option value="true" {"selected" if has_gt_value == "true" else ""}>true</option>
+          <option value="false" {"selected" if has_gt_value == "false" else ""}>false</option>
+        </select>
+      </label>
+      <label>min_quality: <input type="number" step="0.01" name="min_quality" value="{min_quality_value}" /></label>
       <label>sort:
         <select name="sort">
           <option value="createdAtMs" {"selected" if sort_value == "createdAtMs" else ""}>createdAtMs</option>
           <option value="safety_score" {"selected" if sort_value == "safety_score" else ""}>safety_score</option>
+          <option value="quality" {"selected" if sort_value == "quality" else ""}>quality</option>
           <option value="e2e_count" {"selected" if sort_value == "e2e_count" else ""}>e2e_count</option>
           <option value="ttfa_count" {"selected" if sort_value == "ttfa_count" else ""}>ttfa_count</option>
           <option value="frameCountSent" {"selected" if sort_value == "frameCountSent" else ""}>frameCountSent</option>
@@ -1630,8 +1698,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&min_quality={min_quality_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&min_quality={min_quality_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -1642,6 +1710,7 @@ async def runs_dashboard(
           <th>Scenario</th>
           <th>Created</th>
           <th>Safety Score</th>
+          <th>Quality</th>
         </tr>
       </thead>
       <tbody id="runs">{rows_html}</tbody>
