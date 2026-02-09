@@ -176,11 +176,46 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
                 else:
                     warnings.append(f"groundTruth has no valid frameSeq: {rel}")
 
+        events_v1_rel = str(manifest.get("eventsV1Jsonl", "") or "").strip()
+        events_v1_present = 1 if events_v1_rel else 0
+        events_v1_lines = 0
+        events_v1_schema_ok = 0
+        events_v1_normalized = 0
+        events_v1_path: Path | None = None
+        if events_v1_rel:
+            events_v1_path = run_root / events_v1_rel
+            if not events_v1_path.exists():
+                warnings.append(f"eventsV1Jsonl missing: {events_v1_rel}")
+            else:
+                try:
+                    with events_v1_path.open("r", encoding="utf-8-sig") as fp:
+                        for raw_line in fp:
+                            line = raw_line.strip()
+                            if not line:
+                                continue
+                            events_v1_lines += 1
+                            try:
+                                obj = json.loads(line)
+                            except Exception:
+                                continue
+                            if isinstance(obj, dict) and str(obj.get("schemaVersion", "")).strip() == "byes.event.v1":
+                                events_v1_schema_ok += 1
+                except Exception as exc:  # noqa: BLE001
+                    warnings.append(f"eventsV1 read failed: {exc}")
+                events_v1_norm = collect_normalized_ws_events(events_v1_path)
+                events_v1_normalized = int(events_v1_norm.get("normalizedEvents", 0) or 0)
+                warnings.extend(events_v1_norm.get("warnings", []))
+
         ws_rel = str(manifest.get("wsJsonl", "ws_events.jsonl") or "ws_events.jsonl")
         ws_path = run_root / ws_rel
         if not ws_path.exists():
-            errors.append(f"ws jsonl missing: {ws_rel}")
-            norm = {"normalizedEvents": 0, "droppedEvents": 0, "warningsCount": 0}
+            if events_v1_path is not None and events_v1_path.exists():
+                warnings.append(f"ws jsonl missing: {ws_rel} (using eventsV1Jsonl for normalization stats)")
+                norm = collect_normalized_ws_events(events_v1_path)
+                warnings.extend(norm.get("warnings", []))
+            else:
+                errors.append(f"ws jsonl missing: {ws_rel}")
+                norm = {"normalizedEvents": 0, "droppedEvents": 0, "warningsCount": 0}
         else:
             norm = collect_normalized_ws_events(ws_path)
             warnings.extend(norm.get("warnings", []))
@@ -222,6 +257,10 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
             "errorsCount": len(errors),
             "shaChecked": sha_checked,
             "shaMismatch": sha_mismatch,
+            "eventsV1Present": events_v1_present,
+            "eventsV1Lines": events_v1_lines,
+            "eventsV1SchemaOk": events_v1_schema_ok,
+            "eventsV1Normalized": events_v1_normalized,
         }
 
         print(f"run package: {run_package}")
@@ -230,6 +269,10 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
         print(f"framesActual: {frame_count_actual}")
         print(f"normalizedEvents: {summary['normalizedEvents']}")
         print(f"droppedEvents: {summary['droppedEvents']}")
+        print(f"eventsV1Present: {events_v1_present}")
+        print(f"eventsV1Lines: {events_v1_lines}")
+        print(f"eventsV1SchemaOk: {events_v1_schema_ok}")
+        print(f"eventsV1Normalized: {events_v1_normalized}")
         print(f"warnings: {summary['warningsCount']}")
         print(f"errors: {summary['errorsCount']}")
         print(f"shaChecked: {sha_checked}")

@@ -53,6 +53,7 @@ namespace BeYourEyes.Adapters.Networking
         private StreamWriter wsEventsWriter;
         private StreamWriter framesMetaWriter;
         private StreamWriter framesIndexWriter;
+        private EventV1Recorder eventV1Recorder;
         private string lastFinishReason = "not_started";
         private string lastExportZipPath = string.Empty;
         private string lastExportSha256 = string.Empty;
@@ -94,6 +95,9 @@ namespace BeYourEyes.Adapters.Networking
         private const string FramesDirName = "frames";
         private const string FramesMetaFileName = "frames_meta.jsonl";
         private const string FramesIndexFileName = "frames_index.jsonl";
+        private const string EventsDirName = "events";
+        private const string EventsV1FileName = "events_v1.jsonl";
+        private const string EventsV1RelativePath = EventsDirName + "/" + EventsV1FileName;
 
         public bool IsRunActive => runActive || runFinishing;
         public string CurrentScenarioTag => currentScenarioTag ?? string.Empty;
@@ -242,6 +246,7 @@ namespace BeYourEyes.Adapters.Networking
         {
             Directory.CreateDirectory(currentRunDirectory);
             OpenWsEventsWriter();
+            OpenEventsV1Recorder();
             OpenFrameInputWriters();
 
             if (saveMetricsSnapshot)
@@ -318,6 +323,7 @@ namespace BeYourEyes.Adapters.Networking
 
             endMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             CloseWsEventsWriter();
+            CloseEventsV1Recorder();
             CloseFrameInputWriters();
             lastFinishReason = reason;
             WriteManifest(reason);
@@ -348,6 +354,7 @@ namespace BeYourEyes.Adapters.Networking
                 ["wsUrl"] = gatewayClient != null ? gatewayClient.WsUrl : string.Empty,
                 ["sessionId"] = gatewayClient != null ? gatewayClient.SessionId : string.Empty,
                 ["wsJsonl"] = WsJsonlFileName,
+                ["eventsV1Jsonl"] = EventsV1RelativePath,
                 ["metricsBefore"] = MetricsBeforeFileName,
                 ["metricsAfter"] = MetricsAfterFileName,
                 ["framesDir"] = FramesDirName,
@@ -538,6 +545,13 @@ namespace BeYourEyes.Adapters.Networking
 
             eventCountAccepted++;
             WriteWsEventRow(evt);
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var receivedAtMs = ReadLong(evt, "_receivedAtMs", nowMs);
+            var ttlMs = ReadInt(evt, "_eventTtlMs", ReadInt(evt, "ttlMs", 1500));
+            if (eventV1Recorder != null && !eventV1Recorder.RecordAcceptedEvent(evt, receivedAtMs, ttlMs, out var normalizeError))
+            {
+                runErrors.Add($"events_v1_write_failed:{normalizeError}");
+            }
             var type = ReadString(evt, "type");
             if (!string.Equals(type, "health", StringComparison.OrdinalIgnoreCase))
             {
@@ -1259,6 +1273,46 @@ namespace BeYourEyes.Adapters.Networking
             }
 
             return string.Empty;
+        }
+
+        private void OpenEventsV1Recorder()
+        {
+            CloseEventsV1Recorder();
+            try
+            {
+                eventV1Recorder = new EventV1Recorder();
+                if (!eventV1Recorder.Start(currentRunDirectory, EventsDirName, EventsV1FileName, out var error))
+                {
+                    runErrors.Add($"events_v1_open_failed:{error}");
+                    eventV1Recorder = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                runErrors.Add($"events_v1_open_failed:{ex.Message}");
+                eventV1Recorder = null;
+            }
+        }
+
+        private void CloseEventsV1Recorder()
+        {
+            if (eventV1Recorder == null)
+            {
+                return;
+            }
+
+            try
+            {
+                eventV1Recorder.Stop();
+            }
+            catch (Exception ex)
+            {
+                runErrors.Add($"events_v1_close_failed:{ex.Message}");
+            }
+            finally
+            {
+                eventV1Recorder = null;
+            }
         }
 
         private void OpenWsEventsWriter()

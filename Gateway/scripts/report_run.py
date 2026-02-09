@@ -822,6 +822,21 @@ def generate_report_outputs(
 ) -> tuple[Path, Path | None, dict[str, Any]]:
     ws_rows = load_jsonl(ws_jsonl)
     ws_stats = collect_ws_stats(ws_rows)
+    event_schema_source = "wsEventsJsonl"
+    event_source_path = ws_jsonl
+    events_v1_rel: str | None = None
+    if isinstance(run_package_summary, dict):
+        src = str(run_package_summary.get("eventSchemaSource", "")).strip()
+        candidate = str(run_package_summary.get("eventSchemaInputPath", "")).strip()
+        rel = str(run_package_summary.get("eventsV1Path", "")).strip()
+        if src in {"eventsV1Jsonl", "wsEventsJsonl"}:
+            event_schema_source = src
+        if candidate:
+            candidate_path = Path(candidate)
+            if candidate_path.exists():
+                event_source_path = candidate_path
+        if rel:
+            events_v1_rel = rel
 
     if metrics_before_path is not None and metrics_after_path is not None:
         if not metrics_before_path.exists():
@@ -873,9 +888,11 @@ def generate_report_outputs(
     output.write_text(report_text + "\n", encoding="utf-8")
 
     summary = build_summary_payload(ws_stats, after_samples, delta_samples, run_package_summary)
-    event_schema_stats = extract_event_schema_stats(ws_jsonl)
+    event_schema_stats = extract_event_schema_stats(event_source_path)
+    event_schema_stats["source"] = event_schema_source
+    event_schema_stats["eventsV1Path"] = events_v1_rel if event_schema_source == "eventsV1Jsonl" else None
     gt_cfg = (run_package_summary or {}).get("groundTruth", {})
-    base_safety_behavior = extract_safety_behavior_from_ws_events(ws_jsonl)
+    base_safety_behavior = extract_safety_behavior_from_ws_events(event_source_path)
     quality_payload: dict[str, Any] = {"hasGroundTruth": False, "safetyBehavior": base_safety_behavior, "eventSchema": event_schema_stats}
     if isinstance(gt_cfg, dict) and bool(gt_cfg.get("hasGroundTruth")):
         try:
@@ -892,9 +909,9 @@ def generate_report_outputs(
         risk_path_raw = str(gt_cfg.get("riskPath", "")).strip()
         ocr_gt = load_gt_ocr_jsonl(Path(ocr_path_raw)) if ocr_path_raw else {}
         risk_gt = load_gt_risk_jsonl(Path(risk_path_raw)) if risk_path_raw else {}
-        pred_ocr = extract_pred_ocr_from_ws_events(ws_jsonl)
-        ocr_intent_frames = extract_ocr_intent_frames_from_ws_events(ws_jsonl)
-        pred_hazards = extract_pred_hazards_from_ws_events(ws_jsonl)
+        pred_ocr = extract_pred_ocr_from_ws_events(event_source_path)
+        ocr_intent_frames = extract_ocr_intent_frames_from_ws_events(event_source_path)
+        pred_hazards = extract_pred_hazards_from_ws_events(event_source_path)
         ocr_metrics = compute_ocr_metrics(ocr_gt, pred_ocr, frames_total, intent_frames=ocr_intent_frames) if ocr_gt else None
         risk_metrics = None
         window = int(gt_cfg.get("matchWindowFrames", 2) or 2)
@@ -902,7 +919,7 @@ def generate_report_outputs(
             risk_metrics = compute_depth_risk_metrics(risk_gt, pred_hazards, window)
         critical_frames = _collect_critical_gt_frames(risk_gt) if risk_gt else None
         safety_behavior = extract_safety_behavior_from_ws_events(
-            ws_jsonl,
+            event_source_path,
             critical_frame_seqs=critical_frames if critical_frames else None,
             near_window_frames=window,
         )
@@ -1116,14 +1133,26 @@ def load_run_package(run_package_dir: Path) -> tuple[Path, Path | None, Path | N
         raise ValueError("run package manifest must be an object")
     manifest = manifest_raw
 
+    events_v1_relative = str(manifest.get("eventsV1Jsonl", "")).strip()
+    events_v1_path: Path | None = None
+    if events_v1_relative:
+        candidate = run_package_dir / events_v1_relative
+        if candidate.exists():
+            events_v1_path = candidate
+
     ws_relative = str(manifest.get("wsJsonl", "")).strip() or "ws_events.jsonl"
     ws_jsonl = run_package_dir / ws_relative
     if not ws_jsonl.exists():
         fallback_ui_events = run_package_dir / "ui_events.jsonl"
         if fallback_ui_events.exists():
             ws_jsonl = fallback_ui_events
+        elif events_v1_path is not None:
+            ws_jsonl = events_v1_path
         else:
             raise FileNotFoundError(f"ws jsonl not found: {ws_jsonl}")
+
+    event_source_path = events_v1_path if events_v1_path is not None else ws_jsonl
+    event_source = "eventsV1Jsonl" if events_v1_path is not None else "wsEventsJsonl"
 
     metrics_before_path: Path | None = None
     metrics_after_path: Path | None = None
@@ -1149,6 +1178,9 @@ def load_run_package(run_package_dir: Path) -> tuple[Path, Path | None, Path | N
         "healthStatusCounts": manifest.get("healthStatusCounts", {}),
         "errors": manifest.get("errors", []),
         "groundTruth": _resolve_ground_truth(run_package_dir, manifest),
+        "eventSchemaSource": event_source,
+        "eventSchemaInputPath": str(event_source_path),
+        "eventsV1Path": events_v1_relative if events_v1_path is not None else "",
     }
 
     return ws_jsonl, metrics_before_path, metrics_after_path, summary

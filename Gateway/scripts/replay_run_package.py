@@ -23,6 +23,7 @@ if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
 
 from report_run import generate_report_outputs, safe_extract_zip  # noqa: E402
+from byes.event_normalizer import normalize_ws_events_file  # noqa: E402
 
 
 @dataclass
@@ -346,6 +347,8 @@ def replay_run_package(
     metrics_before = replay_dir / "metrics_before.txt"
     metrics_after = replay_dir / "metrics_after.txt"
     ws_jsonl = replay_dir / "ws_events.jsonl"
+    events_v1_dir = replay_dir / "events"
+    events_v1_jsonl = events_v1_dir / "events_v1.jsonl"
     report_md = replay_dir / "report.md"
     report_json = replay_dir / "report.json"
 
@@ -394,6 +397,14 @@ def replay_run_package(
             if ws_recorder.errors:
                 errors.extend(ws_recorder.errors)
 
+        events_v1_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            norm_summary = normalize_ws_events_file(ws_jsonl, events_v1_jsonl, include_raw=False)
+            print(f"events_v1 generated -> {events_v1_jsonl} lines={norm_summary.get('normalizedEvents', 0)}")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"events_v1_generate_failed:{exc}")
+            events_v1_jsonl.write_text("", encoding="utf-8")
+
         try:
             _write_metrics_snapshot(client, f"{normalized_base_url}/metrics", metrics_after)
         except Exception as exc:  # noqa: BLE001
@@ -410,6 +421,9 @@ def replay_run_package(
             "localSafetyFallbackEnterCount": 0,
             "healthStatusCounts": {},
             "errors": errors,
+            "eventSchemaSource": "eventsV1Jsonl",
+            "eventSchemaInputPath": str(events_v1_jsonl),
+            "eventsV1Path": "events/events_v1.jsonl",
         }
         generate_report_outputs(
             ws_jsonl=ws_jsonl,
@@ -454,6 +468,7 @@ def replay_run_package(
             "sessionId": str(manifest.get("sessionId", "default")),
             "sourceRunPackage": str(run_package),
             "wsJsonl": "ws_events.jsonl",
+            "eventsV1Jsonl": "events/events_v1.jsonl",
             "metricsBefore": "metrics_before.txt",
             "metricsAfter": "metrics_after.txt",
             "framesDir": "frames",

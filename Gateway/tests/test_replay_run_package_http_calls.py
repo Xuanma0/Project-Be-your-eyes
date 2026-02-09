@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import httpx
+import json
 
 from scripts.replay_run_package import replay_run_package
 
@@ -56,6 +57,10 @@ def test_replay_run_package_http_calls(tmp_path: Path) -> None:
     assert Path(result["reportMdPath"]).exists()
     assert Path(result["reportJsonPath"]).exists()
     assert result["sentFrames"] == 2
+    events_v1 = replay_dir / "events" / "events_v1.jsonl"
+    assert events_v1.exists()
+    manifest = json.loads((replay_dir / "manifest.json").read_text(encoding="utf-8-sig"))
+    assert manifest.get("eventsV1Jsonl") == "events/events_v1.jsonl"
 
     sequence = [path for path in calls if path in {"/api/dev/reset", "/api/dev/intent", "/api/dev/crosscheck", "/metrics", "/api/frame"}]
     assert sequence[:7] == [

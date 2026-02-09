@@ -1,0 +1,25 @@
+﻿{
+  "scenarioTag": "fixture_with_events_v1",
+  "startMs": 1705000000000,
+  "endMs": 1705000002500,
+  "baseUrl": "http://127.0.0.1:8000",
+  "wsUrl": "ws://127.0.0.1:8000/ws/events",
+  "sessionId": "fixture-schema-v1",
+  "wsJsonl": "ws_events.jsonl",
+  "eventsV1Jsonl": "events/events_v1.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "framesDir": "frames",
+  "framesMetaJsonl": "frames_meta.jsonl",
+  "frameCountSent": 2,
+  "eventCountAccepted": 12,
+  "localSafetyFallbackEnterCount": 0,
+  "healthStatusCounts": {"NORMAL": 1},
+  "groundTruth": {
+    "version": 1,
+    "ocrJsonl": "ground_truth/ocr.jsonl",
+    "riskJsonl": "ground_truth/depth_risk.jsonl",
+    "matchWindowFrames": 2
+  },
+  "errors": []
+}
