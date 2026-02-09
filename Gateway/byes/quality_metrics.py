@@ -114,6 +114,184 @@ def extract_ocr_intent_frames_from_ws_events(ws_events_jsonl_path: Path) -> set[
     return intent_frames
 
 
+def extract_safety_behavior_from_ws_events(
+    ws_events_jsonl_path: Path,
+    *,
+    critical_frame_seqs: set[int] | None = None,
+    near_window_frames: int = 2,
+) -> dict[str, Any]:
+    request_keywords = ["confirm", "ask_user", "user_confirm", "clarify", "double_check"]
+    response_keywords = ["confirm_result", "user_response", "confirm_done", "clarify_done"]
+    timeout_keywords = ["timeout", "confirm_timeout", "expired"]
+    latch_keywords = ["latch", "critical_latch", "safety_lock", "emergency"]
+    preempt_keywords = ["preempt", "preemption"]
+    fallback_keywords = ["local_fallback", "safety_fallback", "on_device_fallback", "fallback_triggered"]
+
+    requests: list[dict[str, Any]] = []
+    responses = 0
+    timeouts = 0
+    response_latencies: list[int] = []
+    timeout_frame_samples: list[int] = []
+    missing_frame_samples: list[int] = []
+    frames_with_intent: set[int] = set()
+    latch_count = 0
+    preempt_count = 0
+    local_fallback_count = 0
+    latch_duration_values: list[int] = []
+    preempt_duration_values: list[int] = []
+    latch_frames: list[int] = []
+    preempt_frames: list[int] = []
+
+    for row in _iter_jsonl(ws_events_jsonl_path):
+        event = row.get("event") if isinstance(row, dict) else None
+        if not isinstance(event, dict):
+            if isinstance(row, dict):
+                event = row
+            else:
+                continue
+
+        seq = _extract_frame_seq(event)
+        row_time_ms = _extract_row_time_ms(row, event)
+        blob = _event_text_blob(event)
+        request_id = _extract_request_id(event)
+        has_choice_payload = _has_confirm_choice_payload(event)
+
+        is_confirm_response = _contains_any(blob, response_keywords) or has_choice_payload
+        is_confirm_timeout = _contains_any(blob, timeout_keywords)
+        is_confirm_request = _contains_any(blob, request_keywords) and not is_confirm_response and not is_confirm_timeout
+
+        if is_confirm_request:
+            if seq is not None:
+                frames_with_intent.add(seq)
+            requests.append(
+                {
+                    "seq": seq,
+                    "timeMs": row_time_ms,
+                    "requestId": request_id,
+                    "responded": False,
+                    "timedOut": False,
+                }
+            )
+
+        if is_confirm_response:
+            responses += 1
+            matched = _match_pending_request(requests, seq=seq, request_id=request_id)
+            latency = _extract_latency_ms(event)
+            if latency is None and matched is not None:
+                start_ms = _parse_int(matched.get("timeMs"))
+                if start_ms is not None:
+                    latency = max(0, row_time_ms - start_ms)
+            if latency is not None and latency >= 0:
+                response_latencies.append(int(latency))
+            if matched is not None:
+                matched["responded"] = True
+
+        if is_confirm_timeout:
+            timeouts += 1
+            matched = _match_pending_request(requests, seq=seq, request_id=request_id)
+            if matched is not None:
+                matched["timedOut"] = True
+                sample_seq = _parse_int(matched.get("seq"))
+                if sample_seq is not None and len(timeout_frame_samples) < 5:
+                    timeout_frame_samples.append(sample_seq)
+            elif seq is not None and len(timeout_frame_samples) < 5:
+                timeout_frame_samples.append(seq)
+
+        if _contains_any(blob, latch_keywords):
+            latch_count += 1
+            if seq is not None:
+                latch_frames.append(seq)
+            duration = _extract_duration_ms(event)
+            if duration is not None:
+                latch_duration_values.append(duration)
+
+        if _contains_any(blob, preempt_keywords):
+            preempt_count += 1
+            if seq is not None:
+                preempt_frames.append(seq)
+            duration = _extract_duration_ms(event)
+            if duration is not None:
+                preempt_duration_values.append(duration)
+
+        if _contains_any(blob, fallback_keywords):
+            local_fallback_count += 1
+
+    missing_response_count = 0
+    for req in requests:
+        if not req.get("responded") and not req.get("timedOut"):
+            missing_response_count += 1
+            sample_seq = _parse_int(req.get("seq"))
+            if sample_seq is not None and len(missing_frame_samples) < 5:
+                missing_frame_samples.append(sample_seq)
+
+    if response_latencies:
+        latency_payload: dict[str, Any] | None = {
+            "count": len(response_latencies),
+            "p50": _percentile(response_latencies, 50),
+            "p90": _percentile(response_latencies, 90),
+            "p99": _percentile(response_latencies, 99),
+            "max": max(response_latencies),
+        }
+    else:
+        latency_payload = None
+
+    critical_known = bool(critical_frame_seqs)
+    latch_near_critical: int | None = None
+    preempt_near_critical: int | None = None
+    window = max(0, int(near_window_frames))
+    if critical_known:
+        latch_near_critical = _count_near_critical_frames(latch_frames, critical_frame_seqs or set(), window)
+        preempt_near_critical = _count_near_critical_frames(preempt_frames, critical_frame_seqs or set(), window)
+
+    latch_duration_payload: dict[str, Any] | None
+    if latch_duration_values:
+        latch_duration_payload = {
+            "count": len(latch_duration_values),
+            "p50": _percentile(latch_duration_values, 50),
+            "p90": _percentile(latch_duration_values, 90),
+            "max": max(latch_duration_values),
+        }
+    else:
+        latch_duration_payload = None
+
+    preempt_duration_payload: dict[str, Any] | None
+    if preempt_duration_values:
+        preempt_duration_payload = {
+            "count": len(preempt_duration_values),
+            "p50": _percentile(preempt_duration_values, 50),
+            "p90": _percentile(preempt_duration_values, 90),
+            "max": max(preempt_duration_values),
+        }
+    else:
+        preempt_duration_payload = None
+
+    return {
+        "confirm": {
+            "requests": len(requests),
+            "responses": responses,
+            "timeouts": timeouts,
+            "latencyMs": latency_payload,
+            "missingResponseCount": missing_response_count,
+            "framesWithConfirmIntent": len(frames_with_intent),
+            "timeoutFrameSeqSample": timeout_frame_samples,
+            "missingFrameSeqSample": missing_frame_samples,
+        },
+        "latch": {
+            "count": latch_count,
+            "nearCriticalCount": latch_near_critical,
+            "durationMs": latch_duration_payload,
+        },
+        "preempt": {
+            "count": preempt_count,
+            "nearCriticalCount": preempt_near_critical,
+            "durationMs": preempt_duration_payload,
+        },
+        "fallback": {
+            "localFallbackCount": local_fallback_count,
+        },
+    }
+
+
 def levenshtein(a: Sequence[Any] | str, b: Sequence[Any] | str) -> int:
     if isinstance(a, str):
         a_seq: Sequence[Any] = list(a)
@@ -367,6 +545,7 @@ def compute_quality_score(
     safety_score: float,
     ocr_metrics: dict[str, Any] | None,
     risk_metrics: dict[str, Any] | None,
+    safety_behavior: dict[str, Any] | None = None,
 ) -> tuple[float, list[dict[str, Any]]]:
     penalty = 0.0
     breakdown: list[dict[str, Any]] = []
@@ -418,6 +597,47 @@ def compute_quality_score(
         if delay_p90 >= 2:
             penalty += 3.0
             breakdown.append({"reason": "risk_detection_delay_p90", "value": 3.0, "details": {"p90": delay_p90}})
+
+    if safety_behavior:
+        confirm = safety_behavior.get("confirm", {}) if isinstance(safety_behavior, dict) else {}
+        timeouts = int(confirm.get("timeouts", 0) or 0)
+        missing = int(confirm.get("missingResponseCount", 0) or 0)
+        latency = confirm.get("latencyMs", {})
+        latency_p90 = None
+        if isinstance(latency, dict):
+            latency_p90 = _parse_int(latency.get("p90"))
+
+        if timeouts > 0:
+            value = float(timeouts * 4)
+            penalty += value
+            breakdown.append({"reason": "confirm_timeouts", "value": value, "details": {"count": timeouts}})
+        if missing > 0:
+            value = float(missing * 2)
+            penalty += value
+            breakdown.append({"reason": "confirm_missing_response", "value": value, "details": {"count": missing}})
+        if latency_p90 is not None and latency_p90 >= 1500:
+            penalty += 3.0
+            breakdown.append({"reason": "confirm_latency_p90_high", "value": 3.0, "details": {"p90": latency_p90}})
+
+        if risk_metrics:
+            critical = risk_metrics.get("critical", {})
+            miss_critical = int(critical.get("missCriticalCount", 0) or 0)
+            gt_critical = int(critical.get("gtCriticalCount", 0) or 0)
+            latch = safety_behavior.get("latch", {}) if isinstance(safety_behavior, dict) else {}
+            preempt = safety_behavior.get("preempt", {}) if isinstance(safety_behavior, dict) else {}
+            latch_near = latch.get("nearCriticalCount")
+            preempt_near = preempt.get("nearCriticalCount")
+            latch_value = int(latch_near or 0) if isinstance(latch_near, (int, float)) else 0
+            preempt_value = int(preempt_near or 0) if isinstance(preempt_near, (int, float)) else 0
+            if gt_critical > 0 and miss_critical > 0 and (latch_value + preempt_value == 0):
+                penalty += 10.0
+                breakdown.append(
+                    {
+                        "reason": "miss_critical_without_latch_preempt",
+                        "value": 10.0,
+                        "details": {"missCriticalCount": miss_critical, "nearCriticalLatch": latch_value, "nearCriticalPreempt": preempt_value},
+                    }
+                )
 
     score = max(0.0, min(100.0, float(safety_score) - penalty))
     return round(score, 3), breakdown
@@ -478,10 +698,19 @@ def _extract_latency_ms(obj: dict[str, Any]) -> int | None:
     if start_ms is not None and end_ms is not None and end_ms >= start_ms:
         return end_ms - start_ms
 
+    start_ts = _parse_timestamp_like(obj.get("startTs") or obj.get("start_ts"))
+    end_ts = _parse_timestamp_like(obj.get("endTs") or obj.get("end_ts"))
+    if start_ts is not None and end_ts is not None and end_ts >= start_ts:
+        return end_ts - start_ts
+
     payload = obj.get("payload")
     if isinstance(payload, dict):
         return _extract_latency_ms(payload)
     return None
+
+
+def _extract_duration_ms(obj: dict[str, Any]) -> int | None:
+    return _extract_latency_ms(obj)
 
 
 def _looks_like_ocr_event(event: dict[str, Any]) -> bool:
@@ -684,3 +913,130 @@ def _normalized_distance(left: Sequence[Any], right: Sequence[Any]) -> float:
     if den <= 0:
         return 0.0
     return levenshtein(left, right) / den
+
+
+def _contains_any(blob: str, keywords: list[str]) -> bool:
+    lowered = str(blob or "").lower()
+    return any(keyword in lowered for keyword in keywords)
+
+
+def _event_text_blob(event: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("type", "name", "tool", "toolName", "source", "category", "summary", "status", "message", "event"):
+        value = event.get(key)
+        if value is not None:
+            parts.append(str(value))
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        for key in ("type", "name", "tool", "toolName", "source", "category", "summary", "status", "message", "event", "error"):
+            value = payload.get(key)
+            if value is not None:
+                parts.append(str(value))
+    return " ".join(parts).lower()
+
+
+def _extract_request_id(event: dict[str, Any]) -> str | None:
+    for key in ("requestId", "confirmId", "id"):
+        value = event.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        for key in ("requestId", "confirmId", "id"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _has_confirm_choice_payload(event: dict[str, Any]) -> bool:
+    payload = event.get("payload")
+    nodes: list[Any] = [event, payload]
+    while nodes:
+        node = nodes.pop()
+        if not isinstance(node, dict):
+            continue
+        for key in ("choice", "confirmed", "answer"):
+            if key in node:
+                return True
+        for key in ("yes", "no"):
+            value = node.get(key)
+            if isinstance(value, bool):
+                return True
+        for nested_key in ("payload", "result"):
+            nested = node.get(nested_key)
+            if isinstance(nested, dict):
+                nodes.append(nested)
+    return False
+
+
+def _extract_row_time_ms(row: dict[str, Any], event: dict[str, Any]) -> int:
+    recv = _parse_timestamp_like(row.get("receivedAtMs"))
+    if recv is not None:
+        return recv
+    ts = _parse_timestamp_like(event.get("timestampMs") or event.get("tsEmitMs") or event.get("ts"))
+    if ts is not None:
+        return ts
+    return 0
+
+
+def _parse_timestamp_like(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        raw = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            raw = float(text)
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if raw <= 0:
+        return None
+    # interpret small values as seconds
+    if raw < 10_000_000_000:
+        raw *= 1000.0
+    return int(raw)
+
+
+def _match_pending_request(
+    requests: list[dict[str, Any]],
+    *,
+    seq: int | None,
+    request_id: str | None,
+) -> dict[str, Any] | None:
+    # 1) requestId exact
+    if request_id:
+        for item in requests:
+            if item.get("responded") or item.get("timedOut"):
+                continue
+            if item.get("requestId") == request_id:
+                return item
+
+    # 2) frame sequence
+    if seq is not None:
+        for item in requests:
+            if item.get("responded") or item.get("timedOut"):
+                continue
+            if _parse_int(item.get("seq")) == seq:
+                return item
+
+    # 3) first unmatched
+    for item in requests:
+        if item.get("responded") or item.get("timedOut"):
+            continue
+        return item
+    return None
+
+
+def _count_near_critical_frames(event_frames: list[int], critical_frames: set[int], window: int) -> int:
+    total = 0
+    for seq in event_frames:
+        if any(abs(int(seq) - int(cseq)) <= window for cseq in critical_frames):
+            total += 1
+    return total

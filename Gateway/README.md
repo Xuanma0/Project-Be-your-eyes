@@ -702,6 +702,18 @@ python scripts/attach_ground_truth.py \
   - OCR split coverage: `intentCoverage`, `resultCoverage`, `gtHitRate`, `falsePositiveRate`, `topMismatches`
   - Depth-risk timing/errors: `detectionDelayFrames`, `topMisses`
 
+v4.12 safety behavior metrics:
+
+- `report.json -> quality.safetyBehavior` includes:
+  - `confirm` requests/responses/timeouts/missingResponseCount/latency
+  - `latch` count/nearCriticalCount/duration
+  - `preempt` count/nearCriticalCount
+  - `fallback.localFallbackCount`
+- `quality.topFindings` summarizes major safety findings (confirm timeout, missing response, miss critical without latch/preempt, high risk delay).
+- Leaderboard adds safety columns and filters:
+  - Columns: `ConfirmTimeouts`, `CriticalMisses`, `MaxDelay(fr)`
+  - Query filters: `max_confirm_timeouts`, `max_critical_misses`
+
 ## v4.8 ONNX readiness (OCR + Depth)
 
 - `external/real_ocr_service` and `external/real_depth_service` now support `BYES_BACKEND=onnxruntime`.

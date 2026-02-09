@@ -23,6 +23,7 @@ from byes.quality_metrics import (  # noqa: E402
     compute_depth_risk_metrics,
     compute_ocr_metrics,
     compute_quality_score,
+    extract_safety_behavior_from_ws_events,
     extract_ocr_intent_frames_from_ws_events,
     extract_pred_hazards_from_ws_events,
     extract_pred_ocr_from_ws_events,
@@ -893,19 +894,30 @@ def generate_report_outputs(
         pred_hazards = extract_pred_hazards_from_ws_events(ws_jsonl)
         ocr_metrics = compute_ocr_metrics(ocr_gt, pred_ocr, frames_total, intent_frames=ocr_intent_frames) if ocr_gt else None
         risk_metrics = None
+        window = int(gt_cfg.get("matchWindowFrames", 2) or 2)
         if risk_gt:
-            window = int(gt_cfg.get("matchWindowFrames", 2) or 2)
             risk_metrics = compute_depth_risk_metrics(risk_gt, pred_hazards, window)
+        critical_frames = _collect_critical_gt_frames(risk_gt) if risk_gt else None
+        safety_behavior = extract_safety_behavior_from_ws_events(
+            ws_jsonl,
+            critical_frame_seqs=critical_frames if critical_frames else None,
+            near_window_frames=window,
+        )
 
         safety_score = float(summary.get("safety_score", 100.0) or 100.0)
-        quality_score, breakdown = compute_quality_score(safety_score, ocr_metrics, risk_metrics)
+        quality_score, breakdown = compute_quality_score(safety_score, ocr_metrics, risk_metrics, safety_behavior=safety_behavior)
+        top_findings = _build_quality_top_findings(ocr_metrics, risk_metrics, safety_behavior)
         quality_payload = {
             "hasGroundTruth": True,
             "ocr": ocr_metrics,
             "depthRisk": risk_metrics,
+            "safetyBehavior": safety_behavior,
+            "topFindings": top_findings,
             "qualityScore": quality_score,
             "qualityScoreBreakdown": breakdown,
         }
+    else:
+        quality_payload = {"hasGroundTruth": False, "safetyBehavior": extract_safety_behavior_from_ws_events(ws_jsonl)}
     summary["quality"] = quality_payload
 
     json_path: Path | None = output_json
@@ -955,6 +967,102 @@ def derive_output_path(ws_jsonl: Path, output: str | None, run_package_dir: Path
 
 def load_text(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
+
+
+def _collect_critical_gt_frames(risk_gt: dict[int, list[dict[str, Any]]]) -> set[int]:
+    critical_frames: set[int] = set()
+    for seq, hazards in risk_gt.items():
+        for hazard in hazards:
+            severity = str(hazard.get("severity", "")).strip().lower()
+            if severity == "critical":
+                critical_frames.add(int(seq))
+                break
+    return critical_frames
+
+
+def _build_quality_top_findings(
+    ocr_metrics: dict[str, Any] | None,
+    risk_metrics: dict[str, Any] | None,
+    safety_behavior: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    confirm = safety_behavior.get("confirm", {}) if isinstance(safety_behavior, dict) else {}
+    timeouts = int(confirm.get("timeouts", 0) or 0)
+    timeout_samples = confirm.get("timeoutFrameSeqSample", []) if isinstance(confirm, dict) else []
+    missing = int(confirm.get("missingResponseCount", 0) or 0)
+    missing_samples = confirm.get("missingFrameSeqSample", []) if isinstance(confirm, dict) else []
+
+    if timeouts > 0:
+        findings.append(
+            {
+                "severity": "critical",
+                "type": "confirm_timeout",
+                "frameSeq": int(timeout_samples[0]) if isinstance(timeout_samples, list) and timeout_samples else None,
+                "message": f"confirm timeout count={timeouts}",
+                "evidence": {"timeouts": timeouts},
+            }
+        )
+    if missing > 0:
+        findings.append(
+            {
+                "severity": "warning",
+                "type": "missing_confirm_response",
+                "frameSeq": int(missing_samples[0]) if isinstance(missing_samples, list) and missing_samples else None,
+                "message": f"missing confirm responses={missing}",
+                "evidence": {"missingResponseCount": missing},
+            }
+        )
+
+    if isinstance(risk_metrics, dict):
+        critical = risk_metrics.get("critical", {})
+        miss_critical = int(critical.get("missCriticalCount", 0) or 0)
+        gt_critical = int(critical.get("gtCriticalCount", 0) or 0)
+        latch = safety_behavior.get("latch", {}) if isinstance(safety_behavior, dict) else {}
+        preempt = safety_behavior.get("preempt", {}) if isinstance(safety_behavior, dict) else {}
+        latch_near = int(latch.get("nearCriticalCount", 0) or 0) if isinstance(latch, dict) else 0
+        preempt_near = int(preempt.get("nearCriticalCount", 0) or 0) if isinstance(preempt, dict) else 0
+        if gt_critical > 0 and miss_critical > 0 and (latch_near + preempt_near == 0):
+            findings.append(
+                {
+                    "severity": "critical",
+                    "type": "miss_critical_no_latch",
+                    "frameSeq": None,
+                    "message": "critical GT misses without near-critical latch/preempt",
+                    "evidence": {
+                        "missCriticalCount": miss_critical,
+                        "nearCriticalLatch": latch_near,
+                        "nearCriticalPreempt": preempt_near,
+                    },
+                }
+            )
+        delay = risk_metrics.get("detectionDelayFrames", {})
+        delay_max = int(delay.get("max", 0) or 0) if isinstance(delay, dict) else 0
+        if delay_max >= 2:
+            findings.append(
+                {
+                    "severity": "warning",
+                    "type": "high_risk_delay",
+                    "frameSeq": None,
+                    "message": f"risk detection delay max={delay_max} frames",
+                    "evidence": {"detectionDelayFrames": delay},
+                }
+            )
+
+    if isinstance(ocr_metrics, dict):
+        mismatches = ocr_metrics.get("topMismatches", [])
+        if isinstance(mismatches, list) and mismatches:
+            item = mismatches[0]
+            findings.append(
+                {
+                    "severity": "info",
+                    "type": "ocr_top_mismatch",
+                    "frameSeq": item.get("frameSeq"),
+                    "message": "ocr mismatch observed",
+                    "evidence": item,
+                }
+            )
+
+    return findings[:8]
 
 
 def _resolve_ground_truth(run_package_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:

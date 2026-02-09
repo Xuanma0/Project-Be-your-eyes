@@ -1189,6 +1189,8 @@ async def run_packages_list(
     start_to_ms: int | None = None,
     has_gt: str = "any",
     min_quality: float | None = None,
+    max_confirm_timeouts: int | None = None,
+    max_critical_misses: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> dict[str, Any]:
@@ -1201,6 +1203,8 @@ async def run_packages_list(
         start_to_ms=start_to_ms,
         has_gt=has_gt,
         min_quality=min_quality,
+        max_confirm_timeouts=max_confirm_timeouts,
+        max_critical_misses=max_critical_misses,
         sort=sort,
         order=order,
     )
@@ -1214,6 +1218,8 @@ async def run_packages_list(
             "start_to_ms": start_to_ms,
             "has_gt": has_gt,
             "min_quality": min_quality,
+            "max_confirm_timeouts": max_confirm_timeouts,
+            "max_critical_misses": max_critical_misses,
             "sort": sort,
             "order": order,
             "limit": limit,
@@ -1231,6 +1237,8 @@ async def run_packages_export_json(
     start_to_ms: int | None = None,
     has_gt: str = "any",
     min_quality: float | None = None,
+    max_confirm_timeouts: int | None = None,
+    max_critical_misses: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> dict[str, Any]:
@@ -1243,6 +1251,8 @@ async def run_packages_export_json(
         start_to_ms=start_to_ms,
         has_gt=has_gt,
         min_quality=min_quality,
+        max_confirm_timeouts=max_confirm_timeouts,
+        max_critical_misses=max_critical_misses,
         sort=sort,
         order=order,
     )
@@ -1262,6 +1272,8 @@ async def run_packages_export_csv(
     start_to_ms: int | None = None,
     has_gt: str = "any",
     min_quality: float | None = None,
+    max_confirm_timeouts: int | None = None,
+    max_critical_misses: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> Response:
@@ -1274,6 +1286,8 @@ async def run_packages_export_csv(
         start_to_ms=start_to_ms,
         has_gt=has_gt,
         min_quality=min_quality,
+        max_confirm_timeouts=max_confirm_timeouts,
+        max_critical_misses=max_critical_misses,
         sort=sort,
         order=order,
     )
@@ -1296,6 +1310,9 @@ async def run_packages_export_csv(
         "safety_score",
         "quality_has_gt",
         "quality_score",
+        "confirm_timeouts",
+        "critical_misses",
+        "max_delay_frames",
         "runUrl",
         "reportUrl",
         "summaryUrl",
@@ -1425,6 +1442,23 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     quality_payload = summary.get("quality", {})
     has_gt = bool(quality_payload.get("hasGroundTruth")) if isinstance(quality_payload, dict) else False
     quality_score = _read_float(quality_payload, "qualityScore") if isinstance(quality_payload, dict) else None
+    safety_behavior = quality_payload.get("safetyBehavior", {}) if isinstance(quality_payload, dict) else {}
+    confirm_behavior = safety_behavior.get("confirm", {}) if isinstance(safety_behavior, dict) else {}
+    confirm_timeouts = int(confirm_behavior.get("timeouts", 0) or 0) if isinstance(confirm_behavior, dict) else 0
+    depth_risk = quality_payload.get("depthRisk", {}) if isinstance(quality_payload, dict) else {}
+    critical_misses: int | None = None
+    max_delay_frames: int | None = None
+    if isinstance(depth_risk, dict):
+        critical = depth_risk.get("critical", {})
+        delay = depth_risk.get("detectionDelayFrames", {})
+        if isinstance(critical, dict):
+            raw = _read_float(critical, "missCriticalCount")
+            if raw is not None:
+                critical_misses = int(raw)
+        if isinstance(delay, dict):
+            raw = _read_float(delay, "max")
+            if raw is not None:
+                max_delay_frames = int(raw)
 
     row = {
         "run_id": run_id,
@@ -1449,6 +1483,9 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "safety_score": _compute_safety_score(summary),
         "quality_has_gt": has_gt,
         "quality_score": quality_score,
+        "confirm_timeouts": confirm_timeouts,
+        "critical_misses": critical_misses,
+        "max_delay_frames": max_delay_frames,
         "summary": summary,
     }
     row.update(urls)
@@ -1464,6 +1501,8 @@ def _matches_run_filters(
     start_to_ms: int | None,
     has_gt: str | None,
     min_quality: float | None,
+    max_confirm_timeouts: int | None,
+    max_critical_misses: int | None,
 ) -> bool:
     if scenario:
         if scenario.lower() not in str(row.get("scenarioTag", "")).lower():
@@ -1488,6 +1527,14 @@ def _matches_run_filters(
         if quality is None:
             return False
         if float(quality) < float(min_quality):
+            return False
+    if max_confirm_timeouts is not None:
+        if int(row.get("confirm_timeouts", 0) or 0) > int(max_confirm_timeouts):
+            return False
+    if max_critical_misses is not None:
+        raw = row.get("critical_misses")
+        value = int(raw) if isinstance(raw, int) else 0
+        if value > int(max_critical_misses):
             return False
     return True
 
@@ -1535,6 +1582,8 @@ async def _query_run_package_rows(
     start_to_ms: int | None,
     has_gt: str | None,
     min_quality: float | None,
+    max_confirm_timeouts: int | None,
+    max_critical_misses: int | None,
     sort: str,
     order: str,
 ) -> list[dict[str, Any]]:
@@ -1553,6 +1602,8 @@ async def _query_run_package_rows(
             start_to_ms=start_to_ms,
             has_gt=has_gt,
             min_quality=min_quality,
+            max_confirm_timeouts=max_confirm_timeouts,
+            max_critical_misses=max_critical_misses,
         ):
             continue
         rows.append(row)
@@ -1599,6 +1650,8 @@ async def runs_dashboard(
     run_id: str | None = None,
     has_gt: str = "any",
     min_quality: float | None = None,
+    max_confirm_timeouts: int | None = None,
+    max_critical_misses: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> HTMLResponse:
@@ -1612,6 +1665,8 @@ async def runs_dashboard(
         start_to_ms=None,
         has_gt=has_gt,
         min_quality=min_quality,
+        max_confirm_timeouts=max_confirm_timeouts,
+        max_critical_misses=max_critical_misses,
         sort=sort,
         order=order,
     )
@@ -1627,6 +1682,11 @@ async def runs_dashboard(
             quality = f"{float(quality_raw):.2f}"
         if row.get("quality_has_gt"):
             quality = f"{quality} (GT)" if quality != "—" else "GT"
+        confirm_timeouts = html.escape(str(row.get("confirm_timeouts", 0)))
+        critical_misses_raw = row.get("critical_misses")
+        critical_misses = "—" if critical_misses_raw is None else str(critical_misses_raw)
+        max_delay_raw = row.get("max_delay_frames")
+        max_delay = "—" if max_delay_raw is None else str(max_delay_raw)
         rows_html += (
             "<tr>"
             f"<td><input type='checkbox' data-run-id='{run_val}' /></td>"
@@ -1635,10 +1695,13 @@ async def runs_dashboard(
             f"<td>{created}</td>"
             f"<td>{safety}</td>"
             f"<td>{html.escape(quality)}</td>"
+            f"<td>{confirm_timeouts}</td>"
+            f"<td>{html.escape(critical_misses)}</td>"
+            f"<td>{html.escape(max_delay)}</td>"
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='6' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='9' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -1647,6 +1710,8 @@ async def runs_dashboard(
     limit_value = html.escape(str(limit))
     has_gt_value = html.escape(has_gt or "any")
     min_quality_value = html.escape("" if min_quality is None else str(min_quality))
+    max_confirm_timeouts_value = html.escape("" if max_confirm_timeouts is None else str(max_confirm_timeouts))
+    max_critical_misses_value = html.escape("" if max_critical_misses is None else str(max_critical_misses))
     html_page = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1680,6 +1745,8 @@ async def runs_dashboard(
         </select>
       </label>
       <label>min_quality: <input type="number" step="0.01" name="min_quality" value="{min_quality_value}" /></label>
+      <label>max_confirm_timeouts: <input type="number" min="0" name="max_confirm_timeouts" value="{max_confirm_timeouts_value}" /></label>
+      <label>max_critical_misses: <input type="number" min="0" name="max_critical_misses" value="{max_critical_misses_value}" /></label>
       <label>sort:
         <select name="sort">
           <option value="createdAtMs" {"selected" if sort_value == "createdAtMs" else ""}>createdAtMs</option>
@@ -1698,8 +1765,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&min_quality={min_quality_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&min_quality={min_quality_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&min_quality={min_quality_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&min_quality={min_quality_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -1711,6 +1778,9 @@ async def runs_dashboard(
           <th>Created</th>
           <th>Safety Score</th>
           <th>Quality</th>
+          <th>ConfirmTimeouts</th>
+          <th>CriticalMisses</th>
+          <th>MaxDelay(fr)</th>
         </tr>
       </thead>
       <tbody id="runs">{rows_html}</tbody>
