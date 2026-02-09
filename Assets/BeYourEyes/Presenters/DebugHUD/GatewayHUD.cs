@@ -19,6 +19,8 @@ namespace BeYourEyes.Presenters.DebugHUD
         [SerializeField] private SpeechOrchestrator speechOrchestrator;
         [SerializeField] private LocalIntentController localIntentController;
         [SerializeField] private float confirmPollIntervalSec = 1.5f;
+        [SerializeField] private float limitedConfirmPollIntervalSec = 2.0f;
+        [SerializeField] private int capabilityHintCooldownMs = 1200;
         [SerializeField] private bool showDebugCounters = true;
 
         private Text statusText;
@@ -30,6 +32,11 @@ namespace BeYourEyes.Presenters.DebugHUD
         private string wsState = "Disconnected";
         private string healthStatus = "-";
         private string healthReason = "-";
+        private string capabilityState = "OK";
+        private string capabilityReason = "-";
+        private string capabilityHintText = string.Empty;
+        private long capabilityHintUntilMs = -1;
+        private long lastCapabilityHintAtMs = long.MinValue;
         private string riskText = "-";
         private string riskLevel = "-";
         private string actionSummary = "-";
@@ -132,9 +139,22 @@ namespace BeYourEyes.Presenters.DebugHUD
                 var intentText = gatewayClient == null ? "none" : gatewayClient.CurrentIntentKind;
                 var questionText = gatewayClient == null ? "-" : Truncate(gatewayClient.CurrentQuestion, 40);
                 var localIntentHint = localIntentController == null ? "-" : localIntentController.HintText;
+                var capabilityText = gatewayClient == null ? capabilityState : gatewayClient.CurrentCapabilityState.ToString();
+                if (gatewayClient != null)
+                {
+                    capabilityReason = gatewayClient.CapabilityTransitionReason;
+                }
+                var readinessText = gatewayClient == null || !gatewayClient.ReadinessKnown
+                    ? "n/a"
+                    : $"{gatewayClient.ReadyToolsCount}/{gatewayClient.UnavailableToolsCount}";
                 if (localSafetyFallback != null && localSafetyFallback.StateEnteredAtMs > 0)
                 {
                     fallbackSinceText = $"{Mathf.Max(0f, (float)(nowMs - localSafetyFallback.StateEnteredAtMs) / 1000f):0.0}s";
+                }
+                if (capabilityHintUntilMs > 0 && nowMs > capabilityHintUntilMs)
+                {
+                    capabilityHintText = string.Empty;
+                    capabilityHintUntilMs = -1;
                 }
                 if (localSafetyFallback != null && !localSafetyFallback.IsOk)
                 {
@@ -157,12 +177,20 @@ namespace BeYourEyes.Presenters.DebugHUD
                     var intentLine = localIntentController == null
                         ? "\nIntentCtl: n/a"
                         : $"\nIntentCtl: enter={localIntentController.ScanEnterCount} exit={localIntentController.ScanExitCount} ask={localIntentController.AskTriggerCount} blocked={localIntentController.BlockedCount} reason={localIntentController.LastBlockedReason}";
+                    var probeLine = gatewayClient == null
+                        ? "\nProbe: n/a"
+                        : $"\nProbe: health ok/fail={gatewayClient.HealthProbeSuccessCount}/{gatewayClient.HealthProbeFailureCount} readiness ok/fail={gatewayClient.ReadinessProbeSuccessCount}/{gatewayClient.ReadinessProbeFailureCount}";
+                    var stateLine = gatewayClient == null
+                        ? "\nCapability: n/a"
+                        : $"\nCapability: state={gatewayClient.CurrentCapabilityState} reason={gatewayClient.CapabilityTransitionReason} transitions={gatewayClient.CapabilityStateTransitionCount}";
                     debugLines =
                         $"\nGuard: acc={gatewayClient.EventAcceptedCount} exp={gatewayClient.EventDroppedExpiredCount} ooo={gatewayClient.EventDroppedOutOfOrderCount} fb={gatewayClient.EventDroppedByFallbackCount}" +
                         $"\nGate: acc={gatewayClient.ActionPlanGateAcceptedCount} blk={gatewayClient.ActionPlanGateBlockedCount} pat={gatewayClient.ActionPlanGatePatchedCount} reason={gatewayClient.ActionPlanGateLastReason}" +
                         guidanceLine +
                         speechLine +
                         intentLine +
+                        probeLine +
+                        stateLine +
                         $"\nlastSeqSeen={gatewayClient.EventLastSeqSeen} displayedSeq={displayedEventSeq} lastEventAgeMs={(lastEventAgeMs >= 0 ? lastEventAgeMs.ToString() : "-")}";
                 }
 
@@ -174,6 +202,8 @@ namespace BeYourEyes.Presenters.DebugHUD
                     $"HealthRTT: {healthRttText}\n" +
                     $"Health: {healthStatus}\n" +
                     $"Reason: {healthReason}\n" +
+                    $"Capability: {capabilityText} ({capabilityReason})\n" +
+                    $"Readiness: {readinessText}\n" +
                     $"Risk: {riskText}\n" +
                     $"RiskLevel: {riskLevel}\n" +
                     $"Action: {actionSummary}\n" +
@@ -186,6 +216,7 @@ namespace BeYourEyes.Presenters.DebugHUD
                     $"Fallback: {fallbackStateText} since={fallbackSinceText} reason={fallbackReasonText}\n" +
                     $"Intent: {intentText} | Question: {questionText}\n" +
                     $"IntentHint: {localIntentHint}\n" +
+                    $"CapHint: {(string.IsNullOrWhiteSpace(capabilityHintText) ? "-" : capabilityHintText)}\n" +
                     $"PendingConfirm: {(string.IsNullOrWhiteSpace(pendingConfirmId) ? "-" : pendingConfirmKind)}" +
                     debugLines +
                     safeBanner;
@@ -206,9 +237,13 @@ namespace BeYourEyes.Presenters.DebugHUD
 
             gatewayClient.OnGatewayEvent -= HandleGatewayEvent;
             gatewayClient.OnGatewayEvent += HandleGatewayEvent;
+            gatewayClient.OnCapabilityStateChanged -= HandleCapabilityStateChanged;
+            gatewayClient.OnCapabilityStateChanged += HandleCapabilityStateChanged;
             gatewayClient.OnWebSocketStateChanged -= HandleWsStateChanged;
             gatewayClient.OnWebSocketStateChanged += HandleWsStateChanged;
             wsState = gatewayClient.IsConnected ? "Connected" : "Disconnected";
+            capabilityState = gatewayClient.CurrentCapabilityState.ToString();
+            capabilityReason = gatewayClient.CapabilityTransitionReason;
         }
 
         private void UnbindClient()
@@ -219,12 +254,33 @@ namespace BeYourEyes.Presenters.DebugHUD
             }
 
             gatewayClient.OnGatewayEvent -= HandleGatewayEvent;
+            gatewayClient.OnCapabilityStateChanged -= HandleCapabilityStateChanged;
             gatewayClient.OnWebSocketStateChanged -= HandleWsStateChanged;
         }
 
         private void HandleWsStateChanged(bool connected, string reason)
         {
             wsState = connected ? "Connected" : $"Disconnected ({reason})";
+        }
+
+        private void HandleCapabilityStateChanged(BeYourEyes.Adapters.Networking.CapabilityState state, string reason)
+        {
+            capabilityState = state.ToString();
+            capabilityReason = string.IsNullOrWhiteSpace(reason) ? "-" : reason;
+
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (nowMs - lastCapabilityHintAtMs < Math.Max(200, capabilityHintCooldownMs))
+            {
+                return;
+            }
+
+            lastCapabilityHintAtMs = nowMs;
+            capabilityHintText = BuildCapabilityHint(state);
+            capabilityHintUntilMs = nowMs + 1500;
+            if (speechOrchestrator != null && !string.IsNullOrWhiteSpace(capabilityHintText))
+            {
+                speechOrchestrator.SpeakLocalHint(capabilityHintText, flush: false);
+            }
         }
 
         private void HandleGatewayEvent(JObject evt)
@@ -469,6 +525,7 @@ namespace BeYourEyes.Presenters.DebugHUD
         {
             while (true)
             {
+                var waitSec = Mathf.Max(0.5f, confirmPollIntervalSec);
                 if (localSafetyFallback == null)
                 {
                     localSafetyFallback = FindFirstObjectByType<LocalSafetyFallback>();
@@ -476,8 +533,23 @@ namespace BeYourEyes.Presenters.DebugHUD
 
                 if (localSafetyFallback != null && !localSafetyFallback.IsOk)
                 {
-                    yield return new WaitForSecondsRealtime(Mathf.Max(0.5f, confirmPollIntervalSec));
+                    yield return new WaitForSecondsRealtime(waitSec);
                     continue;
+                }
+
+                if (gatewayClient != null)
+                {
+                    var capability = gatewayClient.CurrentCapabilityState;
+                    if (capability == BeYourEyes.Adapters.Networking.CapabilityState.OFFLINE ||
+                        capability == BeYourEyes.Adapters.Networking.CapabilityState.REMOTE_STALE)
+                    {
+                        yield return new WaitForSecondsRealtime(waitSec);
+                        continue;
+                    }
+                    if (capability == BeYourEyes.Adapters.Networking.CapabilityState.LIMITED_NOT_READY)
+                    {
+                        waitSec = Mathf.Max(waitSec, Mathf.Max(0.5f, limitedConfirmPollIntervalSec));
+                    }
                 }
 
                 if (gatewayClient != null)
@@ -527,7 +599,7 @@ namespace BeYourEyes.Presenters.DebugHUD
                     });
                 }
 
-                yield return new WaitForSecondsRealtime(Mathf.Max(0.5f, confirmPollIntervalSec));
+                yield return new WaitForSecondsRealtime(waitSec);
             }
         }
 
@@ -889,6 +961,27 @@ namespace BeYourEyes.Presenters.DebugHUD
             }
 
             return trimmed.Substring(0, Math.Max(8, maxChars)) + "...";
+        }
+
+        private static string BuildCapabilityHint(BeYourEyes.Adapters.Networking.CapabilityState state)
+        {
+            switch (state)
+            {
+                case BeYourEyes.Adapters.Networking.CapabilityState.OFFLINE:
+                    return "Offline mode. Network unavailable.";
+                case BeYourEyes.Adapters.Networking.CapabilityState.REMOTE_STALE:
+                    return "Remote stale. Waiting for updates.";
+                case BeYourEyes.Adapters.Networking.CapabilityState.REMOTE_SAFE_MODE:
+                    return "Remote safe mode active.";
+                case BeYourEyes.Adapters.Networking.CapabilityState.LIMITED_NOT_READY:
+                    return "Limited mode. Remote tools unavailable.";
+                case BeYourEyes.Adapters.Networking.CapabilityState.REMOTE_THROTTLED:
+                    return "Remote throttled.";
+                case BeYourEyes.Adapters.Networking.CapabilityState.REMOTE_DEGRADED:
+                    return "Remote degraded.";
+                default:
+                    return "Capabilities restored.";
+            }
         }
 
         private static string ParseHealthStatusFromSummary(string summary)

@@ -41,6 +41,11 @@ namespace BeYourEyes.Adapters.Networking
         [SerializeField] private float healthProbeIntervalSec = 1f;
         [SerializeField] private int healthProbeStaleThresholdMs = 1500;
 
+        [Header("Capability Probe")]
+        [SerializeField] private bool enableExternalReadinessProbe = true;
+        [SerializeField] private float readinessProbeIntervalSec = 2f;
+        [SerializeField] private int probeFailureThreshold = 2;
+
         [Header("Event Guard")]
         [SerializeField] private EventGuard eventGuard = new EventGuard();
         [SerializeField] private LocalActionPlanGate localActionPlanGate = new LocalActionPlanGate();
@@ -72,15 +77,33 @@ namespace BeYourEyes.Adapters.Networking
         private string lastHealthReason = string.Empty;
         private string lastRiskLevel = "warn";
         private int lastHealthRttMs = -1;
+        private long lastHealthOkAtMs = -1;
         private string activeIntent = "none";
         [SerializeField] private string defaultAskQuestion = "What is in front of me?";
         private string currentQuestion = "What is in front of me?";
         private Coroutine healthProbeRoutine;
         private bool healthProbeInFlight;
+        private bool readinessProbeInFlight;
+        private long lastReadinessProbeAtMs = -1;
+        private long lastReadinessOkAtMs = -1;
+        private int readyToolsCount = -1;
+        private int unavailableToolsCount = -1;
+        private bool readinessKnown;
+        private readonly Dictionary<string, bool> toolAvailability = new Dictionary<string, bool>();
+        private int consecutiveHealthProbeFailures;
+        private int consecutiveReadinessProbeFailures;
+        private long healthProbeSuccessCount;
+        private long healthProbeFailureCount;
+        private long readinessProbeSuccessCount;
+        private long readinessProbeFailureCount;
+        private CapabilityState capabilityState = CapabilityState.OK;
+        private long capabilityStateTransitionCount;
+        private string capabilityTransitionReason = "init";
 
         public event Action<JObject> OnGatewayEvent;
         public event Action<JObject> OnUiEventAccepted;
         public event Action<bool, string> OnWebSocketStateChanged;
+        public event Action<CapabilityState, string> OnCapabilityStateChanged;
 
         public string BaseUrl => NormalizeBaseUrl(baseUrl);
         public string WsUrl => string.IsNullOrWhiteSpace(wsUrl) ? "ws://127.0.0.1:8000/ws/events" : wsUrl.Trim();
@@ -99,6 +122,19 @@ namespace BeYourEyes.Adapters.Networking
         public string ActiveIntent => activeIntent;
         public string CurrentIntentKind => activeIntent;
         public string CurrentQuestion => string.IsNullOrWhiteSpace(currentQuestion) ? ResolveDefaultAskQuestion() : currentQuestion;
+        public CapabilityState CurrentCapabilityState => capabilityState;
+        public long LastHealthOkAtMs => lastHealthOkAtMs;
+        public long LastReadinessOkAtMs => lastReadinessOkAtMs;
+        public int ReadyToolsCount => readyToolsCount;
+        public int UnavailableToolsCount => unavailableToolsCount;
+        public bool ReadinessKnown => readinessKnown;
+        public long HealthProbeSuccessCount => healthProbeSuccessCount;
+        public long HealthProbeFailureCount => healthProbeFailureCount;
+        public long ReadinessProbeSuccessCount => readinessProbeSuccessCount;
+        public long ReadinessProbeFailureCount => readinessProbeFailureCount;
+        public long CapabilityStateTransitionCount => capabilityStateTransitionCount;
+        public string CapabilityTransitionReason => capabilityTransitionReason;
+        public bool IsVlmAvailable => IsToolAvailable("real_vlm");
         public long EventAcceptedCount => eventGuard != null ? eventGuard.Accepted : 0;
         public long EventDroppedExpiredCount => eventGuard != null ? eventGuard.DroppedExpired : 0;
         public long EventDroppedOutOfOrderCount => eventGuard != null ? eventGuard.DroppedOutOfOrder : 0;
@@ -115,6 +151,7 @@ namespace BeYourEyes.Adapters.Networking
             shuttingDown = false;
             eventGuard?.ResetRuntime();
             localActionPlanGate?.ResetRuntime();
+            ResetCapabilityRuntime();
             if (connectOnEnable)
             {
                 ConnectWebSocket();
@@ -296,6 +333,21 @@ namespace BeYourEyes.Adapters.Networking
         {
             var resolvedQuestion = string.IsNullOrWhiteSpace(question) ? ResolveDefaultAskQuestion() : question.Trim();
             SendDevIntent("ask", resolvedQuestion, onDone);
+        }
+
+        public bool IsToolAvailable(string toolName)
+        {
+            if (string.IsNullOrWhiteSpace(toolName))
+            {
+                return false;
+            }
+
+            if (!readinessKnown)
+            {
+                return false;
+            }
+
+            return toolAvailability.TryGetValue(toolName.Trim().ToLowerInvariant(), out var ready) && ready;
         }
 
         public void FetchPendingConfirm(Action<bool, JObject> onDone)
@@ -564,6 +616,7 @@ namespace BeYourEyes.Adapters.Networking
             evt["_eventTtlMs"] = ttlMs;
 
             MaybeRecordTtfa(evt, nowMs);
+            UpdateCapabilityState("ws_event");
             PublishAcceptedUiEvent(evt);
         }
 
@@ -734,20 +787,27 @@ namespace BeYourEyes.Adapters.Networking
                 healthProbeRoutine = null;
             }
             healthProbeInFlight = false;
+            readinessProbeInFlight = false;
         }
 
         private IEnumerator HealthProbeLoop()
         {
             while (true)
             {
-                var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                var staleMs = Math.Max(500, healthProbeStaleThresholdMs);
-                var stale = lastMessageAtMs <= 0 || (nowMs - lastMessageAtMs) > staleMs;
-                if ((!IsConnected || stale) && !healthProbeInFlight)
+                if (!healthProbeInFlight)
                 {
                     yield return StartCoroutine(ProbeHealthOnce());
                 }
 
+                var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                if (enableExternalReadinessProbe &&
+                    !readinessProbeInFlight &&
+                    (lastReadinessProbeAtMs <= 0 || nowMs - lastReadinessProbeAtMs >= Mathf.Max(0.5f, readinessProbeIntervalSec) * 1000f))
+                {
+                    yield return StartCoroutine(ProbeReadinessOnce());
+                }
+
+                UpdateCapabilityState("probe_tick");
                 yield return new WaitForSecondsRealtime(Mathf.Max(0.5f, healthProbeIntervalSec));
             }
         }
@@ -765,6 +825,8 @@ namespace BeYourEyes.Adapters.Networking
 
                 if (req.result != UnityWebRequest.Result.Success)
                 {
+                    consecutiveHealthProbeFailures++;
+                    healthProbeFailureCount++;
                     healthProbeInFlight = false;
                     yield break;
                 }
@@ -798,9 +860,234 @@ namespace BeYourEyes.Adapters.Networking
                 catch
                 {
                 }
+
+                lastHealthOkAtMs = finishedAtMs;
+                consecutiveHealthProbeFailures = 0;
+                healthProbeSuccessCount++;
             }
 
             healthProbeInFlight = false;
+        }
+
+        private IEnumerator ProbeReadinessOnce()
+        {
+            readinessProbeInFlight = true;
+            lastReadinessProbeAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            using (var req = UnityWebRequest.Get(BuildApiUrl("/api/external_readiness")))
+            {
+                req.downloadHandler = new DownloadHandlerBuffer();
+                yield return req.SendWebRequest();
+                var finishedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+                if (req.result != UnityWebRequest.Result.Success)
+                {
+                    consecutiveReadinessProbeFailures++;
+                    readinessProbeFailureCount++;
+                    readinessProbeInFlight = false;
+                    yield break;
+                }
+
+                var parseSuccess = false;
+                try
+                {
+                    var body = string.IsNullOrWhiteSpace(req.downloadHandler.text) ? "{}" : req.downloadHandler.text;
+                    var json = JObject.Parse(body);
+                    parseSuccess = ParseReadinessPayload(json);
+                }
+                catch
+                {
+                    parseSuccess = false;
+                }
+
+                if (parseSuccess)
+                {
+                    lastReadinessOkAtMs = finishedAtMs;
+                    consecutiveReadinessProbeFailures = 0;
+                    readinessProbeSuccessCount++;
+                }
+                else
+                {
+                    consecutiveReadinessProbeFailures++;
+                    readinessProbeFailureCount++;
+                }
+            }
+
+            readinessProbeInFlight = false;
+        }
+
+        private bool ParseReadinessPayload(JObject json)
+        {
+            if (json == null)
+            {
+                return false;
+            }
+
+            var parsedAny = false;
+            var readyCount = 0;
+            var unavailableCount = 0;
+            toolAvailability.Clear();
+
+            var toolsToken = json["tools"];
+            if (toolsToken is JArray arr)
+            {
+                foreach (var item in arr)
+                {
+                    if (!(item is JObject toolObj))
+                    {
+                        continue;
+                    }
+
+                    var name = ReadString(toolObj, "name");
+                    if (string.IsNullOrWhiteSpace(name))
+                    {
+                        name = ReadString(toolObj, "tool");
+                    }
+                    if (string.IsNullOrWhiteSpace(name))
+                    {
+                        name = ReadString(toolObj, "id");
+                    }
+                    if (string.IsNullOrWhiteSpace(name))
+                    {
+                        continue;
+                    }
+
+                    var ready = ReadBool(toolObj, "ready", defaultValue: false);
+                    toolAvailability[name.Trim().ToLowerInvariant()] = ready;
+                    if (ready)
+                    {
+                        readyCount++;
+                    }
+                    else
+                    {
+                        unavailableCount++;
+                    }
+                    parsedAny = true;
+                }
+            }
+            else if (toolsToken is JObject dictObj)
+            {
+                foreach (var prop in dictObj.Properties())
+                {
+                    var key = prop.Name?.Trim().ToLowerInvariant();
+                    if (string.IsNullOrWhiteSpace(key))
+                    {
+                        continue;
+                    }
+
+                    var ready = false;
+                    if (prop.Value is JObject nestedObj)
+                    {
+                        ready = ReadBool(nestedObj, "ready", defaultValue: false);
+                    }
+                    else if (prop.Value != null)
+                    {
+                        ready = ReadBoolToken(prop.Value, defaultValue: false);
+                    }
+
+                    toolAvailability[key] = ready;
+                    if (ready)
+                    {
+                        readyCount++;
+                    }
+                    else
+                    {
+                        unavailableCount++;
+                    }
+                    parsedAny = true;
+                }
+            }
+
+            if (!parsedAny)
+            {
+                var readyFromRoot = ReadInt(json, "readyToolsCount", -1);
+                var unavailableFromRoot = ReadInt(json, "unavailableToolsCount", -1);
+                if (readyFromRoot >= 0 || unavailableFromRoot >= 0)
+                {
+                    readyCount = Math.Max(0, readyFromRoot);
+                    unavailableCount = Math.Max(0, unavailableFromRoot);
+                    parsedAny = true;
+                }
+            }
+
+            readinessKnown = parsedAny;
+            readyToolsCount = parsedAny ? readyCount : -1;
+            unavailableToolsCount = parsedAny ? unavailableCount : -1;
+            return parsedAny;
+        }
+
+        private void UpdateCapabilityState(string reason)
+        {
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var next = EvaluateCapabilityState(nowMs, out var nextReason);
+            if (next == capabilityState && string.Equals(nextReason, capabilityTransitionReason, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (next != capabilityState)
+            {
+                capabilityStateTransitionCount++;
+                capabilityState = next;
+                capabilityTransitionReason = string.IsNullOrWhiteSpace(nextReason) ? reason : nextReason;
+                OnCapabilityStateChanged?.Invoke(capabilityState, capabilityTransitionReason);
+            }
+            else
+            {
+                capabilityTransitionReason = string.IsNullOrWhiteSpace(nextReason) ? reason : nextReason;
+            }
+        }
+
+        private CapabilityState EvaluateCapabilityState(long nowMs, out string reason)
+        {
+            reason = "ok";
+            var failureThreshold = Math.Max(1, probeFailureThreshold);
+            if (consecutiveHealthProbeFailures >= failureThreshold)
+            {
+                reason = "health_probe_failed";
+                return CapabilityState.OFFLINE;
+            }
+
+            var staleMs = Math.Max(500, healthProbeStaleThresholdMs);
+            var stale = lastMessageAtMs <= 0 || (nowMs - lastMessageAtMs) > staleMs || !IsConnected;
+            if (stale)
+            {
+                reason = "ws_stale";
+                return CapabilityState.REMOTE_STALE;
+            }
+
+            var normalizedHealth = (lastHealthStatus ?? string.Empty).Trim().ToUpperInvariant();
+            if (normalizedHealth == "SAFE_MODE")
+            {
+                reason = "remote_safe_mode";
+                return CapabilityState.REMOTE_SAFE_MODE;
+            }
+            if (normalizedHealth == "THROTTLED")
+            {
+                reason = "remote_throttled";
+                return CapabilityState.REMOTE_THROTTLED;
+            }
+            if (normalizedHealth == "DEGRADED")
+            {
+                reason = "remote_degraded";
+                return CapabilityState.REMOTE_DEGRADED;
+            }
+
+            if (enableExternalReadinessProbe)
+            {
+                if (consecutiveReadinessProbeFailures >= failureThreshold)
+                {
+                    reason = "readiness_probe_failed";
+                    return CapabilityState.LIMITED_NOT_READY;
+                }
+
+                if (readinessKnown && readyToolsCount == 0 && unavailableToolsCount > 0)
+                {
+                    reason = "tools_unavailable";
+                    return CapabilityState.LIMITED_NOT_READY;
+                }
+            }
+
+            return CapabilityState.OK;
         }
 
         private void EnsureReconnectLoop()
@@ -1102,6 +1389,70 @@ namespace BeYourEyes.Adapters.Networking
         {
             var token = obj[key];
             return token == null ? string.Empty : token.ToString().Trim();
+        }
+
+        private static bool ReadBool(JObject obj, string key, bool defaultValue)
+        {
+            var token = obj[key];
+            return ReadBoolToken(token, defaultValue);
+        }
+
+        private static bool ReadBoolToken(JToken token, bool defaultValue)
+        {
+            if (token == null)
+            {
+                return defaultValue;
+            }
+
+            if (token.Type == JTokenType.Boolean)
+            {
+                return token.Value<bool>();
+            }
+            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+            {
+                return token.Value<double>() > 0.5d;
+            }
+
+            return bool.TryParse(token.ToString(), out var parsed) ? parsed : defaultValue;
+        }
+
+        private static int ReadInt(JObject obj, string key, int defaultValue)
+        {
+            var token = obj[key];
+            if (token == null)
+            {
+                return defaultValue;
+            }
+
+            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+            {
+                return token.Value<int>();
+            }
+
+            return int.TryParse(token.ToString(), out var parsed) ? parsed : defaultValue;
+        }
+
+        private void ResetCapabilityRuntime()
+        {
+            readinessKnown = false;
+            readyToolsCount = -1;
+            unavailableToolsCount = -1;
+            toolAvailability.Clear();
+
+            consecutiveHealthProbeFailures = 0;
+            consecutiveReadinessProbeFailures = 0;
+            healthProbeSuccessCount = 0;
+            healthProbeFailureCount = 0;
+            readinessProbeSuccessCount = 0;
+            readinessProbeFailureCount = 0;
+
+            lastHealthOkAtMs = -1;
+            lastReadinessOkAtMs = -1;
+            lastReadinessProbeAtMs = -1;
+
+            capabilityState = CapabilityState.OK;
+            capabilityStateTransitionCount = 0;
+            capabilityTransitionReason = "init";
         }
     }
 }

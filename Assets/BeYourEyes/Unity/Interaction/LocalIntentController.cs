@@ -345,6 +345,23 @@ namespace BeYourEyes.Unity.Interaction
                 return false;
             }
 
+            var capability = gatewayClient.CurrentCapabilityState;
+            if (capability == CapabilityState.OFFLINE)
+            {
+                blockedReason = "offline";
+                return false;
+            }
+            if (capability == CapabilityState.REMOTE_SAFE_MODE)
+            {
+                blockedReason = "safe_mode";
+                return false;
+            }
+            if (capability == CapabilityState.REMOTE_STALE)
+            {
+                blockedReason = "remote_stale";
+                return false;
+            }
+
             var status = (gatewayClient.LastHealthStatus ?? string.Empty).Trim().ToUpperInvariant();
             if (status == "SAFE_MODE")
             {
@@ -353,9 +370,21 @@ namespace BeYourEyes.Unity.Interaction
             }
 
             var cooldown = Math.Max(100, triggerCooldownMs);
-            if (isAsk && (status == "THROTTLED" || status == "DEGRADED"))
+            if (isAsk && (status == "THROTTLED" || status == "DEGRADED" ||
+                          capability == CapabilityState.REMOTE_THROTTLED ||
+                          capability == CapabilityState.REMOTE_DEGRADED))
             {
                 cooldown *= 2;
+            }
+
+            if (isAsk && capability == CapabilityState.LIMITED_NOT_READY)
+            {
+                cooldown *= 2;
+                if (!gatewayClient.IsVlmAvailable)
+                {
+                    blockedReason = "unavailable_vlm";
+                    return false;
+                }
             }
 
             if (nowMs - lastTriggerAtMs < cooldown)
@@ -372,6 +401,7 @@ namespace BeYourEyes.Unity.Interaction
             blockedCount++;
             lastBlockedReason = string.IsNullOrWhiteSpace(reason) ? "blocked" : reason;
             SetHint("INTENT BLOCKED", nowMs, 1200);
+            TryPulseHaptics();
             if (enableBlockedBeep)
             {
                 PlayBlockedBeep();

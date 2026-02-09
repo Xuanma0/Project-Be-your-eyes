@@ -43,6 +43,8 @@ namespace BeYourEyes.Unity.Capture
         [SerializeField, Range(1, 100)] private int scanTextRoiMinQuality = 75;
         [SerializeField, Range(1, 100)] private int safeModeScanTextRoiQuality = 60;
         [SerializeField] private int scanTextStreamMinIntervalMs = 200;
+        [SerializeField] private int limitedModeMinIntervalMs = 1500;
+        [SerializeField] private int limitedModeQualityDrop = 10;
 
         private readonly WaitForEndOfFrame waitForEndOfFrame = new WaitForEndOfFrame();
         private Coroutine captureRoutine;
@@ -65,6 +67,7 @@ namespace BeYourEyes.Unity.Capture
         private string lastKeyframeReason = "-";
         private long lastFallbackAttemptAtMs = -1;
         private long lastScanTextSentAtMs = -1;
+        private long lastLimitedSentAtMs = -1;
 
         public long FramesCaptured => framesCaptured;
         public long FramesSent => framesSent;
@@ -181,7 +184,22 @@ namespace BeYourEyes.Unity.Capture
             }
             lastKeyframeReason = decision.Reason;
 
+            var capabilityState = gatewayClient.CurrentCapabilityState;
+            if (capabilityState == BeYourEyes.Adapters.Networking.CapabilityState.LIMITED_NOT_READY)
+            {
+                var limitedMin = Math.Max(200, limitedModeMinIntervalMs);
+                if (lastLimitedSentAtMs > 0 && nowMs - lastLimitedSentAtMs < limitedMin)
+                {
+                    lastKeyframeReason = "limited_low_rate_guard";
+                    return;
+                }
+            }
+
             var effectiveQuality = policy.jpegQuality;
+            if (capabilityState == BeYourEyes.Adapters.Networking.CapabilityState.LIMITED_NOT_READY)
+            {
+                effectiveQuality = Mathf.Clamp(effectiveQuality - Math.Max(0, limitedModeQualityDrop), 1, 100);
+            }
             if (useScanTextRoi)
             {
                 var minRoiQuality = string.Equals(healthStatus, "SAFE_MODE", StringComparison.OrdinalIgnoreCase)
@@ -199,6 +217,14 @@ namespace BeYourEyes.Unity.Capture
 
             frameSeq++;
             var meta = BuildMeta(cameraToUse, nowMs, policy.ttlMs, capture, decision.Reason);
+            if (capabilityState == BeYourEyes.Adapters.Networking.CapabilityState.OFFLINE)
+            {
+                framesDroppedNoConn++;
+                lastKeyframeReason = "offline_pause_upload";
+                consecutiveBusyDrops = 0;
+                return;
+            }
+
             var result = gatewayClient.TrySendFrameDetailed(capture.bytes, meta.ToString(Formatting.None), frameSeq, nowMs);
             switch (result)
             {
@@ -211,6 +237,10 @@ namespace BeYourEyes.Unity.Capture
                     if (useScanTextRoi)
                     {
                         lastScanTextSentAtMs = nowMs;
+                    }
+                    if (capabilityState == BeYourEyes.Adapters.Networking.CapabilityState.LIMITED_NOT_READY)
+                    {
+                        lastLimitedSentAtMs = nowMs;
                     }
                     break;
                 case BeYourEyes.Adapters.Networking.FrameSendResult.DroppedBusy:
