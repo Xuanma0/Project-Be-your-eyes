@@ -833,3 +833,46 @@ Key behavior:
 - Captures `metrics_before.txt`, `ws_events.jsonl`, replays frames via `/api/frame`, captures `metrics_after.txt`.
 - Generates `report.md` and `report.json` in replay output directory.
 - Optional `--auto-upload` posts replay zip to `/api/run_package/upload`.
+
+## Event Schema v1 Artifacts (v4.14)
+
+Run package manifest can include:
+
+```json
+{
+  "eventsV1Jsonl": "events/events_v1.jsonl"
+}
+```
+
+- `report_run.py` prefers `eventsV1Jsonl` when present.
+- If `eventsV1Jsonl` is absent/unavailable, it falls back to `ws_events.jsonl` and legacy normalization.
+- `lint_run_package.py` now prints:
+  - `eventsV1Present`
+  - `eventsV1Lines`
+  - `eventsV1SchemaOk`
+  - `eventsV1Normalized`
+
+## Regression Suite + CI (v4.15)
+
+Run locally:
+
+```bash
+python Gateway/scripts/run_regression_suite.py \
+  --suite Gateway/regression/suites/baseline_suite.json \
+  --baseline Gateway/regression/baselines/baseline.json \
+  --fail-on-drop
+```
+
+Refresh baseline:
+
+```bash
+python Gateway/scripts/run_regression_suite.py \
+  --suite Gateway/regression/suites/baseline_suite.json \
+  --baseline Gateway/regression/baselines/baseline.json \
+  --write-baseline
+```
+
+GitHub Actions workflow: `.github/workflows/gateway-ci.yml`
+- runs `pytest`
+- lints run package fixture
+- runs regression suite against committed baseline

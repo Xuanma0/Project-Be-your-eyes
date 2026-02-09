@@ -1,0 +1,18 @@
+{
+  "suiteName": "baseline",
+  "generatedAtMs": 1770651546290,
+  "runs": [
+    {
+      "id": "fixture_with_gt",
+      "qualityScore": 100.0
+    },
+    {
+      "id": "fixture_with_safety",
+      "qualityScore": 76.0
+    },
+    {
+      "id": "fixture_events_v1",
+      "qualityScore": 76.0
+    }
+  ]
+}

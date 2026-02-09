@@ -891,6 +891,13 @@ def generate_report_outputs(
     event_schema_stats = extract_event_schema_stats(event_source_path)
     event_schema_stats["source"] = event_schema_source
     event_schema_stats["eventsV1Path"] = events_v1_rel if event_schema_source == "eventsV1Jsonl" else None
+    extra_event_warnings = []
+    if isinstance(run_package_summary, dict):
+        warnings_raw = run_package_summary.get("eventSchemaWarnings", [])
+        if isinstance(warnings_raw, list):
+            extra_event_warnings = [str(item) for item in warnings_raw if str(item).strip()]
+    if extra_event_warnings:
+        event_schema_stats["warningsCount"] = int(event_schema_stats.get("warningsCount", 0) or 0) + len(extra_event_warnings)
     gt_cfg = (run_package_summary or {}).get("groundTruth", {})
     base_safety_behavior = extract_safety_behavior_from_ws_events(event_source_path)
     quality_payload: dict[str, Any] = {"hasGroundTruth": False, "safetyBehavior": base_safety_behavior, "eventSchema": event_schema_stats}
@@ -1135,10 +1142,18 @@ def load_run_package(run_package_dir: Path) -> tuple[Path, Path | None, Path | N
 
     events_v1_relative = str(manifest.get("eventsV1Jsonl", "")).strip()
     events_v1_path: Path | None = None
+    event_schema_warnings: list[str] = []
     if events_v1_relative:
         candidate = run_package_dir / events_v1_relative
         if candidate.exists():
             events_v1_path = candidate
+        else:
+            legacy_candidate = run_package_dir / "events_v1.jsonl"
+            if legacy_candidate.exists():
+                events_v1_path = legacy_candidate
+                event_schema_warnings.append(
+                    f"eventsV1Jsonl missing at {events_v1_relative}; fallback to events_v1.jsonl"
+                )
 
     ws_relative = str(manifest.get("wsJsonl", "")).strip() or "ws_events.jsonl"
     ws_jsonl = run_package_dir / ws_relative
@@ -1181,6 +1196,7 @@ def load_run_package(run_package_dir: Path) -> tuple[Path, Path | None, Path | N
         "eventSchemaSource": event_source,
         "eventSchemaInputPath": str(event_source_path),
         "eventsV1Path": events_v1_relative if events_v1_path is not None else "",
+        "eventSchemaWarnings": event_schema_warnings,
     }
 
     return ws_jsonl, metrics_before_path, metrics_after_path, summary
