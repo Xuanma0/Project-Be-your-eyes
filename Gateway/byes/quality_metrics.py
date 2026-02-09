@@ -7,6 +7,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from byes.event_normalizer import collect_normalized_ws_events
+
 _FRAME_RE = re.compile(r"(?:frame[_-]?|seq[_-]?)(\d+)", re.IGNORECASE)
 
 
@@ -37,7 +39,37 @@ def load_gt_risk_jsonl(path: Path) -> dict[int, list[dict[str, Any]]]:
 
 
 def extract_pred_ocr_from_ws_events(ws_events_jsonl_path: Path) -> dict[int, dict[str, Any]]:
+    normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
+    normalized_events = normalized_summary.get("events", [])
     preds: dict[int, dict[str, Any]] = {}
+    for event in normalized_events:
+        name = str(event.get("name", "")).strip().lower()
+        phase = str(event.get("phase", "")).strip().lower()
+        if name != "ocr.scan_text":
+            continue
+        if phase and phase not in {"result", "info"}:
+            continue
+        seq = _parse_int(event.get("frameSeq"))
+        if seq is None:
+            continue
+        payload = event.get("payload")
+        text = ""
+        if isinstance(payload, dict):
+            text = str(payload.get("text", "")).strip()
+            if not text:
+                text = str(payload.get("summary", "")).strip()
+        if not text:
+            text = str(event.get("name", "")).strip() if False else ""
+        if not text:
+            continue
+        latency_ms = _parse_int(event.get("latencyMs"))
+        existing = preds.get(seq)
+        if existing is None or len(text) > len(str(existing.get("text", ""))):
+            preds[seq] = {"text": text, "latencyMs": latency_ms}
+
+    if preds:
+        return preds
+
     for row in _iter_jsonl(ws_events_jsonl_path):
         event = row.get("event") if isinstance(row, dict) else None
         if not isinstance(event, dict):
@@ -64,6 +96,44 @@ def extract_pred_ocr_from_ws_events(ws_events_jsonl_path: Path) -> dict[int, dic
 
 
 def extract_pred_hazards_from_ws_events(ws_events_jsonl_path: Path) -> dict[int, list[dict[str, Any]]]:
+    normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
+    normalized_events = normalized_summary.get("events", [])
+    normalized_preds: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for event in normalized_events:
+        name = str(event.get("name", "")).strip().lower()
+        if name not in {"risk.hazards", "risk.depth"}:
+            continue
+        seq = _parse_int(event.get("frameSeq"))
+        if seq is None:
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        hazards = payload.get("hazards")
+        if not isinstance(hazards, list):
+            continue
+        for item in hazards:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("hazardKind", "")).strip().lower()
+            if not kind:
+                continue
+            normalized_preds[seq].append({"hazardKind": kind})
+
+    if normalized_preds:
+        compact: dict[int, list[dict[str, Any]]] = {}
+        for seq, hazards in normalized_preds.items():
+            seen: set[str] = set()
+            uniq: list[dict[str, Any]] = []
+            for hazard in hazards:
+                kind = str(hazard.get("hazardKind", "")).strip().lower()
+                if not kind or kind in seen:
+                    continue
+                seen.add(kind)
+                uniq.append({"hazardKind": kind})
+            compact[seq] = uniq
+        return compact
+
     preds: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for row in _iter_jsonl(ws_events_jsonl_path):
         event = row.get("event") if isinstance(row, dict) else None
@@ -98,6 +168,19 @@ def extract_pred_hazards_from_ws_events(ws_events_jsonl_path: Path) -> dict[int,
 
 
 def extract_ocr_intent_frames_from_ws_events(ws_events_jsonl_path: Path) -> set[int]:
+    normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
+    normalized_events = normalized_summary.get("events", [])
+    intent_frames: set[int] = set()
+    for event in normalized_events:
+        name = str(event.get("name", "")).strip().lower()
+        phase = str(event.get("phase", "")).strip().lower()
+        if name == "ocr.scan_text" and phase == "start":
+            seq = _parse_int(event.get("frameSeq"))
+            if seq is not None:
+                intent_frames.add(seq)
+    if intent_frames:
+        return intent_frames
+
     intent_frames: set[int] = set()
     for row in _iter_jsonl(ws_events_jsonl_path):
         event = row.get("event") if isinstance(row, dict) else None
@@ -115,6 +198,190 @@ def extract_ocr_intent_frames_from_ws_events(ws_events_jsonl_path: Path) -> set[
 
 
 def extract_safety_behavior_from_ws_events(
+    ws_events_jsonl_path: Path,
+    *,
+    critical_frame_seqs: set[int] | None = None,
+    near_window_frames: int = 2,
+) -> dict[str, Any]:
+    normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
+    normalized_events = normalized_summary.get("events", [])
+    if normalized_events:
+        return _extract_safety_behavior_from_normalized(
+            normalized_events,
+            critical_frame_seqs=critical_frame_seqs,
+            near_window_frames=near_window_frames,
+        )
+
+    return _extract_safety_behavior_legacy(
+        ws_events_jsonl_path,
+        critical_frame_seqs=critical_frame_seqs,
+        near_window_frames=near_window_frames,
+    )
+
+
+def _extract_safety_behavior_from_normalized(
+    events: list[dict[str, Any]],
+    *,
+    critical_frame_seqs: set[int] | None,
+    near_window_frames: int,
+) -> dict[str, Any]:
+    requests: list[dict[str, Any]] = []
+    responses = 0
+    timeouts = 0
+    response_latencies: list[int] = []
+    timeout_frame_samples: list[int] = []
+    missing_frame_samples: list[int] = []
+    frames_with_intent: set[int] = set()
+    latch_count = 0
+    preempt_count = 0
+    local_fallback_count = 0
+    latch_duration_values: list[int] = []
+    preempt_duration_values: list[int] = []
+    latch_frames: list[int] = []
+    preempt_frames: list[int] = []
+
+    for event in events:
+        name = str(event.get("name", "")).strip().lower()
+        phase = str(event.get("phase", "")).strip().lower()
+        status = str(event.get("status", "")).strip().lower()
+        seq = _parse_int(event.get("frameSeq"))
+        ts_ms = _parse_int(event.get("tsMs")) or 0
+        latency = _parse_int(event.get("latencyMs"))
+        payload = event.get("payload")
+        request_id = str(payload.get("requestId", "")).strip() if isinstance(payload, dict) else ""
+        if not request_id:
+            request_id = str(payload.get("confirmId", "")).strip() if isinstance(payload, dict) else ""
+
+        if name == "safety.confirm":
+            timeout_reason = ""
+            if isinstance(payload, dict):
+                timeout_reason = str(payload.get("reason", "")).strip().lower()
+            has_choice_payload = False
+            if isinstance(payload, dict):
+                has_choice_payload = any(key in payload for key in ("choice", "confirmed", "answer", "yes", "no"))
+
+            is_timeout = status == "timeout" or phase == "error" or "timeout" in timeout_reason or "expired" in timeout_reason
+            is_response = (phase == "result" or has_choice_payload) and not is_timeout
+            # Older events sometimes normalize to safety.confirm without an explicit phase.
+            is_request = not is_response and not is_timeout and (phase == "start" or not phase)
+            if is_request:
+                if seq is not None:
+                    frames_with_intent.add(seq)
+                requests.append(
+                    {
+                        "seq": seq,
+                        "timeMs": ts_ms,
+                        "requestId": request_id or None,
+                        "responded": False,
+                        "timedOut": False,
+                    }
+                )
+            if is_response:
+                responses += 1
+                matched = _match_pending_request(requests, seq=seq, request_id=request_id or None)
+                if latency is None and matched is not None:
+                    start_ms = _parse_int(matched.get("timeMs"))
+                    if start_ms is not None:
+                        latency = max(0, ts_ms - start_ms)
+                if latency is not None and latency >= 0:
+                    response_latencies.append(int(latency))
+                if matched is not None:
+                    matched["responded"] = True
+            if is_timeout:
+                timeouts += 1
+                matched = _match_pending_request(requests, seq=seq, request_id=request_id or None)
+                if matched is not None:
+                    matched["timedOut"] = True
+                    sample_seq = _parse_int(matched.get("seq"))
+                    if sample_seq is not None and len(timeout_frame_samples) < 5:
+                        timeout_frame_samples.append(sample_seq)
+                elif seq is not None and len(timeout_frame_samples) < 5:
+                    timeout_frame_samples.append(seq)
+
+        if name == "safety.latch":
+            latch_count += 1
+            if seq is not None:
+                latch_frames.append(seq)
+            if latency is not None:
+                latch_duration_values.append(latency)
+
+        if name == "safety.preempt":
+            preempt_count += 1
+            if seq is not None:
+                preempt_frames.append(seq)
+            if latency is not None:
+                preempt_duration_values.append(latency)
+
+        if name == "safety.local_fallback":
+            local_fallback_count += 1
+
+    missing_response_count = 0
+    for req in requests:
+        if not req.get("responded") and not req.get("timedOut"):
+            missing_response_count += 1
+            sample_seq = _parse_int(req.get("seq"))
+            if sample_seq is not None and len(missing_frame_samples) < 5:
+                missing_frame_samples.append(sample_seq)
+
+    latency_payload: dict[str, Any] | None
+    if response_latencies:
+        latency_payload = {
+            "count": len(response_latencies),
+            "p50": _percentile(response_latencies, 50),
+            "p90": _percentile(response_latencies, 90),
+            "p99": _percentile(response_latencies, 99),
+            "max": max(response_latencies),
+        }
+    else:
+        latency_payload = None
+
+    critical_known = bool(critical_frame_seqs)
+    latch_near_critical: int | None = None
+    preempt_near_critical: int | None = None
+    window = max(0, int(near_window_frames))
+    if critical_known:
+        latch_near_critical = _count_near_critical_frames(latch_frames, critical_frame_seqs or set(), window)
+        preempt_near_critical = _count_near_critical_frames(preempt_frames, critical_frame_seqs or set(), window)
+
+    return {
+        "confirm": {
+            "requests": len(requests),
+            "responses": responses,
+            "timeouts": timeouts,
+            "latencyMs": latency_payload,
+            "missingResponseCount": missing_response_count,
+            "framesWithConfirmIntent": len(frames_with_intent),
+            "timeoutFrameSeqSample": timeout_frame_samples,
+            "missingFrameSeqSample": missing_frame_samples,
+        },
+        "latch": {
+            "count": latch_count,
+            "nearCriticalCount": latch_near_critical,
+            "durationMs": _build_duration_payload(latch_duration_values),
+        },
+        "preempt": {
+            "count": preempt_count,
+            "nearCriticalCount": preempt_near_critical,
+            "durationMs": _build_duration_payload(preempt_duration_values),
+        },
+        "fallback": {
+            "localFallbackCount": local_fallback_count,
+        },
+    }
+
+
+def _build_duration_payload(values: list[int]) -> dict[str, Any] | None:
+    if not values:
+        return None
+    return {
+        "count": len(values),
+        "p50": _percentile(values, 50),
+        "p90": _percentile(values, 90),
+        "max": max(values),
+    }
+
+
+def _extract_safety_behavior_legacy(
     ws_events_jsonl_path: Path,
     *,
     critical_frame_seqs: set[int] | None = None,
@@ -1040,3 +1307,13 @@ def _count_near_critical_frames(event_frames: list[int], critical_frames: set[in
         if any(abs(int(seq) - int(cseq)) <= window for cseq in critical_frames):
             total += 1
     return total
+
+
+def extract_event_schema_stats(ws_events_jsonl_path: Path) -> dict[str, Any]:
+    summary = collect_normalized_ws_events(ws_events_jsonl_path)
+    return {
+        "version": "byes.event.v1",
+        "normalizedEvents": int(summary.get("normalizedEvents", 0) or 0),
+        "droppedEvents": int(summary.get("droppedEvents", 0) or 0),
+        "warningsCount": int(summary.get("warningsCount", 0) or 0),
+    }

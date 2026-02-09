@@ -23,6 +23,7 @@ from byes.quality_metrics import (  # noqa: E402
     compute_depth_risk_metrics,
     compute_ocr_metrics,
     compute_quality_score,
+    extract_event_schema_stats,
     extract_safety_behavior_from_ws_events,
     extract_ocr_intent_frames_from_ws_events,
     extract_pred_hazards_from_ws_events,
@@ -872,8 +873,10 @@ def generate_report_outputs(
     output.write_text(report_text + "\n", encoding="utf-8")
 
     summary = build_summary_payload(ws_stats, after_samples, delta_samples, run_package_summary)
+    event_schema_stats = extract_event_schema_stats(ws_jsonl)
     gt_cfg = (run_package_summary or {}).get("groundTruth", {})
-    quality_payload: dict[str, Any] = {"hasGroundTruth": False}
+    base_safety_behavior = extract_safety_behavior_from_ws_events(ws_jsonl)
+    quality_payload: dict[str, Any] = {"hasGroundTruth": False, "safetyBehavior": base_safety_behavior, "eventSchema": event_schema_stats}
     if isinstance(gt_cfg, dict) and bool(gt_cfg.get("hasGroundTruth")):
         try:
             frames_total = int(round(float(summary.get("frame_received", 0) or 0)))
@@ -912,12 +915,13 @@ def generate_report_outputs(
             "ocr": ocr_metrics,
             "depthRisk": risk_metrics,
             "safetyBehavior": safety_behavior,
+            "eventSchema": event_schema_stats,
             "topFindings": top_findings,
             "qualityScore": quality_score,
             "qualityScoreBreakdown": breakdown,
         }
     else:
-        quality_payload = {"hasGroundTruth": False, "safetyBehavior": extract_safety_behavior_from_ws_events(ws_jsonl)}
+        quality_payload["topFindings"] = _build_quality_top_findings(None, None, base_safety_behavior)
     summary["quality"] = quality_payload
 
     json_path: Path | None = output_json

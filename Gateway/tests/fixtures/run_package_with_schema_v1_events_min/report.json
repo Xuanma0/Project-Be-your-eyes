@@ -1,0 +1,189 @@
+{
+  "frame_received": 2.0,
+  "frame_completed": 2.0,
+  "e2e_count": 2.0,
+  "e2e_sum": 30.0,
+  "ttfa_count": 2.0,
+  "ttfa_sum": 12.0,
+  "ttfa_outcomes": {},
+  "safemode_enter": 0.0,
+  "throttle_enter": 0.0,
+  "preempt_enter": 1.0,
+  "confirm_request": 2.0,
+  "confirm_response": 0.0,
+  "confirm_timeout": 1.0,
+  "frame_meta_present": 0.0,
+  "frame_meta_missing": 0.0,
+  "frame_meta_parse_error": 0.0,
+  "ws_total_rows": 12,
+  "ws_event_types": {},
+  "ws_health_status_counts": {},
+  "safe_mode_first_ms": null,
+  "perception_after_safe_mode": 0,
+  "action_plan_after_safe_mode": 0,
+  "confirm_request_after_safe_mode": 0,
+  "safety_score": 82.0,
+  "scenarioTag": "fixture_with_schema_v1_events",
+  "runPackageDir": "tests\\fixtures\\run_package_with_schema_v1_events_min",
+  "quality": {
+    "hasGroundTruth": true,
+    "ocr": {
+      "framesTotal": 2,
+      "framesWithGt": 2,
+      "framesWithPred": 2,
+      "coverage": 1.0,
+      "resultCoverage": 1.0,
+      "intentCoverage": 1.0,
+      "framesWithOcrIntent": 2,
+      "framesWithGtAndPred": 2,
+      "gtHitRate": 1.0,
+      "framesPredButGtEmpty": 0,
+      "falsePositiveRate": 0.0,
+      "topMismatches": [
+        {
+          "frameSeq": 2,
+          "gtText": "NO ENTRY",
+          "predText": "NO ENTRI",
+          "cer": 0.125,
+          "wer": 0.5
+        }
+      ],
+      "exactMatchRate": 0.5,
+      "cer": 0.08333333333333333,
+      "wer": 0.3333333333333333,
+      "latencyMs": {
+        "count": 2,
+        "p50": 110,
+        "p90": 140,
+        "p99": 140,
+        "max": 140
+      }
+    },
+    "depthRisk": {
+      "matchWindowFrames": 2,
+      "byKind": {
+        "stair_down": {
+          "tp": 1,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "overall": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "critical": {
+        "gtCriticalCount": 1,
+        "hitCriticalCount": 1,
+        "missCriticalCount": 0
+      },
+      "detectionDelayFrames": {
+        "count": 1,
+        "p50": 0,
+        "p90": 0,
+        "max": 0,
+        "valuesSample": [
+          0
+        ]
+      },
+      "topMisses": []
+    },
+    "safetyBehavior": {
+      "confirm": {
+        "requests": 2,
+        "responses": 0,
+        "timeouts": 1,
+        "latencyMs": null,
+        "missingResponseCount": 1,
+        "framesWithConfirmIntent": 2,
+        "timeoutFrameSeqSample": [
+          1
+        ],
+        "missingFrameSeqSample": [
+          2
+        ]
+      },
+      "latch": {
+        "count": 1,
+        "nearCriticalCount": 1,
+        "durationMs": {
+          "count": 1,
+          "p50": 300,
+          "p90": 300,
+          "max": 300
+        }
+      },
+      "preempt": {
+        "count": 1,
+        "nearCriticalCount": 1,
+        "durationMs": null
+      },
+      "fallback": {
+        "localFallbackCount": 1
+      }
+    },
+    "eventSchema": {
+      "version": "byes.event.v1",
+      "normalizedEvents": 12,
+      "droppedEvents": 0,
+      "warningsCount": 0
+    },
+    "topFindings": [
+      {
+        "severity": "critical",
+        "type": "confirm_timeout",
+        "frameSeq": 1,
+        "message": "confirm timeout count=1",
+        "evidence": {
+          "timeouts": 1
+        }
+      },
+      {
+        "severity": "warning",
+        "type": "missing_confirm_response",
+        "frameSeq": 2,
+        "message": "missing confirm responses=1",
+        "evidence": {
+          "missingResponseCount": 1
+        }
+      },
+      {
+        "severity": "info",
+        "type": "ocr_top_mismatch",
+        "frameSeq": 2,
+        "message": "ocr mismatch observed",
+        "evidence": {
+          "frameSeq": 2,
+          "gtText": "NO ENTRY",
+          "predText": "NO ENTRI",
+          "cer": 0.125,
+          "wer": 0.5
+        }
+      }
+    ],
+    "qualityScore": 76.0,
+    "qualityScoreBreakdown": [
+      {
+        "reason": "confirm_timeouts",
+        "value": 4.0,
+        "details": {
+          "count": 1
+        }
+      },
+      {
+        "reason": "confirm_missing_response",
+        "value": 2.0,
+        "details": {
+          "count": 1
+        }
+      }
+    ]
+  }
+}

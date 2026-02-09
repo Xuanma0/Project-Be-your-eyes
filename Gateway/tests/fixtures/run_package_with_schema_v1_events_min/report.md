@@ -1,0 +1,190 @@
+# Run Report - ws_events
+
+## Inputs
+- ws jsonl: `tests\fixtures\run_package_with_schema_v1_events_min\ws_events.jsonl`
+- metrics source: `before=tests\fixtures\run_package_with_schema_v1_events_min\metrics_before.txt, after=tests\fixtures\run_package_with_schema_v1_events_min\metrics_after.txt`
+
+## Run Package Summary
+- run package: `tests\fixtures\run_package_with_schema_v1_events_min`
+- scenarioTag: `fixture_with_schema_v1_events`
+- startMs: `1705000000000`
+- endMs: `1705000002500`
+- frameCountSent: `2`
+- eventCountAccepted: `12`
+- localSafetyFallbackEnterCount: `0`
+- healthStatusCounts: `{"NORMAL": 1}`
+- errors: `[]`
+
+## External Readiness
+- unavailable
+
+## WS Summary
+- total rows: `12`
+- expired emitted events: `0`
+- event type counts:
+- healthStatus counts:
+- healthReason topK:
+- safe-mode perception violations:
+  - `first_safe_mode_ms`: `None`
+  - `perception_after_safe_mode`: `0`
+- safe-mode action-plan violations:
+  - `action_plan_after_safe_mode`: `0`
+- safe-mode confirm-request violations:
+  - `confirm_request_after_safe_mode`: `0`
+- active_confirm_events: `0`
+- confirm_request_events: `0`
+- hazard_events: `0`
+- unique_hazards: `0`
+- action-plan events: `0`
+- action-plan categories:
+- dialog events: `0`
+
+## Metrics Snapshot - Raw After
+- `byes_frame_received_total` sum: `2`
+- `byes_frame_completed_total` sum: `2`
+- `byes_frame_meta_present_total` sum: `0` (series absent)
+- `byes_frame_meta_missing_total` sum: `0` (series absent)
+- `byes_frame_meta_parse_error_total` sum: `0` (series absent)
+- `byes_preprocess_cache_hit_total` sum: `0` (series absent)
+- `byes_preprocess_decode_error_total` sum: `0` (series absent)
+- `byes_preprocess_bytes_total` sum: `0` (series absent)
+- `byes_tool_invoked_total` sum: `0` (series absent)
+- `byes_tool_timeout_total` sum: `0` (series absent)
+- `byes_tool_skipped_total` sum: `0` (series absent)
+- `byes_preempt_enter_total` sum: `1`
+- `byes_preempt_window_active_gauge` sum: `0` (series absent)
+- `byes_preempt_cancel_inflight_total` sum: `0` (series absent)
+- `byes_preempt_drop_queued_total` sum: `0` (series absent)
+- `byes_critical_latch_active_gauge` sum: `0` (series absent)
+- `byes_critical_latch_enter_total` sum: `0` (series absent)
+- `byes_risklevel_upgrade_total` sum: `0` (series absent)
+- `byes_tool_queue_ms_count` sum: `0` (series absent)
+- `byes_tool_queue_ms_sum` sum: `0` (series absent)
+- `byes_tool_exec_ms_count` sum: `0` (series absent)
+- `byes_tool_exec_ms_sum` sum: `0` (series absent)
+- `byes_tool_cache_hit_total` sum: `0` (series absent)
+- `byes_tool_cache_miss_total` sum: `0` (series absent)
+- `byes_tool_rate_limited_total` sum: `0` (series absent)
+- `byes_planner_select_total` sum: `0` (series absent)
+- `byes_planner_skip_total` sum: `0` (series absent)
+- `byes_frame_gate_skip_total` sum: `0` (series absent)
+- `byes_ttfa_count_total` sum: `0` (series absent)
+- `byes_ttfa_outcome_total` sum: `0` (series absent)
+- `byes_throttle_enter_total` sum: `0`
+- `byes_throttle_state_gauge` sum: `0` (series absent)
+- `byes_slo_violation_total` sum: `0` (series absent)
+- `byes_safemode_enter_total` sum: `0`
+- `byes_deadline_miss_total` sum: `0` (series absent)
+- `byes_backpressure_drop_total` sum: `0` (series absent)
+- `byes_fault_set_total` sum: `0` (series absent)
+- `byes_fault_trigger_total` sum: `0` (series absent)
+- `byes_health_warn_total` sum: `0` (series absent)
+- `byes_crosscheck_conflict_total` sum: `0` (series absent)
+- `byes_active_confirm_total` sum: `0` (series absent)
+- `byes_actionplan_patched_total` sum: `0` (series absent)
+- `byes_confirm_request_total` sum: `2`
+- `byes_confirm_response_total` sum: `0`
+- `byes_confirm_timeout_total` sum: `1`
+- `byes_confirm_pending_gauge` sum: `0` (series absent)
+- `byes_confirm_suppressed_total` sum: `0` (series absent)
+- `byes_actiongate_block_total` sum: `0` (series absent)
+- `byes_actiongate_patch_total` sum: `0` (series absent)
+- `byes_hazard_emit_total` sum: `0` (series absent)
+- `byes_hazard_suppressed_total` sum: `0` (series absent)
+- `byes_hazard_active_gauge` sum: `0` (series absent)
+- `byes_hazard_persist_total` sum: `0` (series absent)
+- `byes_e2e_latency_ms_count`: `2`
+- `byes_e2e_latency_ms_sum`: `30`
+- `byes_e2e_latency_ms_bucket` sum: `0`
+- `byes_ttfa_ms_count`: `2`
+- `byes_ttfa_ms_sum`: `12`
+- `byes_ttfa_ms_bucket` sum: `0`
+- `byes_preprocess_latency_ms_count`: `0`
+- `byes_preprocess_latency_ms_sum`: `0`
+- `byes_preprocess_latency_ms_bucket` sum: `0`
+- `byes_frame_completed_total` details:
+  - outcome=`ok`: count=`2`
+- `byes_preempt_enter_total` details:
+  - reason=``: count=`1`
+- `byes_confirm_request_total` details:
+  - kind=``: count=`2`
+- `byes_confirm_response_total` details:
+  - kind=``, answer=``: count=`0`
+- `byes_confirm_timeout_total` details:
+  - kind=``: count=`1`
+
+## Metrics Snapshot - Run Delta
+- `byes_frame_received_total` delta sum: `2`
+- `byes_frame_completed_total` delta sum: `2`
+- `byes_frame_meta_present_total` delta sum: `0` (series absent)
+- `byes_frame_meta_missing_total` delta sum: `0` (series absent)
+- `byes_frame_meta_parse_error_total` delta sum: `0` (series absent)
+- `byes_preprocess_cache_hit_total` delta sum: `0` (series absent)
+- `byes_preprocess_decode_error_total` delta sum: `0` (series absent)
+- `byes_preprocess_bytes_total` delta sum: `0` (series absent)
+- `byes_tool_invoked_total` delta sum: `0` (series absent)
+- `byes_tool_timeout_total` delta sum: `0` (series absent)
+- `byes_tool_skipped_total` delta sum: `0` (series absent)
+- `byes_preempt_enter_total` delta sum: `1`
+- `byes_preempt_window_active_gauge` delta sum: `0` (series absent)
+- `byes_preempt_cancel_inflight_total` delta sum: `0` (series absent)
+- `byes_preempt_drop_queued_total` delta sum: `0` (series absent)
+- `byes_critical_latch_active_gauge` delta sum: `0` (series absent)
+- `byes_critical_latch_enter_total` delta sum: `0` (series absent)
+- `byes_risklevel_upgrade_total` delta sum: `0` (series absent)
+- `byes_tool_queue_ms_count` delta sum: `0` (series absent)
+- `byes_tool_queue_ms_sum` delta sum: `0` (series absent)
+- `byes_tool_exec_ms_count` delta sum: `0` (series absent)
+- `byes_tool_exec_ms_sum` delta sum: `0` (series absent)
+- `byes_tool_cache_hit_total` delta sum: `0` (series absent)
+- `byes_tool_cache_miss_total` delta sum: `0` (series absent)
+- `byes_tool_rate_limited_total` delta sum: `0` (series absent)
+- `byes_planner_select_total` delta sum: `0` (series absent)
+- `byes_planner_skip_total` delta sum: `0` (series absent)
+- `byes_frame_gate_skip_total` delta sum: `0` (series absent)
+- `byes_ttfa_count_total` delta sum: `0` (series absent)
+- `byes_ttfa_outcome_total` delta sum: `0` (series absent)
+- `byes_throttle_enter_total` delta sum: `0`
+- `byes_throttle_state_gauge` delta sum: `0` (series absent)
+- `byes_slo_violation_total` delta sum: `0` (series absent)
+- `byes_safemode_enter_total` delta sum: `0`
+- `byes_deadline_miss_total` delta sum: `0` (series absent)
+- `byes_backpressure_drop_total` delta sum: `0` (series absent)
+- `byes_fault_set_total` delta sum: `0` (series absent)
+- `byes_fault_trigger_total` delta sum: `0` (series absent)
+- `byes_health_warn_total` delta sum: `0` (series absent)
+- `byes_crosscheck_conflict_total` delta sum: `0` (series absent)
+- `byes_active_confirm_total` delta sum: `0` (series absent)
+- `byes_actionplan_patched_total` delta sum: `0` (series absent)
+- `byes_confirm_request_total` delta sum: `2`
+- `byes_confirm_response_total` delta sum: `0`
+- `byes_confirm_timeout_total` delta sum: `1`
+- `byes_confirm_pending_gauge` delta sum: `0` (series absent)
+- `byes_confirm_suppressed_total` delta sum: `0` (series absent)
+- `byes_actiongate_block_total` delta sum: `0` (series absent)
+- `byes_actiongate_patch_total` delta sum: `0` (series absent)
+- `byes_hazard_emit_total` delta sum: `0` (series absent)
+- `byes_hazard_suppressed_total` delta sum: `0` (series absent)
+- `byes_hazard_active_gauge` delta sum: `0` (series absent)
+- `byes_hazard_persist_total` delta sum: `0` (series absent)
+- `byes_e2e_latency_ms_count` delta: `2`
+- `byes_e2e_latency_ms_sum` delta: `30`
+- `byes_e2e_latency_ms_bucket` delta sum: `0`
+- `byes_ttfa_ms_count` delta: `2`
+- `byes_ttfa_ms_sum` delta: `12`
+- `byes_ttfa_ms_bucket` delta sum: `0`
+- `byes_preprocess_latency_ms_count` delta: `0`
+- `byes_preprocess_latency_ms_sum` delta: `0`
+- `byes_preprocess_latency_ms_bucket` delta sum: `0`
+- `byes_frame_completed_total` details:
+  - outcome=`ok`: delta=`2`
+- `byes_preempt_enter_total` details:
+  - reason=``: delta=`1`
+- `byes_confirm_request_total` details:
+  - kind=``: delta=`2`
+- `byes_confirm_response_total` details:
+  - kind=``, answer=``: delta=`0`
+- `byes_confirm_timeout_total` details:
+  - kind=``: delta=`1`
+- `ttfa_outcome_equals_frame_completed`: `False` (ttfa_outcome_delta=`0`, frame_completed_delta=`2`)
+

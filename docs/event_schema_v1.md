@@ -1,0 +1,97 @@
+﻿# BYES Event Schema v1
+
+`schemaVersion`: `byes.event.v1`
+
+## Fields
+- `tsMs`: event timestamp in ms.
+- `runId`: optional run id.
+- `frameSeq`: optional frame sequence id.
+- `component`: `unity|gateway|cloud|sim|unknown`.
+- `category`: `tool|safety|system|scenario|metric|unknown`.
+- `name`: normalized event name (`ocr.scan_text`, `risk.hazards`, `safety.confirm`, etc.).
+- `phase`: optional lifecycle stage (`start|result|error|info`).
+- `status`: optional normalized status (`ok|timeout|cancel|error`).
+- `latencyMs`: optional latency in ms.
+- `payload`: normalized payload object.
+- `raw`: optional raw event (debug use only).
+
+## Examples
+
+### 1) OCR intent (start)
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000000120,
+  "frameSeq": 1,
+  "component": "gateway",
+  "category": "tool",
+  "name": "ocr.scan_text",
+  "phase": "start",
+  "status": "ok",
+  "latencyMs": null,
+  "payload": {"requestId": "ocr-1"}
+}
+```
+
+### 2) OCR result (text)
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000000180,
+  "frameSeq": 1,
+  "component": "gateway",
+  "category": "tool",
+  "name": "ocr.scan_text",
+  "phase": "result",
+  "status": "ok",
+  "latencyMs": 110,
+  "payload": {"text": "EXIT"}
+}
+```
+
+### 3) Risk hazards result
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000000900,
+  "frameSeq": 1,
+  "component": "gateway",
+  "category": "tool",
+  "name": "risk.hazards",
+  "phase": "result",
+  "status": "ok",
+  "latencyMs": null,
+  "payload": {"hazards": [{"hazardKind": "stair_down", "severity": "critical"}]}
+}
+```
+
+### 4) Safety confirm timeout / latch
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000000600,
+  "frameSeq": 1,
+  "component": "gateway",
+  "category": "safety",
+  "name": "safety.confirm",
+  "phase": "error",
+  "status": "timeout",
+  "latencyMs": null,
+  "payload": {"reason": "timeout", "requestId": "conf-1"}
+}
+```
+
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000000820,
+  "frameSeq": 1,
+  "component": "gateway",
+  "category": "safety",
+  "name": "safety.latch",
+  "phase": "info",
+  "status": "ok",
+  "latencyMs": 300,
+  "payload": {"reason": "critical_latch"}
+}
+```
