@@ -146,6 +146,7 @@ namespace BeYourEyes.Adapters.Networking
         public long EventDroppedOutOfOrderCount => eventGuard != null ? eventGuard.DroppedOutOfOrder : 0;
         public long EventDroppedByFallbackCount => eventGuard != null ? eventGuard.DroppedByFallback : 0;
         public long EventLastSeqSeen => eventGuard != null ? eventGuard.LastSeqSeen : -1;
+        public int EventAllowedReorderSeq => eventGuard != null ? eventGuard.AllowedReorderSeq : 0;
         public int EventDefaultTtlMs => eventGuard != null ? eventGuard.DefaultEventTtlMs : 1500;
         public long ActionPlanGateAcceptedCount => localActionPlanGate != null ? localActionPlanGate.AcceptedCount : 0;
         public long ActionPlanGateBlockedCount => localActionPlanGate != null ? localActionPlanGate.BlockedCount : 0;

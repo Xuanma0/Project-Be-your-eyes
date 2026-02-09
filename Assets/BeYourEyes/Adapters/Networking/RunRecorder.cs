@@ -26,10 +26,13 @@ namespace BeYourEyes.Adapters.Networking
         private string runsRootPath;
         private string framesDirectory;
         private string manifestPath;
+        private string lastManifestPath;
 
         public bool IsRecording { get; private set; }
         public string CurrentRunId { get; private set; } = string.Empty;
         public string CurrentRunDirectory { get; private set; } = string.Empty;
+        public string CurrentManifestPath => manifestPath ?? string.Empty;
+        public string LastManifestPath => lastManifestPath ?? string.Empty;
         public bool RecordFrames => recordFrames;
         public string ScenarioTag => scenarioTag ?? string.Empty;
 
@@ -88,6 +91,7 @@ namespace BeYourEyes.Adapters.Networking
                 CurrentRunDirectory = Path.Combine(runsRootPath, CurrentRunId);
                 Directory.CreateDirectory(CurrentRunDirectory);
                 manifestPath = Path.Combine(CurrentRunDirectory, "run_manifest.json");
+                lastManifestPath = manifestPath;
 
                 framesDirectory = Path.Combine(CurrentRunDirectory, "frames");
                 if (recordFrames)
@@ -143,8 +147,6 @@ namespace BeYourEyes.Adapters.Networking
                 StopCoroutine(snapshotRoutine);
                 snapshotRoutine = null;
             }
-
-            manifestPath = string.Empty;
 
             lock (writeLock)
             {

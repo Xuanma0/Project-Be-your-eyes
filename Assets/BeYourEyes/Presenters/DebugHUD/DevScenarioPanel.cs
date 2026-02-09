@@ -13,6 +13,7 @@ namespace BeYourEyes.Presenters.DebugHUD
         [SerializeField] private GatewayDevApi gatewayDevApi;
         [SerializeField] private RunRecorder runRecorder;
         [SerializeField] private RunReplayer runReplayer;
+        [SerializeField] private RunPackageManager runPackageManager;
         [SerializeField] private bool visible = true;
         [SerializeField] private int maxHistory = 30;
         [SerializeField] private int maxBodyChars = 800;
@@ -36,6 +37,8 @@ namespace BeYourEyes.Presenters.DebugHUD
         private string lastResponseBody = string.Empty;
         private string lastError = string.Empty;
         private string lastMethodPath = "-";
+        private string lastRunManifestPath = string.Empty;
+        private string lastRunSummary = string.Empty;
         private Vector2 historyScroll;
         private float nextLookupAt;
 
@@ -59,10 +62,16 @@ namespace BeYourEyes.Presenters.DebugHUD
         private void OnEnable()
         {
             EnsureDependencies();
+            BindRunManager();
             if (gatewayClient != null)
             {
                 baseUrlInput = gatewayClient.BaseUrl;
             }
+        }
+
+        private void OnDisable()
+        {
+            UnbindRunManager();
         }
 
         private void Update()
@@ -102,7 +111,8 @@ namespace BeYourEyes.Presenters.DebugHUD
         private void DrawHeader()
         {
             GUILayout.BeginHorizontal();
-            GUILayout.Label($"Replay: {(IsReplayBlocked() ? "ON" : "OFF")}  Scenario: {(scenarioRunning ? currentScenario : "idle")}");
+            var runState = runPackageManager != null && runPackageManager.IsRunActive ? "RUNNING" : "IDLE";
+            GUILayout.Label($"Replay: {(IsReplayBlocked() ? "ON" : "OFF")}  Scenario: {(scenarioRunning ? currentScenario : "idle")}  Run: {runState}");
             if (GUILayout.Button("Hide", GUILayout.Width(80f)))
             {
                 visible = false;
@@ -272,6 +282,8 @@ namespace BeYourEyes.Presenters.DebugHUD
             GUILayout.Space(4f);
             GUILayout.Label($"Last: {lastMethodPath}");
             GUILayout.Label($"status={lastStatusCode} latency={lastLatencyMs}ms error={lastError}");
+            GUILayout.Label($"RunManifest: {Truncate(lastRunManifestPath, 100)}");
+            GUILayout.Label($"RunSummary: {Truncate(lastRunSummary, 120)}");
             GUILayout.Label("Response:");
             GUILayout.TextArea(Truncate(lastResponseBody, maxBodyChars), GUILayout.Height(80f));
         }
@@ -310,6 +322,18 @@ namespace BeYourEyes.Presenters.DebugHUD
             {
                 runReplayer = FindFirstObjectByType<RunReplayer>();
             }
+            if (runPackageManager == null)
+            {
+                runPackageManager = FindFirstObjectByType<RunPackageManager>();
+                if (runPackageManager == null)
+                {
+                    runPackageManager = GetComponent<RunPackageManager>();
+                    if (runPackageManager == null)
+                    {
+                        runPackageManager = gameObject.AddComponent<RunPackageManager>();
+                    }
+                }
+            }
             if (gatewayDevApi == null)
             {
                 gatewayDevApi = GetComponent<GatewayDevApi>();
@@ -323,6 +347,41 @@ namespace BeYourEyes.Presenters.DebugHUD
             {
                 gatewayDevApi.SetBaseUrl(baseUrlInput);
             }
+
+            BindRunManager();
+        }
+
+        private void BindRunManager()
+        {
+            if (runPackageManager == null)
+            {
+                return;
+            }
+
+            runPackageManager.OnRunCompleted -= HandleRunCompleted;
+            runPackageManager.OnRunCompleted += HandleRunCompleted;
+        }
+
+        private void UnbindRunManager()
+        {
+            if (runPackageManager == null)
+            {
+                return;
+            }
+
+            runPackageManager.OnRunCompleted -= HandleRunCompleted;
+        }
+
+        private void HandleRunCompleted(string manifestPath, string summary)
+        {
+            lastRunManifestPath = manifestPath ?? string.Empty;
+            lastRunSummary = summary ?? string.Empty;
+            lastMethodPath = "RUN COMPLETE";
+            lastStatusCode = 0;
+            lastLatencyMs = 0;
+            lastError = "-";
+            lastResponseBody = summary ?? string.Empty;
+            RecordHistory("RUN", "package", 0, 0, true, "-");
         }
 
         private IEnumerator RunSingleGet(string path)
@@ -457,12 +516,42 @@ namespace BeYourEyes.Presenters.DebugHUD
             {
                 runRecorder.SetScenarioTag(scenarioName);
             }
+            if (runPackageManager != null)
+            {
+                runPackageManager.StopRun();
+            }
 
             for (var i = 0; i < steps.Count; i++)
             {
                 var step = steps[i];
                 yield return SendRequest(step.method, step.path, step.payload);
                 yield return new WaitForSecondsRealtime(0.05f);
+            }
+
+            var scenarioPayload = BuildScenarioPayload(steps);
+            if (runPackageManager == null)
+            {
+                PushUiError("run_package_manager_missing");
+            }
+            else if (runPackageManager.StartRun(scenarioName, scenarioPayload, out var runMessage))
+            {
+                lastMethodPath = $"RUN {scenarioName}";
+                lastResponseBody = runMessage;
+                while (runPackageManager.IsRunActive)
+                {
+                    yield return new WaitForSecondsRealtime(0.1f);
+                }
+
+                lastRunManifestPath = runPackageManager.CurrentManifestPath;
+                lastRunSummary = runPackageManager.CurrentRunSummary;
+                if (string.IsNullOrWhiteSpace(lastResponseBody))
+                {
+                    lastResponseBody = runPackageManager.CurrentRunSummary;
+                }
+            }
+            else
+            {
+                PushUiError($"run_start_failed:{runMessage}");
             }
 
             scenarioRunning = false;
@@ -525,16 +614,20 @@ namespace BeYourEyes.Presenters.DebugHUD
             lastResponseBody = result.body ?? string.Empty;
             lastError = string.IsNullOrWhiteSpace(result.error) ? "-" : result.error;
             lastMethodPath = $"{method} {path}";
+            RecordHistory(method, path, result.statusCode, result.latencyMs, result.ok, string.IsNullOrWhiteSpace(result.error) ? "-" : result.error);
+        }
 
+        private void RecordHistory(string method, string path, long statusCode, long latencyMs, bool ok, string error)
+        {
             history.Add(new HistoryRow
             {
                 at = DateTime.Now.ToString("HH:mm:ss"),
                 method = method,
                 path = path,
-                status = result.statusCode,
-                latencyMs = result.latencyMs,
-                ok = result.ok,
-                error = string.IsNullOrWhiteSpace(result.error) ? "-" : result.error,
+                status = statusCode,
+                latencyMs = latencyMs,
+                ok = ok,
+                error = string.IsNullOrWhiteSpace(error) ? "-" : error,
             });
 
             while (history.Count > Mathf.Max(5, maxHistory))
@@ -634,6 +727,40 @@ namespace BeYourEyes.Presenters.DebugHUD
                 payload["value"] = value;
             }
 
+            return payload;
+        }
+
+        private JObject BuildScenarioPayload(IReadOnlyList<Step> steps)
+        {
+            var stepArray = new JArray();
+            if (steps != null)
+            {
+                for (var i = 0; i < steps.Count; i++)
+                {
+                    var step = steps[i];
+                    stepArray.Add(new JObject
+                    {
+                        ["index"] = i,
+                        ["method"] = step.method,
+                        ["path"] = step.path,
+                        ["payload"] = step.payload != null ? step.payload.DeepClone() : null,
+                    });
+                }
+            }
+
+            var payload = new JObject
+            {
+                ["intent"] = IntentOptions[Mathf.Clamp(intentIndex, 0, IntentOptions.Length - 1)],
+                ["question"] = intentQuestion,
+                ["faultPreset"] = new JObject
+                {
+                    ["tool"] = faultTool,
+                    ["mode"] = faultMode,
+                    ["value"] = faultValue,
+                    ["durationMs"] = faultDurationMs,
+                },
+                ["steps"] = stepArray,
+            };
             return payload;
         }
 

@@ -10,6 +10,26 @@ namespace BeYourEyes.Unity.Capture
 {
     public sealed class FrameCapture : MonoBehaviour
     {
+        public readonly struct ForceWindowResult
+        {
+            public ForceWindowResult(bool completed, string reason, long startedAtMs, long endedAtMs, int targetFrames, int sentFrames)
+            {
+                Completed = completed;
+                Reason = string.IsNullOrWhiteSpace(reason) ? "unknown" : reason;
+                StartedAtMs = startedAtMs;
+                EndedAtMs = endedAtMs;
+                TargetFrames = targetFrames;
+                SentFrames = sentFrames;
+            }
+
+            public bool Completed { get; }
+            public string Reason { get; }
+            public long StartedAtMs { get; }
+            public long EndedAtMs { get; }
+            public int TargetFrames { get; }
+            public int SentFrames { get; }
+        }
+
         public readonly struct FrameAcceptedInfo
         {
             public FrameAcceptedInfo(long seq, long timestampMs, byte[] jpgBytes, int width, int height, bool roiApplied, string keyframeReason, string metaJson)
@@ -92,6 +112,13 @@ namespace BeYourEyes.Unity.Capture
         private long lastFallbackAttemptAtMs = -1;
         private long lastScanTextSentAtMs = -1;
         private long lastLimitedSentAtMs = -1;
+        private bool forceWindowActive;
+        private long forceWindowStartedAtMs = -1;
+        private long forceWindowEndAtMs = -1;
+        private long forceWindowLastSendAttemptMs = -1;
+        private int forceWindowTargetFrames;
+        private int forceWindowMinIntervalMs = 120;
+        private long forceWindowSentAtStart;
 
         public long FramesCaptured => framesCaptured;
         public long FramesSent => framesSent;
@@ -100,7 +127,13 @@ namespace BeYourEyes.Unity.Capture
         public long TotalBytesSent => totalBytesSent;
         public double BytesEma => bytesEma;
         public string LastKeyframeReason => lastKeyframeReason;
+        public bool IsForceWindowActive => forceWindowActive;
+        public long ForceWindowStartedAtMs => forceWindowStartedAtMs;
+        public long ForceWindowEndAtMs => forceWindowEndAtMs;
+        public int ForceWindowTargetFrames => forceWindowTargetFrames;
+        public int ForceWindowSentFrames => forceWindowStartedAtMs > 0 ? Math.Max(0, (int)(framesSent - forceWindowSentAtStart)) : 0;
         public event Action<FrameAcceptedInfo> OnFrameAccepted;
+        public event Action<ForceWindowResult> OnForceWindowCompleted;
 
         private void OnEnable()
         {
@@ -112,6 +145,10 @@ namespace BeYourEyes.Unity.Capture
 
         private void OnDisable()
         {
+            if (forceWindowActive)
+            {
+                CompleteForceWindow(false, "disabled", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            }
             StopCapture();
             ReleaseCaptureResources();
             keyframeSelector?.ResetRuntime();
@@ -138,6 +175,42 @@ namespace BeYourEyes.Unity.Capture
             StopCoroutine(captureRoutine);
             captureRoutine = null;
             Debug.Log("[FrameCapture] stopped");
+        }
+
+        public bool ForceCaptureWindow(float durationSec, int maxFrames, int minIntervalMs, out string reason)
+        {
+            if (durationSec <= 0f && maxFrames <= 0)
+            {
+                reason = "invalid_window";
+                return false;
+            }
+
+            if (captureRoutine == null)
+            {
+                StartCapture();
+            }
+
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            forceWindowActive = true;
+            forceWindowStartedAtMs = nowMs;
+            forceWindowEndAtMs = nowMs + (long)(Mathf.Max(0.1f, durationSec) * 1000f);
+            forceWindowTargetFrames = Math.Max(0, maxFrames);
+            forceWindowMinIntervalMs = Math.Max(50, minIntervalMs);
+            forceWindowLastSendAttemptMs = -1;
+            forceWindowSentAtStart = framesSent;
+            lastKeyframeReason = "force_window_start";
+            reason = "ok";
+            return true;
+        }
+
+        public void CancelForceCaptureWindow(string reason = "manual_cancel")
+        {
+            if (!forceWindowActive)
+            {
+                return;
+            }
+
+            CompleteForceWindow(false, reason, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         }
 
         private IEnumerator CaptureLoop()
@@ -190,12 +263,28 @@ namespace BeYourEyes.Unity.Capture
                 return;
             }
 
+            if (forceWindowActive && nowMs >= forceWindowEndAtMs)
+            {
+                CompleteForceWindow(false, "timeout", nowMs);
+                return;
+            }
+
             var policy = ResolvePolicy();
             var healthStatus = ResolveHealthStatus();
             var pose = cameraToUse.transform;
             var useScanTextRoi = ShouldUseScanTextRoi();
             KeyframeDecision decision;
-            if (useScanTextRoi)
+            if (forceWindowActive)
+            {
+                if (forceWindowLastSendAttemptMs > 0 && nowMs - forceWindowLastSendAttemptMs < forceWindowMinIntervalMs)
+                {
+                    lastKeyframeReason = "force_min_interval";
+                    return;
+                }
+                forceWindowLastSendAttemptMs = nowMs;
+                decision = new KeyframeDecision(true, "force_window");
+            }
+            else if (useScanTextRoi)
             {
                 var minInterval = Math.Max(50, scanTextStreamMinIntervalMs);
                 if (lastScanTextSentAtMs > 0 && nowMs - lastScanTextSentAtMs < minInterval)
@@ -217,7 +306,7 @@ namespace BeYourEyes.Unity.Capture
             lastKeyframeReason = decision.Reason;
 
             var capabilityState = gatewayClient.CurrentCapabilityState;
-            if (capabilityState == BeYourEyes.Adapters.Networking.CapabilityState.LIMITED_NOT_READY)
+            if (!forceWindowActive && capabilityState == BeYourEyes.Adapters.Networking.CapabilityState.LIMITED_NOT_READY)
             {
                 var limitedMin = Math.Max(200, limitedModeMinIntervalMs);
                 if (lastLimitedSentAtMs > 0 && nowMs - lastLimitedSentAtMs < limitedMin)
@@ -285,6 +374,10 @@ namespace BeYourEyes.Unity.Capture
                         decision.Reason,
                         metaJson
                     ));
+                    if (forceWindowActive && forceWindowTargetFrames > 0 && ForceWindowSentFrames >= forceWindowTargetFrames)
+                    {
+                        CompleteForceWindow(true, "max_frames", nowMs);
+                    }
                     break;
                 case BeYourEyes.Adapters.Networking.FrameSendResult.DroppedBusy:
                     framesDroppedBusy++;
@@ -398,6 +491,49 @@ namespace BeYourEyes.Unity.Capture
             return gatewayClient != null
                 ? (gatewayClient.LastHealthStatus ?? string.Empty).Trim().ToUpperInvariant()
                 : string.Empty;
+        }
+
+        public JObject BuildParameterSnapshot()
+        {
+            return new JObject
+            {
+                ["captureWidth"] = captureWidth,
+                ["captureHeight"] = captureHeight,
+                ["normalFps"] = normalFps,
+                ["degradedFps"] = degradedFps,
+                ["throttledFps"] = throttledFps,
+                ["safeModeFps"] = safeModeFps,
+                ["normalJpegQuality"] = normalJpegQuality,
+                ["degradedJpegQuality"] = degradedJpegQuality,
+                ["throttledJpegQuality"] = throttledJpegQuality,
+                ["safeModeJpegQuality"] = safeModeJpegQuality,
+                ["ttlMs"] = ttlMs,
+                ["busyDropThreshold"] = busyDropThreshold,
+                ["busyDropFpsScale"] = busyDropFpsScale,
+                ["enableScanTextRoi"] = enableScanTextRoi,
+                ["scanTextRoiWidthRatio"] = scanTextRoiWidthRatio,
+                ["scanTextRoiHeightRatio"] = scanTextRoiHeightRatio,
+                ["scanTextRoiMinQuality"] = scanTextRoiMinQuality,
+                ["safeModeScanTextRoiQuality"] = safeModeScanTextRoiQuality,
+                ["scanTextStreamMinIntervalMs"] = scanTextStreamMinIntervalMs,
+                ["limitedModeMinIntervalMs"] = limitedModeMinIntervalMs,
+                ["limitedModeQualityDrop"] = limitedModeQualityDrop,
+                ["forceWindowMinIntervalMs"] = forceWindowMinIntervalMs,
+                ["keyframe"] = new JObject
+                {
+                    ["normalMinIntervalMs"] = keyframeSelector != null ? keyframeSelector.NormalMinIntervalMs : 0,
+                    ["normalMaxIntervalMs"] = keyframeSelector != null ? keyframeSelector.NormalMaxIntervalMs : 0,
+                    ["throttledMinIntervalMs"] = keyframeSelector != null ? keyframeSelector.ThrottledMinIntervalMs : 0,
+                    ["throttledMaxIntervalMs"] = keyframeSelector != null ? keyframeSelector.ThrottledMaxIntervalMs : 0,
+                    ["degradedMinIntervalMs"] = keyframeSelector != null ? keyframeSelector.DegradedMinIntervalMs : 0,
+                    ["degradedMaxIntervalMs"] = keyframeSelector != null ? keyframeSelector.DegradedMaxIntervalMs : 0,
+                    ["safeModeMinIntervalMs"] = keyframeSelector != null ? keyframeSelector.SafeModeMinIntervalMs : 0,
+                    ["safeModeMaxIntervalMs"] = keyframeSelector != null ? keyframeSelector.SafeModeMaxIntervalMs : 0,
+                    ["angleThresholdDeg"] = keyframeSelector != null ? keyframeSelector.AngleThresholdDeg : 0f,
+                    ["positionThresholdM"] = keyframeSelector != null ? keyframeSelector.PositionThresholdM : 0f,
+                    ["busyDropStreakThreshold"] = keyframeSelector != null ? keyframeSelector.BusyDropStreakThreshold : 0,
+                },
+            };
         }
 
         private bool ShouldUseScanTextRoi()
@@ -527,6 +663,28 @@ namespace BeYourEyes.Unity.Capture
             }
 
             bytesEma = (BytesEmaAlpha * bytes) + ((1d - BytesEmaAlpha) * bytesEma);
+        }
+
+        private void CompleteForceWindow(bool completed, string reason, long endedAtMs)
+        {
+            if (!forceWindowActive)
+            {
+                return;
+            }
+
+            var startedAt = forceWindowStartedAtMs;
+            var sentFrames = ForceWindowSentFrames;
+            var targetFrames = forceWindowTargetFrames;
+
+            forceWindowActive = false;
+            forceWindowStartedAtMs = -1;
+            forceWindowEndAtMs = -1;
+            forceWindowLastSendAttemptMs = -1;
+            forceWindowTargetFrames = 0;
+            forceWindowSentAtStart = framesSent;
+
+            lastKeyframeReason = $"force_window_end:{reason}";
+            OnForceWindowCompleted?.Invoke(new ForceWindowResult(completed, reason, startedAt, endedAtMs, targetFrames, sentFrames));
         }
 
         private void ReleaseCaptureResources()

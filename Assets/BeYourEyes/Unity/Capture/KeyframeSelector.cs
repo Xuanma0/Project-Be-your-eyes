@@ -28,6 +28,18 @@ namespace BeYourEyes.Unity.Capture
         private Vector3 lastSentPosition;
         private Quaternion lastSentRotation = Quaternion.identity;
 
+        public int NormalMinIntervalMs => Math.Max(50, normalMinIntervalMs);
+        public int NormalMaxIntervalMs => Math.Max(NormalMinIntervalMs, normalMaxIntervalMs);
+        public int ThrottledMinIntervalMs => Math.Max(50, throttledMinIntervalMs);
+        public int ThrottledMaxIntervalMs => Math.Max(ThrottledMinIntervalMs, throttledMaxIntervalMs);
+        public int DegradedMinIntervalMs => Math.Max(50, degradedMinIntervalMs);
+        public int DegradedMaxIntervalMs => Math.Max(DegradedMinIntervalMs, degradedMaxIntervalMs);
+        public int SafeModeMinIntervalMs => Math.Max(50, safeModeMinIntervalMs);
+        public int SafeModeMaxIntervalMs => Math.Max(SafeModeMinIntervalMs, safeModeMaxIntervalMs);
+        public float AngleThresholdDeg => Mathf.Max(0f, angleThresholdDeg);
+        public float PositionThresholdM => Mathf.Max(0f, positionThresholdM);
+        public int BusyDropStreakThreshold => Mathf.Max(1, busyDropStreakThreshold);
+
         public KeyframeDecision Evaluate(long nowMs, Vector3 currentPosition, Quaternion currentRotation, string healthStatus, int busyDropStreak)
         {
             var policy = ResolvePolicy(healthStatus);
