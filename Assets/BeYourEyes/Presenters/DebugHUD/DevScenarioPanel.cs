@@ -187,6 +187,13 @@ namespace BeYourEyes.Presenters.DebugHUD
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Open Runs Dashboard"))
+            {
+                OpenRunsDashboard();
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
             if (GUILayout.Button("Crosscheck Once"))
             {
                 StartCoroutine(RunSinglePost("/api/dev/crosscheck", new JObject { ["kind"] = crosscheckKind }));
@@ -312,6 +319,11 @@ namespace BeYourEyes.Presenters.DebugHUD
             GUILayout.Label($"AutoUpload: {(runPackageManager != null && runPackageManager.AutoUploadAfterExport ? "ON" : "OFF")}");
             GUILayout.Label($"LastZipPath: {Truncate(lastZipPath, 100)}");
             GUILayout.Label($"LastZipError: {Truncate(lastZipError, 120)}");
+            if (runPackageManager != null)
+            {
+                GUILayout.Label($"LastUploadRunUrl: {Truncate(runPackageManager.LastUploadRunUrl, 100)}");
+                GUILayout.Label($"LastUploadReportUrl: {Truncate(runPackageManager.LastUploadReportUrl, 100)}");
+            }
             GUILayout.Label("Response:");
             GUILayout.TextArea(Truncate(lastResponseBody, maxBodyChars), GUILayout.Height(80f));
         }
@@ -750,6 +762,16 @@ namespace BeYourEyes.Presenters.DebugHUD
         private void OpenSelectedReport()
         {
             EnsureDependencies();
+            if (runPackageManager != null && !string.IsNullOrWhiteSpace(runPackageManager.LastUploadReportUrl))
+            {
+                Application.OpenURL(runPackageManager.LastUploadReportUrl);
+                return;
+            }
+            if (runPackageManager != null && !string.IsNullOrWhiteSpace(runPackageManager.LastUploadRunUrl))
+            {
+                Application.OpenURL(runPackageManager.LastUploadRunUrl);
+                return;
+            }
             if (runHistoryClient == null)
             {
                 PushUiError("run_history_client_missing");
@@ -768,6 +790,12 @@ namespace BeYourEyes.Presenters.DebugHUD
                 return;
             }
             Application.OpenURL(url);
+        }
+
+        private void OpenRunsDashboard()
+        {
+            var baseUrl = string.IsNullOrWhiteSpace(baseUrlInput) ? "http://127.0.0.1:8000" : baseUrlInput.Trim().TrimEnd('/');
+            Application.OpenURL($"{baseUrl}/runs");
         }
 
         private static string BuildSummaryText(JObject payload)

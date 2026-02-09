@@ -60,6 +60,10 @@ namespace BeYourEyes.Adapters.Networking
         private string lastUploadReportPath = string.Empty;
         private string lastUploadSummary = string.Empty;
         private string lastUploadRunId = string.Empty;
+        private string lastUploadRunUrl = string.Empty;
+        private string lastUploadReportUrl = string.Empty;
+        private string lastUploadSummaryUrl = string.Empty;
+        private string lastUploadZipUrl = string.Empty;
         private long lastUploadAtMs = -1;
         private bool uploadInFlight;
 
@@ -98,6 +102,10 @@ namespace BeYourEyes.Adapters.Networking
         public string LastUploadReportPath => lastUploadReportPath ?? string.Empty;
         public string LastUploadSummary => lastUploadSummary ?? string.Empty;
         public string LastUploadRunId => lastUploadRunId ?? string.Empty;
+        public string LastUploadRunUrl => lastUploadRunUrl ?? string.Empty;
+        public string LastUploadReportUrl => lastUploadReportUrl ?? string.Empty;
+        public string LastUploadSummaryUrl => lastUploadSummaryUrl ?? string.Empty;
+        public string LastUploadZipUrl => lastUploadZipUrl ?? string.Empty;
         public long LastUploadAtMs => lastUploadAtMs;
 
         public event Action<string, string> OnRunCompleted;
@@ -167,6 +175,10 @@ namespace BeYourEyes.Adapters.Networking
             lastUploadReportPath = string.Empty;
             lastUploadSummary = string.Empty;
             lastUploadRunId = string.Empty;
+            lastUploadRunUrl = string.Empty;
+            lastUploadReportUrl = string.Empty;
+            lastUploadSummaryUrl = string.Empty;
+            lastUploadZipUrl = string.Empty;
             lastUploadAtMs = -1;
             startFramesCaptured = frameCapture.FramesCaptured;
             startFramesSent = frameCapture.FramesSent;
@@ -676,6 +688,10 @@ namespace BeYourEyes.Adapters.Networking
             lastUploadReportPath = string.Empty;
             lastUploadSummary = string.Empty;
             lastUploadRunId = string.Empty;
+            lastUploadRunUrl = string.Empty;
+            lastUploadReportUrl = string.Empty;
+            lastUploadSummaryUrl = string.Empty;
+            lastUploadZipUrl = string.Empty;
             lastUploadAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
             var endpoint = $"{baseUrl}/api/run_package/upload";
@@ -733,14 +749,51 @@ namespace BeYourEyes.Adapters.Networking
                     lastUploadError = string.Empty;
                     lastUploadRunId = ReadString(payload, "runId");
                     lastUploadReportPath = ReadString(payload, "reportMdPath");
+                    lastUploadRunUrl = ReadString(payload, "runUrl");
+                    lastUploadReportUrl = ReadString(payload, "reportUrl");
+                    lastUploadSummaryUrl = ReadString(payload, "summaryUrl");
+                    lastUploadZipUrl = ReadString(payload, "zipUrl");
                     lastUploadSummary = BuildUploadSummary(payload["summary"] as JObject);
+                    UpdateManifestServerLinks();
                 }
                 catch (Exception ex)
                 {
                     lastUploadStatus = "error";
                     lastUploadError = $"upload_parse_failed:{ex.Message}";
                     lastUploadRunId = string.Empty;
+                    lastUploadRunUrl = string.Empty;
+                    lastUploadReportUrl = string.Empty;
+                    lastUploadSummaryUrl = string.Empty;
+                    lastUploadZipUrl = string.Empty;
                 }
+            }
+        }
+
+        private void UpdateManifestServerLinks()
+        {
+            if (string.IsNullOrWhiteSpace(currentManifestPath) || !File.Exists(currentManifestPath))
+            {
+                return;
+            }
+
+            try
+            {
+                var raw = File.ReadAllText(currentManifestPath, Encoding.UTF8);
+                var manifest = string.IsNullOrWhiteSpace(raw) ? new JObject() : JObject.Parse(raw);
+                var server = manifest["server"] as JObject ?? new JObject();
+                server["runId"] = lastUploadRunId ?? string.Empty;
+                server["runUrl"] = lastUploadRunUrl ?? string.Empty;
+                server["reportUrl"] = lastUploadReportUrl ?? string.Empty;
+                server["summaryUrl"] = lastUploadSummaryUrl ?? string.Empty;
+                server["zipUrl"] = lastUploadZipUrl ?? string.Empty;
+                server["uploadedAtMs"] = lastUploadAtMs;
+                server["uploadStatus"] = lastUploadStatus ?? string.Empty;
+                manifest["server"] = server;
+                File.WriteAllText(currentManifestPath, manifest.ToString(Formatting.Indented), new UTF8Encoding(false));
+            }
+            catch (Exception ex)
+            {
+                runErrors.Add($"manifest_server_update_failed:{ex.Message}");
             }
         }
 

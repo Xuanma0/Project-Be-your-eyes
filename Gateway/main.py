@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import hashlib
+import html
 import json
 import re
 import time
@@ -12,7 +13,7 @@ from typing import Any, Literal
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, ValidationError, model_validator
 
 from byes.config import GatewayConfig, load_config
@@ -1066,6 +1067,7 @@ async def confirm_submit(request: ConfirmSubmitRequest) -> dict[str, Any]:
 
 @app.post("/api/run_package/upload")
 async def run_package_upload(
+    request: Request,
     file: UploadFile = File(...),
     scenarioTag: str | None = Form(default=None),
 ) -> dict[str, Any]:
@@ -1125,6 +1127,10 @@ async def run_package_upload(
             "summary": summary,
         }
         await gateway.register_run_package(index_entry)
+        base_url = str(request.base_url).rstrip("/")
+        run_url = f"{base_url}/runs/{run_id}"
+        summary_url = f"{base_url}/api/run_packages/{run_id}/summary"
+        zip_url = f"{base_url}/api/run_packages/{run_id}/zip"
 
         return {
             "ok": True,
@@ -1132,6 +1138,10 @@ async def run_package_upload(
             "runDir": str(package_dir),
             "reportMdPath": str(generated_md),
             "reportJsonPath": str(generated_json or report_json_path),
+            "runUrl": run_url,
+            "reportUrl": f"{run_url}#report",
+            "summaryUrl": summary_url,
+            "zipUrl": zip_url,
             "summary": summary,
         }
     except HTTPException:
@@ -1183,6 +1193,150 @@ async def run_package_zip(run_id: str) -> FileResponse:
     if not zip_path.exists():
         raise HTTPException(status_code=404, detail="zip not found")
     return FileResponse(path=zip_path, media_type="application/zip", filename=f"{run_id}.zip")
+
+
+@app.get("/runs", response_class=HTMLResponse)
+async def runs_dashboard(request: Request) -> HTMLResponse:
+    base_url = str(request.base_url).rstrip("/")
+    html_page = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Run Packages</title>
+  <style>
+    body {{ font-family: monospace; margin: 20px; background: #111; color: #eee; }}
+    a {{ color: #7cc7ff; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .muted {{ color: #999; }}
+    ul {{ padding-left: 20px; }}
+    .panel {{ border: 1px solid #333; padding: 12px; border-radius: 8px; margin-top: 12px; }}
+  </style>
+</head>
+<body>
+  <h1>Run Packages</h1>
+  <div class="muted">Source: <code>{html.escape(base_url)}</code></div>
+  <div class="panel">
+    <button id="refresh">Refresh</button>
+    <ul id="runs"></ul>
+  </div>
+  <script>
+    async function loadRuns() {{
+      const list = document.getElementById("runs");
+      list.innerHTML = "<li class='muted'>loading...</li>";
+      try {{
+        const res = await fetch("{base_url}/api/run_packages?limit=50");
+        if (!res.ok) {{
+          list.innerHTML = "<li>failed: HTTP " + res.status + "</li>";
+          return;
+        }}
+        const payload = await res.json();
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        if (items.length === 0) {{
+          list.innerHTML = "<li class='muted'>no runs</li>";
+          return;
+        }}
+        list.innerHTML = "";
+        for (const item of items) {{
+          const runId = item.run_id || "";
+          const tag = item.scenarioTag || "";
+          const created = item.createdAtMs || 0;
+          const li = document.createElement("li");
+          const a = document.createElement("a");
+          a.href = "{base_url}/runs/" + encodeURIComponent(runId);
+          a.textContent = runId + " | " + tag + " | " + created;
+          li.appendChild(a);
+          list.appendChild(li);
+        }}
+      }} catch (err) {{
+        list.innerHTML = "<li>error: " + String(err) + "</li>";
+      }}
+    }}
+    document.getElementById("refresh").addEventListener("click", loadRuns);
+    loadRuns();
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html_page)
+
+
+@app.get("/runs/{run_id}", response_class=HTMLResponse)
+async def run_details_page(run_id: str, request: Request) -> HTMLResponse:
+    entry = await gateway.get_run_package(run_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="run_id not found")
+
+    base_url = str(request.base_url).rstrip("/")
+    safe_run_id = html.escape(run_id)
+    summary_url = f"{base_url}/api/run_packages/{run_id}/summary"
+    report_url = f"{base_url}/api/run_packages/{run_id}/report"
+    zip_url = f"{base_url}/api/run_packages/{run_id}/zip"
+
+    html_page = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Run {safe_run_id}</title>
+  <style>
+    body {{ font-family: monospace; margin: 20px; background: #111; color: #eee; }}
+    a {{ color: #7cc7ff; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .muted {{ color: #999; }}
+    .panel {{ border: 1px solid #333; padding: 12px; border-radius: 8px; margin-top: 12px; }}
+    pre {{ white-space: pre-wrap; background: #0b0b0b; border: 1px solid #2c2c2c; padding: 12px; border-radius: 8px; }}
+  </style>
+</head>
+<body>
+  <h1>Run {safe_run_id}</h1>
+  <div><a href="{base_url}/runs">Back to Run Packages</a></div>
+  <div class="panel">
+    <div><strong>Summary API:</strong> <a href="{summary_url}">{summary_url}</a></div>
+    <div><strong>Report API:</strong> <a href="{report_url}">{report_url}</a></div>
+    <div><strong>Zip API:</strong> <a href="{zip_url}">{zip_url}</a></div>
+  </div>
+  <div class="panel">
+    <h3>Summary</h3>
+    <pre id="summary">loading...</pre>
+  </div>
+  <div class="panel" id="report">
+    <h3>Report.md</h3>
+    <pre id="reportBody">loading...</pre>
+  </div>
+  <script>
+    async function loadSummary() {{
+      const el = document.getElementById("summary");
+      try {{
+        const res = await fetch("{summary_url}");
+        if (!res.ok) {{
+          el.textContent = "failed: HTTP " + res.status;
+          return;
+        }}
+        const payload = await res.json();
+        el.textContent = JSON.stringify(payload, null, 2);
+      }} catch (err) {{
+        el.textContent = "error: " + String(err);
+      }}
+    }}
+    async function loadReport() {{
+      const el = document.getElementById("reportBody");
+      try {{
+        const res = await fetch("{report_url}");
+        if (!res.ok) {{
+          el.textContent = "failed: HTTP " + res.status;
+          return;
+        }}
+        el.textContent = await res.text();
+      }} catch (err) {{
+        el.textContent = "error: " + String(err);
+      }}
+    }}
+    loadSummary();
+    loadReport();
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html_page)
 
 
 @app.get("/metrics")

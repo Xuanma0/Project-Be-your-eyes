@@ -48,5 +48,9 @@ def test_run_package_upload_api_generates_reports() -> None:
         assert "safemode_enter" in summary
         assert "preempt_enter" in summary
         assert "confirm_request" in summary
+        assert isinstance(body.get("runUrl"), str) and "/runs/" in body["runUrl"]
+        assert isinstance(body.get("reportUrl"), str) and body["reportUrl"]
+        assert isinstance(body.get("summaryUrl"), str) and "/api/run_packages/" in body["summaryUrl"]
+        assert isinstance(body.get("zipUrl"), str) and body["zipUrl"].endswith("/zip")
 
         shutil.rmtree(run_dir, ignore_errors=True)

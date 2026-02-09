@@ -637,7 +637,23 @@ Server behavior:
 - saves zip to `Gateway/artifacts/run_packages/<timestamp>_<scenario>.zip`
 - safely extracts to sibling directory
 - generates `report.md` and `report.json`
-- returns `{ ok, runDir, reportMdPath, reportJsonPath, summary }`
+- returns `{ ok, runId, runDir, reportMdPath, reportJsonPath, runUrl, reportUrl, summaryUrl, zipUrl, summary }`
+
+Run package dashboard pages:
+
+- `GET /runs` renders a lightweight HTML list page (fetches `/api/run_packages`).
+- `GET /runs/{run_id}` renders HTML details with summary and `report.md` preview.
+- Shareable links are returned in upload response:
+  - `runUrl` -> run details page
+  - `reportUrl` -> run details page anchored to report section
+  - `summaryUrl` -> summary JSON API
+  - `zipUrl` -> zip download API
+
+Unity integration:
+
+- `DevScenarioPanel` adds `Open Runs Dashboard` button (`{BaseUrl}/runs`).
+- After upload, `RunPackageManager` stores returned server links and writes them back into local `manifest.json` under `server`.
+- `Open Report` in panel prefers latest uploaded `reportUrl`/`runUrl` when available.
 
 Meta baseline (optional FrameMeta on all frames):
 
