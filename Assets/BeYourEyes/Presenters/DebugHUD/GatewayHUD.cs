@@ -69,11 +69,18 @@ namespace BeYourEyes.Presenters.DebugHUD
                     ? $"{Mathf.Max(0f, (float)(nowMs - gatewayClient.LastMessageAtMs) / 1000f):0.0}s ago"
                     : "-";
                 var reconnectText = gatewayClient != null ? gatewayClient.ReconnectAttempt.ToString() : "-";
+                var healthRttText = gatewayClient != null && gatewayClient.LastHealthRttMs >= 0
+                    ? $"{gatewayClient.LastHealthRttMs} ms"
+                    : "-";
                 var ttfaText = gatewayClient != null && gatewayClient.LastTtfaMs >= 0 ? $"{gatewayClient.LastTtfaMs} ms" : "-";
                 var ttfaEmaText = gatewayClient != null && gatewayClient.TtfaEmaMs >= 0 ? $"{gatewayClient.TtfaEmaMs:0.0} ms" : "-";
                 var captureStats = frameCapture == null
                     ? "-"
                     : $"cap={frameCapture.FramesCaptured} sent={frameCapture.FramesSent} dropBusy={frameCapture.FramesDroppedBusy} dropNoConn={frameCapture.FramesDroppedNoConn}";
+                var bytesEmaText = frameCapture != null && frameCapture.BytesEma >= 0
+                    ? $"{frameCapture.BytesEma:0}"
+                    : "-";
+                var keyframeReasonText = frameCapture == null ? "-" : frameCapture.LastKeyframeReason;
                 var safeBanner = string.Equals(healthStatus, "SAFE_MODE", StringComparison.OrdinalIgnoreCase)
                     ? "\nSAFE MODE: STOP / RISK ONLY"
                     : string.Empty;
@@ -83,6 +90,7 @@ namespace BeYourEyes.Presenters.DebugHUD
                     $"WS: {wsState}\n" +
                     $"Reconnects: {reconnectText}\n" +
                     $"LastMsg: {lastMsgAgeText}\n" +
+                    $"HealthRTT: {healthRttText}\n" +
                     $"Health: {healthStatus}\n" +
                     $"Reason: {healthReason}\n" +
                     $"Risk: {riskText}\n" +
@@ -92,6 +100,8 @@ namespace BeYourEyes.Presenters.DebugHUD
                     $"Summary: {lastEventSummary}\n" +
                     $"TTFA: {ttfaText} | EMA: {ttfaEmaText}\n" +
                     $"Frames: {captureStats}\n" +
+                    $"BytesEMA: {bytesEmaText}\n" +
+                    $"Keyframe: {keyframeReasonText}\n" +
                     $"PendingConfirm: {(string.IsNullOrWhiteSpace(pendingConfirmId) ? "-" : pendingConfirmKind)}" +
                     safeBanner;
             }

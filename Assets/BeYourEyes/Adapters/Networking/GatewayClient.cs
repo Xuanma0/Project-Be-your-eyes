@@ -35,6 +35,11 @@ namespace BeYourEyes.Adapters.Networking
         [SerializeField] private bool verboseLogs = true;
         [SerializeField] private int frameOkLogEvery = 30;
 
+        [Header("Health Probe")]
+        [SerializeField] private bool enableHealthProbe = true;
+        [SerializeField] private float healthProbeIntervalSec = 1f;
+        [SerializeField] private int healthProbeStaleThresholdMs = 1500;
+
         private WebSocket webSocket;
         private bool wsConnecting;
         private bool frameRequestInFlight;
@@ -59,6 +64,10 @@ namespace BeYourEyes.Adapters.Networking
 
         private string lastHealthStatus = "UNKNOWN";
         private string lastHealthReason = string.Empty;
+        private int lastHealthRttMs = -1;
+        private string activeIntent = "none";
+        private Coroutine healthProbeRoutine;
+        private bool healthProbeInFlight;
 
         public event Action<JObject> OnGatewayEvent;
         public event Action<bool, string> OnWebSocketStateChanged;
@@ -76,6 +85,8 @@ namespace BeYourEyes.Adapters.Networking
         public int TtfaSampleCount => ttfaSampleCount;
         public string LastHealthStatus => lastHealthStatus;
         public string LastHealthReason => lastHealthReason;
+        public int LastHealthRttMs => lastHealthRttMs;
+        public string ActiveIntent => activeIntent;
 
         private void OnEnable()
         {
@@ -84,11 +95,13 @@ namespace BeYourEyes.Adapters.Networking
             {
                 ConnectWebSocket();
             }
+            StartHealthProbeLoop();
         }
 
         private async void OnDisable()
         {
             shuttingDown = true;
+            StopHealthProbeLoop();
             StopReconnectLoop();
             await CloseWebSocketInternal(notifyState: true, reasonOverride: "disabled");
         }
@@ -96,6 +109,7 @@ namespace BeYourEyes.Adapters.Networking
         private async void OnDestroy()
         {
             shuttingDown = true;
+            StopHealthProbeLoop();
             StopReconnectLoop();
             await CloseWebSocketInternal(notifyState: true, reasonOverride: "destroyed");
         }
@@ -233,6 +247,10 @@ namespace BeYourEyes.Adapters.Networking
                 payload.ToString(Formatting.None),
                 success =>
                 {
+                    if (success)
+                    {
+                        activeIntent = normalized;
+                    }
                     var message = success ? "ok" : "error";
                     onDone?.Invoke(success, message);
                 }
@@ -499,6 +517,93 @@ namespace BeYourEyes.Adapters.Networking
         private string BuildApiUrl(string path)
         {
             return $"{BaseUrl.TrimEnd('/')}{path}";
+        }
+
+        private void StartHealthProbeLoop()
+        {
+            if (!enableHealthProbe || healthProbeRoutine != null)
+            {
+                return;
+            }
+
+            healthProbeRoutine = StartCoroutine(HealthProbeLoop());
+        }
+
+        private void StopHealthProbeLoop()
+        {
+            if (healthProbeRoutine != null)
+            {
+                StopCoroutine(healthProbeRoutine);
+                healthProbeRoutine = null;
+            }
+            healthProbeInFlight = false;
+        }
+
+        private IEnumerator HealthProbeLoop()
+        {
+            while (true)
+            {
+                var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var staleMs = Math.Max(500, healthProbeStaleThresholdMs);
+                var stale = lastMessageAtMs <= 0 || (nowMs - lastMessageAtMs) > staleMs;
+                if ((!IsConnected || stale) && !healthProbeInFlight)
+                {
+                    yield return StartCoroutine(ProbeHealthOnce());
+                }
+
+                yield return new WaitForSecondsRealtime(Mathf.Max(0.5f, healthProbeIntervalSec));
+            }
+        }
+
+        private IEnumerator ProbeHealthOnce()
+        {
+            healthProbeInFlight = true;
+            var startedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            using (var req = UnityWebRequest.Get(BuildApiUrl("/api/health")))
+            {
+                req.downloadHandler = new DownloadHandlerBuffer();
+                yield return req.SendWebRequest();
+                var finishedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                lastHealthRttMs = (int)Mathf.Clamp((float)(finishedAtMs - startedAtMs), 0f, 60000f);
+
+                if (req.result != UnityWebRequest.Result.Success)
+                {
+                    healthProbeInFlight = false;
+                    yield break;
+                }
+
+                try
+                {
+                    var body = string.IsNullOrWhiteSpace(req.downloadHandler.text) ? "{}" : req.downloadHandler.text;
+                    var json = JObject.Parse(body);
+                    var status = ReadString(json, "healthStatus");
+                    if (string.IsNullOrWhiteSpace(status))
+                    {
+                        status = ReadString(json, "state");
+                    }
+                    if (!string.IsNullOrWhiteSpace(status))
+                    {
+                        lastHealthStatus = status;
+                    }
+
+                    var reason = ReadString(json, "healthReason");
+                    if (!string.IsNullOrWhiteSpace(reason))
+                    {
+                        lastHealthReason = reason;
+                    }
+
+                    var intent = ReadString(json, "intent");
+                    if (!string.IsNullOrWhiteSpace(intent))
+                    {
+                        activeIntent = NormalizeIntent(intent);
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            healthProbeInFlight = false;
         }
 
         private void EnsureReconnectLoop()

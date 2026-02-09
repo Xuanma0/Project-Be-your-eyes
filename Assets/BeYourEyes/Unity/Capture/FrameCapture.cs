@@ -25,26 +25,49 @@ namespace BeYourEyes.Unity.Capture
         [SerializeField, Range(1, 100)] private int safeModeJpegQuality = 40;
         [SerializeField] private int ttlMs = 3000;
 
+        [Header("Keyframe")]
+        [SerializeField] private KeyframeSelector keyframeSelector = new KeyframeSelector();
+
         [Header("Backpressure")]
         [SerializeField] private int busyDropThreshold = 8;
         [SerializeField, Range(0.2f, 1f)] private float busyDropFpsScale = 0.5f;
         [SerializeField] private bool includePose = true;
         [SerializeField] private bool autoStart = true;
 
+        [Header("Scan Text ROI")]
+        [SerializeField] private bool enableScanTextRoi = true;
+        [SerializeField, Range(0.2f, 0.9f)] private float scanTextRoiWidthRatio = 0.5f;
+        [SerializeField, Range(0.2f, 0.9f)] private float scanTextRoiHeightRatio = 0.5f;
+        [SerializeField, Range(1, 100)] private int scanTextRoiMinQuality = 75;
+        [SerializeField, Range(1, 100)] private int safeModeScanTextRoiQuality = 60;
+
         private readonly WaitForEndOfFrame waitForEndOfFrame = new WaitForEndOfFrame();
         private Coroutine captureRoutine;
         private int frameSeq;
         private int consecutiveBusyDrops;
 
+        private RenderTexture captureRt;
+        private Texture2D fullTexture;
+        private Texture2D roiTexture;
+        private int rtWidth;
+        private int rtHeight;
+
         private long framesCaptured;
         private long framesSent;
         private long framesDroppedBusy;
         private long framesDroppedNoConn;
+        private long totalBytesSent;
+        private double bytesEma = -1;
+        private const double BytesEmaAlpha = 0.2;
+        private string lastKeyframeReason = "-";
 
         public long FramesCaptured => framesCaptured;
         public long FramesSent => framesSent;
         public long FramesDroppedBusy => framesDroppedBusy;
         public long FramesDroppedNoConn => framesDroppedNoConn;
+        public long TotalBytesSent => totalBytesSent;
+        public double BytesEma => bytesEma;
+        public string LastKeyframeReason => lastKeyframeReason;
 
         private void OnEnable()
         {
@@ -57,6 +80,8 @@ namespace BeYourEyes.Unity.Capture
         private void OnDisable()
         {
             StopCapture();
+            ReleaseCaptureResources();
+            keyframeSelector?.ResetRuntime();
         }
 
         public void StartCapture()
@@ -91,8 +116,7 @@ namespace BeYourEyes.Unity.Capture
 
                 var policy = ResolvePolicy();
                 var fps = Mathf.Max(0.5f, policy.fps * ResolveBusyScale());
-                var interval = 1f / fps;
-                yield return new WaitForSeconds(interval);
+                yield return new WaitForSeconds(1f / fps);
             }
         }
 
@@ -116,23 +140,45 @@ namespace BeYourEyes.Unity.Capture
                 }
             }
 
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var policy = ResolvePolicy();
-            var jpg = CaptureCameraJpg(cameraToUse, captureWidth, captureHeight, policy.jpegQuality);
-            if (jpg == null || jpg.Length == 0)
+            var healthStatus = ResolveHealthStatus();
+            var pose = cameraToUse.transform;
+            var decision = keyframeSelector.Evaluate(nowMs, pose.position, pose.rotation, healthStatus, consecutiveBusyDrops);
+            lastKeyframeReason = decision.Reason;
+            if (!decision.ShouldSend)
+            {
+                return;
+            }
+
+            var useScanTextRoi = ShouldUseScanTextRoi();
+            var effectiveQuality = policy.jpegQuality;
+            if (useScanTextRoi)
+            {
+                var minRoiQuality = string.Equals(healthStatus, "SAFE_MODE", StringComparison.OrdinalIgnoreCase)
+                    ? safeModeScanTextRoiQuality
+                    : scanTextRoiMinQuality;
+                effectiveQuality = Mathf.Max(effectiveQuality, Mathf.Clamp(minRoiQuality, 1, 100));
+            }
+
+            var capture = CaptureCameraJpg(cameraToUse, captureWidth, captureHeight, effectiveQuality, useScanTextRoi);
+            if (capture.bytes == null || capture.bytes.Length == 0)
             {
                 Debug.LogWarning("[FrameCapture] failed to capture jpg");
                 return;
             }
 
             frameSeq++;
-            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var meta = BuildMeta(cameraToUse, nowMs, policy.ttlMs);
-            var result = gatewayClient.TrySendFrameDetailed(jpg, meta.ToString(Formatting.None), frameSeq, nowMs);
+            var meta = BuildMeta(cameraToUse, nowMs, policy.ttlMs, capture, decision.Reason);
+            var result = gatewayClient.TrySendFrameDetailed(capture.bytes, meta.ToString(Formatting.None), frameSeq, nowMs);
             switch (result)
             {
                 case BeYourEyes.Adapters.Networking.FrameSendResult.Accepted:
                     framesSent++;
+                    totalBytesSent += capture.bytes.Length;
+                    UpdateBytesEma(capture.bytes.Length);
                     consecutiveBusyDrops = 0;
+                    keyframeSelector.NotifySendSucceeded(nowMs, pose.position, pose.rotation);
                     break;
                 case BeYourEyes.Adapters.Networking.FrameSendResult.DroppedBusy:
                     framesDroppedBusy++;
@@ -148,12 +194,9 @@ namespace BeYourEyes.Unity.Capture
             }
         }
 
-        private JObject BuildMeta(Camera cameraToUse, long nowMs, int effectiveTtlMs)
+        private JObject BuildMeta(Camera cameraToUse, long nowMs, int effectiveTtlMs, CaptureResult capture, string keyReason)
         {
-            var width = Mathf.Max(32, captureWidth);
-            var height = Mathf.Max(32, captureHeight);
-            var intrinsics = EstimateIntrinsics(cameraToUse, width, height);
-
+            var intrinsics = EstimateIntrinsics(cameraToUse, capture.sourceWidth, capture.sourceHeight, capture.cropRect);
             var meta = new JObject
             {
                 ["sessionId"] = gatewayClient != null ? gatewayClient.SessionId : "default",
@@ -161,11 +204,13 @@ namespace BeYourEyes.Unity.Capture
                 ["timestampMs"] = nowMs,
                 ["tsCaptureMs"] = nowMs,
                 ["ttlMs"] = Mathf.Max(200, effectiveTtlMs),
-                ["width"] = width,
-                ["height"] = height,
+                ["width"] = capture.outputWidth,
+                ["height"] = capture.outputHeight,
                 ["coordFrame"] = "World",
                 ["source"] = "unity_skeleton",
                 ["intrinsics"] = intrinsics,
+                ["keyframeReason"] = string.IsNullOrWhiteSpace(keyReason) ? "unknown" : keyReason,
+                ["roiApplied"] = capture.usedRoi,
             };
 
             if (includePose)
@@ -204,7 +249,7 @@ namespace BeYourEyes.Unity.Capture
 
         private CapturePolicy ResolvePolicy()
         {
-            var status = gatewayClient != null ? (gatewayClient.LastHealthStatus ?? string.Empty).Trim().ToUpperInvariant() : string.Empty;
+            var status = ResolveHealthStatus();
             switch (status)
             {
                 case "SAFE_MODE":
@@ -218,68 +263,187 @@ namespace BeYourEyes.Unity.Capture
             }
         }
 
-        private static JObject EstimateIntrinsics(Camera cameraToUse, int width, int height)
+        private string ResolveHealthStatus()
         {
-            var fovYRad = cameraToUse.fieldOfView * Mathf.Deg2Rad;
-            var fy = 0.5f * height / Mathf.Tan(0.5f * Mathf.Max(0.01f, fovYRad));
-            var fx = fy * (width / Mathf.Max(1f, height));
-            var cx = width * 0.5f;
-            var cy = height * 0.5f;
-
-            return new JObject
-            {
-                ["fx"] = fx,
-                ["fy"] = fy,
-                ["cx"] = cx,
-                ["cy"] = cy,
-                ["width"] = width,
-                ["height"] = height,
-            };
+            return gatewayClient != null
+                ? (gatewayClient.LastHealthStatus ?? string.Empty).Trim().ToUpperInvariant()
+                : string.Empty;
         }
 
-        private static byte[] CaptureCameraJpg(Camera cameraToUse, int width, int height, int quality)
+        private bool ShouldUseScanTextRoi()
+        {
+            if (!enableScanTextRoi || gatewayClient == null)
+            {
+                return false;
+            }
+
+            return string.Equals(gatewayClient.ActiveIntent, "scan_text", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void EnsureCaptureTargets(int width, int height)
+        {
+            var safeWidth = Mathf.Max(32, width);
+            var safeHeight = Mathf.Max(32, height);
+            if (captureRt == null || rtWidth != safeWidth || rtHeight != safeHeight)
+            {
+                ReleaseCaptureResources();
+                captureRt = new RenderTexture(safeWidth, safeHeight, 24, RenderTextureFormat.ARGB32);
+                captureRt.Create();
+                rtWidth = safeWidth;
+                rtHeight = safeHeight;
+            }
+
+            if (fullTexture == null || fullTexture.width != safeWidth || fullTexture.height != safeHeight)
+            {
+                if (fullTexture != null)
+                {
+                    Object.Destroy(fullTexture);
+                }
+                fullTexture = new Texture2D(safeWidth, safeHeight, TextureFormat.RGB24, false);
+            }
+        }
+
+        private CaptureResult CaptureCameraJpg(Camera cameraToUse, int width, int height, int quality, bool useRoi)
         {
             var safeWidth = Mathf.Max(32, width);
             var safeHeight = Mathf.Max(32, height);
             var safeQuality = Mathf.Clamp(quality, 1, 100);
 
-            RenderTexture rt = null;
-            Texture2D tex = null;
             var previousTarget = cameraToUse.targetTexture;
             var previousActive = RenderTexture.active;
-
             try
             {
-                rt = RenderTexture.GetTemporary(safeWidth, safeHeight, 24, RenderTextureFormat.ARGB32);
-                tex = new Texture2D(safeWidth, safeHeight, TextureFormat.RGB24, false);
-
-                cameraToUse.targetTexture = rt;
+                EnsureCaptureTargets(safeWidth, safeHeight);
+                cameraToUse.targetTexture = captureRt;
                 cameraToUse.Render();
-                RenderTexture.active = rt;
+                RenderTexture.active = captureRt;
 
-                tex.ReadPixels(new Rect(0, 0, safeWidth, safeHeight), 0, 0);
-                tex.Apply(false, false);
-                return tex.EncodeToJPG(safeQuality);
+                if (!useRoi)
+                {
+                    fullTexture.ReadPixels(new Rect(0f, 0f, safeWidth, safeHeight), 0, 0);
+                    fullTexture.Apply(false, false);
+                    var fullBytes = fullTexture.EncodeToJPG(safeQuality);
+                    return new CaptureResult(fullBytes, safeWidth, safeHeight, safeWidth, safeHeight, new RectInt(0, 0, safeWidth, safeHeight), false);
+                }
+
+                var roiRect = ComputeCenterRoiRect(safeWidth, safeHeight);
+                if (roiTexture == null || roiTexture.width != roiRect.width || roiTexture.height != roiRect.height)
+                {
+                    if (roiTexture != null)
+                    {
+                        Object.Destroy(roiTexture);
+                    }
+                    roiTexture = new Texture2D(roiRect.width, roiRect.height, TextureFormat.RGB24, false);
+                }
+
+                roiTexture.ReadPixels(new Rect(roiRect.x, roiRect.y, roiRect.width, roiRect.height), 0, 0);
+                roiTexture.Apply(false, false);
+                var roiBytes = roiTexture.EncodeToJPG(safeQuality);
+                return new CaptureResult(roiBytes, roiRect.width, roiRect.height, safeWidth, safeHeight, roiRect, true);
             }
             catch (Exception ex)
             {
                 Debug.LogWarning($"[FrameCapture] capture exception: {ex.Message}");
-                return null;
+                return default;
             }
             finally
             {
                 cameraToUse.targetTexture = previousTarget;
                 RenderTexture.active = previousActive;
-                if (rt != null)
-                {
-                    RenderTexture.ReleaseTemporary(rt);
-                }
-
-                if (tex != null)
-                {
-                    Object.Destroy(tex);
-                }
             }
+        }
+
+        private RectInt ComputeCenterRoiRect(int fullWidth, int fullHeight)
+        {
+            var roiWidth = Mathf.Clamp(Mathf.RoundToInt(fullWidth * Mathf.Clamp(scanTextRoiWidthRatio, 0.2f, 0.9f)), 32, fullWidth);
+            var roiHeight = Mathf.Clamp(Mathf.RoundToInt(fullHeight * Mathf.Clamp(scanTextRoiHeightRatio, 0.2f, 0.9f)), 32, fullHeight);
+            var x = Mathf.Max(0, (fullWidth - roiWidth) / 2);
+            var y = Mathf.Max(0, (fullHeight - roiHeight) / 2);
+            return new RectInt(x, y, roiWidth, roiHeight);
+        }
+
+        private static JObject EstimateIntrinsics(Camera cameraToUse, int sourceWidth, int sourceHeight, RectInt cropRect)
+        {
+            var fovYRad = cameraToUse.fieldOfView * Mathf.Deg2Rad;
+            var fy = 0.5f * sourceHeight / Mathf.Tan(0.5f * Mathf.Max(0.01f, fovYRad));
+            var fx = fy * (sourceWidth / Mathf.Max(1f, sourceHeight));
+            var cx = sourceWidth * 0.5f;
+            var cy = sourceHeight * 0.5f;
+
+            var adjustedCx = cx - cropRect.x;
+            var adjustedCy = cy - cropRect.y;
+            return new JObject
+            {
+                ["fx"] = fx,
+                ["fy"] = fy,
+                ["cx"] = adjustedCx,
+                ["cy"] = adjustedCy,
+                ["width"] = cropRect.width,
+                ["height"] = cropRect.height,
+            };
+        }
+
+        private void UpdateBytesEma(int bytes)
+        {
+            if (bytes <= 0)
+            {
+                return;
+            }
+
+            if (bytesEma < 0)
+            {
+                bytesEma = bytes;
+                return;
+            }
+
+            bytesEma = (BytesEmaAlpha * bytes) + ((1d - BytesEmaAlpha) * bytesEma);
+        }
+
+        private void ReleaseCaptureResources()
+        {
+            if (captureRt != null)
+            {
+                captureRt.Release();
+                Object.Destroy(captureRt);
+                captureRt = null;
+            }
+
+            if (fullTexture != null)
+            {
+                Object.Destroy(fullTexture);
+                fullTexture = null;
+            }
+
+            if (roiTexture != null)
+            {
+                Object.Destroy(roiTexture);
+                roiTexture = null;
+            }
+
+            rtWidth = 0;
+            rtHeight = 0;
+        }
+
+        private readonly struct CaptureResult
+        {
+            public CaptureResult(byte[] bytes, int outputWidth, int outputHeight, int sourceWidth, int sourceHeight, RectInt cropRect, bool usedRoi)
+            {
+                this.bytes = bytes;
+                this.outputWidth = outputWidth;
+                this.outputHeight = outputHeight;
+                this.sourceWidth = sourceWidth;
+                this.sourceHeight = sourceHeight;
+                this.cropRect = cropRect;
+                this.usedRoi = usedRoi;
+            }
+
+            public readonly byte[] bytes;
+            public readonly int outputWidth;
+            public readonly int outputHeight;
+            public readonly int sourceWidth;
+            public readonly int sourceHeight;
+            public readonly RectInt cropRect;
+            public readonly bool usedRoi;
         }
 
         private readonly struct CapturePolicy
