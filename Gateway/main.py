@@ -54,6 +54,33 @@ def _sanitize_file_tag(raw: str | None) -> str:
     return text or "run"
 
 
+def _slugify_anchor(text: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9]+", "-", str(text or "").strip().lower())
+    normalized = normalized.strip("-")
+    return normalized or "section"
+
+
+def _split_report_sections(report_md: str) -> list[tuple[str, str, str]]:
+    lines = (report_md or "").splitlines()
+    sections: list[tuple[str, str, str]] = []
+    current_title = "Overview"
+    current_lines: list[str] = []
+    for raw_line in lines:
+        line = str(raw_line)
+        if line.startswith("## "):
+            body = "\n".join(current_lines).strip()
+            if body:
+                sections.append((current_title, body, _slugify_anchor(current_title)))
+            current_title = line[3:].strip() or "Section"
+            current_lines = []
+            continue
+        current_lines.append(line)
+    final_body = "\n".join(current_lines).strip()
+    if final_body:
+        sections.append((current_title, final_body, _slugify_anchor(current_title)))
+    return sections
+
+
 class MockEvent(BaseModel):
     type: str
     timestampMs: int
@@ -1156,11 +1183,7 @@ async def run_packages_list(limit: int = 20) -> dict[str, Any]:
     return {"ok": True, "items": items}
 
 
-@app.get("/api/run_packages/{run_id}/summary")
-async def run_package_summary(run_id: str) -> dict[str, Any]:
-    entry = await gateway.get_run_package(run_id)
-    if entry is None:
-        raise HTTPException(status_code=404, detail="run_id not found")
+def _load_run_summary_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
     report_path = gateway._resolve_run_packages_path(str(entry.get("reportJsonPath", "")))  # noqa: SLF001
     if not report_path.exists():
         raise HTTPException(status_code=404, detail="report json not found")
@@ -1171,6 +1194,24 @@ async def run_package_summary(run_id: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=500, detail="report json invalid")
     return payload
+
+
+def _load_run_report_md_from_entry(entry: dict[str, Any]) -> str:
+    report_path = gateway._resolve_run_packages_path(str(entry.get("reportMdPath", "")))  # noqa: SLF001
+    if not report_path.exists():
+        raise HTTPException(status_code=404, detail="report md not found")
+    try:
+        return report_path.read_text(encoding="utf-8-sig")
+    except Exception as ex:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"report md read failed: {ex}") from ex
+
+
+@app.get("/api/run_packages/{run_id}/summary")
+async def run_package_summary(run_id: str) -> dict[str, Any]:
+    entry = await gateway.get_run_package(run_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="run_id not found")
+    return _load_run_summary_from_entry(entry)
 
 
 @app.get("/api/run_packages/{run_id}/report")
@@ -1209,8 +1250,11 @@ async def runs_dashboard(request: Request) -> HTMLResponse:
     a {{ color: #7cc7ff; text-decoration: none; }}
     a:hover {{ text-decoration: underline; }}
     .muted {{ color: #999; }}
-    ul {{ padding-left: 20px; }}
+    table {{ width: 100%; border-collapse: collapse; }}
+    th, td {{ border-bottom: 1px solid #2b2b2b; padding: 6px; text-align: left; }}
+    th {{ color: #bbb; }}
     .panel {{ border: 1px solid #333; padding: 12px; border-radius: 8px; margin-top: 12px; }}
+    button {{ margin-right: 8px; }}
   </style>
 </head>
 <body>
@@ -1218,22 +1262,51 @@ async def runs_dashboard(request: Request) -> HTMLResponse:
   <div class="muted">Source: <code>{html.escape(base_url)}</code></div>
   <div class="panel">
     <button id="refresh">Refresh</button>
-    <ul id="runs"></ul>
+    <button id="compare">Compare Selected (2)</button>
+    <table>
+      <thead>
+        <tr>
+          <th>Pick</th>
+          <th>Run</th>
+          <th>Scenario</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody id="runs"></tbody>
+    </table>
   </div>
   <script>
+    let selected = [];
+    function toggleSelected(runId, checked) {{
+      if (checked) {{
+        if (!selected.includes(runId)) {{
+          selected.push(runId);
+        }}
+      }} else {{
+        selected = selected.filter(x => x !== runId);
+      }}
+      if (selected.length > 2) {{
+        selected = selected.slice(selected.length - 2);
+      }}
+      const checks = document.querySelectorAll("input[data-run-id]");
+      checks.forEach(cb => {{
+        const runIdValue = cb.getAttribute("data-run-id");
+        cb.checked = selected.includes(runIdValue);
+      }});
+    }}
     async function loadRuns() {{
       const list = document.getElementById("runs");
-      list.innerHTML = "<li class='muted'>loading...</li>";
+      list.innerHTML = "<tr><td colspan='4' class='muted'>loading...</td></tr>";
       try {{
         const res = await fetch("{base_url}/api/run_packages?limit=50");
         if (!res.ok) {{
-          list.innerHTML = "<li>failed: HTTP " + res.status + "</li>";
+          list.innerHTML = "<tr><td colspan='4'>failed: HTTP " + res.status + "</td></tr>";
           return;
         }}
         const payload = await res.json();
         const items = Array.isArray(payload.items) ? payload.items : [];
         if (items.length === 0) {{
-          list.innerHTML = "<li class='muted'>no runs</li>";
+          list.innerHTML = "<tr><td colspan='4' class='muted'>no runs</td></tr>";
           return;
         }}
         list.innerHTML = "";
@@ -1241,20 +1314,123 @@ async def runs_dashboard(request: Request) -> HTMLResponse:
           const runId = item.run_id || "";
           const tag = item.scenarioTag || "";
           const created = item.createdAtMs || 0;
-          const li = document.createElement("li");
+          const row = document.createElement("tr");
+          const pick = document.createElement("td");
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.setAttribute("data-run-id", runId);
+          checkbox.checked = selected.includes(runId);
+          checkbox.addEventListener("change", (ev) => toggleSelected(runId, ev.target.checked));
+          pick.appendChild(checkbox);
+          row.appendChild(pick);
+          const runCell = document.createElement("td");
           const a = document.createElement("a");
           a.href = "{base_url}/runs/" + encodeURIComponent(runId);
-          a.textContent = runId + " | " + tag + " | " + created;
-          li.appendChild(a);
-          list.appendChild(li);
+          a.textContent = runId;
+          runCell.appendChild(a);
+          row.appendChild(runCell);
+          const tagCell = document.createElement("td");
+          tagCell.textContent = tag;
+          row.appendChild(tagCell);
+          const createdCell = document.createElement("td");
+          createdCell.textContent = String(created);
+          row.appendChild(createdCell);
+          list.appendChild(row);
         }}
       }} catch (err) {{
-        list.innerHTML = "<li>error: " + String(err) + "</li>";
+        list.innerHTML = "<tr><td colspan='4'>error: " + String(err) + "</td></tr>";
       }}
     }}
+    document.getElementById("compare").addEventListener("click", () => {{
+      if (selected.length !== 2) {{
+        alert("Select exactly 2 runs to compare.");
+        return;
+      }}
+      const qs = encodeURIComponent(selected[0]) + "," + encodeURIComponent(selected[1]);
+      window.location.href = "{base_url}/runs/compare?ids=" + qs;
+    }});
     document.getElementById("refresh").addEventListener("click", loadRuns);
     loadRuns();
   </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html_page)
+
+
+@app.get("/runs/compare", response_class=HTMLResponse)
+async def runs_compare_page(ids: str, request: Request) -> HTMLResponse:
+    parts = [part.strip() for part in str(ids or "").split(",") if part.strip()]
+    if len(parts) != 2:
+        raise HTTPException(status_code=400, detail="ids must contain exactly 2 run ids separated by comma")
+    run_a, run_b = parts[0], parts[1]
+    entry_a = await gateway.get_run_package(run_a)
+    entry_b = await gateway.get_run_package(run_b)
+    if entry_a is None or entry_b is None:
+        raise HTTPException(status_code=404, detail="one or more run ids not found")
+    summary_a = _load_run_summary_from_entry(entry_a)
+    summary_b = _load_run_summary_from_entry(entry_b)
+    base_url = str(request.base_url).rstrip("/")
+
+    compare_keys: list[tuple[str, str]] = [
+        ("frame_received", "Frame Received"),
+        ("frame_completed", "Frame Completed"),
+        ("e2e_count", "E2E Count"),
+        ("e2e_sum", "E2E Sum"),
+        ("ttfa_count", "TTFA Count"),
+        ("ttfa_sum", "TTFA Sum"),
+        ("safemode_enter", "SafeMode Enter"),
+        ("throttle_enter", "Throttle Enter"),
+        ("preempt_enter", "Preempt Enter"),
+        ("confirm_request", "Confirm Request"),
+        ("confirm_response", "Confirm Response"),
+    ]
+    rows_html = ""
+    for key, label in compare_keys:
+        value_a = summary_a.get(key, 0)
+        value_b = summary_b.get(key, 0)
+        rows_html += (
+            "<tr>"
+            f"<td>{html.escape(label)}</td>"
+            f"<td>{html.escape(str(value_a))}</td>"
+            f"<td>{html.escape(str(value_b))}</td>"
+            "</tr>"
+        )
+
+    html_page = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Run Compare</title>
+  <style>
+    body {{ font-family: monospace; margin: 20px; background: #111; color: #eee; }}
+    a {{ color: #7cc7ff; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 12px; }}
+    th, td {{ border-bottom: 1px solid #2b2b2b; padding: 8px; text-align: left; }}
+    th {{ color: #bbb; }}
+    .panel {{ border: 1px solid #333; padding: 12px; border-radius: 8px; margin-top: 12px; }}
+  </style>
+</head>
+<body>
+  <h1>Run Compare</h1>
+  <div><a href="{base_url}/runs">Back to Run Packages</a></div>
+  <div class="panel">
+    <div>A: <a href="{base_url}/runs/{html.escape(run_a)}">{html.escape(run_a)}</a></div>
+    <div>B: <a href="{base_url}/runs/{html.escape(run_b)}">{html.escape(run_b)}</a></div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Metric</th>
+        <th>{html.escape(run_a)}</th>
+        <th>{html.escape(run_b)}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {rows_html}
+    </tbody>
+  </table>
 </body>
 </html>"""
     return HTMLResponse(content=html_page)
@@ -1271,6 +1447,37 @@ async def run_details_page(run_id: str, request: Request) -> HTMLResponse:
     summary_url = f"{base_url}/api/run_packages/{run_id}/summary"
     report_url = f"{base_url}/api/run_packages/{run_id}/report"
     zip_url = f"{base_url}/api/run_packages/{run_id}/zip"
+    summary = _load_run_summary_from_entry(entry)
+    report_md = _load_run_report_md_from_entry(entry)
+    sections = _split_report_sections(report_md)
+    nav_links = []
+    for title, _body, anchor in sections:
+        nav_links.append(f'<a href="#{html.escape(anchor)}">{html.escape(title)}</a>')
+    nav_html = " | ".join(nav_links) if nav_links else "<span class=\"muted\">no report sections</span>"
+
+    cards = [
+        ("frame", f"{int(summary.get('frame_received', 0))}/{int(summary.get('frame_completed', 0))}"),
+        ("e2e", f"count={int(summary.get('e2e_count', 0))}, sum={int(summary.get('e2e_sum', 0))}"),
+        ("ttfa", f"count={int(summary.get('ttfa_count', 0))}, sum={int(summary.get('ttfa_sum', 0))}"),
+        ("safe", str(int(summary.get("safemode_enter", 0)))),
+        ("throttle", str(int(summary.get("throttle_enter", 0)))),
+        ("preempt", str(int(summary.get("preempt_enter", 0)))),
+        ("confirm", f"req={int(summary.get('confirm_request', 0))}, resp={int(summary.get('confirm_response', 0))}"),
+    ]
+    cards_html = "".join(
+        f"<div class='card'><div class='muted'>{html.escape(k)}</div><div>{html.escape(v)}</div></div>"
+        for k, v in cards
+    )
+    sections_html = ""
+    for title, body, anchor in sections:
+        sections_html += (
+            f"<details open id='{html.escape(anchor)}'>"
+            f"<summary>{html.escape(title)}</summary>"
+            f"<pre>{html.escape(body)}</pre>"
+            f"</details>"
+        )
+    if not sections_html:
+        sections_html = "<div class='muted'>report.md is empty</div>"
 
     html_page = f"""<!doctype html>
 <html lang="en">
@@ -1284,56 +1491,33 @@ async def run_details_page(run_id: str, request: Request) -> HTMLResponse:
     a:hover {{ text-decoration: underline; }}
     .muted {{ color: #999; }}
     .panel {{ border: 1px solid #333; padding: 12px; border-radius: 8px; margin-top: 12px; }}
+    .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }}
+    .card {{ border: 1px solid #2b2b2b; border-radius: 8px; padding: 8px; background: #0b0b0b; }}
+    summary {{ cursor: pointer; font-weight: bold; }}
+    details {{ margin-top: 8px; border: 1px solid #2b2b2b; border-radius: 8px; padding: 6px; background: #0d0d0d; }}
     pre {{ white-space: pre-wrap; background: #0b0b0b; border: 1px solid #2c2c2c; padding: 12px; border-radius: 8px; }}
   </style>
 </head>
 <body>
   <h1>Run {safe_run_id}</h1>
-  <div><a href="{base_url}/runs">Back to Run Packages</a></div>
+  <div><a href="{base_url}/runs">Back to Run Packages</a> | <a href="{base_url}/runs/compare?ids={html.escape(run_id)},{html.escape(run_id)}">Compare (replace 2nd id manually)</a></div>
   <div class="panel">
     <div><strong>Summary API:</strong> <a href="{summary_url}">{summary_url}</a></div>
     <div><strong>Report API:</strong> <a href="{report_url}">{report_url}</a></div>
     <div><strong>Zip API:</strong> <a href="{zip_url}">{zip_url}</a></div>
   </div>
   <div class="panel">
-    <h3>Summary</h3>
-    <pre id="summary">loading...</pre>
+    <h3>Summary Cards</h3>
+    <div class="cards">{cards_html}</div>
+  </div>
+  <div class="panel">
+    <h3>Report Navigation</h3>
+    <div>{nav_html}</div>
   </div>
   <div class="panel" id="report">
-    <h3>Report.md</h3>
-    <pre id="reportBody">loading...</pre>
+    <h3>Report.md Sections</h3>
+    {sections_html}
   </div>
-  <script>
-    async function loadSummary() {{
-      const el = document.getElementById("summary");
-      try {{
-        const res = await fetch("{summary_url}");
-        if (!res.ok) {{
-          el.textContent = "failed: HTTP " + res.status;
-          return;
-        }}
-        const payload = await res.json();
-        el.textContent = JSON.stringify(payload, null, 2);
-      }} catch (err) {{
-        el.textContent = "error: " + String(err);
-      }}
-    }}
-    async function loadReport() {{
-      const el = document.getElementById("reportBody");
-      try {{
-        const res = await fetch("{report_url}");
-        if (!res.ok) {{
-          el.textContent = "failed: HTTP " + res.status;
-          return;
-        }}
-        el.textContent = await res.text();
-      }} catch (err) {{
-        el.textContent = "error: " + String(err);
-      }}
-    }}
-    loadSummary();
-    loadReport();
-  </script>
 </body>
 </html>"""
     return HTMLResponse(content=html_page)

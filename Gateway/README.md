@@ -642,12 +642,19 @@ Server behavior:
 Run package dashboard pages:
 
 - `GET /runs` renders a lightweight HTML list page (fetches `/api/run_packages`).
-- `GET /runs/{run_id}` renders HTML details with summary and `report.md` preview.
+- `GET /runs/{run_id}` renders HTML details with summary cards and collapsible `report.md` sections (`##` headings).
+- `GET /runs/compare?ids=<runA>,<runB>` renders side-by-side comparison for two runs.
 - Shareable links are returned in upload response:
   - `runUrl` -> run details page
   - `reportUrl` -> run details page anchored to report section
   - `summaryUrl` -> summary JSON API
   - `zipUrl` -> zip download API
+
+Compare usage:
+
+1. Open `/runs`
+2. Select exactly two runs with checkboxes
+3. Click `Compare Selected (2)` to open `/runs/compare?ids=...`
 
 Unity integration:
 
