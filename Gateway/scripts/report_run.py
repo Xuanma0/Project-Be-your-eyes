@@ -3,7 +3,10 @@
 import argparse
 import json
 import re
+import shutil
 import sys
+import tempfile
+import zipfile
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -346,6 +349,9 @@ def build_report(
     if run_package_summary is not None:
         lines.append("## Run Package Summary")
         lines.append(f"- run package: `{run_package_summary.get('runPackageDir', '')}`")
+        source_zip = run_package_summary.get("sourceZip")
+        if isinstance(source_zip, str) and source_zip.strip():
+            lines.append(f"- source zip: `{source_zip}`")
         lines.append(f"- scenarioTag: `{run_package_summary.get('scenarioTag', '')}`")
         lines.append(f"- startMs: `{run_package_summary.get('startMs', '')}`")
         lines.append(f"- endMs: `{run_package_summary.get('endMs', '')}`")
@@ -801,72 +807,65 @@ def load_run_package(run_package_dir: Path) -> tuple[Path, Path | None, Path | N
     return ws_jsonl, metrics_before_path, metrics_after_path, summary
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate markdown report from metrics + ws jsonl")
-    parser.add_argument("--metrics-url", default="http://127.0.0.1:8000/metrics")
-    parser.add_argument("--metrics-before", default=None)
-    parser.add_argument("--metrics-after", default=None)
-    parser.add_argument("--external-readiness-url", default=None)
-    parser.add_argument("--ws-jsonl", default=None)
-    parser.add_argument("--run-package", default=None)
-    parser.add_argument("--output", default=None)
-    args = parser.parse_args()
+def safe_extract_zip(zip_path: Path, target_dir: Path) -> None:
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for member in zf.infolist():
+            member_name = member.filename.replace("\\", "/")
+            if member_name.startswith("/") or member_name.startswith("../") or "/../" in member_name:
+                raise ValueError(f"unsafe zip entry: {member.filename}")
+            resolved = (target_dir / member.filename).resolve()
+            if not str(resolved).startswith(str(target_dir.resolve())):
+                raise ValueError(f"zip path traversal detected: {member.filename}")
+        zf.extractall(target_dir)
 
-    run_package_dir: Path | None = None
-    run_package_summary: dict[str, Any] | None = None
 
-    if args.run_package:
-        run_package_dir = Path(args.run_package)
-        if not run_package_dir.exists() or not run_package_dir.is_dir():
-            print(f"run package dir not found: {run_package_dir}")
-            return 1
+def resolve_run_package_input(run_package_path: Path) -> tuple[Path, Path | None, Path | None, dict[str, Any], Path | None]:
+    if run_package_path.is_dir():
+        ws_jsonl, before, after, summary = load_run_package(run_package_path)
+        return ws_jsonl, before, after, summary, None
+
+    if run_package_path.is_file() and run_package_path.suffix.lower() == ".zip":
+        extract_root = Path(tempfile.mkdtemp(prefix="runpkg_extract_"))
         try:
-            ws_jsonl, pkg_before, pkg_after, run_package_summary = load_run_package(run_package_dir)
-        except Exception as ex:
-            print(str(ex))
-            return 1
-    else:
-        if not args.ws_jsonl:
-            print("either --ws-jsonl or --run-package is required")
-            return 1
-        ws_jsonl = Path(args.ws_jsonl)
-        pkg_before = None
-        pkg_after = None
-        if not ws_jsonl.exists():
-            print(f"ws jsonl not found: {ws_jsonl}")
-            return 1
+            safe_extract_zip(run_package_path, extract_root)
+            ws_jsonl, before, after, summary = load_run_package(extract_root)
+            summary["sourceZip"] = str(run_package_path)
+            return ws_jsonl, before, after, summary, extract_root
+        except Exception:
+            shutil.rmtree(extract_root, ignore_errors=True)
+            raise
 
-    metrics_before_path = Path(args.metrics_before) if args.metrics_before else pkg_before
-    metrics_after_path = Path(args.metrics_after) if args.metrics_after else pkg_after
+    raise FileNotFoundError(f"run package path not supported: {run_package_path}")
 
-    if (metrics_before_path is None) != (metrics_after_path is None):
-        print("must provide both --metrics-before and --metrics-after, or neither")
-        return 1
 
-    output = derive_output_path(ws_jsonl, args.output, run_package_dir)
-    output.parent.mkdir(parents=True, exist_ok=True)
-
+def generate_report(
+    *,
+    ws_jsonl: Path,
+    output: Path,
+    metrics_url: str,
+    metrics_before_path: Path | None,
+    metrics_after_path: Path | None,
+    external_readiness_url: str | None,
+    run_package_summary: dict[str, Any] | None,
+) -> Path:
     ws_rows = load_jsonl(ws_jsonl)
     ws_stats = collect_ws_stats(ws_rows)
 
     if metrics_before_path is not None and metrics_after_path is not None:
         if not metrics_before_path.exists():
-            print(f"metrics before file not found: {metrics_before_path}")
-            return 1
+            raise FileNotFoundError(f"metrics before file not found: {metrics_before_path}")
         if not metrics_after_path.exists():
-            print(f"metrics after file not found: {metrics_after_path}")
-            return 1
-
+            raise FileNotFoundError(f"metrics after file not found: {metrics_after_path}")
         before_text = load_text(metrics_before_path)
         after_text = load_text(metrics_after_path)
         metrics_source = f"before={metrics_before_path}, after={metrics_after_path}"
     else:
         with httpx.Client(timeout=10.0) as client:
-            response = client.get(args.metrics_url)
+            response = client.get(metrics_url)
             response.raise_for_status()
             after_text = response.text
         before_text = ""
-        metrics_source = args.metrics_url
+        metrics_source = metrics_url
 
     after_samples = parse_prometheus_text_to_map(after_text)
     delta_samples = None
@@ -875,7 +874,7 @@ def main() -> int:
         delta_samples = compute_delta(before_samples, after_samples)
 
     external_readiness: dict[str, Any] | None = None
-    readiness_url = args.external_readiness_url or _derive_external_readiness_url(args.metrics_url)
+    readiness_url = external_readiness_url or _derive_external_readiness_url(metrics_url)
     if readiness_url:
         try:
             with httpx.Client(timeout=5.0) as client:
@@ -898,9 +897,79 @@ def main() -> int:
         external_readiness,
         run_package_summary,
     )
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(report_text + "\n", encoding="utf-8")
-    print(f"report generated -> {output}")
-    return 0
+    return output
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Generate markdown report from metrics + ws jsonl")
+    parser.add_argument("--metrics-url", default="http://127.0.0.1:8000/metrics")
+    parser.add_argument("--metrics-before", default=None)
+    parser.add_argument("--metrics-after", default=None)
+    parser.add_argument("--external-readiness-url", default=None)
+    parser.add_argument("--ws-jsonl", default=None)
+    parser.add_argument("--run-package", default=None)
+    parser.add_argument("--output", default=None)
+    args = parser.parse_args()
+
+    run_package_dir: Path | None = None
+    run_package_source: Path | None = None
+    run_package_is_zip = False
+    cleanup_dir: Path | None = None
+    run_package_summary: dict[str, Any] | None = None
+
+    try:
+        if args.run_package:
+            run_package_source = Path(args.run_package)
+            if not run_package_source.exists():
+                print(f"run package path not found: {run_package_source}")
+                return 1
+            run_package_is_zip = run_package_source.is_file() and run_package_source.suffix.lower() == ".zip"
+            ws_jsonl, pkg_before, pkg_after, run_package_summary, cleanup_dir = resolve_run_package_input(run_package_source)
+            run_package_dir = None if run_package_is_zip else run_package_source
+        else:
+            if not args.ws_jsonl:
+                print("either --ws-jsonl or --run-package is required")
+                return 1
+            ws_jsonl = Path(args.ws_jsonl)
+            pkg_before = None
+            pkg_after = None
+            if not ws_jsonl.exists():
+                print(f"ws jsonl not found: {ws_jsonl}")
+                return 1
+
+        metrics_before_path = Path(args.metrics_before) if args.metrics_before else pkg_before
+        metrics_after_path = Path(args.metrics_after) if args.metrics_after else pkg_after
+
+        if (metrics_before_path is None) != (metrics_after_path is None):
+            print("must provide both --metrics-before and --metrics-after, or neither")
+            return 1
+
+        if args.output:
+            output = Path(args.output)
+        elif run_package_is_zip and run_package_source is not None:
+            output = run_package_source.parent / f"report_{run_package_source.stem}.md"
+        else:
+            output = derive_output_path(ws_jsonl, args.output, run_package_dir)
+
+        output = generate_report(
+            ws_jsonl=ws_jsonl,
+            output=output,
+            metrics_url=args.metrics_url,
+            metrics_before_path=metrics_before_path,
+            metrics_after_path=metrics_after_path,
+            external_readiness_url=args.external_readiness_url,
+            run_package_summary=run_package_summary,
+        )
+        print(f"report generated -> {output}")
+        return 0
+    except Exception as ex:
+        print(str(ex))
+        return 1
+    finally:
+        if cleanup_dir is not None:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
 def _derive_external_readiness_url(metrics_url: str) -> str:

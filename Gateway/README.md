@@ -604,10 +604,26 @@ Run-package report mode (consume Unity-exported run package directly):
 python scripts/report_run.py --run-package /path/to/RunPackageDir
 ```
 
+Zip input is also supported:
+
+```bash
+python scripts/report_run.py --run-package /path/to/RunPackage.zip
+```
+
 Notes:
 - The script reads `manifest.json` (or `run_manifest.json`) in the package dir.
 - It auto-loads `wsJsonl`, `metricsBefore`, `metricsAfter` from manifest.
-- Default output is `<run-package>/report.md` (override via `--output`).
+- Default output is `<run-package>/report.md` for directories.
+- For `.zip`, default output is `report_<zip_stem>.md` beside the zip.
+
+Batch scan and generate reports:
+
+```bash
+python scripts/report_packages.py --root /path/to/packages --out /path/to/out
+```
+
+`report_packages.py` recursively scans both run-package directories (`manifest.json`) and `.zip`,
+generates per-run reports, and writes `index.md` + `index.json`.
 
 Meta baseline (optional FrameMeta on all frames):
 
