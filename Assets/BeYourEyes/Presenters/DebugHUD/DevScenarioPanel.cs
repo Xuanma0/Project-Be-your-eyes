@@ -202,6 +202,14 @@ namespace BeYourEyes.Presenters.DebugHUD
             {
                 ExportLastRunZip();
             }
+            if (runPackageManager != null)
+            {
+                var label = runPackageManager.AutoUploadAfterExport ? "Auto Upload: ON" : "Auto Upload: OFF";
+                if (GUILayout.Button(label))
+                {
+                    runPackageManager.AutoUploadAfterExport = !runPackageManager.AutoUploadAfterExport;
+                }
+            }
         }
 
         private void DrawIntentOps()
@@ -291,6 +299,7 @@ namespace BeYourEyes.Presenters.DebugHUD
             GUILayout.Label($"status={lastStatusCode} latency={lastLatencyMs}ms error={lastError}");
             GUILayout.Label($"RunManifest: {Truncate(lastRunManifestPath, 100)}");
             GUILayout.Label($"RunSummary: {Truncate(lastRunSummary, 120)}");
+            GUILayout.Label($"AutoUpload: {(runPackageManager != null && runPackageManager.AutoUploadAfterExport ? "ON" : "OFF")}");
             GUILayout.Label($"LastZipPath: {Truncate(lastZipPath, 100)}");
             GUILayout.Label($"LastZipError: {Truncate(lastZipError, 120)}");
             GUILayout.Label("Response:");

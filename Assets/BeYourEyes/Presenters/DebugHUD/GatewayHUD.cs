@@ -169,6 +169,9 @@ namespace BeYourEyes.Presenters.DebugHUD
                 var runPathText = runRecorder == null || string.IsNullOrWhiteSpace(runRecorder.CurrentRunDirectory) ? "-" : runRecorder.CurrentRunDirectory;
                 var lastZipPathText = runPackageManager == null || string.IsNullOrWhiteSpace(runPackageManager.LastExportZipPath) ? "-" : runPackageManager.LastExportZipPath;
                 var lastZipErrorText = runPackageManager == null || string.IsNullOrWhiteSpace(runPackageManager.LastExportError) ? "-" : runPackageManager.LastExportError;
+                var uploadStatusText = runPackageManager == null ? "-" : runPackageManager.LastUploadStatus;
+                var uploadReportText = runPackageManager == null || string.IsNullOrWhiteSpace(runPackageManager.LastUploadReportPath) ? "-" : runPackageManager.LastUploadReportPath;
+                var uploadSummaryText = runPackageManager == null || string.IsNullOrWhiteSpace(runPackageManager.LastUploadSummary) ? "-" : runPackageManager.LastUploadSummary;
                 var recStateText = runRecorder == null ? "n/a" : (runRecorder.IsRecording ? "REC" : "IDLE");
                 var replayStateText = runReplayer == null ? "n/a" : (runReplayer.IsReplaying ? "REPLAY" : "IDLE");
                 var replayProgressText = runReplayer == null || !runReplayer.IsReplaying
@@ -264,6 +267,9 @@ namespace BeYourEyes.Presenters.DebugHUD
                     $"RunPath: {Truncate(runPathText, 60)}\n" +
                     $"RunZip: {Truncate(lastZipPathText, 60)}\n" +
                     $"RunZipErr: {Truncate(lastZipErrorText, 60)}\n" +
+                    $"Upload: {uploadStatusText}\n" +
+                    $"Report: {Truncate(uploadReportText, 60)}\n" +
+                    $"Summary: {Truncate(uploadSummaryText, 80)}\n" +
                     $"CapHint: {(string.IsNullOrWhiteSpace(capabilityHintText) ? "-" : capabilityHintText)}\n" +
                     $"PendingConfirm: {(string.IsNullOrWhiteSpace(pendingConfirmId) ? "-" : pendingConfirmKind)}" +
                     debugLines +

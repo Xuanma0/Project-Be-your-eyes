@@ -717,6 +717,141 @@ def build_report(
     return "\n".join(lines)
 
 
+def build_summary_payload(
+    ws_stats: dict[str, Any],
+    after_samples: dict[SeriesKey, float],
+    delta_samples: dict[SeriesKey, float] | None,
+    run_package_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = delta_samples if delta_samples is not None else after_samples
+    frame_received = aggregate_metric_sum(source, "byes_frame_received_total")
+    frame_completed = aggregate_metric_sum(source, "byes_frame_completed_total")
+    e2e_count = aggregate_metric_sum(source, "byes_e2e_latency_ms_count")
+    e2e_sum = aggregate_metric_sum(source, "byes_e2e_latency_ms_sum")
+    ttfa_count = aggregate_metric_sum(source, "byes_ttfa_ms_count")
+    ttfa_sum = aggregate_metric_sum(source, "byes_ttfa_ms_sum")
+    safemode_enter = aggregate_metric_sum(source, "byes_safemode_enter_total")
+    throttle_enter = aggregate_metric_sum(source, "byes_throttle_enter_total")
+    preempt_enter = aggregate_metric_sum(source, "byes_preempt_enter_total")
+    confirm_request = aggregate_metric_sum(source, "byes_confirm_request_total")
+    confirm_response = aggregate_metric_sum(source, "byes_confirm_response_total")
+    confirm_timeout = aggregate_metric_sum(source, "byes_confirm_timeout_total")
+    frame_meta_present = aggregate_metric_sum(source, "byes_frame_meta_present_total")
+    frame_meta_missing = aggregate_metric_sum(source, "byes_frame_meta_missing_total")
+    frame_meta_parse_error = aggregate_metric_sum(source, "byes_frame_meta_parse_error_total")
+
+    ttfa_outcomes: dict[str, float] = {}
+    for labels, value in metric_details(source, "byes_ttfa_outcome_total"):
+        outcome = labels.get("outcome", "")
+        kind = labels.get("kind", "")
+        key = f"{outcome}:{kind}"
+        ttfa_outcomes[key] = value
+
+    payload: dict[str, Any] = {
+        "frame_received": frame_received,
+        "frame_completed": frame_completed,
+        "e2e_count": e2e_count,
+        "e2e_sum": e2e_sum,
+        "ttfa_count": ttfa_count,
+        "ttfa_sum": ttfa_sum,
+        "ttfa_outcomes": ttfa_outcomes,
+        "safemode_enter": safemode_enter,
+        "throttle_enter": throttle_enter,
+        "preempt_enter": preempt_enter,
+        "confirm_request": confirm_request,
+        "confirm_response": confirm_response,
+        "confirm_timeout": confirm_timeout,
+        "frame_meta_present": frame_meta_present,
+        "frame_meta_missing": frame_meta_missing,
+        "frame_meta_parse_error": frame_meta_parse_error,
+        "ws_total_rows": ws_stats.get("total_rows", 0),
+        "ws_event_types": ws_stats.get("event_types", {}),
+        "ws_health_status_counts": ws_stats.get("states", {}),
+        "safe_mode_first_ms": ws_stats.get("safe_mode_first_ms"),
+        "perception_after_safe_mode": ws_stats.get("safe_mode_perception_violations", 0),
+        "action_plan_after_safe_mode": ws_stats.get("safe_mode_actionplan_violations", 0),
+        "confirm_request_after_safe_mode": ws_stats.get("safe_mode_confirm_request_violations", 0),
+    }
+    if run_package_summary is not None:
+        payload["scenarioTag"] = run_package_summary.get("scenarioTag", "")
+        payload["runPackageDir"] = run_package_summary.get("runPackageDir", "")
+        if run_package_summary.get("sourceZip"):
+            payload["sourceZip"] = run_package_summary.get("sourceZip")
+    return payload
+
+
+def generate_report_outputs(
+    *,
+    ws_jsonl: Path,
+    output: Path,
+    metrics_url: str,
+    metrics_before_path: Path | None,
+    metrics_after_path: Path | None,
+    external_readiness_url: str | None,
+    run_package_summary: dict[str, Any] | None,
+    output_json: Path | None = None,
+) -> tuple[Path, Path | None, dict[str, Any]]:
+    ws_rows = load_jsonl(ws_jsonl)
+    ws_stats = collect_ws_stats(ws_rows)
+
+    if metrics_before_path is not None and metrics_after_path is not None:
+        if not metrics_before_path.exists():
+            raise FileNotFoundError(f"metrics before file not found: {metrics_before_path}")
+        if not metrics_after_path.exists():
+            raise FileNotFoundError(f"metrics after file not found: {metrics_after_path}")
+        before_text = load_text(metrics_before_path)
+        after_text = load_text(metrics_after_path)
+        metrics_source = f"before={metrics_before_path}, after={metrics_after_path}"
+    else:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(metrics_url)
+            response.raise_for_status()
+            after_text = response.text
+        before_text = ""
+        metrics_source = metrics_url
+
+    after_samples = parse_prometheus_text_to_map(after_text)
+    delta_samples = None
+    if before_text:
+        before_samples = parse_prometheus_text_to_map(before_text)
+        delta_samples = compute_delta(before_samples, after_samples)
+
+    external_readiness: dict[str, Any] | None = None
+    readiness_url = external_readiness_url or _derive_external_readiness_url(metrics_url)
+    if readiness_url:
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                response = client.get(readiness_url)
+                response.raise_for_status()
+                payload = response.json()
+                if isinstance(payload, dict):
+                    external_readiness = payload
+        except Exception:
+            external_readiness = None
+
+    report_title = f"Run Report - {ws_jsonl.stem}"
+    report_text = build_report(
+        report_title,
+        ws_jsonl,
+        metrics_source,
+        ws_stats,
+        after_samples,
+        delta_samples,
+        external_readiness,
+        run_package_summary,
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(report_text + "\n", encoding="utf-8")
+
+    summary = build_summary_payload(ws_stats, after_samples, delta_samples, run_package_summary)
+    json_path: Path | None = output_json
+    if json_path is None:
+        json_path = output.with_suffix(".json")
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return output, json_path, summary
+
+
 def _append_tool_focus(lines: list[str], samples: dict[SeriesKey, float], tool: str, delta: bool) -> None:
     suffix = "delta" if delta else "count"
     invoked = metric_value_with_labels(samples, "byes_tool_invoked_total", {"tool": tool})
@@ -848,58 +983,17 @@ def generate_report(
     external_readiness_url: str | None,
     run_package_summary: dict[str, Any] | None,
 ) -> Path:
-    ws_rows = load_jsonl(ws_jsonl)
-    ws_stats = collect_ws_stats(ws_rows)
-
-    if metrics_before_path is not None and metrics_after_path is not None:
-        if not metrics_before_path.exists():
-            raise FileNotFoundError(f"metrics before file not found: {metrics_before_path}")
-        if not metrics_after_path.exists():
-            raise FileNotFoundError(f"metrics after file not found: {metrics_after_path}")
-        before_text = load_text(metrics_before_path)
-        after_text = load_text(metrics_after_path)
-        metrics_source = f"before={metrics_before_path}, after={metrics_after_path}"
-    else:
-        with httpx.Client(timeout=10.0) as client:
-            response = client.get(metrics_url)
-            response.raise_for_status()
-            after_text = response.text
-        before_text = ""
-        metrics_source = metrics_url
-
-    after_samples = parse_prometheus_text_to_map(after_text)
-    delta_samples = None
-    if before_text:
-        before_samples = parse_prometheus_text_to_map(before_text)
-        delta_samples = compute_delta(before_samples, after_samples)
-
-    external_readiness: dict[str, Any] | None = None
-    readiness_url = external_readiness_url or _derive_external_readiness_url(metrics_url)
-    if readiness_url:
-        try:
-            with httpx.Client(timeout=5.0) as client:
-                response = client.get(readiness_url)
-                response.raise_for_status()
-                payload = response.json()
-                if isinstance(payload, dict):
-                    external_readiness = payload
-        except Exception:
-            external_readiness = None
-
-    report_title = f"Run Report - {ws_jsonl.stem}"
-    report_text = build_report(
-        report_title,
-        ws_jsonl,
-        metrics_source,
-        ws_stats,
-        after_samples,
-        delta_samples,
-        external_readiness,
-        run_package_summary,
+    report_path, _json_path, _summary = generate_report_outputs(
+        ws_jsonl=ws_jsonl,
+        output=output,
+        metrics_url=metrics_url,
+        metrics_before_path=metrics_before_path,
+        metrics_after_path=metrics_after_path,
+        external_readiness_url=external_readiness_url,
+        run_package_summary=run_package_summary,
+        output_json=None,
     )
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(report_text + "\n", encoding="utf-8")
-    return output
+    return report_path
 
 
 def main() -> int:
@@ -911,6 +1005,7 @@ def main() -> int:
     parser.add_argument("--ws-jsonl", default=None)
     parser.add_argument("--run-package", default=None)
     parser.add_argument("--output", default=None)
+    parser.add_argument("--output-json", default=None)
     args = parser.parse_args()
 
     run_package_dir: Path | None = None
@@ -953,7 +1048,8 @@ def main() -> int:
         else:
             output = derive_output_path(ws_jsonl, args.output, run_package_dir)
 
-        output = generate_report(
+        output_json = Path(args.output_json) if args.output_json else None
+        output, json_path, _summary = generate_report_outputs(
             ws_jsonl=ws_jsonl,
             output=output,
             metrics_url=args.metrics_url,
@@ -961,8 +1057,11 @@ def main() -> int:
             metrics_after_path=metrics_after_path,
             external_readiness_url=args.external_readiness_url,
             run_package_summary=run_package_summary,
+            output_json=output_json,
         )
         print(f"report generated -> {output}")
+        if json_path is not None:
+            print(f"summary generated -> {json_path}")
         return 0
     except Exception as ex:
         print(str(ex))

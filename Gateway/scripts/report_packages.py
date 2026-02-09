@@ -2,14 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import shutil
 from pathlib import Path
 from typing import Any
 
-from report_run import generate_report, resolve_run_package_input
-
-_DELTA_LINE_RE = re.compile(r"^- `([^`]+)` (delta(?: sum)?): `([^`]*)`")
+from report_run import generate_report_outputs, resolve_run_package_input
 
 
 def discover_packages(root: Path) -> list[Path]:
@@ -20,32 +17,6 @@ def discover_packages(root: Path) -> list[Path]:
     for archive in root.rglob("*.zip"):
         packages.add(archive)
     return sorted(packages, key=lambda item: str(item).lower())
-
-
-def extract_delta_map(report_text: str) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for raw_line in report_text.splitlines():
-        line = raw_line.strip()
-        match = _DELTA_LINE_RE.match(line)
-        if not match:
-            continue
-        metric_name = match.group(1)
-        delta_kind = match.group(2)
-        value = match.group(3)
-        values[f"{metric_name} {delta_kind}"] = value
-    # explicit count/sum lines not matching generic pattern
-    for line in report_text.splitlines():
-        line = line.strip()
-        if line.startswith("- `byes_e2e_latency_ms_count` delta:"):
-            values["byes_e2e_latency_ms_count delta"] = _extract_backtick_value(line)
-        elif line.startswith("- `byes_ttfa_ms_count` delta:"):
-            values["byes_ttfa_ms_count delta"] = _extract_backtick_value(line)
-    return values
-
-
-def _extract_backtick_value(line: str) -> str:
-    parts = re.findall(r"`([^`]*)`", line)
-    return parts[-1] if parts else ""
 
 
 def build_index(
@@ -67,14 +38,14 @@ def build_index(
                 start=row.get("startMs", ""),
                 end=row.get("endMs", ""),
                 frame_sent=row.get("frameCountSent", ""),
-                recv=metrics.get("byes_frame_received_total delta sum", "n/a"),
-                done=metrics.get("byes_frame_completed_total delta sum", "n/a"),
-                e2e=metrics.get("byes_e2e_latency_ms_count delta", "n/a"),
-                ttfa=metrics.get("byes_ttfa_ms_count delta", "n/a"),
-                safe=metrics.get("byes_safemode_enter_total delta sum", "n/a"),
-                throttle=metrics.get("byes_throttle_enter_total delta sum", "n/a"),
-                preempt=metrics.get("byes_preempt_enter_total delta sum", "n/a"),
-                confirm=metrics.get("byes_confirm_request_total delta sum", "n/a"),
+                recv=metrics.get("frame_received", "n/a"),
+                done=metrics.get("frame_completed", "n/a"),
+                e2e=metrics.get("e2e_count", "n/a"),
+                ttfa=metrics.get("ttfa_count", "n/a"),
+                safe=metrics.get("safemode_enter", "n/a"),
+                throttle=metrics.get("throttle_enter", "n/a"),
+                preempt=metrics.get("preempt_enter", "n/a"),
+                confirm=metrics.get("confirm_request", "n/a"),
                 report=row.get("reportPath", ""),
             )
         )
@@ -112,7 +83,8 @@ def main() -> int:
             ws_jsonl, metrics_before, metrics_after, summary, cleanup_dir = resolve_run_package_input(package)
             report_name = f"report_{package.stem if package.is_file() else package.name}.md"
             report_path = out_dir / report_name
-            output_path = generate_report(
+            json_path = out_dir / f"{Path(report_name).stem}.json"
+            output_path, _summary_json_path, generated_summary = generate_report_outputs(
                 ws_jsonl=ws_jsonl,
                 output=report_path,
                 metrics_url=args.metrics_url,
@@ -120,8 +92,8 @@ def main() -> int:
                 metrics_after_path=metrics_after,
                 external_readiness_url=args.external_readiness_url,
                 run_package_summary=summary,
+                output_json=json_path,
             )
-            report_text = output_path.read_text(encoding="utf-8")
             rows.append(
                 {
                     "package": str(package),
@@ -130,7 +102,7 @@ def main() -> int:
                     "endMs": summary.get("endMs", ""),
                     "frameCountSent": summary.get("frameCountSent", ""),
                     "reportPath": str(output_path),
-                    "delta": extract_delta_map(report_text),
+                    "delta": generated_summary,
                 }
             )
             print(f"generated {output_path}")
@@ -161,4 +133,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -4,7 +4,9 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import re
 import time
+from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 from typing import Any, Literal
 
@@ -34,10 +36,20 @@ from byes.tool_registry import ToolRegistry
 from byes.tools import MockOcrTool, MockRiskTool, RealDepthTool, RealDetTool, RealOcrTool, RealVlmTool
 from byes.tools.base import FrameInput, ToolLane
 from byes.world_state import WorldState
+from scripts.report_run import generate_report_outputs, load_run_package, safe_extract_zip
 
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _sanitize_file_tag(raw: str | None) -> str:
+    text = (raw or "").strip().lower()
+    if not text:
+        return "run"
+    text = re.sub(r"[^a-z0-9_-]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text or "run"
 
 
 class MockEvent(BaseModel):
@@ -968,6 +980,68 @@ async def confirm_submit(request: ConfirmSubmitRequest) -> dict[str, Any]:
         "confirmId": request.confirmId,
         "answer": request.answer,
     }
+
+
+@app.post("/api/run_package/upload")
+async def run_package_upload(
+    file: UploadFile = File(...),
+    scenarioTag: str | None = Form(default=None),
+) -> dict[str, Any]:
+    filename = (file.filename or "").strip().lower()
+    if not filename.endswith(".zip"):
+        raise HTTPException(status_code=400, detail="file must be .zip")
+
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(status_code=400, detail="empty zip payload")
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    scenario = _sanitize_file_tag(scenarioTag)
+    artifacts_root = Path(__file__).resolve().parent / "artifacts" / "run_packages"
+    artifacts_root.mkdir(parents=True, exist_ok=True)
+
+    zip_path = artifacts_root / f"{timestamp}_{scenario}.zip"
+    run_dir = artifacts_root / f"{timestamp}_{scenario}"
+
+    try:
+        zip_path.write_bytes(payload)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        safe_extract_zip(zip_path, run_dir)
+
+        package_dir = run_dir
+        try:
+            load_run_package(package_dir)
+        except Exception:
+            candidates = list(run_dir.rglob("manifest.json")) + list(run_dir.rglob("run_manifest.json"))
+            if not candidates:
+                raise
+            package_dir = candidates[0].parent
+
+        ws_jsonl, metrics_before, metrics_after, run_pkg_summary = load_run_package(package_dir)
+        report_md_path = package_dir / "report.md"
+        report_json_path = package_dir / "report.json"
+        generated_md, generated_json, summary = generate_report_outputs(
+            ws_jsonl=ws_jsonl,
+            output=report_md_path,
+            metrics_url="http://127.0.0.1:8000/metrics",
+            metrics_before_path=metrics_before,
+            metrics_after_path=metrics_after,
+            external_readiness_url=None,
+            run_package_summary=run_pkg_summary,
+            output_json=report_json_path,
+        )
+
+        return {
+            "ok": True,
+            "runDir": str(package_dir),
+            "reportMdPath": str(generated_md),
+            "reportJsonPath": str(generated_json or report_json_path),
+            "summary": summary,
+        }
+    except HTTPException:
+        raise
+    except Exception as ex:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"run package processing failed: {ex}") from ex
 
 
 @app.get("/metrics")

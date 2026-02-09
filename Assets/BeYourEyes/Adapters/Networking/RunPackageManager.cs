@@ -31,6 +31,10 @@ namespace BeYourEyes.Adapters.Networking
         [SerializeField] private bool saveMetricsSnapshot = true;
         [SerializeField] private int metricsTimeoutSec = 3;
 
+        [Header("Upload")]
+        [SerializeField] private bool autoUploadAfterExport = false;
+        [SerializeField] private int uploadTimeoutSec = 10;
+
         private bool runActive;
         private bool runFinishing;
         private bool recorderStartedByManager;
@@ -51,6 +55,12 @@ namespace BeYourEyes.Adapters.Networking
         private long lastExportedAtMs = -1;
         private readonly List<string> lastExportErrors = new List<string>();
         private readonly List<ExportFileStat> lastExportFiles = new List<ExportFileStat>();
+        private string lastUploadStatus = "idle";
+        private string lastUploadError = string.Empty;
+        private string lastUploadReportPath = string.Empty;
+        private string lastUploadSummary = string.Empty;
+        private long lastUploadAtMs = -1;
+        private bool uploadInFlight;
 
         private long startMs;
         private long endMs;
@@ -76,6 +86,17 @@ namespace BeYourEyes.Adapters.Networking
         public string LastExportZipPath => lastExportZipPath ?? string.Empty;
         public string LastExportError => lastExportErrors.Count == 0 ? string.Empty : lastExportErrors[lastExportErrors.Count - 1];
         public long LastExportedAtMs => lastExportedAtMs;
+        public bool AutoUploadAfterExport
+        {
+            get => autoUploadAfterExport;
+            set => autoUploadAfterExport = value;
+        }
+        public bool IsUploadInFlight => uploadInFlight;
+        public string LastUploadStatus => lastUploadStatus ?? "idle";
+        public string LastUploadError => lastUploadError ?? string.Empty;
+        public string LastUploadReportPath => lastUploadReportPath ?? string.Empty;
+        public string LastUploadSummary => lastUploadSummary ?? string.Empty;
+        public long LastUploadAtMs => lastUploadAtMs;
 
         public event Action<string, string> OnRunCompleted;
 
@@ -139,6 +160,11 @@ namespace BeYourEyes.Adapters.Networking
             lastExportedAtMs = -1;
             lastExportErrors.Clear();
             lastExportFiles.Clear();
+            lastUploadStatus = "idle";
+            lastUploadError = string.Empty;
+            lastUploadReportPath = string.Empty;
+            lastUploadSummary = string.Empty;
+            lastUploadAtMs = -1;
             startFramesCaptured = frameCapture.FramesCaptured;
             startFramesSent = frameCapture.FramesSent;
             startFramesDroppedBusy = frameCapture.FramesDroppedBusy;
@@ -516,9 +542,37 @@ namespace BeYourEyes.Adapters.Networking
             if (success)
             {
                 WriteManifest(string.IsNullOrWhiteSpace(lastFinishReason) ? "exported" : lastFinishReason);
+                if (autoUploadAfterExport)
+                {
+                    UploadLastRunZip(gatewayClient != null ? gatewayClient.BaseUrl : "http://127.0.0.1:8000");
+                }
             }
 
             return success;
+        }
+
+        public bool UploadLastRunZip(string baseUrl)
+        {
+            if (uploadInFlight)
+            {
+                lastUploadStatus = "busy";
+                lastUploadError = "upload_in_flight";
+                return false;
+            }
+
+            var zipPath = ResolveLastExportAbsolutePath();
+            if (string.IsNullOrWhiteSpace(zipPath) || !File.Exists(zipPath))
+            {
+                lastUploadStatus = "error";
+                lastUploadError = "zip_not_found";
+                return false;
+            }
+
+            var targetBase = string.IsNullOrWhiteSpace(baseUrl)
+                ? "http://127.0.0.1:8000"
+                : baseUrl.TrimEnd('/');
+            StartCoroutine(UploadZipCoroutine(zipPath, targetBase));
+            return true;
         }
 
         private static string BuildRunDirectory(string scenarioTag)
@@ -609,6 +663,117 @@ namespace BeYourEyes.Adapters.Networking
                 lastExportErrors.Add($"zip_export_failed:{ex.Message}");
                 return false;
             }
+        }
+
+        private IEnumerator UploadZipCoroutine(string zipAbsolutePath, string baseUrl)
+        {
+            uploadInFlight = true;
+            lastUploadStatus = "uploading";
+            lastUploadError = string.Empty;
+            lastUploadReportPath = string.Empty;
+            lastUploadSummary = string.Empty;
+            lastUploadAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            var endpoint = $"{baseUrl}/api/run_package/upload";
+            byte[] bytes;
+            try
+            {
+                bytes = File.ReadAllBytes(zipAbsolutePath);
+            }
+            catch (Exception ex)
+            {
+                uploadInFlight = false;
+                lastUploadStatus = "error";
+                lastUploadError = $"zip_read_failed:{ex.Message}";
+                yield break;
+            }
+
+            var scenario = currentScenarioTag;
+            if (string.IsNullOrWhiteSpace(scenario))
+            {
+                scenario = "run";
+            }
+
+            var form = new WWWForm();
+            form.AddBinaryData("file", bytes, Path.GetFileName(zipAbsolutePath), "application/zip");
+            form.AddField("scenarioTag", scenario);
+            using (var req = UnityWebRequest.Post(endpoint, form))
+            {
+                req.timeout = Mathf.Clamp(uploadTimeoutSec, 1, 60);
+                yield return req.SendWebRequest();
+                uploadInFlight = false;
+                lastUploadAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                if (req.result != UnityWebRequest.Result.Success)
+                {
+                    lastUploadStatus = "error";
+                    lastUploadError = req.error ?? "upload_failed";
+                    yield break;
+                }
+
+                var body = req.downloadHandler != null ? req.downloadHandler.text : string.Empty;
+                try
+                {
+                    var payload = string.IsNullOrWhiteSpace(body) ? new JObject() : JObject.Parse(body);
+                    if (payload.Value<bool?>("ok") != true)
+                    {
+                        lastUploadStatus = "error";
+                        lastUploadError = ReadString(payload, "detail");
+                        if (string.IsNullOrWhiteSpace(lastUploadError))
+                        {
+                            lastUploadError = "upload_response_not_ok";
+                        }
+                        yield break;
+                    }
+
+                    lastUploadStatus = "ok";
+                    lastUploadError = string.Empty;
+                    lastUploadReportPath = ReadString(payload, "reportMdPath");
+                    lastUploadSummary = BuildUploadSummary(payload["summary"] as JObject);
+                }
+                catch (Exception ex)
+                {
+                    lastUploadStatus = "error";
+                    lastUploadError = $"upload_parse_failed:{ex.Message}";
+                }
+            }
+        }
+
+        private string ResolveLastExportAbsolutePath()
+        {
+            if (string.IsNullOrWhiteSpace(lastExportZipPath))
+            {
+                return string.Empty;
+            }
+
+            if (Path.IsPathRooted(lastExportZipPath))
+            {
+                return lastExportZipPath;
+            }
+
+            if (string.IsNullOrWhiteSpace(currentRunDirectory))
+            {
+                return string.Empty;
+            }
+            var runRoot = Path.GetDirectoryName(currentRunDirectory) ?? currentRunDirectory;
+            return Path.Combine(runRoot, lastExportZipPath.Replace('/', Path.DirectorySeparatorChar));
+        }
+
+        private static string BuildUploadSummary(JObject summary)
+        {
+            if (summary == null)
+            {
+                return string.Empty;
+            }
+
+            var frameReceived = ReadLong(summary, "frame_received", -1);
+            var frameCompleted = ReadLong(summary, "frame_completed", -1);
+            var e2eCount = ReadLong(summary, "e2e_count", -1);
+            var ttfaCount = ReadLong(summary, "ttfa_count", -1);
+            var safe = ReadLong(summary, "safemode_enter", -1);
+            var throttle = ReadLong(summary, "throttle_enter", -1);
+            var preempt = ReadLong(summary, "preempt_enter", -1);
+            var confirmReq = ReadLong(summary, "confirm_request", -1);
+            return $"frame={frameReceived}/{frameCompleted} e2e={e2eCount} ttfa={ttfaCount} safe={safe} throttle={throttle} preempt={preempt} confirm={confirmReq}";
         }
 
         private List<ExportFilePath> CollectExportFiles(string runDirectory, string manifestPath)

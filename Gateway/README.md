@@ -625,6 +625,20 @@ python scripts/report_packages.py --root /path/to/packages --out /path/to/out
 `report_packages.py` recursively scans both run-package directories (`manifest.json`) and `.zip`,
 generates per-run reports, and writes `index.md` + `index.json`.
 
+Run package upload API (server-side report generation):
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/run_package/upload" ^
+  -F "file=@run_package.zip" ^
+  -F "scenarioTag=baseline"
+```
+
+Server behavior:
+- saves zip to `Gateway/artifacts/run_packages/<timestamp>_<scenario>.zip`
+- safely extracts to sibling directory
+- generates `report.md` and `report.json`
+- returns `{ ok, runDir, reportMdPath, reportJsonPath, summary }`
+
 Meta baseline (optional FrameMeta on all frames):
 
 1. Example `scripts/meta_sample.json`:
