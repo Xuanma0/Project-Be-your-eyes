@@ -14,6 +14,7 @@ namespace BeYourEyes.Presenters.DebugHUD
         [SerializeField] private BeYourEyes.Unity.Capture.FrameCapture frameCapture;
         [SerializeField] private LocalSafetyFallback localSafetyFallback;
         [SerializeField] private RiskFeedback riskFeedback;
+        [SerializeField] private DirectionalGuidance directionalGuidance;
         [SerializeField] private float confirmPollIntervalSec = 1.5f;
         [SerializeField] private bool showDebugCounters = true;
 
@@ -51,6 +52,7 @@ namespace BeYourEyes.Presenters.DebugHUD
         {
             EnsureUi();
             EnsureRiskFeedback();
+            EnsureDirectionalGuidance();
             BindClient();
             StartConfirmPoller();
         }
@@ -80,6 +82,10 @@ namespace BeYourEyes.Presenters.DebugHUD
             if (riskFeedback == null)
             {
                 riskFeedback = FindFirstObjectByType<RiskFeedback>();
+            }
+            if (directionalGuidance == null)
+            {
+                directionalGuidance = FindFirstObjectByType<DirectionalGuidance>();
             }
 
             if (statusText != null)
@@ -125,9 +131,13 @@ namespace BeYourEyes.Presenters.DebugHUD
                 var debugLines = string.Empty;
                 if (showDebugCounters && gatewayClient != null)
                 {
+                    var guidanceLine = directionalGuidance == null
+                        ? "\nGuidance: n/a"
+                        : $"\nGuidance: shown={directionalGuidance.GuidanceShownCount} cleared={directionalGuidance.GuidanceClearedCount} kind={directionalGuidance.LastGuidanceKind} az={directionalGuidance.LastAzimuthText} dist={directionalGuidance.LastDistanceText}";
                     debugLines =
                         $"\nGuard: acc={gatewayClient.EventAcceptedCount} exp={gatewayClient.EventDroppedExpiredCount} ooo={gatewayClient.EventDroppedOutOfOrderCount} fb={gatewayClient.EventDroppedByFallbackCount}" +
                         $"\nGate: acc={gatewayClient.ActionPlanGateAcceptedCount} blk={gatewayClient.ActionPlanGateBlockedCount} pat={gatewayClient.ActionPlanGatePatchedCount} reason={gatewayClient.ActionPlanGateLastReason}" +
+                        guidanceLine +
                         $"\nlastSeqSeen={gatewayClient.EventLastSeqSeen} displayedSeq={displayedEventSeq} lastEventAgeMs={(lastEventAgeMs >= 0 ? lastEventAgeMs.ToString() : "-")}";
                 }
 
@@ -680,6 +690,20 @@ namespace BeYourEyes.Presenters.DebugHUD
             if (riskFeedback == null)
             {
                 riskFeedback = gameObject.AddComponent<RiskFeedback>();
+            }
+        }
+
+        private void EnsureDirectionalGuidance()
+        {
+            if (directionalGuidance != null)
+            {
+                return;
+            }
+
+            directionalGuidance = GetComponent<DirectionalGuidance>();
+            if (directionalGuidance == null)
+            {
+                directionalGuidance = gameObject.AddComponent<DirectionalGuidance>();
             }
         }
 

@@ -10,21 +10,28 @@ namespace BeYourEyes.Presenters.DebugHUD
     public sealed class RiskFeedback : MonoBehaviour
     {
         [SerializeField] private BeYourEyes.Adapters.Networking.GatewayClient gatewayClient;
-        [SerializeField] private float cooldownMs = 1200f;
+        [SerializeField] private float criticalCooldownMs = 1200f;
         [SerializeField] private float overlayDurationSec = 0.9f;
         [SerializeField] private bool playBeep = true;
         [SerializeField] private bool pulseHaptics = true;
+        [SerializeField] private bool warnHapticOnNewRisk = true;
+        [SerializeField] private float warnHapticCooldownMs = 800f;
         [SerializeField] private float beepFrequencyHz = 920f;
         [SerializeField] private float beepDurationSec = 0.14f;
         [SerializeField] private float beepVolume = 0.22f;
         [SerializeField] private float hapticAmplitude = 0.6f;
         [SerializeField] private float hapticDurationSec = 0.08f;
+        [SerializeField] private float warnHapticAmplitude = 0.25f;
+        [SerializeField] private float warnHapticDurationSec = 0.03f;
 
         private Canvas overlayCanvas;
         private Text overlayText;
         private AudioSource audioSource;
         private AudioClip beepClip;
-        private long lastTriggeredAtMs = long.MinValue;
+        private long lastCriticalTriggeredAtMs = long.MinValue;
+        private long lastWarnTriggeredAtMs = long.MinValue;
+        private long lastWarnSeq = -1;
+        private string lastWarnKind = string.Empty;
         private float overlayHideAtRealtime = -1f;
 
         public long TriggerCount { get; private set; }
@@ -102,29 +109,86 @@ namespace BeYourEyes.Presenters.DebugHUD
             }
 
             var riskLevel = ReadString(evt, "riskLevel");
-            if (!string.Equals(riskLevel, "critical", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(riskLevel, "critical", StringComparison.OrdinalIgnoreCase))
+            {
+                HandleCriticalRisk(evt);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(riskLevel))
+            {
+                riskLevel = "warn";
+            }
+            if (!string.Equals(riskLevel, "warn", StringComparison.OrdinalIgnoreCase))
             {
                 return;
             }
 
+            HandleWarnRisk(evt);
+        }
+
+        private void HandleCriticalRisk(JObject evt)
+        {
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            if (nowMs - lastTriggeredAtMs < Math.Max(0f, cooldownMs))
+            if (nowMs - lastCriticalTriggeredAtMs < Math.Max(0f, criticalCooldownMs))
             {
                 CooldownSuppressedCount++;
                 return;
             }
 
-            lastTriggeredAtMs = nowMs;
+            lastCriticalTriggeredAtMs = nowMs;
             TriggerCount++;
+            var hasAzimuth = TryReadFloat(evt, "azimuthDeg", out var azimuthDeg);
             ShowCriticalOverlay();
             if (playBeep)
             {
-                PlayBeep();
+                PlayBeep(hasAzimuth ? AzimuthToPan(azimuthDeg) : 0f);
             }
             if (pulseHaptics)
             {
-                TryPulseHaptics();
+                TryPulseHaptics(hapticAmplitude, hapticDurationSec);
             }
+        }
+
+        private void HandleWarnRisk(JObject evt)
+        {
+            if (!warnHapticOnNewRisk)
+            {
+                return;
+            }
+
+            var seq = ReadLong(evt, "seq");
+            var kind = ReadString(evt, "hazardKind");
+            if (string.IsNullOrWhiteSpace(kind))
+            {
+                kind = ReadString(evt, "riskText");
+            }
+
+            var isNew = false;
+            if (seq > 0 && seq > lastWarnSeq)
+            {
+                isNew = true;
+            }
+            if (!string.IsNullOrWhiteSpace(kind) && !string.Equals(kind, lastWarnKind, StringComparison.Ordinal))
+            {
+                isNew = true;
+            }
+
+            if (!isNew)
+            {
+                return;
+            }
+
+            lastWarnSeq = Math.Max(lastWarnSeq, seq);
+            lastWarnKind = kind;
+
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (nowMs - lastWarnTriggeredAtMs < Math.Max(0f, warnHapticCooldownMs))
+            {
+                return;
+            }
+            lastWarnTriggeredAtMs = nowMs;
+            TryPulseHaptics(warnHapticAmplitude, warnHapticDurationSec);
         }
 
         private void ShowCriticalOverlay()
@@ -218,7 +282,7 @@ namespace BeYourEyes.Presenters.DebugHUD
             beepClip.SetData(data, 0);
         }
 
-        private void PlayBeep()
+        private void PlayBeep(float panStereo)
         {
             EnsureAudio();
             if (audioSource == null || beepClip == null)
@@ -226,11 +290,18 @@ namespace BeYourEyes.Presenters.DebugHUD
                 return;
             }
 
+            audioSource.panStereo = Mathf.Clamp(panStereo, -1f, 1f);
             audioSource.clip = beepClip;
             audioSource.Play();
         }
 
-        private void TryPulseHaptics()
+        private static float AzimuthToPan(float azimuthDeg)
+        {
+            var clamped = Mathf.Clamp(azimuthDeg, -60f, 60f);
+            return clamped / 60f;
+        }
+
+        private void TryPulseHaptics(float amplitude, float durationSec)
         {
             try
             {
@@ -253,12 +324,46 @@ namespace BeYourEyes.Presenters.DebugHUD
                         continue;
                     }
 
-                    device.SendHapticImpulse(0u, Mathf.Clamp01(hapticAmplitude), Mathf.Clamp(hapticDurationSec, 0.01f, 0.4f));
+                    device.SendHapticImpulse(0u, Mathf.Clamp01(amplitude), Mathf.Clamp(durationSec, 0.01f, 0.4f));
                 }
             }
             catch
             {
             }
+        }
+
+        private static long ReadLong(JObject obj, string key)
+        {
+            var token = obj[key];
+            if (token == null)
+            {
+                return -1;
+            }
+
+            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+            {
+                return token.Value<long>();
+            }
+
+            return long.TryParse(token.ToString(), out var parsed) ? parsed : -1;
+        }
+
+        private static bool TryReadFloat(JObject obj, string key, out float value)
+        {
+            value = 0f;
+            var token = obj[key];
+            if (token == null)
+            {
+                return false;
+            }
+
+            if (token.Type == JTokenType.Float || token.Type == JTokenType.Integer)
+            {
+                value = token.Value<float>();
+                return true;
+            }
+
+            return float.TryParse(token.ToString(), out value);
         }
 
         private static string ReadString(JObject obj, string key)
