@@ -13,6 +13,7 @@ namespace BeYourEyes.Presenters.DebugHUD
         [SerializeField] private BeYourEyes.Adapters.Networking.GatewayClient gatewayClient;
         [SerializeField] private BeYourEyes.Unity.Capture.FrameCapture frameCapture;
         [SerializeField] private LocalSafetyFallback localSafetyFallback;
+        [SerializeField] private RiskFeedback riskFeedback;
         [SerializeField] private float confirmPollIntervalSec = 1.5f;
         [SerializeField] private bool showDebugCounters = true;
 
@@ -49,6 +50,7 @@ namespace BeYourEyes.Presenters.DebugHUD
         private void OnEnable()
         {
             EnsureUi();
+            EnsureRiskFeedback();
             BindClient();
             StartConfirmPoller();
         }
@@ -74,6 +76,10 @@ namespace BeYourEyes.Presenters.DebugHUD
             if (localSafetyFallback == null)
             {
                 localSafetyFallback = FindFirstObjectByType<LocalSafetyFallback>();
+            }
+            if (riskFeedback == null)
+            {
+                riskFeedback = FindFirstObjectByType<RiskFeedback>();
             }
 
             if (statusText != null)
@@ -121,6 +127,7 @@ namespace BeYourEyes.Presenters.DebugHUD
                 {
                     debugLines =
                         $"\nGuard: acc={gatewayClient.EventAcceptedCount} exp={gatewayClient.EventDroppedExpiredCount} ooo={gatewayClient.EventDroppedOutOfOrderCount} fb={gatewayClient.EventDroppedByFallbackCount}" +
+                        $"\nGate: acc={gatewayClient.ActionPlanGateAcceptedCount} blk={gatewayClient.ActionPlanGateBlockedCount} pat={gatewayClient.ActionPlanGatePatchedCount} reason={gatewayClient.ActionPlanGateLastReason}" +
                         $"\nlastSeqSeen={gatewayClient.EventLastSeqSeen} displayedSeq={displayedEventSeq} lastEventAgeMs={(lastEventAgeMs >= 0 ? lastEventAgeMs.ToString() : "-")}";
                 }
 
@@ -660,6 +667,20 @@ namespace BeYourEyes.Presenters.DebugHUD
             displayedEventTtlMs = gatewayClient != null ? gatewayClient.EventDefaultTtlMs : 1500;
             displayedEventSeq = -1;
             HideConfirmPanel();
+        }
+
+        private void EnsureRiskFeedback()
+        {
+            if (riskFeedback != null)
+            {
+                return;
+            }
+
+            riskFeedback = GetComponent<RiskFeedback>();
+            if (riskFeedback == null)
+            {
+                riskFeedback = gameObject.AddComponent<RiskFeedback>();
+            }
         }
 
         private bool IsEventExpired(JObject evt, long nowMs)

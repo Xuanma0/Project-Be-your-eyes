@@ -42,6 +42,7 @@ namespace BeYourEyes.Adapters.Networking
 
         [Header("Event Guard")]
         [SerializeField] private EventGuard eventGuard = new EventGuard();
+        [SerializeField] private LocalActionPlanGate localActionPlanGate = new LocalActionPlanGate();
         [SerializeField] private BeYourEyes.Unity.Interaction.LocalSafetyFallback localSafetyFallback;
 
         private WebSocket webSocket;
@@ -68,6 +69,7 @@ namespace BeYourEyes.Adapters.Networking
 
         private string lastHealthStatus = "UNKNOWN";
         private string lastHealthReason = string.Empty;
+        private string lastRiskLevel = "warn";
         private int lastHealthRttMs = -1;
         private string activeIntent = "none";
         private Coroutine healthProbeRoutine;
@@ -97,11 +99,16 @@ namespace BeYourEyes.Adapters.Networking
         public long EventDroppedByFallbackCount => eventGuard != null ? eventGuard.DroppedByFallback : 0;
         public long EventLastSeqSeen => eventGuard != null ? eventGuard.LastSeqSeen : -1;
         public int EventDefaultTtlMs => eventGuard != null ? eventGuard.DefaultEventTtlMs : 1500;
+        public long ActionPlanGateAcceptedCount => localActionPlanGate != null ? localActionPlanGate.AcceptedCount : 0;
+        public long ActionPlanGateBlockedCount => localActionPlanGate != null ? localActionPlanGate.BlockedCount : 0;
+        public long ActionPlanGatePatchedCount => localActionPlanGate != null ? localActionPlanGate.PatchedCount : 0;
+        public string ActionPlanGateLastReason => localActionPlanGate != null ? localActionPlanGate.LastReason : "n/a";
 
         private void OnEnable()
         {
             shuttingDown = false;
             eventGuard?.ResetRuntime();
+            localActionPlanGate?.ResetRuntime();
             if (connectOnEnable)
             {
                 ConnectWebSocket();
@@ -520,6 +527,10 @@ namespace BeYourEyes.Adapters.Networking
             }
 
             var riskLevel = ReadString(evt, "riskLevel");
+            if (!string.IsNullOrWhiteSpace(riskLevel))
+            {
+                lastRiskLevel = riskLevel;
+            }
             var confirmId = ReadString(evt, "confirmId");
             var stage = ReadString(evt, "stage");
             Debug.Log(
@@ -556,7 +567,32 @@ namespace BeYourEyes.Adapters.Networking
                 evt["type"] = defaultType;
             }
 
-            if (IsFallbackBlockingEvent(evt))
+            var eventType = ReadString(evt, "type");
+            if (string.Equals(eventType, "action_plan", StringComparison.OrdinalIgnoreCase))
+            {
+                var fallbackNonOk = IsFallbackBlockingEvent(evt);
+                var healthStatus = ResolveHealthStatusForEvent(evt);
+                var riskLevel = ResolveRiskLevelForEvent(evt);
+                if (localActionPlanGate != null)
+                {
+                    if (!localActionPlanGate.TryProcess(evt, fallbackNonOk, healthStatus, riskLevel, out var gateReason))
+                    {
+                        rejectReason = gateReason;
+                        if (string.Equals(gateReason, LocalActionPlanGate.ReasonFallbackNonOk, StringComparison.Ordinal))
+                        {
+                            eventGuard?.MarkFallbackDrop();
+                        }
+                        return false;
+                    }
+                }
+                else if (fallbackNonOk)
+                {
+                    eventGuard?.MarkFallbackDrop();
+                    rejectReason = LocalActionPlanGate.ReasonFallbackNonOk;
+                    return false;
+                }
+            }
+            else if (IsFallbackBlockingEvent(evt))
             {
                 eventGuard?.MarkFallbackDrop();
                 rejectReason = "fallback_non_ok";
@@ -596,6 +632,38 @@ namespace BeYourEyes.Adapters.Networking
 
             rejectReason = string.Empty;
             return true;
+        }
+
+        private string ResolveHealthStatusForEvent(JObject evt)
+        {
+            var healthStatus = ReadString(evt, "healthStatus");
+            if (string.IsNullOrWhiteSpace(healthStatus))
+            {
+                healthStatus = lastHealthStatus;
+            }
+
+            if (string.IsNullOrWhiteSpace(healthStatus))
+            {
+                var summary = ReadString(evt, "summary");
+                if (string.IsNullOrWhiteSpace(summary))
+                {
+                    summary = ReadString(evt, "riskText");
+                }
+                healthStatus = ParseHealthStatusFromSummary(summary);
+            }
+
+            return healthStatus;
+        }
+
+        private string ResolveRiskLevelForEvent(JObject evt)
+        {
+            var riskLevel = ReadString(evt, "riskLevel");
+            if (string.IsNullOrWhiteSpace(riskLevel))
+            {
+                riskLevel = lastRiskLevel;
+            }
+
+            return riskLevel;
         }
 
         private bool IsFallbackBlockingEvent(JObject evt)
