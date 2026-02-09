@@ -72,6 +72,8 @@ namespace BeYourEyes.Adapters.Networking
         private long lastTtfaMs = -1;
         private double ttfaEmaMs = -1;
         private int ttfaSampleCount;
+        private bool replayMode;
+        private long replayLastSeqSeen = -1;
 
         private string lastHealthStatus = "UNKNOWN";
         private string lastHealthReason = string.Empty;
@@ -104,6 +106,8 @@ namespace BeYourEyes.Adapters.Networking
         public event Action<JObject> OnUiEventAccepted;
         public event Action<bool, string> OnWebSocketStateChanged;
         public event Action<CapabilityState, string> OnCapabilityStateChanged;
+        public event Action<long, string, long> OnTtfaObserved;
+        public event Action<string> OnReplayBlockedNetworkAction;
 
         public string BaseUrl => NormalizeBaseUrl(baseUrl);
         public string WsUrl => string.IsNullOrWhiteSpace(wsUrl) ? "ws://127.0.0.1:8000/ws/events" : wsUrl.Trim();
@@ -113,6 +117,8 @@ namespace BeYourEyes.Adapters.Networking
         public string LastDisconnectReason => lastDisconnectReason;
         public int ReconnectAttempt => reconnectAttempt;
         public long LastMessageAtMs => lastMessageAtMs;
+        public bool IsReplayMode => replayMode;
+        public long ReplayLastSeqSeen => replayLastSeqSeen;
         public long LastTtfaMs => lastTtfaMs;
         public double TtfaEmaMs => ttfaEmaMs;
         public int TtfaSampleCount => ttfaSampleCount;
@@ -152,7 +158,7 @@ namespace BeYourEyes.Adapters.Networking
             eventGuard?.ResetRuntime();
             localActionPlanGate?.ResetRuntime();
             ResetCapabilityRuntime();
-            if (connectOnEnable)
+            if (connectOnEnable && !replayMode)
             {
                 ConnectWebSocket();
             }
@@ -207,7 +213,7 @@ namespace BeYourEyes.Adapters.Networking
 
         public async void ConnectWebSocket()
         {
-            if (shuttingDown || wsConnecting)
+            if (shuttingDown || wsConnecting || replayMode)
             {
                 return;
             }
@@ -237,6 +243,12 @@ namespace BeYourEyes.Adapters.Networking
                 return FrameSendResult.DroppedInvalid;
             }
 
+            if (replayMode)
+            {
+                OnReplayBlockedNetworkAction?.Invoke("frame");
+                return FrameSendResult.DroppedNoConnection;
+            }
+
             if (!IsConnected)
             {
                 return FrameSendResult.DroppedNoConnection;
@@ -264,6 +276,13 @@ namespace BeYourEyes.Adapters.Networking
 
         public void SendConfirm(string confirmId, string choice, string source = "unity_hud", Action<bool> onDone = null)
         {
+            if (replayMode)
+            {
+                OnReplayBlockedNetworkAction?.Invoke("confirm");
+                onDone?.Invoke(false);
+                return;
+            }
+
             if (string.IsNullOrWhiteSpace(confirmId))
             {
                 Debug.LogWarning("[GatewayClient] confirm skipped: empty confirmId");
@@ -292,6 +311,13 @@ namespace BeYourEyes.Adapters.Networking
 
         public void SendDevIntent(string intent, string question, Action<bool, string> onDone = null)
         {
+            if (replayMode)
+            {
+                OnReplayBlockedNetworkAction?.Invoke("intent");
+                onDone?.Invoke(false, "replay_mode");
+                return;
+            }
+
             var normalized = NormalizeIntent(intent);
             var resolvedQuestion = string.IsNullOrWhiteSpace(question) ? ResolveDefaultAskQuestion() : question.Trim();
             var payload = new JObject
@@ -352,8 +378,51 @@ namespace BeYourEyes.Adapters.Networking
 
         public void FetchPendingConfirm(Action<bool, JObject> onDone)
         {
+            if (replayMode)
+            {
+                OnReplayBlockedNetworkAction?.Invoke("confirm_poll");
+                onDone?.Invoke(false, null);
+                return;
+            }
+
             var url = BuildApiUrl($"/api/confirm/pending?sessionId={UnityWebRequest.EscapeURL(SessionId)}");
             StartCoroutine(GetJsonRoutine(url, onDone));
+        }
+
+        public async void EnterReplayMode()
+        {
+            if (replayMode)
+            {
+                return;
+            }
+
+            replayMode = true;
+            replayLastSeqSeen = -1;
+            StopReconnectLoop();
+            StopHealthProbeLoop();
+            await CloseWebSocketInternal(notifyState: true, reasonOverride: "replay_mode");
+        }
+
+        public void ExitReplayMode(bool reconnect = false)
+        {
+            if (!replayMode)
+            {
+                if (reconnect)
+                {
+                    ConnectWebSocket();
+                }
+                return;
+            }
+
+            replayMode = false;
+            replayLastSeqSeen = -1;
+            eventGuard?.ResetRuntime();
+            localActionPlanGate?.ResetRuntime();
+            StartHealthProbeLoop();
+            if (reconnect && connectOnEnable)
+            {
+                ConnectWebSocket();
+            }
         }
 
         private IEnumerator SendFrameRoutine(byte[] jpg, string metaJson, long seq)
@@ -625,7 +694,7 @@ namespace BeYourEyes.Adapters.Networking
             return $"{BaseUrl.TrimEnd('/')}{path}";
         }
 
-        public bool TryAcceptUiEvent(JObject evt, string defaultType, out long receivedAtMs, out int ttlMs, out string rejectReason)
+        public bool TryAcceptUiEvent(JObject evt, string defaultType, out long receivedAtMs, out int ttlMs, out string rejectReason, bool isReplay = false)
         {
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             receivedAtMs = nowMs;
@@ -641,6 +710,21 @@ namespace BeYourEyes.Adapters.Networking
             if (!string.IsNullOrWhiteSpace(defaultType) && string.IsNullOrWhiteSpace(ReadString(evt, "type")))
             {
                 evt["type"] = defaultType;
+            }
+
+            if (isReplay)
+            {
+                ttlMs = eventGuard != null ? eventGuard.ResolveEventTtlMs(evt) : EventDefaultTtlMs;
+                receivedAtMs = nowMs;
+                evt["_receivedAtMs"] = receivedAtMs;
+                evt["_eventTtlMs"] = ttlMs;
+                if (TryReadLong(evt, "seq", out var replaySeq) && replaySeq > replayLastSeqSeen)
+                {
+                    replayLastSeqSeen = replaySeq;
+                }
+
+                rejectReason = string.Empty;
+                return true;
             }
 
             var eventType = ReadString(evt, "type");
@@ -771,7 +855,7 @@ namespace BeYourEyes.Adapters.Networking
 
         private void StartHealthProbeLoop()
         {
-            if (!enableHealthProbe || healthProbeRoutine != null)
+            if (!enableHealthProbe || healthProbeRoutine != null || replayMode)
             {
                 return;
             }
@@ -1092,7 +1176,7 @@ namespace BeYourEyes.Adapters.Networking
 
         private void EnsureReconnectLoop()
         {
-            if (!autoReconnect || shuttingDown || reconnectLoopRunning || IsConnected)
+            if (!autoReconnect || shuttingDown || replayMode || reconnectLoopRunning || IsConnected)
             {
                 return;
             }
@@ -1243,6 +1327,7 @@ namespace BeYourEyes.Adapters.Networking
             }
 
             ttfaSampleCount++;
+            OnTtfaObserved?.Invoke(seq, type, ttfaMs);
         }
 
         private static string NormalizeBaseUrl(string value)

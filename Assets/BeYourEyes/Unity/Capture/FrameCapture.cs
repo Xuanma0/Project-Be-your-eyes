@@ -10,6 +10,30 @@ namespace BeYourEyes.Unity.Capture
 {
     public sealed class FrameCapture : MonoBehaviour
     {
+        public readonly struct FrameAcceptedInfo
+        {
+            public FrameAcceptedInfo(long seq, long timestampMs, byte[] jpgBytes, int width, int height, bool roiApplied, string keyframeReason, string metaJson)
+            {
+                Seq = seq;
+                TimestampMs = timestampMs;
+                JpgBytes = jpgBytes;
+                Width = width;
+                Height = height;
+                RoiApplied = roiApplied;
+                KeyframeReason = keyframeReason;
+                MetaJson = metaJson;
+            }
+
+            public long Seq { get; }
+            public long TimestampMs { get; }
+            public byte[] JpgBytes { get; }
+            public int Width { get; }
+            public int Height { get; }
+            public bool RoiApplied { get; }
+            public string KeyframeReason { get; }
+            public string MetaJson { get; }
+        }
+
         [SerializeField] private Camera captureCamera;
         [SerializeField] private BeYourEyes.Adapters.Networking.GatewayClient gatewayClient;
         [SerializeField] private LocalSafetyFallback localSafetyFallback;
@@ -76,6 +100,7 @@ namespace BeYourEyes.Unity.Capture
         public long TotalBytesSent => totalBytesSent;
         public double BytesEma => bytesEma;
         public string LastKeyframeReason => lastKeyframeReason;
+        public event Action<FrameAcceptedInfo> OnFrameAccepted;
 
         private void OnEnable()
         {
@@ -147,6 +172,13 @@ namespace BeYourEyes.Unity.Capture
                     return;
                 }
             }
+
+            if (gatewayClient.IsReplayMode)
+            {
+                lastKeyframeReason = "replay_mode_pause";
+                return;
+            }
+
             if (localSafetyFallback == null)
             {
                 localSafetyFallback = FindFirstObjectByType<LocalSafetyFallback>();
@@ -217,6 +249,7 @@ namespace BeYourEyes.Unity.Capture
 
             frameSeq++;
             var meta = BuildMeta(cameraToUse, nowMs, policy.ttlMs, capture, decision.Reason);
+            var metaJson = meta.ToString(Formatting.None);
             if (capabilityState == BeYourEyes.Adapters.Networking.CapabilityState.OFFLINE)
             {
                 framesDroppedNoConn++;
@@ -225,7 +258,7 @@ namespace BeYourEyes.Unity.Capture
                 return;
             }
 
-            var result = gatewayClient.TrySendFrameDetailed(capture.bytes, meta.ToString(Formatting.None), frameSeq, nowMs);
+            var result = gatewayClient.TrySendFrameDetailed(capture.bytes, metaJson, frameSeq, nowMs);
             switch (result)
             {
                 case BeYourEyes.Adapters.Networking.FrameSendResult.Accepted:
@@ -242,6 +275,16 @@ namespace BeYourEyes.Unity.Capture
                     {
                         lastLimitedSentAtMs = nowMs;
                     }
+                    OnFrameAccepted?.Invoke(new FrameAcceptedInfo(
+                        frameSeq,
+                        nowMs,
+                        capture.bytes,
+                        capture.outputWidth,
+                        capture.outputHeight,
+                        capture.usedRoi,
+                        decision.Reason,
+                        metaJson
+                    ));
                     break;
                 case BeYourEyes.Adapters.Networking.FrameSendResult.DroppedBusy:
                     framesDroppedBusy++;

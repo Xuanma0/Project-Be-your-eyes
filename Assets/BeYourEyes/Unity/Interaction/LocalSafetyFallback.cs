@@ -47,6 +47,7 @@ namespace BeYourEyes.Unity.Interaction
         private Canvas overlayCanvas;
         private Text overlayText;
         private AudioSource beepSource;
+        public event Action<LocalSafetyState, LocalSafetyState, string, long> OnStateChanged;
 
         public LocalSafetyState CurrentState => currentState;
         public bool IsOk => currentState == LocalSafetyState.OK;
@@ -105,6 +106,7 @@ namespace BeYourEyes.Unity.Interaction
 
         private void ApplyStateTransition(LocalSafetyState nextState, string reason, long nowMs)
         {
+            var previousState = currentState;
             if (nextState == LocalSafetyState.OK)
             {
                 if (currentState == LocalSafetyState.OK)
@@ -128,6 +130,7 @@ namespace BeYourEyes.Unity.Interaction
                 lastReason = "ok";
                 okCandidateSinceMs = -1;
                 SetOverlayVisible(false, string.Empty);
+                OnStateChanged?.Invoke(previousState, currentState, lastReason, nowMs);
                 return;
             }
 
@@ -138,6 +141,7 @@ namespace BeYourEyes.Unity.Interaction
                 currentState = nextState;
                 stateEnteredAtMs = nowMs;
                 lastReason = string.IsNullOrWhiteSpace(reason) ? nextState.ToString() : reason;
+                OnStateChanged?.Invoke(previousState, currentState, lastReason, nowMs);
             }
 
             if (wasOk)

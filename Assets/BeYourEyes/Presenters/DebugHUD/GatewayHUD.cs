@@ -18,6 +18,8 @@ namespace BeYourEyes.Presenters.DebugHUD
         [SerializeField] private DirectionalGuidance directionalGuidance;
         [SerializeField] private SpeechOrchestrator speechOrchestrator;
         [SerializeField] private LocalIntentController localIntentController;
+        [SerializeField] private BeYourEyes.Adapters.Networking.RunRecorder runRecorder;
+        [SerializeField] private BeYourEyes.Adapters.Networking.RunReplayer runReplayer;
         [SerializeField] private float confirmPollIntervalSec = 1.5f;
         [SerializeField] private float limitedConfirmPollIntervalSec = 2.0f;
         [SerializeField] private int capabilityHintCooldownMs = 1200;
@@ -26,7 +28,12 @@ namespace BeYourEyes.Presenters.DebugHUD
         private Text statusText;
         private Text confirmPromptText;
         private RectTransform confirmOptionsRoot;
-        private Button replayButton;
+        private Button speechReplayButton;
+        private Button startRecButton;
+        private Button stopRecButton;
+        private Button replayRunButton;
+        private Button stopReplayButton;
+        private Button recordFramesButton;
         private readonly List<Button> confirmButtons = new List<Button>();
 
         private string wsState = "Disconnected";
@@ -37,6 +44,7 @@ namespace BeYourEyes.Presenters.DebugHUD
         private string capabilityHintText = string.Empty;
         private long capabilityHintUntilMs = -1;
         private long lastCapabilityHintAtMs = long.MinValue;
+        private long lastReplayBlockHintAtMs = long.MinValue;
         private string riskText = "-";
         private string riskLevel = "-";
         private string actionSummary = "-";
@@ -66,6 +74,7 @@ namespace BeYourEyes.Presenters.DebugHUD
             EnsureDirectionalGuidance();
             EnsureSpeechOrchestrator();
             EnsureLocalIntentController();
+            EnsureRunTools();
             BindClient();
             StartConfirmPoller();
         }
@@ -108,6 +117,14 @@ namespace BeYourEyes.Presenters.DebugHUD
             {
                 localIntentController = FindFirstObjectByType<LocalIntentController>();
             }
+            if (runRecorder == null)
+            {
+                runRecorder = FindFirstObjectByType<BeYourEyes.Adapters.Networking.RunRecorder>();
+            }
+            if (runReplayer == null)
+            {
+                runReplayer = FindFirstObjectByType<BeYourEyes.Adapters.Networking.RunReplayer>();
+            }
 
             if (statusText != null)
             {
@@ -140,6 +157,14 @@ namespace BeYourEyes.Presenters.DebugHUD
                 var questionText = gatewayClient == null ? "-" : Truncate(gatewayClient.CurrentQuestion, 40);
                 var localIntentHint = localIntentController == null ? "-" : localIntentController.HintText;
                 var capabilityText = gatewayClient == null ? capabilityState : gatewayClient.CurrentCapabilityState.ToString();
+                var runIdText = runRecorder == null || string.IsNullOrWhiteSpace(runRecorder.CurrentRunId) ? "-" : runRecorder.CurrentRunId;
+                var runPathText = runRecorder == null || string.IsNullOrWhiteSpace(runRecorder.CurrentRunDirectory) ? "-" : runRecorder.CurrentRunDirectory;
+                var recStateText = runRecorder == null ? "n/a" : (runRecorder.IsRecording ? "REC" : "IDLE");
+                var replayStateText = runReplayer == null ? "n/a" : (runReplayer.IsReplaying ? "REPLAY" : "IDLE");
+                var replayProgressText = runReplayer == null || !runReplayer.IsReplaying
+                    ? "-"
+                    : $"{runReplayer.ReplayIndex}/{Mathf.Max(1, runReplayer.ReplayTotal)} @{runReplayer.ReplaySpeed:0.0}x";
+                var replayModeText = gatewayClient != null && gatewayClient.IsReplayMode ? "ON" : "OFF";
                 if (gatewayClient != null)
                 {
                     capabilityReason = gatewayClient.CapabilityTransitionReason;
@@ -159,6 +184,14 @@ namespace BeYourEyes.Presenters.DebugHUD
                 if (localSafetyFallback != null && !localSafetyFallback.IsOk)
                 {
                     ClearDisplayedContent();
+                }
+                if (recordFramesButton != null && runRecorder != null)
+                {
+                    var text = recordFramesButton.GetComponentInChildren<Text>();
+                    if (text != null)
+                    {
+                        text.text = runRecorder.RecordFrames ? "RecordFrames: ON" : "RecordFrames: OFF";
+                    }
                 }
 
                 var lastEventAgeMs = displayedEventReceivedAtMs > 0 ? Math.Max(0, nowMs - displayedEventReceivedAtMs) : -1;
@@ -216,6 +249,9 @@ namespace BeYourEyes.Presenters.DebugHUD
                     $"Fallback: {fallbackStateText} since={fallbackSinceText} reason={fallbackReasonText}\n" +
                     $"Intent: {intentText} | Question: {questionText}\n" +
                     $"IntentHint: {localIntentHint}\n" +
+                    $"Run: {recStateText} id={runIdText}\n" +
+                    $"Replay: {replayStateText} mode={replayModeText} progress={replayProgressText}\n" +
+                    $"RunPath: {Truncate(runPathText, 60)}\n" +
                     $"CapHint: {(string.IsNullOrWhiteSpace(capabilityHintText) ? "-" : capabilityHintText)}\n" +
                     $"PendingConfirm: {(string.IsNullOrWhiteSpace(pendingConfirmId) ? "-" : pendingConfirmKind)}" +
                     debugLines +
@@ -241,6 +277,8 @@ namespace BeYourEyes.Presenters.DebugHUD
             gatewayClient.OnCapabilityStateChanged += HandleCapabilityStateChanged;
             gatewayClient.OnWebSocketStateChanged -= HandleWsStateChanged;
             gatewayClient.OnWebSocketStateChanged += HandleWsStateChanged;
+            gatewayClient.OnReplayBlockedNetworkAction -= HandleReplayBlockedNetworkAction;
+            gatewayClient.OnReplayBlockedNetworkAction += HandleReplayBlockedNetworkAction;
             wsState = gatewayClient.IsConnected ? "Connected" : "Disconnected";
             capabilityState = gatewayClient.CurrentCapabilityState.ToString();
             capabilityReason = gatewayClient.CapabilityTransitionReason;
@@ -256,6 +294,7 @@ namespace BeYourEyes.Presenters.DebugHUD
             gatewayClient.OnGatewayEvent -= HandleGatewayEvent;
             gatewayClient.OnCapabilityStateChanged -= HandleCapabilityStateChanged;
             gatewayClient.OnWebSocketStateChanged -= HandleWsStateChanged;
+            gatewayClient.OnReplayBlockedNetworkAction -= HandleReplayBlockedNetworkAction;
         }
 
         private void HandleWsStateChanged(bool connected, string reason)
@@ -281,6 +320,19 @@ namespace BeYourEyes.Presenters.DebugHUD
             {
                 speechOrchestrator.SpeakLocalHint(capabilityHintText, flush: false);
             }
+        }
+
+        private void HandleReplayBlockedNetworkAction(string action)
+        {
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (nowMs - lastReplayBlockHintAtMs < 1200)
+            {
+                return;
+            }
+
+            lastReplayBlockHintAtMs = nowMs;
+            capabilityHintText = $"Replay mode: network disabled ({action})";
+            capabilityHintUntilMs = nowMs + 1400;
         }
 
         private void HandleGatewayEvent(JObject evt)
@@ -537,6 +589,12 @@ namespace BeYourEyes.Presenters.DebugHUD
                     continue;
                 }
 
+                if (gatewayClient != null && gatewayClient.IsReplayMode)
+                {
+                    yield return new WaitForSecondsRealtime(waitSec);
+                    continue;
+                }
+
                 if (gatewayClient != null)
                 {
                     var capability = gatewayClient.CurrentCapabilityState;
@@ -618,7 +676,7 @@ namespace BeYourEyes.Presenters.DebugHUD
         {
             if (statusText != null && confirmPromptText != null && confirmOptionsRoot != null)
             {
-                EnsureReplayButton();
+                EnsureControlButtons();
                 return;
             }
 
@@ -668,6 +726,7 @@ namespace BeYourEyes.Presenters.DebugHUD
             layout.childControlWidth = true;
 
             HideConfirmPanel();
+            EnsureControlButtons();
         }
 
         private static GameObject CreatePanel(Transform parent, Vector2 anchoredPos, Vector2 anchor, Vector2 size)
@@ -777,7 +836,7 @@ namespace BeYourEyes.Presenters.DebugHUD
             displayedEventTtlMs = gatewayClient != null ? gatewayClient.EventDefaultTtlMs : 1500;
             displayedEventSeq = -1;
             HideConfirmPanel();
-            EnsureReplayButton();
+            EnsureControlButtons();
         }
 
         private void EnsureRiskFeedback()
@@ -836,30 +895,84 @@ namespace BeYourEyes.Presenters.DebugHUD
             }
         }
 
-        private void EnsureReplayButton()
+        private void EnsureRunTools()
         {
-            if (replayButton != null || statusText == null)
+            if (runRecorder == null)
+            {
+                runRecorder = GetComponent<BeYourEyes.Adapters.Networking.RunRecorder>();
+                if (runRecorder == null)
+                {
+                    runRecorder = gameObject.AddComponent<BeYourEyes.Adapters.Networking.RunRecorder>();
+                }
+            }
+
+            if (runReplayer == null)
+            {
+                runReplayer = GetComponent<BeYourEyes.Adapters.Networking.RunReplayer>();
+                if (runReplayer == null)
+                {
+                    runReplayer = gameObject.AddComponent<BeYourEyes.Adapters.Networking.RunReplayer>();
+                }
+            }
+        }
+
+        private void EnsureControlButtons()
+        {
+            if (speechReplayButton != null || statusText == null)
             {
                 return;
             }
 
+            EnsureRunTools();
             var panel = statusText.transform.parent;
             if (panel == null)
             {
                 return;
             }
 
-            replayButton = CreateOptionButton(panel, "Replay");
-            var rect = replayButton.GetComponent<RectTransform>();
-            rect.anchorMin = new Vector2(1f, 1f);
-            rect.anchorMax = new Vector2(1f, 1f);
-            rect.pivot = new Vector2(1f, 1f);
-            rect.anchoredPosition = new Vector2(-10f, -10f);
-            rect.sizeDelta = new Vector2(96f, 34f);
-            replayButton.onClick.AddListener(OnReplayClicked);
+            speechReplayButton = CreateOptionButton(panel, "Replay TTS");
+            var speechRect = speechReplayButton.GetComponent<RectTransform>();
+            speechRect.anchorMin = new Vector2(1f, 1f);
+            speechRect.anchorMax = new Vector2(1f, 1f);
+            speechRect.pivot = new Vector2(1f, 1f);
+            speechRect.anchoredPosition = new Vector2(-10f, -10f);
+            speechRect.sizeDelta = new Vector2(120f, 34f);
+            speechReplayButton.onClick.AddListener(OnSpeechReplayClicked);
+
+            startRecButton = CreateOptionButton(panel, "Start Rec");
+            SetupControlButton(startRecButton, new Vector2(10f, 10f), new Vector2(0f, 0f), new Vector2(92f, 32f), OnStartRecClicked);
+
+            stopRecButton = CreateOptionButton(panel, "Stop Rec");
+            SetupControlButton(stopRecButton, new Vector2(108f, 10f), new Vector2(0f, 0f), new Vector2(92f, 32f), OnStopRecClicked);
+
+            replayRunButton = CreateOptionButton(panel, "Replay Last");
+            SetupControlButton(replayRunButton, new Vector2(206f, 10f), new Vector2(0f, 0f), new Vector2(108f, 32f), OnReplayRunClicked);
+
+            stopReplayButton = CreateOptionButton(panel, "Stop Replay");
+            SetupControlButton(stopReplayButton, new Vector2(320f, 10f), new Vector2(0f, 0f), new Vector2(108f, 32f), OnStopReplayClicked);
+
+            recordFramesButton = CreateOptionButton(panel, "RecordFrames: OFF");
+            SetupControlButton(recordFramesButton, new Vector2(10f, 46f), new Vector2(0f, 0f), new Vector2(170f, 30f), OnToggleRecordFramesClicked);
         }
 
-        private void OnReplayClicked()
+        private static void SetupControlButton(Button button, Vector2 anchoredPosition, Vector2 pivot, Vector2 size, UnityEngine.Events.UnityAction callback)
+        {
+            if (button == null)
+            {
+                return;
+            }
+
+            var rect = button.GetComponent<RectTransform>();
+            rect.anchorMin = new Vector2(0f, 0f);
+            rect.anchorMax = new Vector2(0f, 0f);
+            rect.pivot = pivot;
+            rect.anchoredPosition = anchoredPosition;
+            rect.sizeDelta = size;
+            button.onClick.RemoveAllListeners();
+            button.onClick.AddListener(callback);
+        }
+
+        private void OnSpeechReplayClicked()
         {
             if (speechOrchestrator == null)
             {
@@ -867,6 +980,60 @@ namespace BeYourEyes.Presenters.DebugHUD
             }
 
             speechOrchestrator?.ReplayLast();
+        }
+
+        private void OnStartRecClicked()
+        {
+            EnsureRunTools();
+            if (runRecorder == null || runRecorder.IsRecording)
+            {
+                return;
+            }
+
+            runRecorder.StartRecording(out var message);
+            if (!string.IsNullOrWhiteSpace(message))
+            {
+                capabilityHintText = $"REC: {message}";
+                capabilityHintUntilMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 1800;
+            }
+        }
+
+        private void OnStopRecClicked()
+        {
+            EnsureRunTools();
+            runRecorder?.StopRecording();
+        }
+
+        private void OnReplayRunClicked()
+        {
+            EnsureRunTools();
+            if (runReplayer == null)
+            {
+                return;
+            }
+
+            if (!runReplayer.ReplayLatestRun(out var message))
+            {
+                capabilityHintText = $"Replay failed: {message}";
+                capabilityHintUntilMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 1800;
+            }
+        }
+
+        private void OnStopReplayClicked()
+        {
+            EnsureRunTools();
+            runReplayer?.StopReplay();
+        }
+
+        private void OnToggleRecordFramesClicked()
+        {
+            EnsureRunTools();
+            if (runRecorder == null)
+            {
+                return;
+            }
+
+            runRecorder.SetRecordFrames(!runRecorder.RecordFrames);
         }
 
         private bool IsEventExpired(JObject evt, long nowMs)
