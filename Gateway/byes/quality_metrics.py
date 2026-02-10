@@ -725,6 +725,7 @@ def compute_depth_risk_metrics(
     local_norm_meta = _new_hazard_norm_meta()
 
     pred_entries: list[dict[str, Any]] = []
+    pred_entries_by_kind: dict[str, list[int]] = defaultdict(list)
     for seq, hazards in pred_map.items():
         for hazard in hazards:
             normalized_rows, warnings = normalize_hazards([hazard] if isinstance(hazard, dict) else [])
@@ -736,11 +737,15 @@ def compute_depth_risk_metrics(
             if not kind:
                 continue
             pred_entries.append({"seq": int(seq), "kind": kind, "used": False})
+            pred_entries_by_kind[kind].append(len(pred_entries) - 1)
+    for kind, idx_rows in pred_entries_by_kind.items():
+        idx_rows.sort(key=lambda item: int(pred_entries[item]["seq"]))
 
     gt_critical_count = 0
     hit_critical_count = 0
     miss_critical_count = 0
     detection_delays: list[int] = []
+    matched_pairs: list[dict[str, Any]] = []
     top_misses: list[dict[str, Any]] = []
 
     for gt_seq, hazards in gt_map.items():
@@ -759,24 +764,29 @@ def compute_depth_risk_metrics(
                 gt_critical_count += 1
 
             best_idx = -1
+            best_pred_seq = 10**9
             best_dist = 10**9
-            for idx, pred in enumerate(pred_entries):
+            for idx in pred_entries_by_kind.get(kind, []):
+                pred = pred_entries[idx]
                 if pred["used"]:
                     continue
-                if pred["kind"] != kind:
-                    continue
-                dist = abs(int(pred["seq"]) - int(gt_seq))
+                pred_seq = int(pred["seq"])
+                dist = abs(pred_seq - int(gt_seq))
                 if dist > window:
                     continue
-                if dist < best_dist:
+                if pred_seq < best_pred_seq or (pred_seq == best_pred_seq and dist < best_dist):
+                    best_pred_seq = pred_seq
                     best_dist = dist
                     best_idx = idx
 
             if best_idx >= 0:
                 pred_entries[best_idx]["used"] = True
                 by_kind_counts[kind]["tp"] += 1
-                delay = max(0, int(pred_entries[best_idx]["seq"]) - int(gt_seq))
+                pred_seq = int(pred_entries[best_idx]["seq"])
+                delay_raw = pred_seq - int(gt_seq)
+                delay = max(0, min(window, delay_raw))
                 detection_delays.append(delay)
+                matched_pairs.append({"gtSeq": int(gt_seq), "predSeq": pred_seq, "kind": kind, "delay": delay})
                 if is_critical:
                     hit_critical_count += 1
             else:
@@ -836,6 +846,15 @@ def compute_depth_risk_metrics(
     else:
         merged_norm = local_norm
 
+    matched_pairs_sorted = sorted(
+        matched_pairs,
+        key=lambda row: (
+            -int(row.get("delay", 0)),
+            int(row.get("gtSeq", 0)),
+            int(row.get("predSeq", 0)),
+            str(row.get("kind", "")),
+        ),
+    )
     return {
         "matchWindowFrames": window,
         "byKind": by_kind,
@@ -858,6 +877,10 @@ def compute_depth_risk_metrics(
             "p90": _percentile(detection_delays, 90),
             "max": max(detection_delays) if detection_delays else 0,
             "valuesSample": detection_delays[:10],
+        },
+        "delayDiagnostics": {
+            "matchedPairsSample": sorted(matched_pairs, key=lambda row: (int(row.get("gtSeq", 0)), int(row.get("predSeq", 0))))[:5],
+            "maxDelayPairs": matched_pairs_sorted[:5],
         },
         "topMisses": top_misses,
         "normalization": merged_norm,
@@ -1491,9 +1514,12 @@ def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict
 
 
 def _merge_inference_fields(target: dict[str, str | None], payload: dict[str, Any]) -> None:
-    backend = str(payload.get("backend", "")).strip().lower()
-    model = str(payload.get("model", "")).strip()
-    endpoint = str(payload.get("endpoint", "")).strip()
+    backend_value = payload.get("backend")
+    model_value = payload.get("model")
+    endpoint_value = payload.get("endpoint")
+    backend = str(backend_value).strip().lower() if backend_value is not None else ""
+    model = str(model_value).strip() if model_value is not None else ""
+    endpoint = str(endpoint_value).strip() if endpoint_value is not None else ""
     if backend:
         target["backend"] = backend
     if model:

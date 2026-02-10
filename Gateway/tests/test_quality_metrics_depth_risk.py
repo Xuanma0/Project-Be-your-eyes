@@ -46,6 +46,10 @@ def test_compute_depth_risk_metrics_window_match() -> None:
     assert delay["p90"] == 2
     assert delay["max"] == 2
     assert delay["valuesSample"] == [2, 2]
+    diagnostics = metrics["delayDiagnostics"]
+    assert diagnostics["matchedPairsSample"]
+    assert diagnostics["maxDelayPairs"]
+    assert all(int(item["delay"]) >= 0 for item in diagnostics["matchedPairsSample"])
     misses = metrics["topMisses"]
     assert misses == []
     normalization = metrics["normalization"]

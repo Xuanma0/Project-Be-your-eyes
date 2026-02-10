@@ -425,6 +425,18 @@ class GatewayApp:
     async def _run_inference_for_frame(self, frame_bytes: bytes, seq: int, ts_ms: int, meta: dict[str, Any]) -> None:
         run_id = self._extract_run_id(meta)
         component = str(self.config.inference_event_component or "gateway")
+        event_frame_seq = seq
+        for key in ("clientSeq", "frameSeq", "frame_seq", "seq"):
+            raw_value = meta.get(key)
+            if raw_value is None:
+                continue
+            try:
+                parsed = int(raw_value)
+            except Exception:
+                continue
+            if parsed > 0:
+                event_frame_seq = parsed
+                break
         if self.config.inference_enable_ocr:
             ocr_started_ms = _now_ms()
             try:
@@ -433,7 +445,7 @@ class GatewayApp:
                 ocr_result = OCRResult(status="error", error=exc.__class__.__name__, payload={"reason": exc.__class__.__name__})
             await emit_ocr_events(
                 ocr_result,
-                frame_seq=seq,
+                frame_seq=event_frame_seq,
                 ts_ms=_now_ms(),
                 started_ts_ms=ocr_started_ms,
                 sink=self._emit_inference_event,
@@ -457,7 +469,7 @@ class GatewayApp:
                 )
             await emit_risk_events(
                 risk_result,
-                frame_seq=seq,
+                frame_seq=event_frame_seq,
                 ts_ms=_now_ms(),
                 started_ts_ms=risk_started_ms,
                 sink=self._emit_inference_event,

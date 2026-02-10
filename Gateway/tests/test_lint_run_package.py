@@ -26,6 +26,8 @@ def test_lint_run_package_smoke() -> None:
     assert "framesActual:" in result.stdout
     assert "hazardUnknownKinds:" in result.stdout
     assert "hazardAliasHits:" in result.stdout
+    assert "riskEventMissingFrameSeq:" in result.stdout
+    assert "riskEventFrameSeqOutOfRange:" in result.stdout
 
 
 def test_lint_run_package_events_v1_stats() -> None:

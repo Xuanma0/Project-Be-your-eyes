@@ -118,6 +118,8 @@ def test_api_frame_emits_http_backend_metadata(monkeypatch) -> None:
             assert isinstance(risk_payload, dict)
             assert ocr_payload.get("backend") == "http"
             assert risk_payload.get("backend") == "http"
+            assert ocr_payload.get("model") == "paddleocr-v4"
+            assert risk_payload.get("model") == "depth-v2"
             assert ocr_payload.get("endpoint")
             assert risk_payload.get("endpoint")
             assert "latencyMs" not in ocr_payload

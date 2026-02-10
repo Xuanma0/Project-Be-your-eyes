@@ -76,6 +76,35 @@ def _collect_hazard_stats_from_ws(path: Path) -> dict[str, Any]:
     return {"unknownKinds": unknown, "aliasHits": alias_hits}
 
 
+def _collect_risk_frame_seq_stats(path: Path, *, frames_declared: int) -> dict[str, int]:
+    missing = 0
+    out_of_range = 0
+    normalized = collect_normalized_ws_events(path)
+    events = normalized.get("events", [])
+    if not isinstance(events, list):
+        events = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        name = str(event.get("name", "")).strip().lower()
+        if name not in {"risk.hazards", "risk.depth"}:
+            continue
+        frame_seq_raw = event.get("frameSeq")
+        if not isinstance(frame_seq_raw, int):
+            missing += 1
+            continue
+        frame_seq = int(frame_seq_raw)
+        if frame_seq <= 0:
+            out_of_range += 1
+            continue
+        if frames_declared > 0 and frame_seq > frames_declared:
+            out_of_range += 1
+    return {
+        "riskEventMissingFrameSeq": missing,
+        "riskEventFrameSeqOutOfRange": out_of_range,
+    }
+
+
 def _safe_extract_zip(zip_path: Path, target_dir: Path) -> None:
     with zipfile.ZipFile(zip_path, "r") as zf:
         for member in zf.infolist():
@@ -208,6 +237,8 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
         gt_covered = 0
         hazard_unknown_kinds: set[str] = set()
         hazard_alias_hits = 0
+        risk_event_missing_frame_seq = 0
+        risk_event_frame_seq_out_of_range = 0
         if isinstance(gt, dict):
             for key in ("ocrJsonl", "riskJsonl"):
                 rel = str(gt.get(key, "")).strip()
@@ -278,6 +309,9 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
                 ws_kind_stats = _collect_hazard_stats_from_ws(events_v1_path)
                 hazard_unknown_kinds.update(ws_kind_stats["unknownKinds"])
                 hazard_alias_hits += int(ws_kind_stats["aliasHits"])
+                risk_seq_stats = _collect_risk_frame_seq_stats(events_v1_path, frames_declared=frames_count_declared)
+                risk_event_missing_frame_seq += int(risk_seq_stats.get("riskEventMissingFrameSeq", 0) or 0)
+                risk_event_frame_seq_out_of_range += int(risk_seq_stats.get("riskEventFrameSeqOutOfRange", 0) or 0)
             else:
                 errors.append(f"ws jsonl missing: {ws_rel}")
                 norm = {"normalizedEvents": 0, "droppedEvents": 0, "warningsCount": 0}
@@ -287,6 +321,9 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
             ws_kind_stats = _collect_hazard_stats_from_ws(ws_path)
             hazard_unknown_kinds.update(ws_kind_stats["unknownKinds"])
             hazard_alias_hits += int(ws_kind_stats["aliasHits"])
+            risk_seq_stats = _collect_risk_frame_seq_stats(ws_path, frames_declared=frames_count_declared)
+            risk_event_missing_frame_seq += int(risk_seq_stats.get("riskEventMissingFrameSeq", 0) or 0)
+            risk_event_frame_seq_out_of_range += int(risk_seq_stats.get("riskEventFrameSeqOutOfRange", 0) or 0)
 
         if hazard_unknown_kinds:
             msg = f"unknown hazard kinds: {', '.join(sorted(hazard_unknown_kinds))}"
@@ -338,6 +375,8 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
             "eventsV1Normalized": events_v1_normalized,
             "hazardUnknownKinds": len(hazard_unknown_kinds),
             "hazardAliasHits": int(hazard_alias_hits),
+            "riskEventMissingFrameSeq": int(risk_event_missing_frame_seq),
+            "riskEventFrameSeqOutOfRange": int(risk_event_frame_seq_out_of_range),
         }
 
         print(f"run package: {run_package}")
@@ -352,6 +391,8 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
         print(f"eventsV1Normalized: {events_v1_normalized}")
         print(f"hazardUnknownKinds: {summary['hazardUnknownKinds']}")
         print(f"hazardAliasHits: {summary['hazardAliasHits']}")
+        print(f"riskEventMissingFrameSeq: {summary['riskEventMissingFrameSeq']}")
+        print(f"riskEventFrameSeqOutOfRange: {summary['riskEventFrameSeqOutOfRange']}")
         print(f"warnings: {summary['warningsCount']}")
         print(f"errors: {summary['errorsCount']}")
         print(f"shaChecked: {sha_checked}")

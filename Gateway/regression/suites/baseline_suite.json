@@ -20,6 +20,7 @@
   ],
   "expected": {
     "minQualityScore": 60,
-    "maxConfirmTimeouts": 1
+    "maxConfirmTimeouts": 1,
+    "maxRiskDelay": 0
   }
 }

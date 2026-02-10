@@ -1,6 +1,6 @@
 {
   "suiteName": "baseline",
-  "generatedAtMs": 1770721166693,
+  "generatedAtMs": 1770732378074,
   "runs": [
     {
       "id": "fixture_with_gt",
@@ -16,7 +16,9 @@
         "exactMatchRate": 0.5
       },
       "depthRisk": {
-        "f1": 1.0
+        "f1": 1.0,
+        "delayP90": 0,
+        "delayMax": 0
       },
       "safetyBehavior": {
         "confirmTimeouts": 0,
@@ -69,7 +71,9 @@
         "exactMatchRate": 0.5
       },
       "depthRisk": {
-        "f1": 1.0
+        "f1": 1.0,
+        "delayP90": 0,
+        "delayMax": 0
       },
       "safetyBehavior": {
         "confirmTimeouts": 1,
@@ -140,7 +144,9 @@
         "exactMatchRate": 0.5
       },
       "depthRisk": {
-        "f1": 1.0
+        "f1": 1.0,
+        "delayP90": 0,
+        "delayMax": 0
       },
       "safetyBehavior": {
         "confirmTimeouts": 1,
@@ -211,7 +217,9 @@
         "exactMatchRate": null
       },
       "depthRisk": {
-        "f1": 0.8
+        "f1": 0.8,
+        "delayP90": 0,
+        "delayMax": 0
       },
       "safetyBehavior": {
         "confirmTimeouts": 0,
@@ -233,8 +241,8 @@
         }
       },
       "topFindings": [],
-      "baselineScore": null,
-      "scoreDelta": null
+      "baselineScore": 99.0,
+      "scoreDelta": 0.0
     }
   ]
 }

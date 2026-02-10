@@ -44,6 +44,7 @@ class HttpOCRBackend:
                     payload={"error": f"http_{response.status_code}"},
                 )
             payload = response.json()
+            self._update_model_id(payload)
             text = ""
             if isinstance(payload, dict):
                 text = str(payload.get("text", payload.get("summary", "")) or "")
@@ -72,6 +73,16 @@ class HttpOCRBackend:
                 error=exc.__class__.__name__,
                 payload={"error": exc.__class__.__name__},
             )
+
+    def _update_model_id(self, payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        value = payload.get("model")
+        if value is None:
+            return
+        text = str(value).strip()
+        if text:
+            self.model_id = text
 
 
 class HttpRiskBackend:
@@ -104,6 +115,7 @@ class HttpRiskBackend:
                     payload={"error": f"http_{response.status_code}"},
                 )
             payload = response.json()
+            self._update_model_id(payload)
             hazards: list[dict[str, Any]] = []
             if isinstance(payload, dict) and isinstance(payload.get("hazards"), list):
                 for item in payload["hazards"]:
@@ -133,6 +145,16 @@ class HttpRiskBackend:
                 error=exc.__class__.__name__,
                 payload={"error": exc.__class__.__name__},
             )
+
+    def _update_model_id(self, payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        value = payload.get("model")
+        if value is None:
+            return
+        text = str(value).strip()
+        if text:
+            self.model_id = text
 
 
 def _normalize_payload(payload: Any) -> dict[str, Any]:

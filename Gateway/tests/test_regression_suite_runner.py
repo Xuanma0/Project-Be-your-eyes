@@ -28,11 +28,14 @@ def test_regression_suite_runner_outputs_json(tmp_path: Path) -> None:
     first = runs[0]
     assert "qualityScore" in first
     assert "safetyBehavior" in first
+    assert "depthRisk" in first
     assert "eventSchema" in first
     assert "inference" in first
     assert "ocr" in first["inference"]
     assert "risk" in first["inference"]
     assert "confirmTimeouts" in first["safetyBehavior"]
+    assert "delayP90" in first["depthRisk"]
+    assert "delayMax" in first["depthRisk"]
 
 
 def test_regression_suite_runner_detects_drop(tmp_path: Path) -> None:

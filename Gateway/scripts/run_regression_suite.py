@@ -31,6 +31,8 @@ class RunSummary:
     ocr_wer: float | None
     ocr_exact_match_rate: float | None
     depth_risk_f1: float | None
+    depth_risk_delay_p90: int | None
+    depth_risk_delay_max: int | None
     confirm_timeouts: int
     confirm_missing_response: int
     event_schema_source: str
@@ -60,6 +62,8 @@ class RunSummary:
             },
             "depthRisk": {
                 "f1": self.depth_risk_f1,
+                "delayP90": self.depth_risk_delay_p90,
+                "delayMax": self.depth_risk_delay_max,
             },
             "safetyBehavior": {
                 "confirmTimeouts": self.confirm_timeouts,
@@ -143,6 +147,8 @@ def _extract_run_summary(
     depth_risk = depth_risk if isinstance(depth_risk, dict) else {}
     depth_overall = depth_risk.get("overall")
     depth_overall = depth_overall if isinstance(depth_overall, dict) else {}
+    depth_delay = depth_risk.get("detectionDelayFrames")
+    depth_delay = depth_delay if isinstance(depth_delay, dict) else {}
     safety = quality.get("safetyBehavior")
     safety = safety if isinstance(safety, dict) else {}
     confirm = safety.get("confirm")
@@ -178,6 +184,8 @@ def _extract_run_summary(
         ocr_wer=_try_float(ocr.get("wer")),
         ocr_exact_match_rate=_try_float(ocr.get("exactMatchRate")),
         depth_risk_f1=_try_float(depth_overall.get("f1")),
+        depth_risk_delay_p90=_try_int(depth_delay.get("p90")),
+        depth_risk_delay_max=_try_int(depth_delay.get("max")),
         confirm_timeouts=int(confirm.get("timeouts", 0) or 0),
         confirm_missing_response=int(confirm.get("missingResponseCount", 0) or 0),
         event_schema_source=str(event_schema.get("source", "")),
@@ -200,6 +208,15 @@ def _try_float(value: Any) -> float | None:
         return None
 
 
+def _try_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
 def _render_markdown(result: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append(f"# Regression Suite - {result.get('suiteName', '')}")
@@ -214,12 +231,13 @@ def _render_markdown(result: dict[str, Any]) -> str:
         if not isinstance(run, dict):
             continue
         lines.append(
-            "- `{id}` score=`{score}` baseline=`{baseline}` delta=`{delta}` confirmTimeouts=`{ct}` schema=`{schema}`".format(
+            "- `{id}` score=`{score}` baseline=`{baseline}` delta=`{delta}` confirmTimeouts=`{ct}` riskDelayMax=`{dmax}` schema=`{schema}`".format(
                 id=run.get("id", ""),
                 score=run.get("qualityScore", None),
                 baseline=run.get("baselineScore", None),
                 delta=run.get("scoreDelta", None),
                 ct=run.get("safetyBehavior", {}).get("confirmTimeouts", 0),
+                dmax=run.get("depthRisk", {}).get("delayMax", None),
                 schema=run.get("eventSchema", {}).get("source", ""),
             )
         )
@@ -264,6 +282,11 @@ def run_suite(
         max_confirm_timeouts = int(max_confirm_timeouts) if max_confirm_timeouts is not None else None
     except Exception:
         max_confirm_timeouts = None
+    max_risk_delay = expected.get("maxRiskDelay")
+    try:
+        max_risk_delay = int(max_risk_delay) if max_risk_delay is not None else None
+    except Exception:
+        max_risk_delay = None
 
     run_summaries: list[RunSummary] = []
     failures: list[str] = []
@@ -314,6 +337,8 @@ def run_suite(
             failures.append(f"{run.run_id}: qualityScore {run.quality_score:.3f} < minQualityScore {min_quality:.3f}")
         if max_confirm_timeouts is not None and run.confirm_timeouts > max_confirm_timeouts:
             failures.append(f"{run.run_id}: confirmTimeouts {run.confirm_timeouts} > maxConfirmTimeouts {max_confirm_timeouts}")
+        if max_risk_delay is not None and run.depth_risk_delay_max is not None and run.depth_risk_delay_max > max_risk_delay:
+            failures.append(f"{run.run_id}: riskDelayMax {run.depth_risk_delay_max} > maxRiskDelay {max_risk_delay}")
         if fail_on_drop and run.baseline_score is not None and run.quality_score is not None:
             delta = run.quality_score - run.baseline_score
             if delta < -2.0:
@@ -374,13 +399,15 @@ def _print_summary(result: dict[str, Any]) -> None:
             risk_model = inference_risk.get("model", "")
             print(
                 "[run] {run_id}: score={score} baseline={baseline} delta={delta} "
-                "confirmTimeouts={confirm_timeouts} source={schema_src} "
+                "confirmTimeouts={confirm_timeouts} riskDelayP90={risk_delay_p90} riskDelayMax={risk_delay_max} source={schema_src} "
                 "ocr={ocr_backend}/{ocr_model} risk={risk_backend}/{risk_model}".format(
                     run_id=run_id,
                     score=score,
                     baseline=baseline,
                     delta=delta,
                     confirm_timeouts=confirm_timeouts,
+                    risk_delay_p90=row.get("depthRisk", {}).get("delayP90", None),
+                    risk_delay_max=row.get("depthRisk", {}).get("delayMax", None),
                     schema_src=schema_src,
                     ocr_backend=ocr_backend,
                     ocr_model=ocr_model,

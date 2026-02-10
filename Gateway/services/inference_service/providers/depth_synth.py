@@ -33,7 +33,7 @@ class SynthDepthProvider:
             for y in range(split, self.height):
                 for x in range(int(self.width * 0.3), int(self.width * 0.7)):
                     grid[y][x] = 0.9
-        elif seq == 3:
+        elif seq in {1, 3}:
             # Obstacle-close pattern: bottom-center includes very near depth.
             start_y = int(self.height * 0.65)
             for y in range(start_y, self.height):
