@@ -12,3 +12,10 @@ class OCRProvider(Protocol):
     def infer(self, image: Image.Image, frame_seq: int | None) -> dict[str, Any]:
         ...
 
+
+class RiskProvider(Protocol):
+    name: str
+    model: str
+
+    def infer(self, image: Image.Image, frame_seq: int | None) -> dict[str, Any]:
+        ...

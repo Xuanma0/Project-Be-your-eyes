@@ -15,9 +15,14 @@ def main(argv: list[str] | None = None) -> int:
 
     service_dir = Path(__file__).resolve().parents[1]
     env = dict(os.environ)
-    provider = str(env.get("BYES_SERVICE_OCR_PROVIDER", "reference")).strip().lower() or "reference"
-    model = str(env.get("BYES_SERVICE_OCR_MODEL_ID", "")).strip() or "(provider default)"
-    print(f"[run_service] provider={provider} model={model} host={args.host} port={args.port}")
+    ocr_provider = str(env.get("BYES_SERVICE_OCR_PROVIDER", "reference")).strip().lower() or "reference"
+    ocr_model = str(env.get("BYES_SERVICE_OCR_MODEL_ID", "")).strip() or "(provider default)"
+    risk_provider = str(env.get("BYES_SERVICE_RISK_PROVIDER", "reference")).strip().lower() or "reference"
+    risk_model = str(env.get("BYES_SERVICE_RISK_MODEL_ID", "")).strip() or "(provider default)"
+    print(
+        f"[run_service] ocrProvider={ocr_provider} ocrModel={ocr_model} "
+        f"riskProvider={risk_provider} riskModel={risk_model} host={args.host} port={args.port}"
+    )
     print("[run_service] endpoint /ocr and /risk")
 
     cmd = [sys.executable, "-m", "uvicorn", "app:app", "--host", str(args.host), "--port", str(args.port)]
@@ -26,4 +31,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

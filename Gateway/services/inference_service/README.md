@@ -1,4 +1,4 @@
-# Inference Service (Reference + Optional Real OCR Providers)
+# Inference Service (Reference + Optional Real OCR/Risk Providers)
 
 This service is optional and isolated from `Gateway/requirements.txt` so CI stays lightweight.
 
@@ -49,7 +49,23 @@ Notes:
 - first run may download model assets depending on paddle settings.
 - use CPU package variants if needed for your platform.
 
-## D) Connect Gateway + replay
+## D) Heuristic Risk provider (optional lightweight)
+
+```bash
+pip install -r requirements-heuristic-risk.txt
+set BYES_SERVICE_RISK_PROVIDER=heuristic
+set BYES_SERVICE_RISK_MODEL_ID=heuristic-risk-v1
+python scripts/run_service.py --port 19101
+```
+
+Optional thresholds:
+- `BYES_RISK_EDGE_DENSITY_WARN`
+- `BYES_RISK_EDGE_DENSITY_CRIT`
+- `BYES_RISK_DROPOFF_PEAK`
+- `BYES_RISK_BRIGHTNESS_LOW`
+- `BYES_RISK_BRIGHTNESS_HIGH`
+
+## E) Connect Gateway + replay
 
 ```bash
 set BYES_OCR_BACKEND=http
@@ -57,10 +73,11 @@ set BYES_OCR_HTTP_URL=http://127.0.0.1:19101/ocr
 set BYES_OCR_MODEL_ID=<same as service model>
 set BYES_RISK_BACKEND=http
 set BYES_RISK_HTTP_URL=http://127.0.0.1:19101/risk
-set BYES_RISK_MODEL_ID=reference-risk-v1
+set BYES_RISK_MODEL_ID=heuristic-risk-v1
 python Gateway/scripts/dev_replay_with_http_ocr.py --run-package Gateway/tests/fixtures/run_package_with_gt_min --ocr-url http://127.0.0.1:19101/ocr --risk-url http://127.0.0.1:19101/risk
 ```
 
 Check outputs:
 - `events/events_v1.jsonl`: `event.latencyMs` set, payload has `backend/model/endpoint`, no `payload.latencyMs`
+- `risk.hazards` payload entries include `hazardKind`, `severity`, and optional `score/evidence`
 - `report.json`: top-level `inference` block records OCR/Risk backend/model/endpoint

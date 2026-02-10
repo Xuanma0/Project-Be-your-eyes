@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 
-def _tail_ocr_events(events_path: Path, limit: int = 5) -> list[dict[str, object]]:
+def _tail_events(events_path: Path, *, name: str, phase: str = "result", limit: int = 5) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     if not events_path.exists():
         return rows
@@ -23,18 +23,21 @@ def _tail_ocr_events(events_path: Path, limit: int = 5) -> list[dict[str, object
                 continue
             if not isinstance(event, dict):
                 continue
-            if str(event.get("name", "")).strip().lower() != "ocr.scan_text":
+            if str(event.get("name", "")).strip().lower() != str(name).strip().lower():
                 continue
-            if str(event.get("phase", "")).strip().lower() != "result":
+            if str(event.get("phase", "")).strip().lower() != str(phase).strip().lower():
                 continue
             payload = event.get("payload")
             payload = payload if isinstance(payload, dict) else {}
             rows.append(
                 {
                     "frameSeq": event.get("frameSeq"),
+                    "status": event.get("status"),
                     "text": payload.get("text"),
+                    "hazards": payload.get("hazards"),
                     "latencyMs": event.get("latencyMs"),
                     "model": payload.get("model"),
+                    "backend": payload.get("backend"),
                 }
             )
     return rows[-limit:]
@@ -99,11 +102,13 @@ def main(argv: list[str] | None = None) -> int:
     events_path = replay_dir / "events" / "events_v1.jsonl"
     print(f"[dev_replay_with_http_ocr] events={events_path}")
     print("[dev_replay_with_http_ocr] last OCR result rows:")
-    for item in _tail_ocr_events(events_path, limit=5):
+    for item in _tail_events(events_path, name="ocr.scan_text", phase="result", limit=5):
+        print(json.dumps(item, ensure_ascii=False))
+    print("[dev_replay_with_http_ocr] last Risk result rows:")
+    for item in _tail_events(events_path, name="risk.hazards", phase="result", limit=5):
         print(json.dumps(item, ensure_ascii=False))
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

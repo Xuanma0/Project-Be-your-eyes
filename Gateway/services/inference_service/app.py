@@ -11,9 +11,11 @@ from fastapi import FastAPI, HTTPException
 from PIL import Image
 from pydantic import BaseModel
 
-from services.inference_service.providers.base import OCRProvider
+from services.inference_service.providers.base import OCRProvider, RiskProvider
+from services.inference_service.providers.heuristic_risk import HeuristicRiskProvider
 from services.inference_service.providers.paddleocr_ocr import PaddleOcrProvider
 from services.inference_service.providers.reference_ocr import ReferenceOcrProvider
+from services.inference_service.providers.reference_risk import ReferenceRiskProvider
 from services.inference_service.providers.tesseract_ocr import TesseractOcrProvider
 from services.inference_service.providers.utils import postprocess_text
 
@@ -29,6 +31,7 @@ class InferenceRequest(BaseModel):
 
 app = FastAPI(title="BYES Reference Inference Service")
 _OCR_PROVIDER: OCRProvider | None = None
+_RISK_PROVIDER: RiskProvider | None = None
 
 
 def _decode_image_b64(value: str) -> bytes:
@@ -62,6 +65,13 @@ def _select_ocr_provider() -> OCRProvider:
     return ReferenceOcrProvider()
 
 
+def _select_risk_provider() -> RiskProvider:
+    name = str(os.getenv("BYES_SERVICE_RISK_PROVIDER", "reference")).strip().lower()
+    if name == "heuristic":
+        return HeuristicRiskProvider()
+    return ReferenceRiskProvider()
+
+
 def get_ocr_provider() -> OCRProvider:
     global _OCR_PROVIDER  # noqa: PLW0603
     if _OCR_PROVIDER is None:
@@ -70,15 +80,31 @@ def get_ocr_provider() -> OCRProvider:
     return _OCR_PROVIDER
 
 
+def get_risk_provider() -> RiskProvider:
+    global _RISK_PROVIDER  # noqa: PLW0603
+    if _RISK_PROVIDER is None:
+        _RISK_PROVIDER = _select_risk_provider()
+        print(f"[inference_service] selected RISK provider={_RISK_PROVIDER.name} model={_RISK_PROVIDER.model}")
+    return _RISK_PROVIDER
+
+
 @app.on_event("startup")
 def _startup_provider() -> None:
     get_ocr_provider()
+    get_risk_provider()
 
 
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
-    provider = get_ocr_provider()
-    return {"ok": True, "ocrProvider": provider.name, "ocrModel": provider.model}
+    ocr_provider = get_ocr_provider()
+    risk_provider = get_risk_provider()
+    return {
+        "ok": True,
+        "ocrProvider": ocr_provider.name,
+        "ocrModel": ocr_provider.model,
+        "riskProvider": risk_provider.name,
+        "riskModel": risk_provider.model,
+    }
 
 
 @app.post("/ocr")
@@ -110,20 +136,43 @@ def infer_ocr(request: InferenceRequest) -> dict[str, Any]:
 @app.post("/risk")
 def infer_risk(request: InferenceRequest) -> dict[str, Any]:
     started = _now_ms()
-    _decode_pil_image(request.image_b64)
-    fail_prob = float(os.getenv("BYES_REF_RISK_FAIL_PROB", "0") or "0")
+    image = _decode_pil_image(request.image_b64)
+    fail_prob = float(os.getenv("BYES_SERVICE_RISK_FAIL_PROB", os.getenv("BYES_REF_RISK_FAIL_PROB", "0")) or "0")
     if random.random() < max(0.0, min(1.0, fail_prob)):
         raise HTTPException(status_code=503, detail="risk_unavailable")
 
-    delay_ms = max(0, int(os.getenv("BYES_REF_RISK_DELAY_MS", "0") or "0"))
+    delay_ms = max(0, int(os.getenv("BYES_SERVICE_RISK_DELAY_MS", os.getenv("BYES_REF_RISK_DELAY_MS", "0")) or "0"))
     if delay_ms > 0:
         time.sleep(delay_ms / 1000.0)
 
-    model = str(os.getenv("BYES_REF_RISK_MODEL_ID", "reference-risk-v1")).strip() or "reference-risk-v1"
-    if isinstance(request.frameSeq, int) and request.frameSeq % 3 == 0:
-        hazards = [{"hazardKind": "dropoff", "severity": "critical"}]
-    else:
-        hazards = [{"hazardKind": "stair_down", "severity": "warning"}]
+    provider = get_risk_provider()
+    try:
+        result = provider.infer(image, request.frameSeq)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"risk_infer_failed:{exc.__class__.__name__}") from exc
+
+    model = str(result.get("model", provider.model)).strip() or provider.model
+    hazards_raw = result.get("hazards", [])
+    hazards: list[dict[str, Any]] = []
+    if isinstance(hazards_raw, list):
+        for item in hazards_raw:
+            if not isinstance(item, dict):
+                continue
+            hazard_kind = str(item.get("hazardKind", "unknown")).strip() or "unknown"
+            severity = str(item.get("severity", "warning")).strip().lower()
+            if severity not in {"critical", "warning", "info"}:
+                severity = "warning"
+            normalized = {"hazardKind": hazard_kind, "severity": severity}
+            if "score" in item:
+                try:
+                    normalized["score"] = float(item["score"])
+                except Exception:  # noqa: BLE001
+                    pass
+            if isinstance(item.get("evidence"), dict):
+                normalized["evidence"] = dict(item["evidence"])
+            hazards.append(normalized)
     latency_ms = max(0, _now_ms() - started)
     return {"hazards": hazards, "latencyMs": latency_ms, "model": model}
 

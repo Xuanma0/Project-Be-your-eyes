@@ -258,6 +258,33 @@ Environment controls:
 - `BYES_ENABLE_RISK=1|0` (default `1`)
 - `BYES_OCR_BACKEND=mock|http` (default `mock`)
 - `BYES_RISK_BACKEND=mock|http` (default `mock`)
+
+Inference service provider controls (local service side):
+
+- `BYES_SERVICE_OCR_PROVIDER=reference|tesseract|paddleocr`
+- `BYES_SERVICE_RISK_PROVIDER=reference|heuristic` (default `reference`)
+- `BYES_SERVICE_OCR_MODEL_ID=<optional model label>`
+- `BYES_SERVICE_RISK_MODEL_ID=<optional model label>`
+
+Quick switch to heuristic depth-risk provider:
+
+```bash
+cd Gateway/services/inference_service
+pip install -r requirements-heuristic-risk.txt
+set BYES_SERVICE_RISK_PROVIDER=heuristic
+set BYES_SERVICE_RISK_MODEL_ID=heuristic-risk-v1
+python scripts/run_service.py --port 19101
+```
+
+Then point Gateway to HTTP backends and replay:
+
+```bash
+set BYES_OCR_BACKEND=http
+set BYES_OCR_HTTP_URL=http://127.0.0.1:19101/ocr
+set BYES_RISK_BACKEND=http
+set BYES_RISK_HTTP_URL=http://127.0.0.1:19101/risk
+python Gateway/scripts/dev_replay_with_http_ocr.py --run-package Gateway/tests/fixtures/run_package_with_risk_gt_min --ocr-url http://127.0.0.1:19101/ocr --risk-url http://127.0.0.1:19101/risk
+```
 - `BYES_OCR_HTTP_URL=http://127.0.0.1:9001/ocr`
 - `BYES_RISK_HTTP_URL=http://127.0.0.1:9002/risk`
 - `BYES_OCR_HTTP_TIMEOUT_MS=1500`
