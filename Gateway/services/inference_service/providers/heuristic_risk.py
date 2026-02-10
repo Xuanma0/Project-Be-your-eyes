@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import math
 import os
-from statistics import mean
+from statistics import mean, median
 from typing import Any
 
 from PIL import Image, ImageFilter, ImageStat
+
+from services.inference_service.providers.depth_base import DepthProvider
+from services.inference_service.providers.depth_none import NoneDepthProvider
 
 try:
     from byes.hazards.taxonomy_v1 import normalize_hazard_kind as _normalize_hazard_kind  # type: ignore
@@ -35,15 +39,25 @@ except Exception:  # noqa: BLE001
 class HeuristicRiskProvider:
     name = "heuristic"
 
-    def __init__(self) -> None:
-        default_model = "heuristic-risk-v1"
+    def __init__(self, depth_provider: DepthProvider | None = None) -> None:
+        self.depth_provider = depth_provider or NoneDepthProvider()
+        self.depth_provider_name = str(getattr(self.depth_provider, "name", "none") or "none").strip().lower()
+        self.depth_provider_model = str(getattr(self.depth_provider, "model", "none") or "none").strip()
+        self.depth_enabled = _env_bool("BYES_RISK_DEPTH_ENABLE", True)
+
+        default_model = "heuristic-risk-v2"
+        if self.depth_enabled and self.depth_provider_name not in {"", "none"}:
+            depth_model = self.depth_provider_model or self.depth_provider_name
+            default_model = f"{default_model}+depth={depth_model}"
         override = str(os.getenv("BYES_SERVICE_RISK_MODEL_ID", "")).strip()
         self.model = override or default_model
+
         self.target_width = max(96, int(os.getenv("BYES_RISK_TARGET_WIDTH", "320") or "320"))
         self.bottom_ratio = _clamp(float(os.getenv("BYES_RISK_BOTTOM_RATIO", "0.35") or "0.35"), 0.15, 0.60)
         self.center_ratio = _clamp(float(os.getenv("BYES_RISK_CENTER_RATIO", "0.40") or "0.40"), 0.20, 0.70)
         self.edge_threshold = max(1, int(os.getenv("BYES_RISK_EDGE_THRESHOLD", "48") or "48"))
-        # v4.20 calibrated defaults (with backward-compatible fallbacks)
+
+        # visual fallback thresholds (v4.20)
         self.obs_warn = _clamp(
             float(
                 os.getenv(
@@ -68,6 +82,8 @@ class HeuristicRiskProvider:
         )
         self.dropoff_peak = _clamp(float(os.getenv("BYES_RISK_DROPOFF_PEAK", "28.0") or "28.0"), 1.0, 255.0)
         self.dropoff_contrast = _clamp(float(os.getenv("BYES_RISK_DROPOFF_CONTRAST", "0.20") or "0.20"), 0.01, 1.0)
+        self.min_edge_density = _clamp(float(os.getenv("BYES_RISK_MIN_EDGE_DENSITY", "0.02") or "0.02"), 0.0, 1.0)
+
         brightness_pair = str(os.getenv("BYES_RISK_UNKNOWN_BRIGHTNESS", "32,222") or "32,222").split(",", 1)
         try:
             b_low = float(brightness_pair[0].strip())
@@ -81,10 +97,174 @@ class HeuristicRiskProvider:
             b_high = float(os.getenv("BYES_RISK_BRIGHTNESS_HIGH", "222") or "222")
         self.brightness_low = _clamp(b_low, 0.0, 255.0)
         self.brightness_high = _clamp(b_high, 0.0, 255.0)
-        self.min_edge_density = _clamp(float(os.getenv("BYES_RISK_MIN_EDGE_DENSITY", "0.02") or "0.02"), 0.0, 1.0)
+
+        # depth-aware thresholds (v4.21)
+        self.depth_obs_warn = _clamp(float(os.getenv("BYES_RISK_DEPTH_OBS_WARN", "1.0") or "1.0"), 0.01, 20.0)
+        self.depth_obs_crit = _clamp(float(os.getenv("BYES_RISK_DEPTH_OBS_CRIT", "0.6") or "0.6"), 0.01, 20.0)
+        self.depth_dropoff_delta = _clamp(
+            float(os.getenv("BYES_RISK_DEPTH_DROPOFF_DELTA", "0.8") or "0.8"),
+            0.05,
+            20.0,
+        )
 
     def infer(self, image: Image.Image, frame_seq: int | None) -> dict[str, Any]:
-        del frame_seq
+        visual_hazards, visual_debug = self._infer_visual_hazards(image)
+        depth_hazards, depth_debug, depth_failed = self._infer_depth_hazards(image, frame_seq)
+
+        if depth_hazards:
+            hazards = depth_hazards
+            source = "depth"
+        elif depth_failed:
+            hazards = depth_hazards
+            source = "depth_error"
+        else:
+            hazards = visual_hazards
+            source = "visual"
+
+        hazards = self._select_primary(hazards)
+        filtered: list[dict[str, Any]] = []
+        for hazard in hazards:
+            kind = str(hazard.get("hazardKind", "")).strip().lower()
+            normalized_kind, _warnings = _normalize_hazard_kind(kind)
+            if normalized_kind:
+                hazard["hazardKind"] = normalized_kind
+            filtered.append(hazard)
+
+        return {
+            "hazards": filtered,
+            "model": self.model,
+            "debug": {
+                "source": source,
+                "depth": depth_debug,
+                "visual": visual_debug,
+                "thresholds": {
+                    "depthObsWarn": self.depth_obs_warn,
+                    "depthObsCrit": self.depth_obs_crit,
+                    "depthDropoffDelta": self.depth_dropoff_delta,
+                    "obsWarn": self.obs_warn,
+                    "obsCrit": self.obs_crit,
+                    "dropoffPeak": self.dropoff_peak,
+                    "dropoffContrast": self.dropoff_contrast,
+                },
+            },
+        }
+
+    def _infer_depth_hazards(
+        self,
+        image: Image.Image,
+        frame_seq: int | None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
+        debug: dict[str, Any] = {
+            "enabled": bool(self.depth_enabled),
+            "provider": self.depth_provider_name,
+            "model": self.depth_provider_model,
+        }
+        if not self.depth_enabled or self.depth_provider_name in {"", "none"}:
+            return [], debug, False
+
+        try:
+            depth_map = self.depth_provider.infer_depth(image, frame_seq)
+        except Exception as exc:  # noqa: BLE001
+            debug["error"] = f"infer_depth_failed:{exc.__class__.__name__}"
+            return [self._unknown_depth_hazard("depth_infer_failed")], debug, True
+
+        grid = _extract_depth_grid(depth_map)
+        if not grid:
+            debug["error"] = "depth_empty"
+            return [self._unknown_depth_hazard("depth_empty")], debug, True
+
+        height = len(grid)
+        width = len(grid[0]) if height > 0 else 0
+        if width <= 0 or height <= 0:
+            debug["error"] = "depth_shape_invalid"
+            return [self._unknown_depth_hazard("depth_shape_invalid")], debug, True
+
+        flat = [v for row in grid for v in row if math.isfinite(v) and v > 0.0]
+        if not flat:
+            debug["error"] = "depth_non_finite"
+            return [self._unknown_depth_hazard("depth_non_finite")], debug, True
+
+        depth_min = min(flat)
+        depth_max = max(flat)
+        debug["min"] = round(depth_min, 4)
+        debug["max"] = round(depth_max, 4)
+        if depth_max - depth_min < 1e-6:
+            debug["error"] = "depth_low_dynamic_range"
+            return [self._unknown_depth_hazard("depth_low_dynamic_range")], debug, True
+
+        bottom_start = max(0, min(height - 1, int(height * (1.0 - self.bottom_ratio))))
+        center_left = max(0, int(width * (0.5 - self.center_ratio / 2.0)))
+        center_right = min(width, int(width * (0.5 + self.center_ratio / 2.0)))
+        if center_right <= center_left:
+            center_left = max(0, width // 4)
+            center_right = min(width, width - center_left)
+        center_bottom = [row[center_left:center_right] for row in grid[bottom_start:]]
+        center_values = _flatten_valid(center_bottom)
+        if not center_values:
+            debug["error"] = "depth_center_empty"
+            return [self._unknown_depth_hazard("depth_center_empty")], debug, True
+
+        p10 = _percentile(center_values, 0.10)
+        local_min = min(center_values)
+        debug["roiStats"] = {
+            "roi": "bottom_center",
+            "depthMin": round(local_min, 4),
+            "depthP10": round(p10, 4),
+        }
+
+        hazards: list[dict[str, Any]] = []
+        obstacle_hazard: dict[str, Any] | None = None
+        if local_min <= self.depth_obs_crit:
+            score = _clamp((self.depth_obs_crit - local_min) / max(self.depth_obs_crit, 1e-6) + 0.6, 0.0, 1.0)
+            obstacle_hazard = {
+                "hazardKind": "obstacle_close",
+                "severity": "critical",
+                "score": round(score, 3),
+                "evidence": {"roi": "bottom_center", "depthMin": round(local_min, 4), "depthP10": round(p10, 4)},
+            }
+        elif p10 <= self.depth_obs_warn:
+            score = _clamp((self.depth_obs_warn - p10) / max(self.depth_obs_warn, 1e-6) + 0.4, 0.0, 1.0)
+            obstacle_hazard = {
+                "hazardKind": "obstacle_close",
+                "severity": "warning",
+                "score": round(score, 3),
+                "evidence": {"roi": "bottom_center", "depthMin": round(local_min, 4), "depthP10": round(p10, 4)},
+            }
+
+        dropoff_hazard: dict[str, Any] | None = None
+        bottom_rows = center_bottom
+        split_index = max(1, len(bottom_rows) // 2)
+        far_values = _flatten_valid(bottom_rows[:split_index])
+        near_values = _flatten_valid(bottom_rows[split_index:])
+        if far_values and near_values:
+            far_med = median(far_values)
+            near_med = median(near_values)
+            delta = far_med - near_med
+            debug["roiStats"]["dropoffDelta"] = round(delta, 4)
+            debug["roiStats"]["depthFarMedian"] = round(far_med, 4)
+            debug["roiStats"]["depthNearMedian"] = round(near_med, 4)
+            if delta >= self.depth_dropoff_delta:
+                score = _clamp(delta / max(self.depth_dropoff_delta * 2.0, 1e-6), 0.0, 1.0)
+                dropoff_hazard = {
+                    "hazardKind": "dropoff",
+                    "severity": "critical",
+                    "score": round(score, 3),
+                    "evidence": {
+                        "roi": "bottom",
+                        "dropoffDelta": round(delta, 4),
+                        "near": round(near_med, 4),
+                        "far": round(far_med, 4),
+                    },
+                }
+
+        if dropoff_hazard is not None:
+            hazards.append(dropoff_hazard)
+        elif obstacle_hazard is not None:
+            hazards.append(obstacle_hazard)
+
+        return hazards, debug, False
+
+    def _infer_visual_hazards(self, image: Image.Image) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         resized = _resize_to_width(image, self.target_width).convert("RGB")
         gray = resized.convert("L")
         edges = gray.filter(ImageFilter.FIND_EDGES)
@@ -105,6 +285,15 @@ class HeuristicRiskProvider:
         contrast_signal = _bottom_contrast_signal(center_gray)
         dropoff_signal = _dropoff_signal(center_gray)
         texture_wave = _texture_wave_signal(center_edges)
+
+        debug = {
+            "brightness": round(brightness, 3),
+            "edgeDensityBottom": round(bottom_density, 4),
+            "edgeDensityCenter": round(center_density, 4),
+            "dropoffSignal": round(dropoff_signal, 4),
+            "contrastSignal": round(contrast_signal, 4),
+            "textureWave": round(texture_wave, 4),
+        }
 
         hazards: list[dict[str, Any]] = []
         unknown_depth_triggered = (
@@ -137,7 +326,14 @@ class HeuristicRiskProvider:
             and bottom_density >= self.obs_warn * 0.8
         )
         if is_dropoff:
-            score = _clamp(max(dropoff_signal / max(self.dropoff_peak * 1.6, 1.0), contrast_signal / self.dropoff_contrast), 0.0, 1.0)
+            score = _clamp(
+                max(
+                    dropoff_signal / max(self.dropoff_peak * 1.6, 1.0),
+                    contrast_signal / max(self.dropoff_contrast, 1e-6),
+                ),
+                0.0,
+                1.0,
+            )
             vertical_hazard = {
                 "hazardKind": "dropoff",
                 "severity": "critical",
@@ -175,7 +371,6 @@ class HeuristicRiskProvider:
         obstacle_enabled = bottom_density >= self.obs_warn and center_density >= self.obs_warn * 0.9
         if obstacle_enabled and not (unknown_depth_triggered and obstacle_score < 0.95):
             severity = "critical" if obstacle_score >= 1.0 else "warning"
-            # avoid duplicate vertical labels unless obstacle is truly critical
             if vertical_hazard is None or severity == "critical":
                 hazards.append(
                     {
@@ -190,21 +385,31 @@ class HeuristicRiskProvider:
                     }
                 )
 
-        hazards = _rank_hazards(hazards)
-        # keep only highest-priority vertical hazard to avoid dropoff/stair_down co-existence.
-        filtered: list[dict[str, Any]] = []
-        seen_vertical = False
-        for hazard in hazards:
-            kind = str(hazard.get("hazardKind", "")).strip().lower()
-            if kind in {"dropoff", "stair_down"}:
-                if seen_vertical:
-                    continue
-                seen_vertical = True
-            normalized_kind, _warnings = _normalize_hazard_kind(kind)
-            if normalized_kind:
-                hazard["hazardKind"] = normalized_kind
-            filtered.append(hazard)
-        return {"hazards": filtered, "model": self.model}
+        return hazards, debug
+
+    @staticmethod
+    def _select_primary(hazards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not hazards:
+            return []
+        ranked = _rank_hazards(hazards)
+        priority = {"dropoff": 0, "stair_down": 1, "obstacle_close": 2, "unknown_depth": 3}
+        ranked.sort(
+            key=lambda item: (
+                priority.get(str(item.get("hazardKind", "")).strip().lower(), 99),
+                {"critical": 0, "warning": 1, "info": 2}.get(str(item.get("severity", "warning")).lower(), 3),
+                -float(item.get("score", 0.0)),
+            )
+        )
+        return [ranked[0]]
+
+    @staticmethod
+    def _unknown_depth_hazard(reason: str) -> dict[str, Any]:
+        return {
+            "hazardKind": "unknown_depth",
+            "severity": "warning",
+            "score": 0.55,
+            "evidence": {"reason": reason},
+        }
 
 
 def _resize_to_width(image: Image.Image, target_width: int) -> Image.Image:
@@ -297,5 +502,65 @@ def _rank_hazards(hazards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
+def _extract_depth_grid(depth_map: Any) -> list[list[float]]:
+    if not isinstance(depth_map, dict):
+        return []
+    raw = depth_map.get("depth")
+    if raw is None:
+        return []
+    if hasattr(raw, "tolist"):
+        try:
+            raw = raw.tolist()
+        except Exception:  # noqa: BLE001
+            return []
+    if not isinstance(raw, list) or not raw:
+        return []
+
+    grid: list[list[float]] = []
+    width: int | None = None
+    for row in raw:
+        if not isinstance(row, list):
+            return []
+        parsed_row: list[float] = []
+        for value in row:
+            try:
+                parsed_row.append(float(value))
+            except Exception:  # noqa: BLE001
+                parsed_row.append(float("nan"))
+        if width is None:
+            width = len(parsed_row)
+        if width != len(parsed_row) or width == 0:
+            return []
+        grid.append(parsed_row)
+    return grid
+
+
+def _flatten_valid(rows: list[list[float]]) -> list[float]:
+    out: list[float] = []
+    for row in rows:
+        for value in row:
+            if math.isfinite(value) and value > 0.0:
+                out.append(float(value))
+    return out
+
+
+def _percentile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    if q <= 0:
+        return min(values)
+    if q >= 1:
+        return max(values)
+    ordered = sorted(values)
+    index = int(round((len(ordered) - 1) * q))
+    index = max(0, min(len(ordered) - 1, index))
+    return float(ordered[index])
+
+
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}

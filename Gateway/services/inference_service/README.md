@@ -64,10 +64,44 @@ Optional thresholds:
 - `BYES_RISK_DROPOFF_PEAK`
 - `BYES_RISK_DROPOFF_CONTRAST`
 - `BYES_RISK_UNKNOWN_BRIGHTNESS`  (format: `low,high`, default `32,222`)
+- `BYES_RISK_DEPTH_ENABLE` (`1|0`, default `1`)
+- `BYES_RISK_DEPTH_OBS_WARN` (default `1.0`)
+- `BYES_RISK_DEPTH_OBS_CRIT` (default `0.6`)
+- `BYES_RISK_DEPTH_DROPOFF_DELTA` (default `0.8`)
 
 Heuristic output uses canonical hazard taxonomy (`dropoff`, `stair_down`, `obstacle_close`, `unknown_depth`) and avoids emitting `dropoff` + `stair_down` together for the same frame.
 
-## E) Connect Gateway + replay
+## E) Depth provider for risk (optional)
+
+Depth providers are selected independently and consumed by the heuristic risk provider.
+
+Defaults:
+- `BYES_SERVICE_DEPTH_PROVIDER=none`
+
+Test/CI-friendly option:
+```bash
+set BYES_SERVICE_DEPTH_PROVIDER=synth
+```
+
+Real-model option (optional, local-only):
+```bash
+pip install -r requirements-depth-midas-onnx.txt
+set BYES_SERVICE_DEPTH_PROVIDER=midas
+set BYES_SERVICE_DEPTH_MODEL_PATH=C:\\models\\midas_small.onnx
+set BYES_SERVICE_DEPTH_MODEL_ID=midas-small-onnx
+```
+
+When enabled, `/risk` can emit depth-backed evidence in hazards and optional debug payload.
+
+## F) /risk debug evidence toggle
+
+Enable lightweight debug evidence in `/risk` response:
+```bash
+set BYES_SERVICE_RISK_DEBUG=1
+```
+`debug` includes depth provider stats and active thresholds. Default is `0` (disabled).
+
+## G) Connect Gateway + replay
 
 ```bash
 set BYES_OCR_BACKEND=http

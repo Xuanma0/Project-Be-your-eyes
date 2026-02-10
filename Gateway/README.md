@@ -263,8 +263,12 @@ Inference service provider controls (local service side):
 
 - `BYES_SERVICE_OCR_PROVIDER=reference|tesseract|paddleocr`
 - `BYES_SERVICE_RISK_PROVIDER=reference|heuristic` (default `reference`)
+- `BYES_SERVICE_DEPTH_PROVIDER=none|synth|midas` (default `none`)
 - `BYES_SERVICE_OCR_MODEL_ID=<optional model label>`
 - `BYES_SERVICE_RISK_MODEL_ID=<optional model label>`
+- `BYES_SERVICE_DEPTH_MODEL_ID=<optional model label>`
+- `BYES_SERVICE_DEPTH_MODEL_PATH=<onnx path>` (for `midas`)
+- `BYES_SERVICE_RISK_DEBUG=1|0` (default `0`, include low-overhead debug evidence in `/risk` response)
 
 Quick switch to heuristic depth-risk provider:
 
@@ -293,6 +297,10 @@ Heuristic risk tuning envs:
 - `BYES_RISK_DROPOFF_PEAK` (default `28`)
 - `BYES_RISK_DROPOFF_CONTRAST` (default `0.20`)
 - `BYES_RISK_UNKNOWN_BRIGHTNESS` (default `"32,222"`)
+- `BYES_RISK_DEPTH_ENABLE` (default `1`)
+- `BYES_RISK_DEPTH_OBS_WARN` (default `1.0`)
+- `BYES_RISK_DEPTH_OBS_CRIT` (default `0.6`)
+- `BYES_RISK_DEPTH_DROPOFF_DELTA` (default `0.8`)
 
 Hazard taxonomy v1 canonical kinds and aliases are documented in `docs/hazard_taxonomy_v1.md`.
 - `BYES_OCR_HTTP_URL=http://127.0.0.1:9001/ocr`
@@ -317,6 +325,16 @@ Local demo servers (no extra deps):
 ```bash
 python Gateway/scripts/dev_mock_ocr_service.py --host 127.0.0.1 --port 9001
 python Gateway/scripts/dev_mock_risk_service.py --host 127.0.0.1 --port 9002
+```
+
+Optional depth backend for inference_service (local only):
+
+```bash
+cd Gateway/services/inference_service
+pip install -r requirements-depth-midas-onnx.txt
+set BYES_SERVICE_DEPTH_PROVIDER=midas
+set BYES_SERVICE_DEPTH_MODEL_PATH=C:\\models\\midas_small.onnx
+set BYES_SERVICE_DEPTH_MODEL_ID=midas-small-onnx
 ```
 
 Reference service template (optional, local/server-side only):

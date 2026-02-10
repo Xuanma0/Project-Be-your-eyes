@@ -12,6 +12,9 @@ from PIL import Image
 from pydantic import BaseModel
 
 from services.inference_service.providers.base import OCRProvider, RiskProvider
+from services.inference_service.providers.depth_base import DepthProvider
+from services.inference_service.providers.depth_none import NoneDepthProvider
+from services.inference_service.providers.depth_synth import SynthDepthProvider
 from services.inference_service.providers.heuristic_risk import HeuristicRiskProvider
 from services.inference_service.providers.paddleocr_ocr import PaddleOcrProvider
 from services.inference_service.providers.reference_ocr import ReferenceOcrProvider
@@ -32,6 +35,7 @@ class InferenceRequest(BaseModel):
 app = FastAPI(title="BYES Reference Inference Service")
 _OCR_PROVIDER: OCRProvider | None = None
 _RISK_PROVIDER: RiskProvider | None = None
+_DEPTH_PROVIDER: DepthProvider | None = None
 
 
 def _decode_image_b64(value: str) -> bytes:
@@ -68,8 +72,21 @@ def _select_ocr_provider() -> OCRProvider:
 def _select_risk_provider() -> RiskProvider:
     name = str(os.getenv("BYES_SERVICE_RISK_PROVIDER", "reference")).strip().lower()
     if name == "heuristic":
-        return HeuristicRiskProvider()
+        return HeuristicRiskProvider(depth_provider=get_depth_provider())
     return ReferenceRiskProvider()
+
+
+def _select_depth_provider() -> DepthProvider:
+    name = str(os.getenv("BYES_SERVICE_DEPTH_PROVIDER", "none")).strip().lower()
+    if name == "synth":
+        return SynthDepthProvider()
+    if name == "midas":
+        try:
+            from services.inference_service.providers.depth_midas import MidasOnnxDepthProvider
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"depth_provider_import_failed:{exc.__class__.__name__}") from exc
+        return MidasOnnxDepthProvider()
+    return NoneDepthProvider()
 
 
 def get_ocr_provider() -> OCRProvider:
@@ -88,8 +105,17 @@ def get_risk_provider() -> RiskProvider:
     return _RISK_PROVIDER
 
 
+def get_depth_provider() -> DepthProvider:
+    global _DEPTH_PROVIDER  # noqa: PLW0603
+    if _DEPTH_PROVIDER is None:
+        _DEPTH_PROVIDER = _select_depth_provider()
+        print(f"[inference_service] selected DEPTH provider={_DEPTH_PROVIDER.name} model={_DEPTH_PROVIDER.model}")
+    return _DEPTH_PROVIDER
+
+
 @app.on_event("startup")
 def _startup_provider() -> None:
+    get_depth_provider()
     get_ocr_provider()
     get_risk_provider()
 
@@ -98,12 +124,15 @@ def _startup_provider() -> None:
 def healthz() -> dict[str, Any]:
     ocr_provider = get_ocr_provider()
     risk_provider = get_risk_provider()
+    depth_provider = get_depth_provider()
     return {
         "ok": True,
         "ocrProvider": ocr_provider.name,
         "ocrModel": ocr_provider.model,
         "riskProvider": risk_provider.name,
         "riskModel": risk_provider.model,
+        "depthProvider": depth_provider.name,
+        "depthModel": depth_provider.model,
     }
 
 
@@ -174,9 +203,19 @@ def infer_risk(request: InferenceRequest) -> dict[str, Any]:
                 normalized["evidence"] = dict(item["evidence"])
             hazards.append(normalized)
     latency_ms = max(0, _now_ms() - started)
-    return {"hazards": hazards, "latencyMs": latency_ms, "model": model}
+    response = {"hazards": hazards, "latencyMs": latency_ms, "model": model}
+    if _env_bool("BYES_SERVICE_RISK_DEBUG", False):
+        debug_payload = result.get("debug")
+        if isinstance(debug_payload, dict):
+            response["debug"] = debug_payload
+    return response
 
 
 # TODO: replace infer_ocr and infer_risk internals with real model pipelines:
 # - OCR: PaddleOCR/Tesseract tokenizer + postprocess
 # - Risk: depth model + hazard projection and thresholding
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
