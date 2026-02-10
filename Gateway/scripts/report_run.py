@@ -917,15 +917,32 @@ def generate_report_outputs(
         ocr_path_raw = str(gt_cfg.get("ocrPath", "")).strip()
         risk_path_raw = str(gt_cfg.get("riskPath", "")).strip()
         ocr_gt = load_gt_ocr_jsonl(Path(ocr_path_raw)) if ocr_path_raw else {}
-        risk_gt = load_gt_risk_jsonl(Path(risk_path_raw)) if risk_path_raw else {}
+        risk_gt: dict[int, list[dict[str, Any]]] = {}
+        risk_norm_meta = {"unknownKinds": [], "aliasHits": [], "warningsCount": 0}
+        if risk_path_raw:
+            risk_gt_result = load_gt_risk_jsonl(Path(risk_path_raw), return_meta=True)
+            if isinstance(risk_gt_result, tuple):
+                risk_gt, risk_norm_meta = risk_gt_result
+            else:
+                risk_gt = risk_gt_result
         pred_ocr = extract_pred_ocr_from_ws_events(event_source_path)
         ocr_intent_frames = extract_ocr_intent_frames_from_ws_events(event_source_path)
-        pred_hazards = extract_pred_hazards_from_ws_events(event_source_path)
+        pred_hazard_result = extract_pred_hazards_from_ws_events(event_source_path, return_meta=True)
+        pred_hazards: dict[int, list[dict[str, Any]]] = {}
+        pred_norm_meta = {"unknownKinds": [], "aliasHits": [], "warningsCount": 0}
+        if isinstance(pred_hazard_result, tuple):
+            pred_hazards, pred_norm_meta = pred_hazard_result
+        else:
+            pred_hazards = pred_hazard_result
         ocr_metrics = compute_ocr_metrics(ocr_gt, pred_ocr, frames_total, intent_frames=ocr_intent_frames) if ocr_gt else None
         risk_metrics = None
         window = int(gt_cfg.get("matchWindowFrames", 2) or 2)
         if risk_gt:
-            risk_metrics = compute_depth_risk_metrics(risk_gt, pred_hazards, window)
+            merged_norm = _merge_hazard_normalization_meta(risk_norm_meta, pred_norm_meta)
+            risk_metrics = compute_depth_risk_metrics(risk_gt, pred_hazards, window, normalization=merged_norm)
+            event_schema_stats["warningsCount"] = int(event_schema_stats.get("warningsCount", 0) or 0) + int(
+                merged_norm.get("warningsCount", 0) or 0
+            )
         critical_frames = _collect_critical_gt_frames(risk_gt) if risk_gt else None
         safety_behavior = extract_safety_behavior_from_ws_events(
             event_source_path,
@@ -1010,6 +1027,36 @@ def _collect_critical_gt_frames(risk_gt: dict[int, list[dict[str, Any]]]) -> set
     return critical_frames
 
 
+def _merge_hazard_normalization_meta(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    unknown = sorted(
+        {
+            str(item).strip().lower()
+            for item in list(left.get("unknownKinds", []) or []) + list(right.get("unknownKinds", []) or [])
+            if str(item).strip()
+        }
+    )
+    alias_counts: dict[tuple[str, str], int] = {}
+    for source in (left, right):
+        rows = source.get("aliasHits", [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            from_kind = str(row.get("from", "")).strip().lower()
+            to_kind = str(row.get("to", "")).strip().lower()
+            if not from_kind or not to_kind:
+                continue
+            key = (from_kind, to_kind)
+            alias_counts[key] = alias_counts.get(key, 0) + int(row.get("count", 0) or 0)
+    alias_hits = [
+        {"from": from_kind, "to": to_kind, "count": count}
+        for (from_kind, to_kind), count in sorted(alias_counts.items(), key=lambda item: (item[0][0], item[0][1]))
+    ]
+    warnings_count = int(left.get("warningsCount", 0) or 0) + int(right.get("warningsCount", 0) or 0)
+    return {"unknownKinds": unknown, "aliasHits": alias_hits, "warningsCount": warnings_count}
+
+
 def _build_quality_top_findings(
     ocr_metrics: dict[str, Any] | None,
     risk_metrics: dict[str, Any] | None,
@@ -1077,6 +1124,19 @@ def _build_quality_top_findings(
                     "evidence": {"detectionDelayFrames": delay},
                 }
             )
+        normalization = risk_metrics.get("normalization", {})
+        if isinstance(normalization, dict):
+            unknown = normalization.get("unknownKinds", [])
+            if isinstance(unknown, list) and unknown:
+                findings.append(
+                    {
+                        "severity": "info",
+                        "type": "unknown_hazard_kind",
+                        "frameSeq": None,
+                        "message": f"unknown hazard kinds detected: {', '.join(str(x) for x in unknown)}",
+                        "evidence": {"unknownKinds": unknown},
+                    }
+                )
 
     if isinstance(ocr_metrics, dict):
         mismatches = ocr_metrics.get("topMismatches", [])

@@ -16,8 +16,64 @@ if str(GATEWAY_ROOT) not in sys.path:
     sys.path.insert(0, str(GATEWAY_ROOT))
 
 from byes.event_normalizer import collect_normalized_ws_events
+from byes.hazards.taxonomy_v1 import normalize_hazards
 
 _SHA_LINE_RE = re.compile(r"^([a-fA-F0-9]{64})\s+\*?(.+)$")
+
+
+def _collect_hazard_stats_from_gt(path: Path) -> dict[str, Any]:
+    unknown: set[str] = set()
+    alias_hits = 0
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(row, dict):
+            continue
+        hazards_raw = row.get("hazards")
+        if not isinstance(hazards_raw, list):
+            continue
+        _normalized, warnings = normalize_hazards([item for item in hazards_raw if isinstance(item, dict)])
+        for warning in warnings:
+            text = str(warning or "").strip().lower()
+            if text.startswith("unknown_kind:"):
+                unknown.add(text.split(":", 1)[1].strip())
+            elif text.startswith("alias:"):
+                alias_hits += 1
+    return {"unknownKinds": unknown, "aliasHits": alias_hits}
+
+
+def _collect_hazard_stats_from_ws(path: Path) -> dict[str, Any]:
+    unknown: set[str] = set()
+    alias_hits = 0
+    normalized = collect_normalized_ws_events(path)
+    events = normalized.get("events", [])
+    if not isinstance(events, list):
+        events = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        name = str(event.get("name", "")).strip().lower()
+        if name not in {"risk.hazards", "risk.depth"}:
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        hazards_raw = payload.get("hazards")
+        if not isinstance(hazards_raw, list):
+            continue
+        _normalized_hazards, warnings = normalize_hazards([item for item in hazards_raw if isinstance(item, dict)])
+        for warning in warnings:
+            text = str(warning or "").strip().lower()
+            if text.startswith("unknown_kind:"):
+                unknown.add(text.split(":", 1)[1].strip())
+            elif text.startswith("alias:"):
+                alias_hits += 1
+    return {"unknownKinds": unknown, "aliasHits": alias_hits}
 
 
 def _safe_extract_zip(zip_path: Path, target_dir: Path) -> None:
@@ -150,6 +206,8 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
 
         gt = manifest.get("groundTruth")
         gt_covered = 0
+        hazard_unknown_kinds: set[str] = set()
+        hazard_alias_hits = 0
         if isinstance(gt, dict):
             for key in ("ocrJsonl", "riskJsonl"):
                 rel = str(gt.get(key, "")).strip()
@@ -175,6 +233,10 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
                     gt_covered += 1
                 else:
                     warnings.append(f"groundTruth has no valid frameSeq: {rel}")
+                if key == "riskJsonl":
+                    gt_kind_stats = _collect_hazard_stats_from_gt(path)
+                    hazard_unknown_kinds.update(gt_kind_stats["unknownKinds"])
+                    hazard_alias_hits += int(gt_kind_stats["aliasHits"])
 
         events_v1_rel = str(manifest.get("eventsV1Jsonl", "") or "").strip()
         events_v1_present = 1 if events_v1_rel else 0
@@ -213,12 +275,25 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
                 warnings.append(f"ws jsonl missing: {ws_rel} (using eventsV1Jsonl for normalization stats)")
                 norm = collect_normalized_ws_events(events_v1_path)
                 warnings.extend(norm.get("warnings", []))
+                ws_kind_stats = _collect_hazard_stats_from_ws(events_v1_path)
+                hazard_unknown_kinds.update(ws_kind_stats["unknownKinds"])
+                hazard_alias_hits += int(ws_kind_stats["aliasHits"])
             else:
                 errors.append(f"ws jsonl missing: {ws_rel}")
                 norm = {"normalizedEvents": 0, "droppedEvents": 0, "warningsCount": 0}
         else:
             norm = collect_normalized_ws_events(ws_path)
             warnings.extend(norm.get("warnings", []))
+            ws_kind_stats = _collect_hazard_stats_from_ws(ws_path)
+            hazard_unknown_kinds.update(ws_kind_stats["unknownKinds"])
+            hazard_alias_hits += int(ws_kind_stats["aliasHits"])
+
+        if hazard_unknown_kinds:
+            msg = f"unknown hazard kinds: {', '.join(sorted(hazard_unknown_kinds))}"
+            if strict:
+                errors.append(msg)
+            else:
+                warnings.append(msg)
 
         sha_files = _discover_sha_lists(run_root)
         sha_checked = 0
@@ -261,6 +336,8 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
             "eventsV1Lines": events_v1_lines,
             "eventsV1SchemaOk": events_v1_schema_ok,
             "eventsV1Normalized": events_v1_normalized,
+            "hazardUnknownKinds": len(hazard_unknown_kinds),
+            "hazardAliasHits": int(hazard_alias_hits),
         }
 
         print(f"run package: {run_package}")
@@ -273,6 +350,8 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
         print(f"eventsV1Lines: {events_v1_lines}")
         print(f"eventsV1SchemaOk: {events_v1_schema_ok}")
         print(f"eventsV1Normalized: {events_v1_normalized}")
+        print(f"hazardUnknownKinds: {summary['hazardUnknownKinds']}")
+        print(f"hazardAliasHits: {summary['hazardAliasHits']}")
         print(f"warnings: {summary['warningsCount']}")
         print(f"errors: {summary['errorsCount']}")
         print(f"shaChecked: {sha_checked}")

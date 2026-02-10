@@ -285,6 +285,16 @@ set BYES_RISK_BACKEND=http
 set BYES_RISK_HTTP_URL=http://127.0.0.1:19101/risk
 python Gateway/scripts/dev_replay_with_http_ocr.py --run-package Gateway/tests/fixtures/run_package_with_risk_gt_min --ocr-url http://127.0.0.1:19101/ocr --risk-url http://127.0.0.1:19101/risk
 ```
+
+Heuristic risk tuning envs:
+
+- `BYES_RISK_OBS_WARN` (default `0.14`)
+- `BYES_RISK_OBS_CRIT` (default `0.24`)
+- `BYES_RISK_DROPOFF_PEAK` (default `28`)
+- `BYES_RISK_DROPOFF_CONTRAST` (default `0.20`)
+- `BYES_RISK_UNKNOWN_BRIGHTNESS` (default `"32,222"`)
+
+Hazard taxonomy v1 canonical kinds and aliases are documented in `docs/hazard_taxonomy_v1.md`.
 - `BYES_OCR_HTTP_URL=http://127.0.0.1:9001/ocr`
 - `BYES_RISK_HTTP_URL=http://127.0.0.1:9002/risk`
 - `BYES_OCR_HTTP_TIMEOUT_MS=1500`

@@ -12,6 +12,10 @@
     {
       "id": "fixture_events_v1",
       "path": "Gateway/tests/fixtures/run_package_with_events_v1_min"
+    },
+    {
+      "id": "fixture_with_risk_gt",
+      "path": "Gateway/tests/fixtures/run_package_with_risk_gt_min"
     }
   ],
   "expected": {

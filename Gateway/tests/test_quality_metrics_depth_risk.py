@@ -6,10 +6,10 @@ from byes.quality_metrics import compute_depth_risk_metrics
 def test_compute_depth_risk_metrics_window_match() -> None:
     gt_map = {
         1: [{"hazardKind": "stair_down", "severity": "critical"}],
-        5: [{"hazardKind": "obstacle", "severity": "warning"}],
+        5: [{"hazardKind": "obstacle_close", "severity": "warning"}],
     }
     pred_map = {
-        3: [{"hazardKind": "stair_down"}],
+        3: [{"hazardKind": "stairs_down"}],
         5: [{"hazardKind": "glass"}],
         7: [{"hazardKind": "obstacle"}],
     }
@@ -23,9 +23,9 @@ def test_compute_depth_risk_metrics_window_match() -> None:
     assert by_kind["stair_down"]["fp"] == 0
     assert by_kind["stair_down"]["fn"] == 0
 
-    assert by_kind["obstacle"]["tp"] == 1
-    assert by_kind["obstacle"]["fp"] == 0
-    assert by_kind["obstacle"]["fn"] == 0
+    assert by_kind["obstacle_close"]["tp"] == 1
+    assert by_kind["obstacle_close"]["fp"] == 0
+    assert by_kind["obstacle_close"]["fn"] == 0
 
     assert by_kind["glass"]["tp"] == 0
     assert by_kind["glass"]["fp"] == 1
@@ -48,3 +48,5 @@ def test_compute_depth_risk_metrics_window_match() -> None:
     assert delay["valuesSample"] == [2, 2]
     misses = metrics["topMisses"]
     assert misses == []
+    normalization = metrics["normalization"]
+    assert "glass" in normalization["unknownKinds"]

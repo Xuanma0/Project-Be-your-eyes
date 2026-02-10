@@ -6,9 +6,10 @@ from services.inference_service.providers.heuristic_risk import HeuristicRiskPro
 
 
 def test_heuristic_risk_detects_structured_hazard(monkeypatch) -> None:
-    monkeypatch.setenv("BYES_RISK_EDGE_DENSITY_WARN", "0.02")
-    monkeypatch.setenv("BYES_RISK_EDGE_DENSITY_CRIT", "0.04")
+    monkeypatch.setenv("BYES_RISK_OBS_WARN", "0.02")
+    monkeypatch.setenv("BYES_RISK_OBS_CRIT", "0.04")
     monkeypatch.setenv("BYES_RISK_DROPOFF_PEAK", "6")
+    monkeypatch.setenv("BYES_RISK_DROPOFF_CONTRAST", "0.06")
     monkeypatch.setenv("BYES_RISK_MIN_EDGE_DENSITY", "0.005")
     image = Image.new("RGB", (320, 180), (220, 220, 220))
     draw = ImageDraw.Draw(image)
@@ -21,7 +22,7 @@ def test_heuristic_risk_detects_structured_hazard(monkeypatch) -> None:
     result = provider.infer(image, frame_seq=2)
     hazards = result.get("hazards", [])
     kinds = {str(item.get("hazardKind")) for item in hazards if isinstance(item, dict)}
-    assert kinds & {"obstacle_close", "stair_down"}
+    assert "dropoff" in kinds
 
 
 def test_heuristic_risk_reports_unknown_depth_for_dark_frame() -> None:
@@ -31,3 +32,4 @@ def test_heuristic_risk_reports_unknown_depth_for_dark_frame() -> None:
     hazards = result.get("hazards", [])
     unknown = [item for item in hazards if isinstance(item, dict) and item.get("hazardKind") == "unknown_depth"]
     assert unknown
+    assert not any(isinstance(item, dict) and item.get("hazardKind") == "obstacle_close" for item in hazards)

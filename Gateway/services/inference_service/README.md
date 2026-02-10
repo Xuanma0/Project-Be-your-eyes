@@ -59,11 +59,13 @@ python scripts/run_service.py --port 19101
 ```
 
 Optional thresholds:
-- `BYES_RISK_EDGE_DENSITY_WARN`
-- `BYES_RISK_EDGE_DENSITY_CRIT`
+- `BYES_RISK_OBS_WARN`
+- `BYES_RISK_OBS_CRIT`
 - `BYES_RISK_DROPOFF_PEAK`
-- `BYES_RISK_BRIGHTNESS_LOW`
-- `BYES_RISK_BRIGHTNESS_HIGH`
+- `BYES_RISK_DROPOFF_CONTRAST`
+- `BYES_RISK_UNKNOWN_BRIGHTNESS`  (format: `low,high`, default `32,222`)
+
+Heuristic output uses canonical hazard taxonomy (`dropoff`, `stair_down`, `obstacle_close`, `unknown_depth`) and avoids emitting `dropoff` + `stair_down` together for the same frame.
 
 ## E) Connect Gateway + replay
 

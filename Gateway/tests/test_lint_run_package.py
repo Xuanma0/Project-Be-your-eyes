@@ -24,6 +24,8 @@ def test_lint_run_package_smoke() -> None:
     assert "droppedEvents:" in result.stdout
     assert "framesDeclared:" in result.stdout
     assert "framesActual:" in result.stdout
+    assert "hazardUnknownKinds:" in result.stdout
+    assert "hazardAliasHits:" in result.stdout
 
 
 def test_lint_run_package_events_v1_stats() -> None:

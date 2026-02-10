@@ -350,14 +350,31 @@ def _extract_text(event: dict[str, Any]) -> str:
 def _extract_hazards(event: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
 
-    def push(item: dict[str, Any]) -> None:
+    def push(item: dict[str, Any], fallback: dict[str, Any] | None = None) -> None:
         kind = _read_str(item, "hazardKind") or _read_str(item, "kind") or _read_str(item, "type")
         if not kind:
             return
         severity = _read_str(item, "severity")
-        row = {"hazardKind": kind.strip().lower()}
+        row: dict[str, Any] = {"hazardKind": kind.strip().lower()}
         if severity:
             row["severity"] = severity.strip().lower()
+        score = item.get("score")
+        if score is None and fallback is not None:
+            score = fallback.get("confidence")
+        try:
+            if score is not None:
+                row["score"] = float(score)
+        except Exception:
+            pass
+        evidence: dict[str, Any] = {}
+        for key in ("distanceM", "azimuthDeg", "source"):
+            value = item.get(key)
+            if value is None and fallback is not None:
+                value = fallback.get(key)
+            if value is not None:
+                evidence[key] = value
+        if evidence:
+            row["evidence"] = evidence
         out.append(row)
 
     for key in ("hazards", "risks", "depthHazards"):
@@ -374,14 +391,22 @@ def _extract_hazards(event: dict[str, Any]) -> list[dict[str, Any]]:
             if isinstance(value, list):
                 for item in value:
                     if isinstance(item, dict):
-                        push(item)
+                        push(item, fallback=event)
+
+    # Legacy single-risk style payloads used by older WS events.
+    single_kind = _read_str(event, "hazardKind") or _read_str(event, "riskKind")
+    if not single_kind and _read_str(event, "type") == "risk":
+        single_kind = "obstacle_close"
+    if single_kind:
+        severity = _read_str(event, "riskLevel") or "warning"
+        push({"hazardKind": single_kind, "severity": severity}, fallback=event)
 
     return out
 
 
 def _event_blob(event: dict[str, Any]) -> str:
     parts: list[str] = []
-    for key in ("type", "name", "tool", "toolName", "source", "category", "summary", "message", "event", "status"):
+    for key in ("type", "name", "tool", "toolName", "source", "category", "summary", "message", "event", "status", "hazardKind", "riskLevel"):
         value = event.get(key)
         if value is not None:
             parts.append(str(value))

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from byes.event_normalizer import collect_normalized_ws_events
+from byes.hazards.taxonomy_v1 import normalize_hazard_kind, normalize_hazards
 
 _FRAME_RE = re.compile(r"(?:frame[_-]?|seq[_-]?)(\d+)", re.IGNORECASE)
 
@@ -25,16 +26,24 @@ def load_gt_ocr_jsonl(path: Path) -> dict[int, str]:
     return rows
 
 
-def load_gt_risk_jsonl(path: Path) -> dict[int, list[dict[str, Any]]]:
+def load_gt_risk_jsonl(
+    path: Path,
+    *,
+    return_meta: bool = False,
+) -> dict[int, list[dict[str, Any]]] | tuple[dict[int, list[dict[str, Any]]], dict[str, Any]]:
     rows: dict[int, list[dict[str, Any]]] = {}
+    meta = _new_hazard_norm_meta()
     for item in _iter_jsonl(path):
         if not isinstance(item, dict):
             continue
         seq = _extract_frame_seq(item)
         if seq is None:
             continue
-        hazards = _extract_hazards(item)
+        hazards = _extract_hazards(item, norm_meta=meta)
         rows[seq] = hazards
+    finalized = _finalize_hazard_norm_meta(meta)
+    if return_meta:
+        return rows, finalized
     return rows
 
 
@@ -95,9 +104,14 @@ def extract_pred_ocr_from_ws_events(ws_events_jsonl_path: Path) -> dict[int, dic
     return preds
 
 
-def extract_pred_hazards_from_ws_events(ws_events_jsonl_path: Path) -> dict[int, list[dict[str, Any]]]:
+def extract_pred_hazards_from_ws_events(
+    ws_events_jsonl_path: Path,
+    *,
+    return_meta: bool = False,
+) -> dict[int, list[dict[str, Any]]] | tuple[dict[int, list[dict[str, Any]]], dict[str, Any]]:
     normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
     normalized_events = normalized_summary.get("events", [])
+    meta = _new_hazard_norm_meta()
     normalized_preds: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for event in normalized_events:
         name = str(event.get("name", "")).strip().lower()
@@ -112,13 +126,10 @@ def extract_pred_hazards_from_ws_events(ws_events_jsonl_path: Path) -> dict[int,
         hazards = payload.get("hazards")
         if not isinstance(hazards, list):
             continue
-        for item in hazards:
-            if not isinstance(item, dict):
-                continue
-            kind = str(item.get("hazardKind", "")).strip().lower()
-            if not kind:
-                continue
-            normalized_preds[seq].append({"hazardKind": kind})
+        normalized_hazards, warnings = normalize_hazards([item for item in hazards if isinstance(item, dict)])
+        _ingest_hazard_warnings(meta, warnings)
+        for row in normalized_hazards:
+            normalized_preds[seq].append(dict(row))
 
     if normalized_preds:
         compact: dict[int, list[dict[str, Any]]] = {}
@@ -130,8 +141,15 @@ def extract_pred_hazards_from_ws_events(ws_events_jsonl_path: Path) -> dict[int,
                 if not kind or kind in seen:
                     continue
                 seen.add(kind)
-                uniq.append({"hazardKind": kind})
+                row = {"hazardKind": kind}
+                severity = str(hazard.get("severity", "warning")).strip().lower()
+                if severity in {"critical", "warning", "info"}:
+                    row["severity"] = severity
+                uniq.append(row)
             compact[seq] = uniq
+        finalized = _finalize_hazard_norm_meta(meta)
+        if return_meta:
+            return compact, finalized
         return compact
 
     preds: dict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -146,7 +164,7 @@ def extract_pred_hazards_from_ws_events(ws_events_jsonl_path: Path) -> dict[int,
         seq = _extract_frame_seq(event)
         if seq is None:
             continue
-        hazards = _extract_hazards(event)
+        hazards = _extract_hazards(event, norm_meta=meta)
         if not hazards:
             continue
         preds[seq].extend(hazards)
@@ -162,8 +180,15 @@ def extract_pred_hazards_from_ws_events(ws_events_jsonl_path: Path) -> dict[int,
             if kind in seen:
                 continue
             seen.add(kind)
-            uniq.append({"hazardKind": kind})
+            row = {"hazardKind": kind}
+            severity = str(hazard.get("severity", "warning")).strip().lower()
+            if severity in {"critical", "warning", "info"}:
+                row["severity"] = severity
+            uniq.append(row)
         compact[seq] = uniq
+    finalized = _finalize_hazard_norm_meta(meta)
+    if return_meta:
+        return compact, finalized
     return compact
 
 
@@ -692,14 +717,22 @@ def compute_depth_risk_metrics(
     gt_map: dict[int, list[dict[str, Any]]],
     pred_map: dict[int, list[dict[str, Any]]],
     window_frames: int,
+    *,
+    normalization: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     window = max(0, int(window_frames))
     by_kind_counts: dict[str, dict[str, int]] = defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0})
+    local_norm_meta = _new_hazard_norm_meta()
 
     pred_entries: list[dict[str, Any]] = []
     for seq, hazards in pred_map.items():
         for hazard in hazards:
-            kind = _normalize_kind(hazard.get("hazardKind"))
+            normalized_rows, warnings = normalize_hazards([hazard] if isinstance(hazard, dict) else [])
+            _ingest_hazard_warnings(local_norm_meta, warnings)
+            if not normalized_rows:
+                continue
+            row = normalized_rows[0]
+            kind = _normalize_kind(row.get("hazardKind"))
             if not kind:
                 continue
             pred_entries.append({"seq": int(seq), "kind": kind, "used": False})
@@ -712,10 +745,15 @@ def compute_depth_risk_metrics(
 
     for gt_seq, hazards in gt_map.items():
         for hazard in hazards:
-            kind = _normalize_kind(hazard.get("hazardKind"))
+            normalized_rows, warnings = normalize_hazards([hazard] if isinstance(hazard, dict) else [])
+            _ingest_hazard_warnings(local_norm_meta, warnings)
+            if not normalized_rows:
+                continue
+            row = normalized_rows[0]
+            kind = _normalize_kind(row.get("hazardKind"))
             if not kind:
                 continue
-            severity = str(hazard.get("severity", "")).strip().lower()
+            severity = str(row.get("severity", "")).strip().lower()
             is_critical = severity == "critical"
             if is_critical:
                 gt_critical_count += 1
@@ -781,6 +819,23 @@ def compute_depth_risk_metrics(
             "f1": _f1(tp, fp, fn),
         }
 
+    local_norm = _finalize_hazard_norm_meta(local_norm_meta)
+    merged_norm = normalization or {"unknownKinds": [], "aliasHits": [], "warningsCount": 0}
+    if normalization:
+        merged_norm = {
+            "unknownKinds": sorted(
+                set(str(item) for item in normalization.get("unknownKinds", []))
+                | set(str(item) for item in local_norm.get("unknownKinds", []))
+            ),
+            "aliasHits": _merge_alias_hits(
+                normalization.get("aliasHits", []),
+                local_norm.get("aliasHits", []),
+            ),
+            "warningsCount": int(normalization.get("warningsCount", 0) or 0) + int(local_norm.get("warningsCount", 0) or 0),
+        }
+    else:
+        merged_norm = local_norm
+
     return {
         "matchWindowFrames": window,
         "byKind": by_kind,
@@ -805,6 +860,7 @@ def compute_depth_risk_metrics(
             "valuesSample": detection_delays[:10],
         },
         "topMisses": top_misses,
+        "normalization": merged_norm,
     }
 
 
@@ -1081,16 +1137,88 @@ def _merge_line_text(lines: list[Any]) -> str:
     return " ".join(parts).strip()
 
 
-def _extract_hazards(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _new_hazard_norm_meta() -> dict[str, Any]:
+    return {
+        "warnings": [],
+        "unknownKinds": set(),
+        "aliasHits": defaultdict(int),
+    }
+
+
+def _ingest_hazard_warnings(meta: dict[str, Any], warnings: list[str]) -> None:
+    store = meta.get("warnings")
+    if not isinstance(store, list):
+        return
+    for item in warnings:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        store.append(text)
+        if text.startswith("unknown_kind:"):
+            kind = text.split(":", 1)[1].strip().lower()
+            unknown_set = meta.get("unknownKinds")
+            if isinstance(unknown_set, set) and kind:
+                unknown_set.add(kind)
+        elif text.startswith("alias:"):
+            payload = text.split(":", 1)[1].strip()
+            parts = payload.split("->", 1)
+            if len(parts) == 2:
+                from_kind = parts[0].strip().lower()
+                to_kind = parts[1].strip().lower()
+                if from_kind and to_kind:
+                    alias_hits = meta.get("aliasHits")
+                    if isinstance(alias_hits, defaultdict):
+                        alias_hits[(from_kind, to_kind)] += 1
+
+
+def _finalize_hazard_norm_meta(meta: dict[str, Any]) -> dict[str, Any]:
+    alias_hits = meta.get("aliasHits")
+    alias_rows: list[dict[str, Any]] = []
+    if isinstance(alias_hits, defaultdict):
+        for (from_kind, to_kind), count in sorted(alias_hits.items(), key=lambda item: (item[0][0], item[0][1])):
+            alias_rows.append({"from": from_kind, "to": to_kind, "count": int(count)})
+    unknown_kinds = meta.get("unknownKinds")
+    unknown_rows = sorted(str(item) for item in unknown_kinds) if isinstance(unknown_kinds, set) else []
+    warnings = meta.get("warnings")
+    warnings_count = len(warnings) if isinstance(warnings, list) else 0
+    return {
+        "unknownKinds": unknown_rows,
+        "aliasHits": alias_rows,
+        "warningsCount": warnings_count,
+    }
+
+
+def _merge_alias_hits(left: list[Any], right: list[Any]) -> list[dict[str, Any]]:
+    counts: dict[tuple[str, str], int] = {}
+    for source in (left, right):
+        if not isinstance(source, list):
+            continue
+        for row in source:
+            if not isinstance(row, dict):
+                continue
+            from_kind = str(row.get("from", "")).strip().lower()
+            to_kind = str(row.get("to", "")).strip().lower()
+            if not from_kind or not to_kind:
+                continue
+            key = (from_kind, to_kind)
+            counts[key] = counts.get(key, 0) + int(row.get("count", 0) or 0)
+    return [
+        {"from": from_kind, "to": to_kind, "count": count}
+        for (from_kind, to_kind), count in sorted(counts.items(), key=lambda item: (item[0][0], item[0][1]))
+    ]
+
+
+def _extract_hazards(payload: dict[str, Any], *, norm_meta: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     hazards: list[dict[str, Any]] = []
 
     def push(item: dict[str, Any]) -> None:
-        kind = _normalize_kind(item.get("hazardKind") or item.get("kind") or item.get("type"))
-        if not kind:
+        normalized, warnings = normalize_hazards([item])
+        if norm_meta is not None:
+            _ingest_hazard_warnings(norm_meta, warnings)
+        if not normalized:
             return
-        severity_raw = item.get("severity")
-        severity = str(severity_raw).strip().lower() if isinstance(severity_raw, str) else None
-        hazards.append({"hazardKind": kind, "severity": severity})
+        row = dict(normalized[0])
+        hazards.append(row)
 
     if isinstance(payload.get("hazardKind"), str):
         push(payload)
@@ -1105,14 +1233,15 @@ def _extract_hazards(payload: dict[str, Any]) -> list[dict[str, Any]]:
     for key in ("payload", "result", "output"):
         nested = payload.get(key)
         if isinstance(nested, dict):
-            hazards.extend(_extract_hazards(nested))
+            hazards.extend(_extract_hazards(nested, norm_meta=norm_meta))
     return hazards
 
 
 def _normalize_kind(value: Any) -> str:
     if not isinstance(value, str):
         return ""
-    return value.strip().lower()
+    kind, _warnings = normalize_hazard_kind(value)
+    return kind
 
 
 def _read_text(payload: dict[str, Any]) -> str:
