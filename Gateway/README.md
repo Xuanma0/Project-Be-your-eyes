@@ -296,6 +296,18 @@ After replay/live run, inspect:
 - `events/events_v1.jsonl`: `event.latencyMs` is authoritative, payload has no `latencyMs`
 - `report.json`: top-level `inference = {"ocr": {...}, "risk": {...}}`
 
+Switch from reference OCR to a real OCR provider (minimal path):
+1. Start `Gateway/services/inference_service` with `BYES_SERVICE_OCR_PROVIDER=tesseract` or `paddleocr`.
+2. Set Gateway env:
+   - `BYES_OCR_BACKEND=http`
+   - `BYES_OCR_HTTP_URL=http://127.0.0.1:19101/ocr`
+   - `BYES_OCR_MODEL_ID=<your-model-id>`
+   - `BYES_RISK_BACKEND=http`
+   - `BYES_RISK_HTTP_URL=http://127.0.0.1:19101/risk`
+3. Replay a package with `python Gateway/scripts/dev_replay_with_http_ocr.py --run-package Gateway/tests/fixtures/run_package_with_gt_min --ocr-url http://127.0.0.1:19101/ocr --risk-url http://127.0.0.1:19101/risk`.
+4. Confirm `events/events_v1.jsonl` contains `name=ocr.scan_text` result events with `payload.backend=http` and your model id.
+5. Confirm `report.json` has populated `inference.ocr` and `quality.ocr` metrics.
+
 Common readiness env for all external services:
 
 - `BYES_BACKEND=mock|torch|onnx` (default `mock`)
