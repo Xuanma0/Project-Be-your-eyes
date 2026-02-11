@@ -1,145 +1,117 @@
-# Inference Service (Reference + Optional Real OCR/Risk Providers)
+# Inference Service Deployment Guide
 
-This service is optional and isolated from `Gateway/requirements.txt` so CI stays lightweight.
+TL;DR:
+- `inference_service` provides pluggable `/ocr` and `/risk` endpoints (reference + optional real providers).
+- Keep CI lightweight: optional OCR/depth dependencies are split into extra requirements files.
+- For replay/report/regression usage, read `Gateway/README.md`.
 
-API contract stays fixed:
+## Common Commands (PowerShell)
 
-- `POST /ocr` => `{"text": "...", "latencyMs": <int>, "model": "<id>"}`
-- `POST /risk` => `{"hazards": [...], "latencyMs": <int>, "model": "<id>"}`
-
-## A) Reference provider (default)
-
-```bash
-cd Gateway/services/inference_service
-python -m venv .venv
-. .venv/Scripts/activate
-pip install -r requirements.txt
-set BYES_SERVICE_OCR_PROVIDER=reference
-python scripts/run_service.py --port 19101
+```powershell
+cd Gateway
+python -m pip install -r requirements.txt
+python -m uvicorn services.inference_service.app:app --host 127.0.0.1 --port 19120
 ```
 
-## B) Tesseract provider (optional)
+ONNX depth optional:
 
-1) Install system Tesseract binary first.
-2) Install Python deps:
-
-```bash
-pip install -r requirements-tesseract.txt
+```powershell
+python -m pip install -r services/inference_service/requirements-onnx-depth.txt
+python services/inference_service/tools/verify_depth_onnx.py --path D:\models\depth_anything_v2_small\model.onnx --expected-sha256 <sha256>
 ```
 
-3) Run:
+## API Contract
 
-```bash
-set BYES_SERVICE_OCR_PROVIDER=tesseract
-set BYES_SERVICE_OCR_MODEL_ID=tesseract-v5
-set BYES_TESSERACT_CMD=C:\\Program Files\\Tesseract-OCR\\tesseract.exe
-python scripts/run_service.py --port 19101
+- `POST /ocr` -> `{"text": "...", "latencyMs": <int>, "model": "<id>"}`
+- `POST /risk` -> `{"hazards": [...], "latencyMs": <int>, "model": "<id>"}`
+
+## Provider Matrix
+
+| Domain | Provider | Env Value | Optional Dependency |
+|---|---|---|---|
+| OCR | reference | `BYES_SERVICE_OCR_PROVIDER=reference` | none |
+| OCR | tesseract | `BYES_SERVICE_OCR_PROVIDER=tesseract` | `requirements-tesseract.txt` |
+| OCR | paddleocr | `BYES_SERVICE_OCR_PROVIDER=paddleocr` | `requirements-paddleocr.txt` |
+| Risk | reference | `BYES_SERVICE_RISK_PROVIDER=reference` | none |
+| Risk | heuristic | `BYES_SERVICE_RISK_PROVIDER=heuristic` | `requirements-heuristic-risk.txt` |
+| Depth (for heuristic risk) | none/synth/midas/onnx | `BYES_SERVICE_DEPTH_PROVIDER=<...>` | midas/onnx are optional |
+
+## Calibrated Risk Defaults (v4.28 -> v4.29)
+
+Current default thresholds:
+- `depthObsCrit = 0.55` (`BYES_RISK_DEPTH_OBS_CRIT`)
+- `depthDropoffDelta = 0.4` (`BYES_RISK_DEPTH_DROPOFF_DELTA`)
+- `obsCrit = 0.28` (`BYES_RISK_OBS_CRIT`)
+
+All defaults remain env-overridable.
+
+## ONNX Depth Quick Setup (Optional)
+
+### 1) Install optional runtime
+
+```powershell
+python -m pip install -r services/inference_service/requirements-onnx-depth.txt
 ```
 
-## C) PaddleOCR provider (optional)
+### 2) Prepare model (outside repo)
 
-```bash
-pip install -r requirements-paddleocr.txt
-set BYES_SERVICE_OCR_PROVIDER=paddleocr
-set BYES_SERVICE_OCR_MODEL_ID=paddleocr-v4-en
-python scripts/run_service.py --port 19101
+- Source: `onnx-community/depth-anything-v2-small -> onnx/model.onnx`
+- Example path: `D:\models\depth_anything_v2_small\model.onnx`
+
+### 3) Verify model file
+
+```powershell
+python services/inference_service/tools/verify_depth_onnx.py --path D:\models\depth_anything_v2_small\model.onnx --expected-sha256 <sha256_from_hf_page>
 ```
 
-Notes:
-- first run may download model assets depending on paddle settings.
-- use CPU package variants if needed for your platform.
+### 4) Run service with ONNX depth
 
-## D) Heuristic Risk provider (optional lightweight)
-
-```bash
-pip install -r requirements-heuristic-risk.txt
-set BYES_SERVICE_RISK_PROVIDER=heuristic
-set BYES_SERVICE_RISK_MODEL_ID=heuristic-risk-v1
-python scripts/run_service.py --port 19101
+```powershell
+cd Gateway
+$env:BYES_SERVICE_RISK_PROVIDER="heuristic"
+$env:BYES_SERVICE_DEPTH_PROVIDER="onnx"
+$env:BYES_SERVICE_DEPTH_ONNX_PATH="D:\models\depth_anything_v2_small\model.onnx"
+$env:BYES_SERVICE_DEPTH_MODEL_ID="depth-anything-v2-small-onnx"
+$env:BYES_SERVICE_DEPTH_INPUT_SIZE="256"
+$env:BYES_SERVICE_RISK_DEBUG="1"
+python -m uvicorn services.inference_service.app:app --host 127.0.0.1 --port 19120
 ```
 
-Optional thresholds:
-- `BYES_RISK_OBS_WARN`
-- `BYES_RISK_OBS_CRIT` (default `0.28`)
-- `BYES_RISK_DROPOFF_PEAK`
-- `BYES_RISK_DROPOFF_CONTRAST`
-- `BYES_RISK_UNKNOWN_BRIGHTNESS`  (format: `low,high`, default `32,222`)
-- `BYES_RISK_DEPTH_ENABLE` (`1|0`, default `1`)
-- `BYES_RISK_DEPTH_OBS_WARN` (default `1.0`)
-- `BYES_RISK_DEPTH_OBS_CRIT` (default `0.55`)
-- `BYES_RISK_DEPTH_DROPOFF_DELTA` (default `0.4`)
+Recommended default input size is `256` (can test `384`/`518` with sweep tools).
 
-Heuristic output uses canonical hazard taxonomy (`dropoff`, `stair_down`, `obstacle_close`, `unknown_depth`) and avoids emitting `dropoff` + `stair_down` together for the same frame.
+## Core Environment Variables
 
-Calibrated defaults (v4.28):
-- tuned on `run_package_risk_calib_10f` with calibration gate `critical_fn==0`.
-- applied defaults:
-  - `depthObsCrit=0.55`
-  - `depthDropoffDelta=0.4`
-  - `obsCrit=0.28`
-- override any default via env (`BYES_RISK_DEPTH_OBS_CRIT`, `BYES_RISK_DEPTH_DROPOFF_DELTA`, `BYES_RISK_OBS_CRIT`).
+| Variable | Default | Purpose |
+|---|---|---|
+| `BYES_SERVICE_OCR_PROVIDER` | `reference` | OCR provider selection |
+| `BYES_SERVICE_RISK_PROVIDER` | `reference` | risk provider selection |
+| `BYES_SERVICE_DEPTH_PROVIDER` | `none` | depth provider for heuristic risk |
+| `BYES_SERVICE_OCR_MODEL_ID` | provider default | OCR model metadata tag |
+| `BYES_SERVICE_RISK_MODEL_ID` | provider default | risk model metadata tag |
+| `BYES_SERVICE_DEPTH_MODEL_ID` | provider default | depth model metadata tag |
+| `BYES_SERVICE_DEPTH_ONNX_PATH` | empty | ONNX depth model path (`onnx` provider) |
+| `BYES_SERVICE_DEPTH_INPUT_SIZE` | `256` | ONNX depth input resolution |
+| `BYES_SERVICE_RISK_DEBUG` | `0` | include `debug` evidence in `/risk` |
 
-## E) Depth provider for risk (optional)
+## Connect With Gateway
 
-Depth providers are selected independently and consumed by the heuristic risk provider.
-
-Defaults:
-- `BYES_SERVICE_DEPTH_PROVIDER=none`
-
-Test/CI-friendly option:
-```bash
-set BYES_SERVICE_DEPTH_PROVIDER=synth
+```powershell
+cd Gateway
+$env:BYES_RISK_BACKEND="http"
+$env:BYES_RISK_HTTP_URL="http://127.0.0.1:19120/risk"
+$env:BYES_OCR_BACKEND="http"
+$env:BYES_OCR_HTTP_URL="http://127.0.0.1:19120/ocr"
+$env:BYES_INFERENCE_EMIT_WS_V1="1"
+python scripts/replay_run_package.py --run-package tests/fixtures/run_package_with_risk_gt_min --reset
 ```
 
-Real-model option (optional, local-only):
-```bash
-pip install -r requirements-depth-midas-onnx.txt
-set BYES_SERVICE_DEPTH_PROVIDER=midas
-set BYES_SERVICE_DEPTH_MODEL_PATH=C:\\models\\midas_small.onnx
-set BYES_SERVICE_DEPTH_MODEL_ID=midas-small-onnx
-```
+Then inspect:
+- `events/events_v1.jsonl` for backend/model/endpoint/latency evidence.
+- `report.json` for `inference` summary and quality metrics.
 
-Depth Anything V2 Small ONNX option (optional, local-only):
-```bash
-pip install -r requirements-onnx-depth.txt
-set BYES_SERVICE_DEPTH_PROVIDER=onnx
-set BYES_SERVICE_DEPTH_ONNX_PATH=C:\\models\\depth_anything_v2_small.onnx
-set BYES_SERVICE_DEPTH_MODEL_ID=depth-anything-v2-small-onnx
-set BYES_SERVICE_DEPTH_INPUT_SIZE=256
-```
+## References
 
-Recommended default is `256` (sweep speed/quality tradeoff). If your scene needs higher quality and latency budget allows, try `384` or `518`.
-
-Model source and hash verification:
-- HF: `onnx-community/depth-anything-v2-small -> onnx/model.onnx`
-- verify local file hash with:
-```bash
-python tools/verify_depth_onnx.py --path C:\\models\\depth_anything_v2_small.onnx --expected-sha256 <sha256_from_hf_page>
-```
-
-When enabled, `/risk` can emit depth-backed evidence in hazards and optional debug payload.
-
-## F) /risk debug evidence toggle
-
-Enable lightweight debug evidence in `/risk` response:
-```bash
-set BYES_SERVICE_RISK_DEBUG=1
-```
-`debug` includes depth provider stats and active thresholds. Default is `0` (disabled).
-
-## G) Connect Gateway + replay
-
-```bash
-set BYES_OCR_BACKEND=http
-set BYES_OCR_HTTP_URL=http://127.0.0.1:19101/ocr
-set BYES_OCR_MODEL_ID=<same as service model>
-set BYES_RISK_BACKEND=http
-set BYES_RISK_HTTP_URL=http://127.0.0.1:19101/risk
-set BYES_RISK_MODEL_ID=heuristic-risk-v1
-python Gateway/scripts/dev_replay_with_http_ocr.py --run-package Gateway/tests/fixtures/run_package_with_gt_min --ocr-url http://127.0.0.1:19101/ocr --risk-url http://127.0.0.1:19101/risk
-```
-
-Check outputs:
-- `events/events_v1.jsonl`: `event.latencyMs` set, payload has `backend/model/endpoint`, no `payload.latencyMs`
-- `risk.hazards` payload entries include `hazardKind`, `severity`, and optional `score/evidence`
-- `report.json`: top-level `inference` block records OCR/Risk backend/model/endpoint
+- Gateway runtime + evaluation flow: `Gateway/README.md`
+- Root overview: `README.md`
+- Event schema: `docs/event_schema_v1.md`
+- Hazard taxonomy: `docs/hazard_taxonomy_v1.md`
