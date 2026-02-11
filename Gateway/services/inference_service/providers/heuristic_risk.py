@@ -41,10 +41,10 @@ except Exception:  # noqa: BLE001
 @dataclass(frozen=True)
 class RiskThresholds:
     depth_obs_warn: float = 1.0
-    depth_obs_crit: float = 0.6
-    depth_dropoff_delta: float = 0.8
+    depth_obs_crit: float = 0.55
+    depth_dropoff_delta: float = 0.4
     obs_warn: float = 0.14
-    obs_crit: float = 0.24
+    obs_crit: float = 0.28
     dropoff_peak: float = 28.0
     dropoff_contrast: float = 0.2
     guardrail_dropoff_delta: float | None = None
@@ -54,13 +54,13 @@ class RiskThresholds:
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "RiskThresholds":
         env = environ if environ is not None else os.environ
         obs_warn_raw = _read_env(env, "BYES_RISK_OBS_WARN") or _read_env(env, "BYES_RISK_EDGE_DENSITY_WARN") or "0.14"
-        obs_crit_raw = _read_env(env, "BYES_RISK_OBS_CRIT") or _read_env(env, "BYES_RISK_EDGE_DENSITY_CRIT") or "0.24"
+        obs_crit_raw = _read_env(env, "BYES_RISK_OBS_CRIT") or _read_env(env, "BYES_RISK_EDGE_DENSITY_CRIT") or "0.28"
         return cls(
             depth_obs_warn=_clamp(_to_float(_read_env(env, "BYES_RISK_DEPTH_OBS_WARN"), 1.0), 0.01, 20.0),
-            depth_obs_crit=_clamp(_to_float(_read_env(env, "BYES_RISK_DEPTH_OBS_CRIT"), 0.6), 0.01, 20.0),
-            depth_dropoff_delta=_clamp(_to_float(_read_env(env, "BYES_RISK_DEPTH_DROPOFF_DELTA"), 0.8), 0.05, 20.0),
+            depth_obs_crit=_clamp(_to_float(_read_env(env, "BYES_RISK_DEPTH_OBS_CRIT"), 0.55), 0.01, 20.0),
+            depth_dropoff_delta=_clamp(_to_float(_read_env(env, "BYES_RISK_DEPTH_DROPOFF_DELTA"), 0.4), 0.05, 20.0),
             obs_warn=_clamp(_to_float(obs_warn_raw, 0.14), 0.01, 0.95),
-            obs_crit=_clamp(_to_float(obs_crit_raw, 0.24), 0.01, 0.99),
+            obs_crit=_clamp(_to_float(obs_crit_raw, 0.28), 0.01, 0.99),
             dropoff_peak=_clamp(_to_float(_read_env(env, "BYES_RISK_DROPOFF_PEAK"), 28.0), 1.0, 255.0),
             dropoff_contrast=_clamp(_to_float(_read_env(env, "BYES_RISK_DROPOFF_CONTRAST"), 0.2), 0.01, 1.0),
             guardrail_dropoff_delta=_to_optional_float(_read_env(env, "BYES_RISK_GUARDRAIL_DROPOFF_DELTA"), low=0.05, high=20.0),

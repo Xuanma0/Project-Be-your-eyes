@@ -60,16 +60,24 @@ python scripts/run_service.py --port 19101
 
 Optional thresholds:
 - `BYES_RISK_OBS_WARN`
-- `BYES_RISK_OBS_CRIT`
+- `BYES_RISK_OBS_CRIT` (default `0.28`)
 - `BYES_RISK_DROPOFF_PEAK`
 - `BYES_RISK_DROPOFF_CONTRAST`
 - `BYES_RISK_UNKNOWN_BRIGHTNESS`  (format: `low,high`, default `32,222`)
 - `BYES_RISK_DEPTH_ENABLE` (`1|0`, default `1`)
 - `BYES_RISK_DEPTH_OBS_WARN` (default `1.0`)
-- `BYES_RISK_DEPTH_OBS_CRIT` (default `0.6`)
-- `BYES_RISK_DEPTH_DROPOFF_DELTA` (default `0.8`)
+- `BYES_RISK_DEPTH_OBS_CRIT` (default `0.55`)
+- `BYES_RISK_DEPTH_DROPOFF_DELTA` (default `0.4`)
 
 Heuristic output uses canonical hazard taxonomy (`dropoff`, `stair_down`, `obstacle_close`, `unknown_depth`) and avoids emitting `dropoff` + `stair_down` together for the same frame.
+
+Calibrated defaults (v4.28):
+- tuned on `run_package_risk_calib_10f` with calibration gate `critical_fn==0`.
+- applied defaults:
+  - `depthObsCrit=0.55`
+  - `depthDropoffDelta=0.4`
+  - `obsCrit=0.28`
+- override any default via env (`BYES_RISK_DEPTH_OBS_CRIT`, `BYES_RISK_DEPTH_DROPOFF_DELTA`, `BYES_RISK_OBS_CRIT`).
 
 ## E) Depth provider for risk (optional)
 

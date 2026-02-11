@@ -15,7 +15,8 @@
     },
     {
       "id": "fixture_with_risk_gt",
-      "path": "Gateway/tests/fixtures/run_package_with_risk_gt_min"
+      "path": "Gateway/tests/fixtures/run_package_with_risk_gt_min",
+      "requireCriticalFnZero": true
     }
   ],
   "expected": {

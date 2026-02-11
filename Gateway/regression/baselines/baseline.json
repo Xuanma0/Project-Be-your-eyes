@@ -206,6 +206,9 @@
     {
       "id": "fixture_with_risk_gt",
       "runPath": "D:\\Unity\\Project\\Project-Be-your-eyes\\Gateway\\tests\\fixtures\\run_package_with_risk_gt_min",
+      "minQualityScore": 85.0,
+      "criticalFnMustBeZero": true,
+      "riskLatencyP90": 120,
       "scenarioTag": "fixture_with_risk_gt",
       "reportMd": "D:\\Unity\\Project\\Project-Be-your-eyes\\Gateway\\regression\\out\\reports\\fixture_with_risk_gt.md",
       "reportJson": "D:\\Unity\\Project\\Project-Be-your-eyes\\Gateway\\regression\\out\\reports\\fixture_with_risk_gt.json",

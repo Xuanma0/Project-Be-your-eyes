@@ -56,7 +56,7 @@ def test_run_packages_export_csv_and_filter_sort() -> None:
         items = json_body.get("items", [])
         assert all("alpha" in str(item.get("scenarioTag", "")) for item in items)
 
-        sorted_resp = client.get("/api/run_packages", params={"sort": "safety_score", "order": "asc", "limit": 2})
+        sorted_resp = client.get("/api/run_packages", params={"sort": "safety_score", "order": "asc", "limit": 200})
         assert sorted_resp.status_code == 200, sorted_resp.text
         sorted_items = sorted_resp.json().get("items", [])
         assert len(sorted_items) >= 2

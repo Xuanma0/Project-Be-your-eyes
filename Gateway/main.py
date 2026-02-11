@@ -1420,6 +1420,7 @@ async def run_packages_export_csv(
         "quality_has_gt",
         "quality_score",
         "confirm_timeouts",
+        "missCriticalCount",
         "critical_misses",
         "max_delay_frames",
         "risk_latency_p90",
@@ -1605,6 +1606,7 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "quality_has_gt": has_gt,
         "quality_score": quality_score,
         "confirm_timeouts": confirm_timeouts,
+        "missCriticalCount": critical_misses,
         "critical_misses": critical_misses,
         "max_delay_frames": max_delay_frames,
         "riskLatencyP90": risk_latency_p90,
@@ -1935,7 +1937,7 @@ async def runs_dashboard(
           <th>Safety Score</th>
           <th>Quality</th>
           <th>ConfirmTimeouts</th>
-          <th>CriticalMisses</th>
+          <th>Critical FN</th>
           <th>MaxDelay(fr)</th>
           <th>Risk p90(ms)</th>
         </tr>

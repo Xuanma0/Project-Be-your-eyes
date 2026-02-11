@@ -54,7 +54,7 @@ def test_runs_safety_filters_and_columns() -> None:
         page = client.get("/runs", params={"has_gt": "true", "sort": "quality"})
         assert page.status_code == 200, page.text
         assert "ConfirmTimeouts" in page.text
-        assert "CriticalMisses" in page.text
+        assert "Critical FN" in page.text
         assert "MaxDelay(fr)" in page.text
 
         shutil.rmtree(safety_dir, ignore_errors=True)

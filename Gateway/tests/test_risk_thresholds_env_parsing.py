@@ -19,10 +19,10 @@ def test_risk_thresholds_defaults_from_env_empty(monkeypatch) -> None:
 
     thresholds = RiskThresholds.from_env()
     assert thresholds.depth_obs_warn == 1.0
-    assert thresholds.depth_obs_crit == 0.6
-    assert thresholds.depth_dropoff_delta == 0.8
+    assert thresholds.depth_obs_crit == 0.55
+    assert thresholds.depth_dropoff_delta == 0.4
     assert thresholds.obs_warn == 0.14
-    assert thresholds.obs_crit == 0.24
+    assert thresholds.obs_crit == 0.28
     assert thresholds.dropoff_peak == 28.0
     assert thresholds.dropoff_contrast == 0.2
 
