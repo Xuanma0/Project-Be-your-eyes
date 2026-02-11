@@ -263,11 +263,13 @@ Inference service provider controls (local service side):
 
 - `BYES_SERVICE_OCR_PROVIDER=reference|tesseract|paddleocr`
 - `BYES_SERVICE_RISK_PROVIDER=reference|heuristic` (default `reference`)
-- `BYES_SERVICE_DEPTH_PROVIDER=none|synth|midas` (default `none`)
+- `BYES_SERVICE_DEPTH_PROVIDER=none|synth|midas|onnx` (default `none`)
 - `BYES_SERVICE_OCR_MODEL_ID=<optional model label>`
 - `BYES_SERVICE_RISK_MODEL_ID=<optional model label>`
 - `BYES_SERVICE_DEPTH_MODEL_ID=<optional model label>`
 - `BYES_SERVICE_DEPTH_MODEL_PATH=<onnx path>` (for `midas`)
+- `BYES_SERVICE_DEPTH_ONNX_PATH=<onnx path>` (for `onnx`)
+- `BYES_SERVICE_DEPTH_INPUT_SIZE=<int>` (for `onnx`, default `518`)
 - `BYES_SERVICE_RISK_DEBUG=1|0` (default `0`, include low-overhead debug evidence in `/risk` response)
 
 Quick switch to heuristic depth-risk provider:
@@ -335,6 +337,25 @@ pip install -r requirements-depth-midas-onnx.txt
 set BYES_SERVICE_DEPTH_PROVIDER=midas
 set BYES_SERVICE_DEPTH_MODEL_PATH=C:\\models\\midas_small.onnx
 set BYES_SERVICE_DEPTH_MODEL_ID=midas-small-onnx
+```
+
+Optional Depth Anything V2 Small ONNX backend (local only):
+
+```bash
+cd Gateway/services/inference_service
+pip install -r requirements-onnx-depth.txt
+set BYES_SERVICE_DEPTH_PROVIDER=onnx
+set BYES_SERVICE_DEPTH_ONNX_PATH=C:\\models\\depth_anything_v2_small.onnx
+set BYES_SERVICE_DEPTH_MODEL_ID=depth-anything-v2-small-onnx
+set BYES_SERVICE_DEPTH_INPUT_SIZE=518
+```
+
+Model source + checksum:
+- HF: `onnx-community/depth-anything-v2-small -> onnx/model.onnx`
+- verify checksum:
+
+```bash
+python tools/verify_depth_onnx.py --path C:\\models\\depth_anything_v2_small.onnx --expected-sha256 <sha256_from_hf_page>
 ```
 
 Reference service template (optional, local/server-side only):

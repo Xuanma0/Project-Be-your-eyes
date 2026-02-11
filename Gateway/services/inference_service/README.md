@@ -91,6 +91,22 @@ set BYES_SERVICE_DEPTH_MODEL_PATH=C:\\models\\midas_small.onnx
 set BYES_SERVICE_DEPTH_MODEL_ID=midas-small-onnx
 ```
 
+Depth Anything V2 Small ONNX option (optional, local-only):
+```bash
+pip install -r requirements-onnx-depth.txt
+set BYES_SERVICE_DEPTH_PROVIDER=onnx
+set BYES_SERVICE_DEPTH_ONNX_PATH=C:\\models\\depth_anything_v2_small.onnx
+set BYES_SERVICE_DEPTH_MODEL_ID=depth-anything-v2-small-onnx
+set BYES_SERVICE_DEPTH_INPUT_SIZE=518
+```
+
+Model source and hash verification:
+- HF: `onnx-community/depth-anything-v2-small -> onnx/model.onnx`
+- verify local file hash with:
+```bash
+python tools/verify_depth_onnx.py --path C:\\models\\depth_anything_v2_small.onnx --expected-sha256 <sha256_from_hf_page>
+```
+
 When enabled, `/risk` can emit depth-backed evidence in hazards and optional debug payload.
 
 ## F) /risk debug evidence toggle
