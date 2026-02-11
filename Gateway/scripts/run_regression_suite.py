@@ -33,6 +33,8 @@ class RunSummary:
     depth_risk_f1: float | None
     depth_risk_delay_p90: int | None
     depth_risk_delay_max: int | None
+    risk_latency_p90: int | None
+    risk_latency_max: int | None
     confirm_timeouts: int
     confirm_missing_response: int
     event_schema_source: str
@@ -65,6 +67,12 @@ class RunSummary:
                 "delayP90": self.depth_risk_delay_p90,
                 "delayMax": self.depth_risk_delay_max,
             },
+            "riskLatency": {
+                "p90": self.risk_latency_p90,
+                "max": self.risk_latency_max,
+            },
+            "riskLatencyP90": self.risk_latency_p90,
+            "riskLatencyMax": self.risk_latency_max,
             "safetyBehavior": {
                 "confirmTimeouts": self.confirm_timeouts,
                 "confirmMissingResponse": self.confirm_missing_response,
@@ -149,6 +157,8 @@ def _extract_run_summary(
     depth_overall = depth_overall if isinstance(depth_overall, dict) else {}
     depth_delay = depth_risk.get("detectionDelayFrames")
     depth_delay = depth_delay if isinstance(depth_delay, dict) else {}
+    risk_latency = quality.get("riskLatencyMs")
+    risk_latency = risk_latency if isinstance(risk_latency, dict) else {}
     safety = quality.get("safetyBehavior")
     safety = safety if isinstance(safety, dict) else {}
     confirm = safety.get("confirm")
@@ -186,6 +196,8 @@ def _extract_run_summary(
         depth_risk_f1=_try_float(depth_overall.get("f1")),
         depth_risk_delay_p90=_try_int(depth_delay.get("p90")),
         depth_risk_delay_max=_try_int(depth_delay.get("max")),
+        risk_latency_p90=_try_int(risk_latency.get("p90")),
+        risk_latency_max=_try_int(risk_latency.get("max")),
         confirm_timeouts=int(confirm.get("timeouts", 0) or 0),
         confirm_missing_response=int(confirm.get("missingResponseCount", 0) or 0),
         event_schema_source=str(event_schema.get("source", "")),
@@ -231,13 +243,15 @@ def _render_markdown(result: dict[str, Any]) -> str:
         if not isinstance(run, dict):
             continue
         lines.append(
-            "- `{id}` score=`{score}` baseline=`{baseline}` delta=`{delta}` confirmTimeouts=`{ct}` riskDelayMax=`{dmax}` schema=`{schema}`".format(
+            "- `{id}` score=`{score}` baseline=`{baseline}` delta=`{delta}` confirmTimeouts=`{ct}` riskDelayMax=`{dmax}` riskLatencyP90=`{rlp90}` riskLatencyMax=`{rlmax}` schema=`{schema}`".format(
                 id=run.get("id", ""),
                 score=run.get("qualityScore", None),
                 baseline=run.get("baselineScore", None),
                 delta=run.get("scoreDelta", None),
                 ct=run.get("safetyBehavior", {}).get("confirmTimeouts", 0),
                 dmax=run.get("depthRisk", {}).get("delayMax", None),
+                rlp90=run.get("riskLatency", {}).get("p90", None),
+                rlmax=run.get("riskLatency", {}).get("max", None),
                 schema=run.get("eventSchema", {}).get("source", ""),
             )
         )
@@ -399,7 +413,8 @@ def _print_summary(result: dict[str, Any]) -> None:
             risk_model = inference_risk.get("model", "")
             print(
                 "[run] {run_id}: score={score} baseline={baseline} delta={delta} "
-                "confirmTimeouts={confirm_timeouts} riskDelayP90={risk_delay_p90} riskDelayMax={risk_delay_max} source={schema_src} "
+                "confirmTimeouts={confirm_timeouts} riskDelayP90={risk_delay_p90} riskDelayMax={risk_delay_max} "
+                "riskLatencyP90={risk_latency_p90} riskLatencyMax={risk_latency_max} source={schema_src} "
                 "ocr={ocr_backend}/{ocr_model} risk={risk_backend}/{risk_model}".format(
                     run_id=run_id,
                     score=score,
@@ -408,6 +423,8 @@ def _print_summary(result: dict[str, Any]) -> None:
                     confirm_timeouts=confirm_timeouts,
                     risk_delay_p90=row.get("depthRisk", {}).get("delayP90", None),
                     risk_delay_max=row.get("depthRisk", {}).get("delayMax", None),
+                    risk_latency_p90=row.get("riskLatency", {}).get("p90", None),
+                    risk_latency_max=row.get("riskLatency", {}).get("max", None),
                     schema_src=schema_src,
                     ocr_backend=ocr_backend,
                     ocr_model=ocr_model,

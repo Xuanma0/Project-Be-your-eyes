@@ -23,6 +23,7 @@ from byes.quality_metrics import (  # noqa: E402
     compute_depth_risk_metrics,
     compute_ocr_metrics,
     compute_quality_score,
+    extract_risk_latency_metrics_from_events_v1,
     extract_event_schema_stats,
     extract_inference_summary_from_ws_events,
     infer_inference_summary_from_events_v1,
@@ -890,8 +891,10 @@ def generate_report_outputs(
     output.write_text(report_text + "\n", encoding="utf-8")
 
     summary = build_summary_payload(ws_stats, after_samples, delta_samples, run_package_summary)
+    event_rows = load_jsonl(event_source_path)
     inferred_summary = extract_inference_summary_from_ws_events(event_source_path)
-    events_v1_inferred = infer_inference_summary_from_events_v1(load_jsonl(event_source_path))
+    events_v1_inferred = infer_inference_summary_from_events_v1(event_rows)
+    risk_latency_stats, risk_timings_stats = extract_risk_latency_metrics_from_events_v1(event_rows)
     summary["inference"] = _merge_inference_summary(inferred_summary, events_v1_inferred)
     event_schema_stats = extract_event_schema_stats(event_source_path)
     event_schema_stats["source"] = event_schema_source
@@ -905,7 +908,14 @@ def generate_report_outputs(
         event_schema_stats["warningsCount"] = int(event_schema_stats.get("warningsCount", 0) or 0) + len(extra_event_warnings)
     gt_cfg = (run_package_summary or {}).get("groundTruth", {})
     base_safety_behavior = extract_safety_behavior_from_ws_events(event_source_path)
-    quality_payload: dict[str, Any] = {"hasGroundTruth": False, "safetyBehavior": base_safety_behavior, "eventSchema": event_schema_stats}
+    quality_payload: dict[str, Any] = {
+        "hasGroundTruth": False,
+        "safetyBehavior": base_safety_behavior,
+        "eventSchema": event_schema_stats,
+        "riskLatencyMs": risk_latency_stats,
+    }
+    if risk_timings_stats is not None:
+        quality_payload["riskTimingsMs"] = risk_timings_stats
     if isinstance(gt_cfg, dict) and bool(gt_cfg.get("hasGroundTruth")):
         try:
             frames_total = int(round(float(summary.get("frame_received", 0) or 0)))
@@ -965,7 +975,10 @@ def generate_report_outputs(
             "topFindings": top_findings,
             "qualityScore": quality_score,
             "qualityScoreBreakdown": breakdown,
+            "riskLatencyMs": risk_latency_stats,
         }
+        if risk_timings_stats is not None:
+            quality_payload["riskTimingsMs"] = risk_timings_stats
     else:
         quality_payload["topFindings"] = _build_quality_top_findings(None, None, base_safety_behavior)
     summary["quality"] = quality_payload

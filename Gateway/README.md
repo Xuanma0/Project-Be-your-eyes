@@ -269,7 +269,7 @@ Inference service provider controls (local service side):
 - `BYES_SERVICE_DEPTH_MODEL_ID=<optional model label>`
 - `BYES_SERVICE_DEPTH_MODEL_PATH=<onnx path>` (for `midas`)
 - `BYES_SERVICE_DEPTH_ONNX_PATH=<onnx path>` (for `onnx`)
-- `BYES_SERVICE_DEPTH_INPUT_SIZE=<int>` (for `onnx`, default `518`)
+- `BYES_SERVICE_DEPTH_INPUT_SIZE=<int>` (for `onnx`, default `256`)
 - `BYES_SERVICE_RISK_DEBUG=1|0` (default `0`, include low-overhead debug evidence in `/risk` response)
 
 Quick switch to heuristic depth-risk provider:
@@ -347,8 +347,10 @@ pip install -r requirements-onnx-depth.txt
 set BYES_SERVICE_DEPTH_PROVIDER=onnx
 set BYES_SERVICE_DEPTH_ONNX_PATH=C:\\models\\depth_anything_v2_small.onnx
 set BYES_SERVICE_DEPTH_MODEL_ID=depth-anything-v2-small-onnx
-set BYES_SERVICE_DEPTH_INPUT_SIZE=518
+set BYES_SERVICE_DEPTH_INPUT_SIZE=256
 ```
+
+Recommended default is `256` (from depth sweep speed/quality tradeoff). For higher quality with higher latency, test `384` or `518`.
 
 Model source + checksum:
 - HF: `onnx-community/depth-anything-v2-small -> onnx/model.onnx`
@@ -374,6 +376,7 @@ Recommended workflow:
 1. Start `inference_service` with ONNX depth model and set `BYES_SERVICE_DEPTH_INPUT_SIZE` for the size under test.
 2. Run sweep to generate `depth_sweep_latest.json` + `depth_sweep_latest.md`.
 3. Choose default size using the generated recommendation rule (prefer smallest latency p90 while keeping `qualityScore >= baseline-2`).
+   Current recommended starting default: `256`; escalate to `384`/`518` only when quality gains justify latency.
 
 Quick latency-only check:
 

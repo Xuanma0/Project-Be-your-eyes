@@ -1286,6 +1286,8 @@ async def run_packages_list(
     min_quality: float | None = None,
     max_confirm_timeouts: int | None = None,
     max_critical_misses: int | None = None,
+    max_risk_latency_p90: int | None = None,
+    max_risk_latency_max: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> dict[str, Any]:
@@ -1300,6 +1302,8 @@ async def run_packages_list(
         min_quality=min_quality,
         max_confirm_timeouts=max_confirm_timeouts,
         max_critical_misses=max_critical_misses,
+        max_risk_latency_p90=max_risk_latency_p90,
+        max_risk_latency_max=max_risk_latency_max,
         sort=sort,
         order=order,
     )
@@ -1315,6 +1319,8 @@ async def run_packages_list(
             "min_quality": min_quality,
             "max_confirm_timeouts": max_confirm_timeouts,
             "max_critical_misses": max_critical_misses,
+            "max_risk_latency_p90": max_risk_latency_p90,
+            "max_risk_latency_max": max_risk_latency_max,
             "sort": sort,
             "order": order,
             "limit": limit,
@@ -1334,6 +1340,8 @@ async def run_packages_export_json(
     min_quality: float | None = None,
     max_confirm_timeouts: int | None = None,
     max_critical_misses: int | None = None,
+    max_risk_latency_p90: int | None = None,
+    max_risk_latency_max: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> dict[str, Any]:
@@ -1348,6 +1356,8 @@ async def run_packages_export_json(
         min_quality=min_quality,
         max_confirm_timeouts=max_confirm_timeouts,
         max_critical_misses=max_critical_misses,
+        max_risk_latency_p90=max_risk_latency_p90,
+        max_risk_latency_max=max_risk_latency_max,
         sort=sort,
         order=order,
     )
@@ -1369,6 +1379,8 @@ async def run_packages_export_csv(
     min_quality: float | None = None,
     max_confirm_timeouts: int | None = None,
     max_critical_misses: int | None = None,
+    max_risk_latency_p90: int | None = None,
+    max_risk_latency_max: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> Response:
@@ -1383,6 +1395,8 @@ async def run_packages_export_csv(
         min_quality=min_quality,
         max_confirm_timeouts=max_confirm_timeouts,
         max_critical_misses=max_critical_misses,
+        max_risk_latency_p90=max_risk_latency_p90,
+        max_risk_latency_max=max_risk_latency_max,
         sort=sort,
         order=order,
     )
@@ -1408,6 +1422,8 @@ async def run_packages_export_csv(
         "confirm_timeouts",
         "critical_misses",
         "max_delay_frames",
+        "risk_latency_p90",
+        "risk_latency_max",
         "runUrl",
         "reportUrl",
         "summaryUrl",
@@ -1541,8 +1557,11 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     confirm_behavior = safety_behavior.get("confirm", {}) if isinstance(safety_behavior, dict) else {}
     confirm_timeouts = int(confirm_behavior.get("timeouts", 0) or 0) if isinstance(confirm_behavior, dict) else 0
     depth_risk = quality_payload.get("depthRisk", {}) if isinstance(quality_payload, dict) else {}
+    risk_latency = quality_payload.get("riskLatencyMs", {}) if isinstance(quality_payload, dict) else {}
     critical_misses: int | None = None
     max_delay_frames: int | None = None
+    risk_latency_p90: int | None = None
+    risk_latency_max: int | None = None
     if isinstance(depth_risk, dict):
         critical = depth_risk.get("critical", {})
         delay = depth_risk.get("detectionDelayFrames", {})
@@ -1554,6 +1573,13 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
             raw = _read_float(delay, "max")
             if raw is not None:
                 max_delay_frames = int(raw)
+    if isinstance(risk_latency, dict):
+        raw_p90 = _read_float(risk_latency, "p90")
+        if raw_p90 is not None:
+            risk_latency_p90 = int(raw_p90)
+        raw_max = _read_float(risk_latency, "max")
+        if raw_max is not None:
+            risk_latency_max = int(raw_max)
 
     row = {
         "run_id": run_id,
@@ -1581,6 +1607,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "confirm_timeouts": confirm_timeouts,
         "critical_misses": critical_misses,
         "max_delay_frames": max_delay_frames,
+        "riskLatencyP90": risk_latency_p90,
+        "riskLatencyMax": risk_latency_max,
+        "risk_latency_p90": risk_latency_p90,
+        "risk_latency_max": risk_latency_max,
         "summary": summary,
     }
     row.update(urls)
@@ -1598,6 +1628,8 @@ def _matches_run_filters(
     min_quality: float | None,
     max_confirm_timeouts: int | None,
     max_critical_misses: int | None,
+    max_risk_latency_p90: int | None,
+    max_risk_latency_max: int | None,
 ) -> bool:
     if scenario:
         if scenario.lower() not in str(row.get("scenarioTag", "")).lower():
@@ -1631,6 +1663,18 @@ def _matches_run_filters(
         value = int(raw) if isinstance(raw, int) else 0
         if value > int(max_critical_misses):
             return False
+    if max_risk_latency_p90 is not None:
+        value = row.get("risk_latency_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_risk_latency_p90):
+            return False
+    if max_risk_latency_max is not None:
+        value = row.get("risk_latency_max")
+        if value is None:
+            return False
+        if int(value) > int(max_risk_latency_max):
+            return False
     return True
 
 
@@ -1646,6 +1690,7 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "safety_score",
         "quality",
         "quality_score",
+        "risk_latency_p90",
         "safemode_enter",
         "throttle_enter",
         "preempt_enter",
@@ -1679,6 +1724,8 @@ async def _query_run_package_rows(
     min_quality: float | None,
     max_confirm_timeouts: int | None,
     max_critical_misses: int | None,
+    max_risk_latency_p90: int | None,
+    max_risk_latency_max: int | None,
     sort: str,
     order: str,
 ) -> list[dict[str, Any]]:
@@ -1699,6 +1746,8 @@ async def _query_run_package_rows(
             min_quality=min_quality,
             max_confirm_timeouts=max_confirm_timeouts,
             max_critical_misses=max_critical_misses,
+            max_risk_latency_p90=max_risk_latency_p90,
+            max_risk_latency_max=max_risk_latency_max,
         ):
             continue
         rows.append(row)
@@ -1747,6 +1796,8 @@ async def runs_dashboard(
     min_quality: float | None = None,
     max_confirm_timeouts: int | None = None,
     max_critical_misses: int | None = None,
+    max_risk_latency_p90: int | None = None,
+    max_risk_latency_max: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> HTMLResponse:
@@ -1762,6 +1813,8 @@ async def runs_dashboard(
         min_quality=min_quality,
         max_confirm_timeouts=max_confirm_timeouts,
         max_critical_misses=max_critical_misses,
+        max_risk_latency_p90=max_risk_latency_p90,
+        max_risk_latency_max=max_risk_latency_max,
         sort=sort,
         order=order,
     )
@@ -1782,6 +1835,8 @@ async def runs_dashboard(
         critical_misses = "—" if critical_misses_raw is None else str(critical_misses_raw)
         max_delay_raw = row.get("max_delay_frames")
         max_delay = "—" if max_delay_raw is None else str(max_delay_raw)
+        risk_p90_raw = row.get("risk_latency_p90")
+        risk_p90 = "—" if risk_p90_raw is None else str(risk_p90_raw)
         rows_html += (
             "<tr>"
             f"<td><input type='checkbox' data-run-id='{run_val}' /></td>"
@@ -1793,10 +1848,11 @@ async def runs_dashboard(
             f"<td>{confirm_timeouts}</td>"
             f"<td>{html.escape(critical_misses)}</td>"
             f"<td>{html.escape(max_delay)}</td>"
+            f"<td>{html.escape(risk_p90)}</td>"
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='9' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='10' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -1807,6 +1863,8 @@ async def runs_dashboard(
     min_quality_value = html.escape("" if min_quality is None else str(min_quality))
     max_confirm_timeouts_value = html.escape("" if max_confirm_timeouts is None else str(max_confirm_timeouts))
     max_critical_misses_value = html.escape("" if max_critical_misses is None else str(max_critical_misses))
+    max_risk_latency_p90_value = html.escape("" if max_risk_latency_p90 is None else str(max_risk_latency_p90))
+    max_risk_latency_max_value = html.escape("" if max_risk_latency_max is None else str(max_risk_latency_max))
     html_page = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1842,11 +1900,14 @@ async def runs_dashboard(
       <label>min_quality: <input type="number" step="0.01" name="min_quality" value="{min_quality_value}" /></label>
       <label>max_confirm_timeouts: <input type="number" min="0" name="max_confirm_timeouts" value="{max_confirm_timeouts_value}" /></label>
       <label>max_critical_misses: <input type="number" min="0" name="max_critical_misses" value="{max_critical_misses_value}" /></label>
+      <label>max_risk_latency_p90: <input type="number" min="0" name="max_risk_latency_p90" value="{max_risk_latency_p90_value}" /></label>
+      <label>max_risk_latency_max: <input type="number" min="0" name="max_risk_latency_max" value="{max_risk_latency_max_value}" /></label>
       <label>sort:
         <select name="sort">
           <option value="createdAtMs" {"selected" if sort_value == "createdAtMs" else ""}>createdAtMs</option>
           <option value="safety_score" {"selected" if sort_value == "safety_score" else ""}>safety_score</option>
           <option value="quality" {"selected" if sort_value == "quality" else ""}>quality</option>
+          <option value="risk_latency_p90" {"selected" if sort_value == "risk_latency_p90" else ""}>risk_latency_p90</option>
           <option value="e2e_count" {"selected" if sort_value == "e2e_count" else ""}>e2e_count</option>
           <option value="ttfa_count" {"selected" if sort_value == "ttfa_count" else ""}>ttfa_count</option>
           <option value="frameCountSent" {"selected" if sort_value == "frameCountSent" else ""}>frameCountSent</option>
@@ -1860,8 +1921,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&min_quality={min_quality_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&min_quality={min_quality_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&min_quality={min_quality_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&min_quality={min_quality_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -1876,6 +1937,7 @@ async def runs_dashboard(
           <th>ConfirmTimeouts</th>
           <th>CriticalMisses</th>
           <th>MaxDelay(fr)</th>
+          <th>Risk p90(ms)</th>
         </tr>
       </thead>
       <tbody id="runs">{rows_html}</tbody>

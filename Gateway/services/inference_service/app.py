@@ -168,7 +168,10 @@ def infer_ocr(request: InferenceRequest) -> dict[str, Any]:
 @app.post("/risk")
 def infer_risk(request: InferenceRequest) -> dict[str, Any]:
     started = _now_ms()
+    request_started = time.perf_counter()
+    decode_started = time.perf_counter()
     image = _decode_pil_image(request.image_b64)
+    decode_ms = (time.perf_counter() - decode_started) * 1000.0
     fail_prob = float(os.getenv("BYES_SERVICE_RISK_FAIL_PROB", os.getenv("BYES_REF_RISK_FAIL_PROB", "0")) or "0")
     if random.random() < max(0.0, min(1.0, fail_prob)):
         raise HTTPException(status_code=503, detail="risk_unavailable")
@@ -209,8 +212,13 @@ def infer_risk(request: InferenceRequest) -> dict[str, Any]:
     response = {"hazards": hazards, "latencyMs": latency_ms, "model": model}
     if _env_bool("BYES_SERVICE_RISK_DEBUG", False):
         debug_payload = result.get("debug")
-        if isinstance(debug_payload, dict):
-            response["debug"] = debug_payload
+        merged_debug = dict(debug_payload) if isinstance(debug_payload, dict) else {}
+        timings = merged_debug.get("timings")
+        timings_payload = dict(timings) if isinstance(timings, dict) else {}
+        timings_payload["decodeMs"] = round(max(0.0, decode_ms), 3)
+        timings_payload["totalMs"] = round(max(0.0, (time.perf_counter() - request_started) * 1000.0), 3)
+        merged_debug["timings"] = timings_payload
+        response["debug"] = merged_debug
     return response
 
 

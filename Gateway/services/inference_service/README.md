@@ -97,8 +97,10 @@ pip install -r requirements-onnx-depth.txt
 set BYES_SERVICE_DEPTH_PROVIDER=onnx
 set BYES_SERVICE_DEPTH_ONNX_PATH=C:\\models\\depth_anything_v2_small.onnx
 set BYES_SERVICE_DEPTH_MODEL_ID=depth-anything-v2-small-onnx
-set BYES_SERVICE_DEPTH_INPUT_SIZE=518
+set BYES_SERVICE_DEPTH_INPUT_SIZE=256
 ```
+
+Recommended default is `256` (sweep speed/quality tradeoff). If your scene needs higher quality and latency budget allows, try `384` or `518`.
 
 Model source and hash verification:
 - HF: `onnx-community/depth-anything-v2-small -> onnx/model.onnx`

@@ -18,7 +18,7 @@ class OnnxDepthProvider:
     def __init__(self) -> None:
         override = str(os.getenv("BYES_SERVICE_DEPTH_MODEL_ID", "")).strip()
         self.model = override or "depth-anything-v2-small-onnx"
-        self.input_size = max(64, int(str(os.getenv("BYES_SERVICE_DEPTH_INPUT_SIZE", "518") or "518").strip()))
+        self.input_size = max(64, int(str(os.getenv("BYES_SERVICE_DEPTH_INPUT_SIZE", "256") or "256").strip()))
         self.model_path = self._resolve_model_path()
         self._session: Any | None = None
 

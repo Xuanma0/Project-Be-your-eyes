@@ -9,6 +9,7 @@ from typing import Any, Iterable, Sequence
 
 from byes.event_normalizer import collect_normalized_ws_events
 from byes.hazards.taxonomy_v1 import normalize_hazard_kind, normalize_hazards
+from byes.latency_stats import summarize_latency
 
 _FRAME_RE = re.compile(r"(?:frame[_-]?|seq[_-]?)(\d+)", re.IGNORECASE)
 
@@ -1544,6 +1545,58 @@ def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> 
             continue
         _merge_inference_fields(bucket, payload)
     return summary
+
+
+def extract_risk_latency_metrics_from_events_v1(
+    events: Iterable[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, dict[str, int]] | None]:
+    latencies: list[int] = []
+    timing_values: dict[str, list[int]] = defaultdict(list)
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("category", "")).strip().lower() != "tool":
+            continue
+        if str(event.get("name", "")).strip().lower() != "risk.hazards":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+
+        latency = _parse_int(event.get("latencyMs"))
+        if latency is not None and latency >= 0:
+            latencies.append(latency)
+
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        debug = payload.get("debug")
+        if not isinstance(debug, dict):
+            continue
+        timings = debug.get("timings")
+        if not isinstance(timings, dict):
+            continue
+        for key in ("decodeMs", "depthMs", "featureMs", "ruleMs", "totalMs"):
+            value = _parse_int(timings.get(key))
+            if value is not None and value >= 0:
+                timing_values[key].append(value)
+
+    latency_stats = summarize_latency(latencies)
+    timings_summary: dict[str, dict[str, int]] = {}
+    for key, values in timing_values.items():
+        stats = summarize_latency(values)
+        timings_summary[key] = {
+            "count": int(stats.get("count", 0) or 0),
+            "p50": int(stats.get("p50", 0) or 0),
+            "p90": int(stats.get("p90", 0) or 0),
+            "max": int(stats.get("max", 0) or 0),
+        }
+
+    return latency_stats, timings_summary or None
 
 
 def _merge_inference_fields(target: dict[str, str | None], payload: dict[str, Any]) -> None:

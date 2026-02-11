@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from statistics import mean, median
 from typing import Any
 
@@ -108,9 +109,13 @@ class HeuristicRiskProvider:
         )
 
     def infer(self, image: Image.Image, frame_seq: int | None) -> dict[str, Any]:
+        total_started = time.perf_counter()
+        visual_started = time.perf_counter()
         visual_hazards, visual_debug = self._infer_visual_hazards(image)
-        depth_hazards, depth_debug, depth_failed = self._infer_depth_hazards(image, frame_seq)
+        visual_feature_ms = (time.perf_counter() - visual_started) * 1000.0
+        depth_hazards, depth_debug, depth_failed, depth_timings = self._infer_depth_hazards(image, frame_seq)
 
+        rule_started = time.perf_counter()
         if depth_hazards:
             hazards = depth_hazards
             source = "depth"
@@ -129,6 +134,12 @@ class HeuristicRiskProvider:
             if normalized_kind:
                 hazard["hazardKind"] = normalized_kind
             filtered.append(hazard)
+        rule_ms = (time.perf_counter() - rule_started) * 1000.0
+
+        depth_ms = float(depth_timings.get("depthMs", 0.0))
+        feature_ms = visual_feature_ms + float(depth_timings.get("featureMs", 0.0))
+        rule_total_ms = rule_ms + float(depth_timings.get("ruleMs", 0.0))
+        total_ms = (time.perf_counter() - total_started) * 1000.0
 
         return {
             "hazards": filtered,
@@ -146,6 +157,12 @@ class HeuristicRiskProvider:
                     "dropoffPeak": self.dropoff_peak,
                     "dropoffContrast": self.dropoff_contrast,
                 },
+                "timings": {
+                    "depthMs": _round_ms(depth_ms),
+                    "featureMs": _round_ms(feature_ms),
+                    "ruleMs": _round_ms(rule_total_ms),
+                    "totalMs": _round_ms(total_ms),
+                },
             },
         }
 
@@ -153,44 +170,64 @@ class HeuristicRiskProvider:
         self,
         image: Image.Image,
         frame_seq: int | None,
-    ) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
+    ) -> tuple[list[dict[str, Any]], dict[str, Any], bool, dict[str, float]]:
+        depth_ms = 0.0
+        feature_ms = 0.0
+        rule_ms = 0.0
+
+        def _done(hazards: list[dict[str, Any]], failed: bool) -> tuple[list[dict[str, Any]], dict[str, Any], bool, dict[str, float]]:
+            return hazards, debug, failed, {
+                "depthMs": _round_ms(depth_ms),
+                "featureMs": _round_ms(feature_ms),
+                "ruleMs": _round_ms(rule_ms),
+            }
+
         debug: dict[str, Any] = {
             "enabled": bool(self.depth_enabled),
             "provider": self.depth_provider_name,
             "model": self.depth_provider_model,
         }
         if not self.depth_enabled or self.depth_provider_name in {"", "none"}:
-            return [], debug, False
+            return _done([], False)
 
+        depth_started = time.perf_counter()
         try:
             depth_map = self.depth_provider.infer_depth(image, frame_seq)
         except Exception as exc:  # noqa: BLE001
+            depth_ms += (time.perf_counter() - depth_started) * 1000.0
             debug["error"] = f"infer_depth_failed:{exc.__class__.__name__}"
-            return [self._unknown_depth_hazard("depth_infer_failed")], debug, True
+            return _done([self._unknown_depth_hazard("depth_infer_failed")], True)
+        depth_ms += (time.perf_counter() - depth_started) * 1000.0
 
+        feature_started = time.perf_counter()
         grid = _extract_depth_grid(depth_map)
+        feature_ms += (time.perf_counter() - feature_started) * 1000.0
         if not grid:
             debug["error"] = "depth_empty"
-            return [self._unknown_depth_hazard("depth_empty")], debug, True
+            return _done([self._unknown_depth_hazard("depth_empty")], True)
 
         height = len(grid)
         width = len(grid[0]) if height > 0 else 0
         if width <= 0 or height <= 0:
             debug["error"] = "depth_shape_invalid"
-            return [self._unknown_depth_hazard("depth_shape_invalid")], debug, True
+            return _done([self._unknown_depth_hazard("depth_shape_invalid")], True)
 
+        feature_started = time.perf_counter()
         flat = [v for row in grid for v in row if math.isfinite(v) and v > 0.0]
+        feature_ms += (time.perf_counter() - feature_started) * 1000.0
         if not flat:
             debug["error"] = "depth_non_finite"
-            return [self._unknown_depth_hazard("depth_non_finite")], debug, True
+            return _done([self._unknown_depth_hazard("depth_non_finite")], True)
 
+        feature_started = time.perf_counter()
         depth_min = min(flat)
         depth_max = max(flat)
         debug["min"] = round(depth_min, 4)
         debug["max"] = round(depth_max, 4)
         if depth_max - depth_min < 1e-6:
             debug["error"] = "depth_low_dynamic_range"
-            return [self._unknown_depth_hazard("depth_low_dynamic_range")], debug, True
+            feature_ms += (time.perf_counter() - feature_started) * 1000.0
+            return _done([self._unknown_depth_hazard("depth_low_dynamic_range")], True)
 
         bottom_start = max(0, min(height - 1, int(height * (1.0 - self.bottom_ratio))))
         center_left = max(0, int(width * (0.5 - self.center_ratio / 2.0)))
@@ -202,7 +239,8 @@ class HeuristicRiskProvider:
         center_values = _flatten_valid(center_bottom)
         if not center_values:
             debug["error"] = "depth_center_empty"
-            return [self._unknown_depth_hazard("depth_center_empty")], debug, True
+            feature_ms += (time.perf_counter() - feature_started) * 1000.0
+            return _done([self._unknown_depth_hazard("depth_center_empty")], True)
 
         p10 = _percentile(center_values, 0.10)
         local_min = min(center_values)
@@ -256,13 +294,16 @@ class HeuristicRiskProvider:
                         "far": round(far_med, 4),
                     },
                 }
+        feature_ms += (time.perf_counter() - feature_started) * 1000.0
 
+        rule_started = time.perf_counter()
         if dropoff_hazard is not None:
             hazards.append(dropoff_hazard)
         elif obstacle_hazard is not None:
             hazards.append(obstacle_hazard)
+        rule_ms += (time.perf_counter() - rule_started) * 1000.0
 
-        return hazards, debug, False
+        return _done(hazards, False)
 
     def _infer_visual_hazards(self, image: Image.Image) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         resized = _resize_to_width(image, self.target_width).convert("RGB")
@@ -559,6 +600,10 @@ def _percentile(values: list[float], q: float) -> float:
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def _round_ms(value: float) -> float:
+    return round(max(0.0, float(value)), 3)
 
 
 def _env_bool(name: str, default: bool) -> bool:
