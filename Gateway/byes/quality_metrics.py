@@ -1513,6 +1513,39 @@ def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict
     return summary
 
 
+def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, dict[str, str | None]]:
+    summary: dict[str, dict[str, str | None]] = {
+        "ocr": {"backend": None, "model": None, "endpoint": None},
+        "risk": {"backend": None, "model": None, "endpoint": None},
+    }
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("category", "")).strip().lower() != "tool":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+
+        name = str(event.get("name", "")).strip().lower()
+        if name == "ocr.scan_text":
+            bucket = summary["ocr"]
+        elif name == "risk.hazards":
+            bucket = summary["risk"]
+        else:
+            continue
+
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        _merge_inference_fields(bucket, payload)
+    return summary
+
+
 def _merge_inference_fields(target: dict[str, str | None], payload: dict[str, Any]) -> None:
     backend_value = payload.get("backend")
     model_value = payload.get("model")

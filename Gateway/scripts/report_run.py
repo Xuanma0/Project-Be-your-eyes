@@ -25,6 +25,7 @@ from byes.quality_metrics import (  # noqa: E402
     compute_quality_score,
     extract_event_schema_stats,
     extract_inference_summary_from_ws_events,
+    infer_inference_summary_from_events_v1,
     extract_safety_behavior_from_ws_events,
     extract_ocr_intent_frames_from_ws_events,
     extract_pred_hazards_from_ws_events,
@@ -889,7 +890,9 @@ def generate_report_outputs(
     output.write_text(report_text + "\n", encoding="utf-8")
 
     summary = build_summary_payload(ws_stats, after_samples, delta_samples, run_package_summary)
-    summary["inference"] = extract_inference_summary_from_ws_events(event_source_path)
+    inferred_summary = extract_inference_summary_from_ws_events(event_source_path)
+    events_v1_inferred = infer_inference_summary_from_events_v1(load_jsonl(event_source_path))
+    summary["inference"] = _merge_inference_summary(inferred_summary, events_v1_inferred)
     event_schema_stats = extract_event_schema_stats(event_source_path)
     event_schema_stats["source"] = event_schema_source
     event_schema_stats["eventsV1Path"] = events_v1_rel if event_schema_source == "eventsV1Jsonl" else None
@@ -973,6 +976,37 @@ def generate_report_outputs(
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return output, json_path, summary
+
+
+def _merge_inference_summary(
+    primary: dict[str, dict[str, str | None]],
+    fallback: dict[str, dict[str, str | None]],
+) -> dict[str, dict[str, str | None]]:
+    merged: dict[str, dict[str, str | None]] = {}
+    for tool_name in ("ocr", "risk"):
+        primary_bucket = primary.get(tool_name, {}) if isinstance(primary, dict) else {}
+        fallback_bucket = fallback.get(tool_name, {}) if isinstance(fallback, dict) else {}
+        bucket = {
+            "backend": _coalesce_inference_field(primary_bucket, fallback_bucket, "backend"),
+            "model": _coalesce_inference_field(primary_bucket, fallback_bucket, "model"),
+            "endpoint": _coalesce_inference_field(primary_bucket, fallback_bucket, "endpoint"),
+        }
+        merged[tool_name] = bucket
+    return merged
+
+
+def _coalesce_inference_field(
+    primary_bucket: dict[str, Any],
+    fallback_bucket: dict[str, Any],
+    key: str,
+) -> str | None:
+    primary_value = str(primary_bucket.get(key, "")).strip() if isinstance(primary_bucket, dict) else ""
+    if primary_value:
+        return primary_value
+    fallback_value = str(fallback_bucket.get(key, "")).strip() if isinstance(fallback_bucket, dict) else ""
+    if fallback_value:
+        return fallback_value
+    return None
 
 
 def _append_tool_focus(lines: list[str], samples: dict[SeriesKey, float], tool: str, delta: bool) -> None:
@@ -1216,6 +1250,13 @@ def load_run_package(run_package_dir: Path) -> tuple[Path, Path | None, Path | N
                 event_schema_warnings.append(
                     f"eventsV1Jsonl missing at {events_v1_relative}; fallback to events_v1.jsonl"
                 )
+    if events_v1_path is None:
+        autodetect_rel = "events/events_v1.jsonl"
+        autodetect_candidate = run_package_dir / autodetect_rel
+        if autodetect_candidate.exists():
+            events_v1_path = autodetect_candidate
+            if not events_v1_relative:
+                events_v1_relative = autodetect_rel
 
     ws_relative = str(manifest.get("wsJsonl", "")).strip() or "ws_events.jsonl"
     ws_jsonl = run_package_dir / ws_relative
