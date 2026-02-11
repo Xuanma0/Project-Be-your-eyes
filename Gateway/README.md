@@ -358,6 +358,29 @@ Model source + checksum:
 python tools/verify_depth_onnx.py --path C:\\models\\depth_anything_v2_small.onnx --expected-sha256 <sha256_from_hf_page>
 ```
 
+Depth input size sweep (local tuning loop):
+
+```bash
+python Gateway/scripts/sweep_depth_input_size.py ^
+  --run-package Gateway/tests/fixtures/run_package_with_risk_gt_min ^
+  --sizes 518,384,256 ^
+  --out Gateway/regression/out/depth_sweep_latest.json ^
+  --port 19120 ^
+  --risk-url http://127.0.0.1:19120/risk ^
+  --use-http true
+```
+
+Recommended workflow:
+1. Start `inference_service` with ONNX depth model and set `BYES_SERVICE_DEPTH_INPUT_SIZE` for the size under test.
+2. Run sweep to generate `depth_sweep_latest.json` + `depth_sweep_latest.md`.
+3. Choose default size using the generated recommendation rule (prefer smallest latency p90 while keeping `qualityScore >= baseline-2`).
+
+Quick latency-only check:
+
+```bash
+python Gateway/scripts/bench_risk_latency.py --run-package <replay_or_fixture_run_package> --json-out Gateway/regression/out/risk_latency.json
+```
+
 Reference service template (optional, local/server-side only):
 
 ```bash
