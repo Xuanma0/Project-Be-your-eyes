@@ -188,6 +188,8 @@ def _collect_risk_threshold_overrides_from_env() -> dict[str, float]:
         "BYES_RISK_OBS_CRIT": "obsCrit",
         "BYES_RISK_DROPOFF_PEAK": "dropoffPeak",
         "BYES_RISK_DROPOFF_CONTRAST": "dropoffContrast",
+        "BYES_RISK_GUARDRAIL_DROPOFF_DELTA": "guardrailDropoffDelta",
+        "BYES_RISK_GUARDRAIL_OBS_P10_CRIT": "guardrailObstacleP10Crit",
     }
     out: dict[str, float] = {}
     for env_name, payload_name in env_map.items():

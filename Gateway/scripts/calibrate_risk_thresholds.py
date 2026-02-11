@@ -19,7 +19,14 @@ GATEWAY_ROOT = THIS_DIR.parent
 if str(GATEWAY_ROOT) not in sys.path:
     sys.path.insert(0, str(GATEWAY_ROOT))
 
-from byes.risk_calibration import DEFAULT_GRID, expand_grid, select_best_candidates  # noqa: E402
+from byes.hazards.taxonomy_v1 import normalize_hazard_kind  # noqa: E402
+from byes.risk_calibration import (  # noqa: E402
+    DEFAULT_GRID,
+    build_calibration_latency_metrics,
+    expand_grid,
+    load_jsonl,
+    select_best_candidates,
+)
 
 
 def _parse_bool(raw: str | bool) -> bool:
@@ -78,11 +85,6 @@ def _load_manifest(path: Path) -> dict[str, Any]:
     raise FileNotFoundError(f"manifest not found under {path}")
 
 
-def _normalize_endpoint(url: str) -> str:
-    text = str(url or "").strip()
-    return text
-
-
 def _check_risk_url_ready(risk_url: str) -> tuple[bool, str]:
     try:
         with httpx.Client(timeout=3.0) as client:
@@ -134,7 +136,6 @@ def _build_generated_run_package(
     package_dir = out_dir / run_id
     package_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy frame + GT artifacts only.
     for rel in ("frames", "ground_truth"):
         src = source_run_package / rel
         if src.exists() and src.is_dir():
@@ -178,7 +179,6 @@ def _write_events_v1(
     events_dir.mkdir(parents=True, exist_ok=True)
     events_path = events_dir / "events_v1.jsonl"
     errors: list[str] = []
-    endpoint = _normalize_endpoint(risk_url)
 
     with httpx.Client(timeout=10.0) as client, events_path.open("w", encoding="utf-8") as fp:
         for frame in frames:
@@ -194,12 +194,11 @@ def _write_events_v1(
             }
             started = time.perf_counter()
             status = "ok"
-            phase = "result"
             event_payload: dict[str, Any] = {
                 "hazards": [],
                 "backend": "http",
                 "model": None,
-                "endpoint": endpoint,
+                "endpoint": str(risk_url).strip(),
             }
             try:
                 response = client.post(risk_url, json=payload)
@@ -234,7 +233,7 @@ def _write_events_v1(
                 "component": "gateway",
                 "category": "tool",
                 "name": "risk.hazards",
-                "phase": phase,
+                "phase": "result",
                 "status": status,
                 "latencyMs": max(0, int(latency_ms)),
                 "payload": event_payload,
@@ -273,13 +272,10 @@ def _extract_metrics(report_payload: dict[str, Any]) -> dict[str, Any]:
     critical = critical if isinstance(critical, dict) else {}
     overall = depth_risk.get("overall", {})
     overall = overall if isinstance(overall, dict) else {}
-    risk_latency = quality.get("riskLatencyMs", {})
-    risk_latency = risk_latency if isinstance(risk_latency, dict) else {}
     return {
         "critical_fn": int(critical.get("missCriticalCount", 0) or 0),
         "fp_total": int(overall.get("fp", 0) or 0),
         "qualityScore": _to_float(quality.get("qualityScore")),
-        "riskLatencyP90": int(risk_latency.get("p90", 0) or 0),
     }
 
 
@@ -296,8 +292,10 @@ def _render_md(payload: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append("# Risk Threshold Calibration")
     lines.append("")
-    lines.append("| rank | size | depthObsCrit | depthDropoffDelta | obsCrit | critical_fn | fp_total | qualityScore | riskLatencyP90 |")
-    lines.append("|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("> Latency is valid only when events_v1 contains non-zero `risk.hazards` `event.latencyMs` from real HTTP inference.")
+    lines.append("")
+    lines.append("| rank | size | depthObsCrit | depthDropoffDelta | obsCrit | critical_fn | fp_total | qualityScore | riskLatencyP90 | notes |")
+    lines.append("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     topk = payload.get("topK", [])
     if not isinstance(topk, list):
         topk = []
@@ -306,7 +304,7 @@ def _render_md(payload: dict[str, Any]) -> str:
             continue
         params = item.get("params", {}) if isinstance(item.get("params"), dict) else {}
         lines.append(
-            "| {rank} | {size} | {depth_obs_crit} | {depth_dropoff_delta} | {obs_crit} | {critical_fn} | {fp_total} | {score} | {lat} |".format(
+            "| {rank} | {size} | {depth_obs_crit} | {depth_dropoff_delta} | {obs_crit} | {critical_fn} | {fp_total} | {score} | {lat} | {notes} |".format(
                 rank=idx,
                 size=item.get("size", ""),
                 depth_obs_crit=params.get("depthObsCrit", ""),
@@ -316,6 +314,7 @@ def _render_md(payload: dict[str, Any]) -> str:
                 fp_total=item.get("fp_total", ""),
                 score=item.get("qualityScore", ""),
                 lat=item.get("riskLatencyP90", ""),
+                notes=str(item.get("notes", "")).replace("\n", " "),
             )
         )
     lines.append("")
@@ -323,6 +322,280 @@ def _render_md(payload: dict[str, Any]) -> str:
     lines.append(f"- criticalFnGateSatisfied: `{payload.get('criticalFnGateSatisfied', True)}`")
     lines.append("- selectionRule: `critical_fn == 0 (if enabled) -> fp_total asc -> qualityScore desc -> riskLatencyP90 asc`")
     lines.append("- note: `--sizes` assumes inference_service is preconfigured to the tested depth input size.")
+    return "\n".join(lines) + "\n"
+
+
+def _load_gt_hazards(run_package: Path, manifest: dict[str, Any]) -> dict[int, list[dict[str, Any]]]:
+    gt_cfg = manifest.get("groundTruth", {})
+    risk_rel = ""
+    if isinstance(gt_cfg, dict):
+        risk_rel = str(gt_cfg.get("riskJsonl", "")).strip()
+    if not risk_rel:
+        risk_rel = "ground_truth/depth_risk.jsonl"
+    risk_path = run_package / risk_rel
+    rows: dict[int, list[dict[str, Any]]] = {}
+    if not risk_path.exists():
+        return rows
+    with risk_path.open("r", encoding="utf-8-sig") as fp:
+        for raw in fp:
+            line = raw.strip()
+            if not line:
+                continue
+            item = json.loads(line)
+            if not isinstance(item, dict):
+                continue
+            seq = int(item.get("frameSeq", item.get("seq", 0)) or 0)
+            hazards_raw = item.get("hazards", [])
+            hazards: list[dict[str, Any]] = []
+            if isinstance(hazards_raw, list):
+                for hazard in hazards_raw:
+                    if not isinstance(hazard, dict):
+                        continue
+                    kind_raw = str(hazard.get("hazardKind", "")).strip()
+                    kind_norm, _warn = normalize_hazard_kind(kind_raw)
+                    if not kind_norm:
+                        continue
+                    severity = str(hazard.get("severity", "warning")).strip().lower() or "warning"
+                    hazards.append({"hazardKind": kind_norm, "severity": severity, "rawHazardKind": kind_raw})
+            rows[seq] = hazards
+    return rows
+
+
+def _collect_prediction_evidence(events_rows: list[dict[str, Any]]) -> tuple[dict[int, dict[str, Any]], dict[int, dict[str, Any]]]:
+    pred_map: dict[int, dict[str, Any]] = {}
+    debug_map: dict[int, dict[str, Any]] = {}
+    for row in events_rows:
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("category", "")).strip().lower() != "tool":
+            continue
+        if str(event.get("name", "")).strip().lower() != "risk.hazards":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        seq = int(event.get("frameSeq", 0) or 0)
+        if seq <= 0:
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        hazards_rows = payload.get("hazards")
+        normalized_kinds: list[str] = []
+        raw_kinds: list[str] = []
+        if isinstance(hazards_rows, list):
+            for hazard in hazards_rows:
+                if not isinstance(hazard, dict):
+                    continue
+                raw = str(hazard.get("hazardKind", "")).strip()
+                if not raw:
+                    continue
+                raw_kinds.append(raw)
+                normalized, _warn = normalize_hazard_kind(raw)
+                if normalized:
+                    normalized_kinds.append(normalized)
+        pred_map[seq] = {"rawKinds": raw_kinds, "kinds": normalized_kinds}
+        debug_payload = payload.get("debug")
+        if isinstance(debug_payload, dict):
+            debug_map[seq] = debug_payload
+    return pred_map, debug_map
+
+
+def _classify_miss_reason(
+    *,
+    gt_kind: str,
+    predicted_norm_kinds: list[str],
+    predicted_raw_kinds: list[str],
+    thresholds: dict[str, Any],
+    depth_evidence: dict[str, Any],
+) -> str:
+    if not predicted_norm_kinds:
+        return "A) no_prediction_in_window"
+
+    if any(_normalize_kind(raw) == gt_kind and str(raw).strip().lower() != gt_kind for raw in predicted_raw_kinds):
+        return "D) eval_mismatch(alias/normalization)"
+
+    if gt_kind == "dropoff":
+        delta = _to_float(depth_evidence.get("dropoffDelta"))
+        threshold = _to_float(thresholds.get("depthDropoffDelta"))
+        if delta is not None and threshold is not None and delta > 0 and delta < threshold:
+            return "C) predicted_but_below_threshold"
+    if gt_kind == "obstacle_close":
+        p10 = _to_float(depth_evidence.get("depthP10"))
+        threshold = _to_float(thresholds.get("depthObsCrit"))
+        if p10 is not None and threshold is not None and p10 > threshold:
+            return "C) predicted_but_below_threshold"
+
+    if gt_kind not in predicted_norm_kinds:
+        return "B) predicted_other_kind"
+    return "D) eval_mismatch(alias/normalization)"
+
+
+def _normalize_kind(kind: str) -> str:
+    normalized, _warnings = normalize_hazard_kind(str(kind))
+    return normalized
+
+
+def _build_fn_report(
+    *,
+    candidate: dict[str, Any],
+    source_manifest: dict[str, Any],
+    source_run_package: Path,
+) -> dict[str, Any]:
+    report_json_path = Path(str(candidate.get("reportJson", "")).strip())
+    events_path = Path(str(candidate.get("eventsPath", "")).strip())
+    if not report_json_path.exists() or not events_path.exists():
+        return {"misses": [], "note": "reportJson or eventsPath missing"}
+
+    report_payload = json.loads(report_json_path.read_text(encoding="utf-8-sig"))
+    quality = report_payload.get("quality", {}) if isinstance(report_payload, dict) else {}
+    quality = quality if isinstance(quality, dict) else {}
+    depth_risk = quality.get("depthRisk", {})
+    depth_risk = depth_risk if isinstance(depth_risk, dict) else {}
+    top_misses = depth_risk.get("topMisses", [])
+    if not isinstance(top_misses, list):
+        top_misses = []
+    window_default = int(depth_risk.get("matchWindowFrames", 1) or 1)
+
+    gt_map = _load_gt_hazards(source_run_package, source_manifest)
+    events_rows = load_jsonl(events_path)
+    pred_map, debug_map = _collect_prediction_evidence(events_rows)
+
+    misses: list[dict[str, Any]] = []
+    for miss in top_misses:
+        if not isinstance(miss, dict):
+            continue
+        frame_seq = int(miss.get("frameSeq", 0) or 0)
+        if frame_seq <= 0:
+            continue
+        gt_kind = str(miss.get("hazardKind", "")).strip().lower()
+        severity = str(miss.get("severity", "")).strip().lower() or None
+        if not gt_kind or not severity:
+            gt_rows = gt_map.get(frame_seq, [])
+            critical_rows = [row for row in gt_rows if str(row.get("severity", "")).strip().lower() == "critical"]
+            chosen = critical_rows[0] if critical_rows else (gt_rows[0] if gt_rows else {})
+            if isinstance(chosen, dict):
+                if not gt_kind:
+                    gt_kind = str(chosen.get("hazardKind", "")).strip().lower()
+                if not severity:
+                    severity = str(chosen.get("severity", "")).strip().lower() or None
+        if severity != "critical":
+            continue
+        window = int(miss.get("window", window_default) or window_default)
+
+        preds_window: list[dict[str, Any]] = []
+        pred_norm_kinds: list[str] = []
+        pred_raw_kinds: list[str] = []
+        nearest_debug: dict[str, Any] | None = debug_map.get(frame_seq)
+        nearest_gap = 10**9
+        for seq, preds in sorted(pred_map.items(), key=lambda item: int(item[0])):
+            gap = abs(int(seq) - frame_seq)
+            if gap > window:
+                continue
+            kinds = list(preds.get("kinds", []))
+            raw_kinds = list(preds.get("rawKinds", []))
+            preds_window.append({"frameSeq": int(seq), "hazardKinds": kinds, "rawHazardKinds": raw_kinds})
+            pred_norm_kinds.extend(kinds)
+            pred_raw_kinds.extend(raw_kinds)
+            if gap < nearest_gap and seq in debug_map:
+                nearest_gap = gap
+                nearest_debug = debug_map.get(seq)
+
+        debug_thresholds = {}
+        debug_depth = {}
+        debug_visual = {}
+        if isinstance(nearest_debug, dict):
+            thresholds = nearest_debug.get("thresholds")
+            depth_node = nearest_debug.get("depth")
+            visual_node = nearest_debug.get("visual")
+            debug_thresholds = thresholds if isinstance(thresholds, dict) else {}
+            debug_depth = depth_node if isinstance(depth_node, dict) else {}
+            debug_visual = visual_node if isinstance(visual_node, dict) else {}
+
+        roi_stats = debug_depth.get("roiStats", {}) if isinstance(debug_depth, dict) else {}
+        if not isinstance(roi_stats, dict):
+            roi_stats = {}
+        depth_evidence = {
+            "depthMin": roi_stats.get("depthMin"),
+            "depthP10": roi_stats.get("depthP10"),
+            "dropoffDelta": roi_stats.get("dropoffDelta"),
+            "near": roi_stats.get("depthNearMedian"),
+            "far": roi_stats.get("depthFarMedian"),
+        }
+        visual_evidence = {
+            "dropoffSignal": debug_visual.get("dropoffSignal"),
+            "contrastSignal": debug_visual.get("contrastSignal"),
+            "edgeDensityBottom": debug_visual.get("edgeDensityBottom"),
+        }
+        thresholds_view = dict(debug_thresholds) if debug_thresholds else dict(candidate.get("params", {}))
+        reason = _classify_miss_reason(
+            gt_kind=gt_kind,
+            predicted_norm_kinds=pred_norm_kinds,
+            predicted_raw_kinds=pred_raw_kinds,
+            thresholds=thresholds_view,
+            depth_evidence=depth_evidence,
+        )
+        misses.append(
+            {
+                "frameSeq": frame_seq,
+                "gtHazardKind": gt_kind,
+                "gtSeverity": severity,
+                "predictedInWindow": preds_window,
+                "thresholds": thresholds_view,
+                "depthEvidence": depth_evidence,
+                "visualEvidence": visual_evidence,
+                "reason": reason,
+            }
+        )
+
+    return {
+        "runPackage": str(source_run_package),
+        "candidateRunPackage": candidate.get("runPackage"),
+        "bestParams": candidate.get("params", {}),
+        "bestMetrics": {
+            "critical_fn": candidate.get("critical_fn"),
+            "fp_total": candidate.get("fp_total"),
+            "qualityScore": candidate.get("qualityScore"),
+            "riskLatencyP90": candidate.get("riskLatencyP90"),
+        },
+        "missCount": len(misses),
+        "misses": misses,
+    }
+
+
+def _render_fn_report_md(payload: dict[str, Any]) -> str:
+    lines: list[str] = []
+    lines.append("# Calibration FN Report")
+    lines.append("")
+    lines.append(f"- missCount: `{payload.get('missCount', 0)}`")
+    lines.append(f"- bestParams: `{json.dumps(payload.get('bestParams', {}), ensure_ascii=False)}`")
+    lines.append(f"- bestMetrics: `{json.dumps(payload.get('bestMetrics', {}), ensure_ascii=False)}`")
+    lines.append("")
+    lines.append("| frameSeq | gt | predictedInWindow | reason | depthP10 | depthMin | dropoffDelta |")
+    lines.append("|---:|---|---|---|---:|---:|---:|")
+    misses = payload.get("misses", [])
+    if not isinstance(misses, list):
+        misses = []
+    for miss in misses:
+        if not isinstance(miss, dict):
+            continue
+        depth = miss.get("depthEvidence", {}) if isinstance(miss.get("depthEvidence"), dict) else {}
+        preds = miss.get("predictedInWindow", [])
+        preds_text = json.dumps(preds, ensure_ascii=False)
+        lines.append(
+            "| {seq} | {kind}/{sev} | {pred} | {reason} | {p10} | {minv} | {delta} |".format(
+                seq=miss.get("frameSeq"),
+                kind=miss.get("gtHazardKind", ""),
+                sev=miss.get("gtSeverity", ""),
+                pred=preds_text.replace("|", "/"),
+                reason=miss.get("reason", ""),
+                p10=depth.get("depthP10"),
+                minv=depth.get("depthMin"),
+                delta=depth.get("dropoffDelta"),
+            )
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -376,15 +649,25 @@ def main(argv: list[str] | None = None) -> int:
                 thresholds=params,
                 run_id=run_id,
             )
+            events_rows = load_jsonl(events_path)
+            latency_metrics = build_calibration_latency_metrics(events_rows)
+            latency_info = latency_metrics.get("riskLatency", {})
+            notes: list[str] = [item for item in call_errors if item]
+            if isinstance(latency_metrics.get("notes"), list):
+                notes.extend(str(item) for item in latency_metrics["notes"] if str(item).strip())
+            risk_latency_p90: int | None = latency_metrics.get("riskLatencyP90")
+
             row: dict[str, Any] = {
                 "size": int(size),
                 "params": params,
                 "critical_fn": 10**9,
                 "fp_total": 10**9,
                 "qualityScore": None,
-                "riskLatencyP90": 10**9,
-                "notes": "; ".join(call_errors),
+                "riskLatencyP90": risk_latency_p90,
+                "riskLatency": latency_info,
+                "notes": "; ".join(notes),
                 "eventsPath": str(events_path),
+                "riskLatencyRawCount": int(latency_metrics.get("riskLatencyRawCount", 0) or 0),
             }
 
             report_ok, report_json_path, report_error = _run_report(generated_pkg)
@@ -399,15 +682,18 @@ def main(argv: list[str] | None = None) -> int:
             row["runPackage"] = str(generated_pkg)
             results.append(row)
 
-    best, topk = select_best_candidates(
+    best_zero, topk_zero = select_best_candidates(
         results,
         must_zero_critical_fn=bool(args.must_zero_critical_fn),
         top_k=5,
     )
     gate_satisfied = True
-    if best is None and bool(args.must_zero_critical_fn):
+    best = best_zero
+    topk = topk_zero
+    if best_zero is None and bool(args.must_zero_critical_fn):
         gate_satisfied = False
         best, topk = select_best_candidates(results, must_zero_critical_fn=False, top_k=5)
+
     summary = {
         "generatedAtMs": int(datetime.now(timezone.utc).timestamp() * 1000),
         "runPackage": str(run_package),
@@ -421,15 +707,28 @@ def main(argv: list[str] | None = None) -> int:
             "critical_fn": int(best.get("critical_fn", 0) or 0) if isinstance(best, dict) else None,
             "fp_total": int(best.get("fp_total", 0) or 0) if isinstance(best, dict) else None,
             "qualityScore": _to_float(best.get("qualityScore")) if isinstance(best, dict) else None,
-            "riskLatencyP90": int(best.get("riskLatencyP90", 0) or 0) if isinstance(best, dict) else None,
+            "riskLatencyP90": best.get("riskLatencyP90") if isinstance(best, dict) else None,
         },
         "topK": topk,
         "results": results,
     }
+
+    if not gate_satisfied and isinstance(best, dict):
+        fn_report_payload = _build_fn_report(candidate=best, source_manifest=source_manifest, source_run_package=run_package)
+        fn_json = out_json.parent / "fn_report.json"
+        fn_md = out_json.parent / "fn_report.md"
+        fn_json.write_text(json.dumps(fn_report_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        fn_md.write_text(_render_fn_report_md(fn_report_payload), encoding="utf-8")
+        summary["fnReportJson"] = str(fn_json)
+        summary["fnReportMd"] = str(fn_md)
+
     out_json.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     out_md.write_text(_render_md(summary), encoding="utf-8")
     print(f"calibration json -> {out_json}")
     print(f"calibration md -> {out_md}")
+    if "fnReportJson" in summary:
+        print(f"fn report json -> {summary['fnReportJson']}")
+        print(f"fn report md -> {summary.get('fnReportMd', '')}")
     print(f"best params -> {json.dumps(summary['bestParams'], ensure_ascii=False)}")
     print(f"best metrics -> {json.dumps(summary['bestMetrics'], ensure_ascii=False)}")
     return 0

@@ -47,6 +47,8 @@ class RiskThresholds:
     obs_crit: float = 0.24
     dropoff_peak: float = 28.0
     dropoff_contrast: float = 0.2
+    guardrail_dropoff_delta: float | None = None
+    guardrail_obstacle_p10_crit: float | None = None
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "RiskThresholds":
@@ -61,6 +63,12 @@ class RiskThresholds:
             obs_crit=_clamp(_to_float(obs_crit_raw, 0.24), 0.01, 0.99),
             dropoff_peak=_clamp(_to_float(_read_env(env, "BYES_RISK_DROPOFF_PEAK"), 28.0), 1.0, 255.0),
             dropoff_contrast=_clamp(_to_float(_read_env(env, "BYES_RISK_DROPOFF_CONTRAST"), 0.2), 0.01, 1.0),
+            guardrail_dropoff_delta=_to_optional_float(_read_env(env, "BYES_RISK_GUARDRAIL_DROPOFF_DELTA"), low=0.05, high=20.0),
+            guardrail_obstacle_p10_crit=_to_optional_float(
+                _read_env(env, "BYES_RISK_GUARDRAIL_OBS_P10_CRIT"),
+                low=0.01,
+                high=20.0,
+            ),
         )
 
     def with_overrides(self, overrides: Mapping[str, Any] | None) -> "RiskThresholds":
@@ -82,9 +90,21 @@ class RiskThresholds:
                 0.01,
                 1.0,
             ),
+            guardrail_dropoff_delta=_to_optional_float(
+                _pick_override(overrides, "guardrail_dropoff_delta", "guardrailDropoffDelta"),
+                fallback=self.guardrail_dropoff_delta,
+                low=0.05,
+                high=20.0,
+            ),
+            guardrail_obstacle_p10_crit=_to_optional_float(
+                _pick_override(overrides, "guardrail_obstacle_p10_crit", "guardrailObstacleP10Crit"),
+                fallback=self.guardrail_obstacle_p10_crit,
+                low=0.01,
+                high=20.0,
+            ),
         )
 
-    def as_debug_dict(self) -> dict[str, float]:
+    def as_debug_dict(self) -> dict[str, float | None]:
         return {
             "depthObsWarn": round(self.depth_obs_warn, 6),
             "depthObsCrit": round(self.depth_obs_crit, 6),
@@ -93,6 +113,12 @@ class RiskThresholds:
             "obsCrit": round(self.obs_crit, 6),
             "dropoffPeak": round(self.dropoff_peak, 6),
             "dropoffContrast": round(self.dropoff_contrast, 6),
+            "guardrailDropoffDelta": (
+                round(self.guardrail_dropoff_delta, 6) if self.guardrail_dropoff_delta is not None else None
+            ),
+            "guardrailObstacleP10Crit": (
+                round(self.guardrail_obstacle_p10_crit, 6) if self.guardrail_obstacle_p10_crit is not None else None
+            ),
         }
 
 
@@ -188,6 +214,7 @@ class HeuristicRiskProvider:
                 "source": source,
                 "depth": depth_debug,
                 "visual": visual_debug,
+                "guardrail": depth_debug.get("guardrail", {"enabled": False}),
                 "thresholds": thresholds.as_debug_dict(),
                 "timings": {
                     "depthMs": _round_ms(depth_ms),
@@ -219,6 +246,7 @@ class HeuristicRiskProvider:
             "enabled": bool(self.depth_enabled),
             "provider": self.depth_provider_name,
             "model": self.depth_provider_model,
+            "guardrail": {"enabled": False},
         }
         if not self.depth_enabled or self.depth_provider_name in {"", "none"}:
             return _done([], False)
@@ -335,10 +363,73 @@ class HeuristicRiskProvider:
                         "far": round(far_med, 4),
                     },
                 }
+            guardrail_dropoff = thresholds.guardrail_dropoff_delta
+            if (
+                dropoff_hazard is None
+                and guardrail_dropoff is not None
+                and delta >= float(guardrail_dropoff)
+                and far_med > near_med
+            ):
+                score = _clamp(delta / max(float(guardrail_dropoff) * 2.0, 1e-6), 0.0, 1.0)
+                dropoff_hazard = {
+                    "hazardKind": "dropoff",
+                    "severity": "critical",
+                    "score": round(score, 3),
+                    "evidence": {
+                        "roi": "bottom",
+                        "dropoffDelta": round(delta, 4),
+                        "near": round(near_med, 4),
+                        "far": round(far_med, 4),
+                        "guardrail": True,
+                    },
+                }
+                debug["guardrail"] = {
+                    "enabled": True,
+                    "reason": "dropoff_delta_guardrail",
+                    "threshold": float(guardrail_dropoff),
+                    "value": round(delta, 4),
+                }
+
+        obstacle_guardrail_active = False
+        guardrail_obs = thresholds.guardrail_obstacle_p10_crit
+        if guardrail_obs is not None and p10 <= float(guardrail_obs):
+            obstacle_guardrail_active = True
+            if obstacle_hazard is None or str(obstacle_hazard.get("severity", "")).lower() != "critical":
+                score = _clamp((float(guardrail_obs) - p10) / max(float(guardrail_obs), 1e-6) + 0.7, 0.0, 1.0)
+                obstacle_hazard = {
+                    "hazardKind": "obstacle_close",
+                    "severity": "critical",
+                    "score": round(score, 3),
+                    "evidence": {
+                        "roi": "bottom_center",
+                        "depthMin": round(local_min, 4),
+                        "depthP10": round(p10, 4),
+                        "guardrail": True,
+                    },
+                }
+            elif isinstance(obstacle_hazard.get("evidence"), dict):
+                obstacle_hazard["evidence"]["guardrail"] = True
+            debug["guardrail"] = {
+                "enabled": True,
+                "reason": "obstacle_p10_guardrail",
+                "threshold": float(guardrail_obs),
+                "value": round(p10, 4),
+            }
         feature_ms += (time.perf_counter() - feature_started) * 1000.0
 
         rule_started = time.perf_counter()
-        if dropoff_hazard is not None:
+        guardrail_debug = debug.get("guardrail", {})
+        prefer_obstacle = (
+            obstacle_guardrail_active
+            or (
+                isinstance(guardrail_debug, dict)
+                and bool(guardrail_debug.get("enabled"))
+                and str(guardrail_debug.get("reason", "")).strip().lower() == "obstacle_p10_guardrail"
+            )
+        )
+        if prefer_obstacle and obstacle_hazard is not None:
+            hazards.append(obstacle_hazard)
+        elif dropoff_hazard is not None:
             hazards.append(dropoff_hazard)
         elif obstacle_hazard is not None:
             hazards.append(obstacle_hazard)
@@ -658,6 +749,28 @@ def _to_float(value: Any, default: float) -> float:
         return float(text)
     except Exception:  # noqa: BLE001
         return float(default)
+
+
+def _to_optional_float(
+    value: Any,
+    *,
+    fallback: float | None = None,
+    low: float,
+    high: float,
+) -> float | None:
+    if value is None:
+        return fallback
+    try:
+        text = str(value).strip()
+    except Exception:  # noqa: BLE001
+        return fallback
+    if not text:
+        return fallback
+    try:
+        parsed = float(text)
+    except Exception:  # noqa: BLE001
+        return fallback
+    return _clamp(parsed, low, high)
 
 
 def _pick_override(overrides: Mapping[str, Any], *keys: str) -> Any:

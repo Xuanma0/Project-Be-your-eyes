@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import itertools
+import json
+from pathlib import Path
 from typing import Any
+
+from byes.latency_stats import summarize_latency
 
 
 DEFAULT_GRID: dict[str, list[float]] = {
-    "depthObsCrit": [0.45, 0.55, 0.65],
-    "depthDropoffDelta": [0.6, 0.8, 1.0],
-    "obsCrit": [0.20, 0.24, 0.28],
+    "depthObsCrit": [0.35, 0.45, 0.55, 0.65],
+    "depthDropoffDelta": [0.4, 0.6, 0.8, 1.0],
+    "obsCrit": [0.16, 0.20, 0.24, 0.28],
 }
 
 
@@ -84,3 +88,83 @@ def _as_float(value: Any, fallback: float = 0.0) -> float:
         return float(value)
     except Exception:  # noqa: BLE001
         return float(fallback)
+
+
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8-sig") as fp:
+        for raw in fp:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
+
+
+def collect_risk_hazard_result_latencies(events: list[dict[str, Any]]) -> list[int]:
+    latencies: list[int] = []
+    for row in events:
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("category", "")).strip().lower() != "tool":
+            continue
+        if str(event.get("name", "")).strip().lower() != "risk.hazards":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        value = _as_int_or_none(event.get("latencyMs"))
+        if value is None:
+            continue
+        latencies.append(value)
+    return latencies
+
+
+def validate_risk_latency_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    latencies = collect_risk_hazard_result_latencies(events)
+    positive = [value for value in latencies if int(value) > 0]
+    all_stats = summarize_latency(latencies)
+    positive_stats = summarize_latency(positive)
+    valid = bool(positive)
+    return {
+        "valid": valid,
+        "totalCount": int(all_stats.get("count", 0) or 0),
+        "positiveCount": int(positive_stats.get("count", 0) or 0),
+        "p50": int(positive_stats.get("p50", 0) or 0) if valid else None,
+        "p90": int(positive_stats.get("p90", 0) or 0) if valid else None,
+        "p99": int(positive_stats.get("p99", 0) or 0) if valid else None,
+        "max": int(positive_stats.get("max", 0) or 0) if valid else None,
+        "valuesSample": positive_stats.get("valuesSample", []) if valid else [],
+        "allValuesSample": all_stats.get("valuesSample", []),
+    }
+
+
+def build_calibration_latency_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
+    info = validate_risk_latency_from_events(events)
+    notes: list[str] = []
+    p90: int | None = info.get("p90") if isinstance(info, dict) else None
+    if not bool(info.get("valid", False)):
+        p90 = None
+        notes.append("latency_invalid")
+    return {
+        "riskLatencyP90": p90,
+        "riskLatency": info,
+        "riskLatencyRawCount": len(collect_risk_hazard_result_latencies(events)),
+        "notes": notes,
+    }
+
+
+def _as_int_or_none(value: Any) -> int | None:
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        return int(float(value))
+    except Exception:  # noqa: BLE001
+        return None
