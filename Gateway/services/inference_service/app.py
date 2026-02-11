@@ -31,6 +31,7 @@ def _now_ms() -> int:
 class InferenceRequest(BaseModel):
     image_b64: str
     frameSeq: int | None = None
+    riskThresholds: dict[str, float] | None = None
 
 
 app = FastAPI(title="BYES Reference Inference Service")
@@ -181,8 +182,22 @@ def infer_risk(request: InferenceRequest) -> dict[str, Any]:
         time.sleep(delay_ms / 1000.0)
 
     provider = get_risk_provider()
+    risk_thresholds_override: dict[str, float] | None = None
+    if isinstance(request.riskThresholds, dict):
+        risk_thresholds_override = {}
+        for key, value in request.riskThresholds.items():
+            try:
+                risk_thresholds_override[str(key)] = float(value)
+            except Exception:  # noqa: BLE001
+                continue
     try:
-        result = provider.infer(image, request.frameSeq)
+        if risk_thresholds_override:
+            try:
+                result = provider.infer(image, request.frameSeq, thresholds_override=risk_thresholds_override)
+            except TypeError:
+                result = provider.infer(image, request.frameSeq)
+        else:
+            result = provider.infer(image, request.frameSeq)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001

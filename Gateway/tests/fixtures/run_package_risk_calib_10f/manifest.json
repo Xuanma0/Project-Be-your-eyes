@@ -1,0 +1,26 @@
+﻿{
+  "scenarioTag": "fixture_risk_calib_10f",
+  "startMs": 1702600000000,
+  "endMs": 1702600004000,
+  "baseUrl": "http://127.0.0.1:8000",
+  "wsUrl": "ws://127.0.0.1:8000/ws/events",
+  "sessionId": "fixture-risk-calib-10f",
+  "wsJsonl": "ws_events.jsonl",
+  "eventsV1Jsonl": "events/events_v1.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "framesDir": "frames",
+  "framesMetaJsonl": "frames_meta.jsonl",
+  "frameCountSent": 10,
+  "eventCountAccepted": 0,
+  "localSafetyFallbackEnterCount": 0,
+  "healthStatusCounts": {
+    "NORMAL": 1
+  },
+  "groundTruth": {
+    "version": 1,
+    "riskJsonl": "ground_truth/depth_risk.jsonl",
+    "matchWindowFrames": 1
+  },
+  "errors": []
+}

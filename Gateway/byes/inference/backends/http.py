@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import time
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -101,6 +102,9 @@ class HttpRiskBackend:
             "tsMs": ts_ms,
             "image_b64": base64.b64encode(image_bytes).decode("ascii"),
         }
+        risk_thresholds = _collect_risk_threshold_overrides_from_env()
+        if risk_thresholds:
+            request_payload["riskThresholds"] = risk_thresholds
         try:
             timeout_s = max(0.05, self.timeout_ms / 1000.0)
             async with httpx.AsyncClient(timeout=timeout_s) as client:
@@ -173,3 +177,25 @@ def _sanitize_endpoint(url: str) -> str | None:
     if not parsed.scheme or not parsed.netloc:
         return None
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/", "", "", ""))
+
+
+def _collect_risk_threshold_overrides_from_env() -> dict[str, float]:
+    env_map = {
+        "BYES_RISK_DEPTH_OBS_WARN": "depthObsWarn",
+        "BYES_RISK_DEPTH_OBS_CRIT": "depthObsCrit",
+        "BYES_RISK_DEPTH_DROPOFF_DELTA": "depthDropoffDelta",
+        "BYES_RISK_OBS_WARN": "obsWarn",
+        "BYES_RISK_OBS_CRIT": "obsCrit",
+        "BYES_RISK_DROPOFF_PEAK": "dropoffPeak",
+        "BYES_RISK_DROPOFF_CONTRAST": "dropoffContrast",
+    }
+    out: dict[str, float] = {}
+    for env_name, payload_name in env_map.items():
+        raw = str(os.getenv(env_name, "")).strip()
+        if not raw:
+            continue
+        try:
+            out[payload_name] = float(raw)
+        except Exception:  # noqa: BLE001
+            continue
+    return out

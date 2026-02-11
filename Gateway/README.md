@@ -384,6 +384,29 @@ Quick latency-only check:
 python Gateway/scripts/bench_risk_latency.py --run-package <replay_or_fixture_run_package> --json-out Gateway/regression/out/risk_latency.json
 ```
 
+Risk calibration workflow (heuristic thresholds):
+
+1. Start `inference_service` with heuristic risk + depth provider (typically ONNX depth):
+   - `BYES_SERVICE_RISK_PROVIDER=heuristic`
+   - `BYES_SERVICE_DEPTH_PROVIDER=onnx`
+   - `BYES_SERVICE_DEPTH_ONNX_PATH=<model.onnx>`
+2. Run calibration grid search:
+
+```bash
+python Gateway/scripts/calibrate_risk_thresholds.py ^
+  --run-package Gateway/tests/fixtures/run_package_risk_calib_10f ^
+  --risk-url http://127.0.0.1:19120/risk ^
+  --sizes 256
+```
+
+Outputs:
+- `out.json`: best params, topK candidates, and full calibration rows.
+- `out.md`: readable topK table + selection rule summary.
+
+Selection rule:
+- hard gate `critical_fn == 0` (if `--must-zero-critical-fn=true`)
+- then sort by `fp_total` asc, `qualityScore` desc, `riskLatencyP90` asc.
+
 Reference service template (optional, local/server-side only):
 
 ```bash

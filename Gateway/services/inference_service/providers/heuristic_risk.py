@@ -3,8 +3,9 @@ from __future__ import annotations
 import math
 import os
 import time
+from dataclasses import dataclass
 from statistics import mean, median
-from typing import Any
+from typing import Any, Mapping
 
 from PIL import Image, ImageFilter, ImageStat
 
@@ -37,6 +38,64 @@ except Exception:  # noqa: BLE001
         return mapped, warnings
 
 
+@dataclass(frozen=True)
+class RiskThresholds:
+    depth_obs_warn: float = 1.0
+    depth_obs_crit: float = 0.6
+    depth_dropoff_delta: float = 0.8
+    obs_warn: float = 0.14
+    obs_crit: float = 0.24
+    dropoff_peak: float = 28.0
+    dropoff_contrast: float = 0.2
+
+    @classmethod
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> "RiskThresholds":
+        env = environ if environ is not None else os.environ
+        obs_warn_raw = _read_env(env, "BYES_RISK_OBS_WARN") or _read_env(env, "BYES_RISK_EDGE_DENSITY_WARN") or "0.14"
+        obs_crit_raw = _read_env(env, "BYES_RISK_OBS_CRIT") or _read_env(env, "BYES_RISK_EDGE_DENSITY_CRIT") or "0.24"
+        return cls(
+            depth_obs_warn=_clamp(_to_float(_read_env(env, "BYES_RISK_DEPTH_OBS_WARN"), 1.0), 0.01, 20.0),
+            depth_obs_crit=_clamp(_to_float(_read_env(env, "BYES_RISK_DEPTH_OBS_CRIT"), 0.6), 0.01, 20.0),
+            depth_dropoff_delta=_clamp(_to_float(_read_env(env, "BYES_RISK_DEPTH_DROPOFF_DELTA"), 0.8), 0.05, 20.0),
+            obs_warn=_clamp(_to_float(obs_warn_raw, 0.14), 0.01, 0.95),
+            obs_crit=_clamp(_to_float(obs_crit_raw, 0.24), 0.01, 0.99),
+            dropoff_peak=_clamp(_to_float(_read_env(env, "BYES_RISK_DROPOFF_PEAK"), 28.0), 1.0, 255.0),
+            dropoff_contrast=_clamp(_to_float(_read_env(env, "BYES_RISK_DROPOFF_CONTRAST"), 0.2), 0.01, 1.0),
+        )
+
+    def with_overrides(self, overrides: Mapping[str, Any] | None) -> "RiskThresholds":
+        if not isinstance(overrides, Mapping):
+            return self
+        return RiskThresholds(
+            depth_obs_warn=_clamp(_to_float(_pick_override(overrides, "depth_obs_warn", "depthObsWarn"), self.depth_obs_warn), 0.01, 20.0),
+            depth_obs_crit=_clamp(_to_float(_pick_override(overrides, "depth_obs_crit", "depthObsCrit"), self.depth_obs_crit), 0.01, 20.0),
+            depth_dropoff_delta=_clamp(
+                _to_float(_pick_override(overrides, "depth_dropoff_delta", "depthDropoffDelta"), self.depth_dropoff_delta),
+                0.05,
+                20.0,
+            ),
+            obs_warn=_clamp(_to_float(_pick_override(overrides, "obs_warn", "obsWarn"), self.obs_warn), 0.01, 0.95),
+            obs_crit=_clamp(_to_float(_pick_override(overrides, "obs_crit", "obsCrit"), self.obs_crit), 0.01, 0.99),
+            dropoff_peak=_clamp(_to_float(_pick_override(overrides, "dropoff_peak", "dropoffPeak"), self.dropoff_peak), 1.0, 255.0),
+            dropoff_contrast=_clamp(
+                _to_float(_pick_override(overrides, "dropoff_contrast", "dropoffContrast"), self.dropoff_contrast),
+                0.01,
+                1.0,
+            ),
+        )
+
+    def as_debug_dict(self) -> dict[str, float]:
+        return {
+            "depthObsWarn": round(self.depth_obs_warn, 6),
+            "depthObsCrit": round(self.depth_obs_crit, 6),
+            "depthDropoffDelta": round(self.depth_dropoff_delta, 6),
+            "obsWarn": round(self.obs_warn, 6),
+            "obsCrit": round(self.obs_crit, 6),
+            "dropoffPeak": round(self.dropoff_peak, 6),
+            "dropoffContrast": round(self.dropoff_contrast, 6),
+        }
+
+
 class HeuristicRiskProvider:
     name = "heuristic"
 
@@ -58,31 +117,11 @@ class HeuristicRiskProvider:
         self.center_ratio = _clamp(float(os.getenv("BYES_RISK_CENTER_RATIO", "0.40") or "0.40"), 0.20, 0.70)
         self.edge_threshold = max(1, int(os.getenv("BYES_RISK_EDGE_THRESHOLD", "48") or "48"))
 
-        # visual fallback thresholds (v4.20)
-        self.obs_warn = _clamp(
-            float(
-                os.getenv(
-                    "BYES_RISK_OBS_WARN",
-                    os.getenv("BYES_RISK_EDGE_DENSITY_WARN", "0.14"),
-                )
-                or "0.14"
-            ),
-            0.01,
-            0.95,
-        )
-        self.obs_crit = _clamp(
-            float(
-                os.getenv(
-                    "BYES_RISK_OBS_CRIT",
-                    os.getenv("BYES_RISK_EDGE_DENSITY_CRIT", "0.24"),
-                )
-                or "0.24"
-            ),
-            0.01,
-            0.99,
-        )
-        self.dropoff_peak = _clamp(float(os.getenv("BYES_RISK_DROPOFF_PEAK", "28.0") or "28.0"), 1.0, 255.0)
-        self.dropoff_contrast = _clamp(float(os.getenv("BYES_RISK_DROPOFF_CONTRAST", "0.20") or "0.20"), 0.01, 1.0)
+        self.thresholds = RiskThresholds.from_env()
+        self.obs_warn = self.thresholds.obs_warn
+        self.obs_crit = self.thresholds.obs_crit
+        self.dropoff_peak = self.thresholds.dropoff_peak
+        self.dropoff_contrast = self.thresholds.dropoff_contrast
         self.min_edge_density = _clamp(float(os.getenv("BYES_RISK_MIN_EDGE_DENSITY", "0.02") or "0.02"), 0.0, 1.0)
 
         brightness_pair = str(os.getenv("BYES_RISK_UNKNOWN_BRIGHTNESS", "32,222") or "32,222").split(",", 1)
@@ -99,21 +138,22 @@ class HeuristicRiskProvider:
         self.brightness_low = _clamp(b_low, 0.0, 255.0)
         self.brightness_high = _clamp(b_high, 0.0, 255.0)
 
-        # depth-aware thresholds (v4.21)
-        self.depth_obs_warn = _clamp(float(os.getenv("BYES_RISK_DEPTH_OBS_WARN", "1.0") or "1.0"), 0.01, 20.0)
-        self.depth_obs_crit = _clamp(float(os.getenv("BYES_RISK_DEPTH_OBS_CRIT", "0.6") or "0.6"), 0.01, 20.0)
-        self.depth_dropoff_delta = _clamp(
-            float(os.getenv("BYES_RISK_DEPTH_DROPOFF_DELTA", "0.8") or "0.8"),
-            0.05,
-            20.0,
-        )
+        self.depth_obs_warn = self.thresholds.depth_obs_warn
+        self.depth_obs_crit = self.thresholds.depth_obs_crit
+        self.depth_dropoff_delta = self.thresholds.depth_dropoff_delta
 
-    def infer(self, image: Image.Image, frame_seq: int | None) -> dict[str, Any]:
+    def infer(
+        self,
+        image: Image.Image,
+        frame_seq: int | None,
+        thresholds_override: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        thresholds = self.thresholds.with_overrides(thresholds_override)
         total_started = time.perf_counter()
         visual_started = time.perf_counter()
-        visual_hazards, visual_debug = self._infer_visual_hazards(image)
+        visual_hazards, visual_debug = self._infer_visual_hazards(image, thresholds)
         visual_feature_ms = (time.perf_counter() - visual_started) * 1000.0
-        depth_hazards, depth_debug, depth_failed, depth_timings = self._infer_depth_hazards(image, frame_seq)
+        depth_hazards, depth_debug, depth_failed, depth_timings = self._infer_depth_hazards(image, frame_seq, thresholds)
 
         rule_started = time.perf_counter()
         if depth_hazards:
@@ -148,15 +188,7 @@ class HeuristicRiskProvider:
                 "source": source,
                 "depth": depth_debug,
                 "visual": visual_debug,
-                "thresholds": {
-                    "depthObsWarn": self.depth_obs_warn,
-                    "depthObsCrit": self.depth_obs_crit,
-                    "depthDropoffDelta": self.depth_dropoff_delta,
-                    "obsWarn": self.obs_warn,
-                    "obsCrit": self.obs_crit,
-                    "dropoffPeak": self.dropoff_peak,
-                    "dropoffContrast": self.dropoff_contrast,
-                },
+                "thresholds": thresholds.as_debug_dict(),
                 "timings": {
                     "depthMs": _round_ms(depth_ms),
                     "featureMs": _round_ms(feature_ms),
@@ -170,6 +202,7 @@ class HeuristicRiskProvider:
         self,
         image: Image.Image,
         frame_seq: int | None,
+        thresholds: "RiskThresholds",
     ) -> tuple[list[dict[str, Any]], dict[str, Any], bool, dict[str, float]]:
         depth_ms = 0.0
         feature_ms = 0.0
@@ -252,16 +285,24 @@ class HeuristicRiskProvider:
 
         hazards: list[dict[str, Any]] = []
         obstacle_hazard: dict[str, Any] | None = None
-        if local_min <= self.depth_obs_crit:
-            score = _clamp((self.depth_obs_crit - local_min) / max(self.depth_obs_crit, 1e-6) + 0.6, 0.0, 1.0)
+        if local_min <= thresholds.depth_obs_crit:
+            score = _clamp(
+                (thresholds.depth_obs_crit - local_min) / max(thresholds.depth_obs_crit, 1e-6) + 0.6,
+                0.0,
+                1.0,
+            )
             obstacle_hazard = {
                 "hazardKind": "obstacle_close",
                 "severity": "critical",
                 "score": round(score, 3),
                 "evidence": {"roi": "bottom_center", "depthMin": round(local_min, 4), "depthP10": round(p10, 4)},
             }
-        elif p10 <= self.depth_obs_warn:
-            score = _clamp((self.depth_obs_warn - p10) / max(self.depth_obs_warn, 1e-6) + 0.4, 0.0, 1.0)
+        elif p10 <= thresholds.depth_obs_warn:
+            score = _clamp(
+                (thresholds.depth_obs_warn - p10) / max(thresholds.depth_obs_warn, 1e-6) + 0.4,
+                0.0,
+                1.0,
+            )
             obstacle_hazard = {
                 "hazardKind": "obstacle_close",
                 "severity": "warning",
@@ -281,8 +322,8 @@ class HeuristicRiskProvider:
             debug["roiStats"]["dropoffDelta"] = round(delta, 4)
             debug["roiStats"]["depthFarMedian"] = round(far_med, 4)
             debug["roiStats"]["depthNearMedian"] = round(near_med, 4)
-            if delta >= self.depth_dropoff_delta:
-                score = _clamp(delta / max(self.depth_dropoff_delta * 2.0, 1e-6), 0.0, 1.0)
+            if delta >= thresholds.depth_dropoff_delta:
+                score = _clamp(delta / max(thresholds.depth_dropoff_delta * 2.0, 1e-6), 0.0, 1.0)
                 dropoff_hazard = {
                     "hazardKind": "dropoff",
                     "severity": "critical",
@@ -305,7 +346,11 @@ class HeuristicRiskProvider:
 
         return _done(hazards, False)
 
-    def _infer_visual_hazards(self, image: Image.Image) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    def _infer_visual_hazards(
+        self,
+        image: Image.Image,
+        thresholds: "RiskThresholds",
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         resized = _resize_to_width(image, self.target_width).convert("RGB")
         gray = resized.convert("L")
         edges = gray.filter(ImageFilter.FIND_EDGES)
@@ -359,18 +404,18 @@ class HeuristicRiskProvider:
             )
 
         vertical_hazard: dict[str, Any] | None = None
-        is_dropoff = dropoff_signal >= self.dropoff_peak and contrast_signal >= self.dropoff_contrast
+        is_dropoff = dropoff_signal >= thresholds.dropoff_peak and contrast_signal >= thresholds.dropoff_contrast
         is_stair = (
             not is_dropoff
-            and dropoff_signal >= self.dropoff_peak * 0.45
+            and dropoff_signal >= thresholds.dropoff_peak * 0.45
             and texture_wave >= 0.015
-            and bottom_density >= self.obs_warn * 0.8
+            and bottom_density >= thresholds.obs_warn * 0.8
         )
         if is_dropoff:
             score = _clamp(
                 max(
-                    dropoff_signal / max(self.dropoff_peak * 1.6, 1.0),
-                    contrast_signal / max(self.dropoff_contrast, 1e-6),
+                    dropoff_signal / max(thresholds.dropoff_peak * 1.6, 1.0),
+                    contrast_signal / max(thresholds.dropoff_contrast, 1e-6),
                 ),
                 0.0,
                 1.0,
@@ -387,7 +432,7 @@ class HeuristicRiskProvider:
             }
         elif is_stair:
             stair_score = _clamp(
-                max(dropoff_signal / max(self.dropoff_peak, 1.0), texture_wave / 0.05),
+                max(dropoff_signal / max(thresholds.dropoff_peak, 1.0), texture_wave / 0.05),
                 0.0,
                 1.0,
             )
@@ -405,11 +450,11 @@ class HeuristicRiskProvider:
             hazards.append(vertical_hazard)
 
         obstacle_score = _clamp(
-            max(bottom_density, center_density) / max(self.obs_crit, 1e-6),
+            max(bottom_density, center_density) / max(thresholds.obs_crit, 1e-6),
             0.0,
             1.0,
         )
-        obstacle_enabled = bottom_density >= self.obs_warn and center_density >= self.obs_warn * 0.9
+        obstacle_enabled = bottom_density >= thresholds.obs_warn and center_density >= thresholds.obs_warn * 0.9
         if obstacle_enabled and not (unknown_depth_triggered and obstacle_score < 0.95):
             severity = "critical" if obstacle_score >= 1.0 else "warning"
             if vertical_hazard is None or severity == "critical":
@@ -596,6 +641,30 @@ def _percentile(values: list[float], q: float) -> float:
     index = int(round((len(ordered) - 1) * q))
     index = max(0, min(len(ordered) - 1, index))
     return float(ordered[index])
+
+
+def _read_env(environ: Mapping[str, str], name: str) -> str:
+    value = environ.get(name)
+    return str(value).strip() if value is not None else ""
+
+
+def _to_float(value: Any, default: float) -> float:
+    if value is None:
+        return float(default)
+    try:
+        text = str(value).strip()
+        if not text:
+            return float(default)
+        return float(text)
+    except Exception:  # noqa: BLE001
+        return float(default)
+
+
+def _pick_override(overrides: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in overrides:
+            return overrides.get(key)
+    return None
 
 
 def _clamp(value: float, low: float, high: float) -> float:
