@@ -1654,6 +1654,8 @@ async def run_packages_list(
     min_pov_context_token_approx: int | None = None,
     has_plan: str = "any",
     max_plan_guardrails: int | None = None,
+    min_plan_score: float | None = None,
+    plan_risk_level: str | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> dict[str, Any]:
@@ -1676,6 +1678,8 @@ async def run_packages_list(
         min_pov_context_token_approx=min_pov_context_token_approx,
         has_plan=has_plan,
         max_plan_guardrails=max_plan_guardrails,
+        min_plan_score=min_plan_score,
+        plan_risk_level=plan_risk_level,
         sort=sort,
         order=order,
     )
@@ -1699,6 +1703,8 @@ async def run_packages_list(
             "min_pov_context_token_approx": min_pov_context_token_approx,
             "has_plan": has_plan,
             "max_plan_guardrails": max_plan_guardrails,
+            "min_plan_score": min_plan_score,
+            "plan_risk_level": plan_risk_level,
             "sort": sort,
             "order": order,
             "limit": limit,
@@ -1726,6 +1732,8 @@ async def run_packages_export_json(
     min_pov_context_token_approx: int | None = None,
     has_plan: str = "any",
     max_plan_guardrails: int | None = None,
+    min_plan_score: float | None = None,
+    plan_risk_level: str | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> dict[str, Any]:
@@ -1748,6 +1756,8 @@ async def run_packages_export_json(
         min_pov_context_token_approx=min_pov_context_token_approx,
         has_plan=has_plan,
         max_plan_guardrails=max_plan_guardrails,
+        min_plan_score=min_plan_score,
+        plan_risk_level=plan_risk_level,
         sort=sort,
         order=order,
     )
@@ -1777,6 +1787,8 @@ async def run_packages_export_csv(
     min_pov_context_token_approx: int | None = None,
     has_plan: str = "any",
     max_plan_guardrails: int | None = None,
+    min_plan_score: float | None = None,
+    plan_risk_level: str | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> Response:
@@ -1799,6 +1811,8 @@ async def run_packages_export_csv(
         min_pov_context_token_approx=min_pov_context_token_approx,
         has_plan=has_plan,
         max_plan_guardrails=max_plan_guardrails,
+        min_plan_score=min_plan_score,
+        plan_risk_level=plan_risk_level,
         sort=sort,
         order=order,
     )
@@ -1838,6 +1852,9 @@ async def run_packages_export_csv(
         "plan_risk_level",
         "plan_actions",
         "plan_guardrails",
+        "plan_has_stop",
+        "plan_has_confirm",
+        "plan_score",
         "runUrl",
         "reportUrl",
         "summaryUrl",
@@ -2352,6 +2369,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     pov_context_out = pov_context_out if isinstance(pov_context_out, dict) else {}
     plan_payload = summary.get("plan", {})
     plan_payload = plan_payload if isinstance(plan_payload, dict) else {}
+    plan_quality_payload = summary.get("planQuality", {})
+    plan_quality_payload = plan_quality_payload if isinstance(plan_quality_payload, dict) else {}
     critical_misses: int | None = None
     max_delay_frames: int | None = None
     risk_latency_p90: int | None = None
@@ -2373,14 +2392,35 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     plan_risk_level = str(plan_payload.get("riskLevel", "")).strip() or None
     plan_actions = 0
     plan_guardrails = 0
+    plan_has_stop = False
+    plan_has_confirm = False
+    plan_score: float | None = None
     plan_actions_payload = plan_payload.get("actions")
     if isinstance(plan_actions_payload, dict):
         raw_actions = _read_float(plan_actions_payload, "count")
         if raw_actions is not None:
             plan_actions = int(raw_actions)
+        types = plan_actions_payload.get("types")
+        if isinstance(types, list):
+            normalized_types = {str(item).strip().lower() for item in types if str(item).strip()}
+            plan_has_stop = "stop" in normalized_types
+            plan_has_confirm = "confirm" in normalized_types
     plan_guardrails_payload = plan_payload.get("guardrailsApplied")
     if isinstance(plan_guardrails_payload, list):
         plan_guardrails = len([item for item in plan_guardrails_payload if str(item).strip()])
+    if isinstance(plan_quality_payload, dict):
+        risk_level_override = str(plan_quality_payload.get("riskLevel", "")).strip()
+        if risk_level_override:
+            plan_risk_level = risk_level_override
+        has_stop_override = plan_quality_payload.get("hasStop")
+        if isinstance(has_stop_override, bool):
+            plan_has_stop = has_stop_override
+        has_confirm_override = plan_quality_payload.get("hasConfirm")
+        if isinstance(has_confirm_override, bool):
+            plan_has_confirm = has_confirm_override
+        score_raw = _read_float(plan_quality_payload, "score")
+        if score_raw is not None:
+            plan_score = float(score_raw)
     if isinstance(depth_risk, dict):
         critical = depth_risk.get("critical", {})
         delay = depth_risk.get("detectionDelayFrames", {})
@@ -2443,6 +2483,9 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "plan_risk_level": plan_risk_level,
         "plan_actions": plan_actions,
         "plan_guardrails": plan_guardrails,
+        "plan_has_stop": plan_has_stop,
+        "plan_has_confirm": plan_has_confirm,
+        "plan_score": plan_score,
         "summary": summary,
     }
     row.update(urls)
@@ -2468,6 +2511,8 @@ def _matches_run_filters(
     min_pov_context_token_approx: int | None,
     has_plan: str | None,
     max_plan_guardrails: int | None,
+    min_plan_score: float | None,
+    plan_risk_level: str | None,
 ) -> bool:
     if scenario:
         if scenario.lower() not in str(row.get("scenarioTag", "")).lower():
@@ -2547,6 +2592,17 @@ def _matches_run_filters(
         value = int(row.get("plan_guardrails", 0) or 0)
         if value > int(max_plan_guardrails):
             return False
+    if min_plan_score is not None:
+        value = row.get("plan_score")
+        if value is None:
+            return False
+        if float(value) < float(min_plan_score):
+            return False
+    if plan_risk_level:
+        expected = str(plan_risk_level).strip().lower()
+        actual = str(row.get("plan_risk_level") or "").strip().lower()
+        if actual != expected:
+            return False
     return True
 
 
@@ -2569,6 +2625,7 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "pov_context_token_approx",
         "plan_actions",
         "plan_guardrails",
+        "plan_score",
         "safemode_enter",
         "throttle_enter",
         "preempt_enter",
@@ -2610,6 +2667,8 @@ async def _query_run_package_rows(
     min_pov_context_token_approx: int | None,
     has_plan: str | None,
     max_plan_guardrails: int | None,
+    min_plan_score: float | None,
+    plan_risk_level: str | None,
     sort: str,
     order: str,
 ) -> list[dict[str, Any]]:
@@ -2638,6 +2697,8 @@ async def _query_run_package_rows(
             min_pov_context_token_approx=min_pov_context_token_approx,
             has_plan=has_plan,
             max_plan_guardrails=max_plan_guardrails,
+            min_plan_score=min_plan_score,
+            plan_risk_level=plan_risk_level,
         ):
             continue
         rows.append(row)
@@ -2694,6 +2755,8 @@ async def runs_dashboard(
     min_pov_context_token_approx: int | None = None,
     has_plan: str = "any",
     max_plan_guardrails: int | None = None,
+    min_plan_score: float | None = None,
+    plan_risk_level: str | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> HTMLResponse:
@@ -2717,6 +2780,8 @@ async def runs_dashboard(
         min_pov_context_token_approx=min_pov_context_token_approx,
         has_plan=has_plan,
         max_plan_guardrails=max_plan_guardrails,
+        min_plan_score=min_plan_score,
+        plan_risk_level=plan_risk_level,
         sort=sort,
         order=order,
     )
@@ -2752,6 +2817,10 @@ async def runs_dashboard(
         plan_risk_level = str(row.get("plan_risk_level") or "—")
         plan_actions = str(int(row.get("plan_actions", 0) or 0))
         plan_guardrails = str(int(row.get("plan_guardrails", 0) or 0))
+        plan_has_stop = "yes" if bool(row.get("plan_has_stop")) else "no"
+        plan_has_confirm = "yes" if bool(row.get("plan_has_confirm")) else "no"
+        plan_score_raw = row.get("plan_score")
+        plan_score = "—" if plan_score_raw is None else f"{float(plan_score_raw):.2f}"
         rows_html += (
             "<tr>"
             f"<td><input type='checkbox' data-run-id='{run_val}' /></td>"
@@ -2774,10 +2843,13 @@ async def runs_dashboard(
             f"<td>{html.escape(plan_risk_level)}</td>"
             f"<td>{html.escape(plan_actions)}</td>"
             f"<td>{html.escape(plan_guardrails)}</td>"
+            f"<td>{html.escape(plan_has_stop)}</td>"
+            f"<td>{html.escape(plan_has_confirm)}</td>"
+            f"<td>{html.escape(plan_score)}</td>"
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='20' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='23' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -2798,6 +2870,8 @@ async def runs_dashboard(
     )
     has_plan_value = html.escape(has_plan or "any")
     max_plan_guardrails_value = html.escape("" if max_plan_guardrails is None else str(max_plan_guardrails))
+    min_plan_score_value = html.escape("" if min_plan_score is None else str(min_plan_score))
+    plan_risk_level_value = html.escape(plan_risk_level or "")
     html_page = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -2859,6 +2933,16 @@ async def runs_dashboard(
       <label>max_risk_latency_p90: <input type="number" min="0" name="max_risk_latency_p90" value="{max_risk_latency_p90_value}" /></label>
       <label>max_risk_latency_max: <input type="number" min="0" name="max_risk_latency_max" value="{max_risk_latency_max_value}" /></label>
       <label>max_plan_guardrails: <input type="number" min="0" name="max_plan_guardrails" value="{max_plan_guardrails_value}" /></label>
+      <label>min_plan_score: <input type="number" step="0.01" min="0" max="100" name="min_plan_score" value="{min_plan_score_value}" /></label>
+      <label>plan_risk_level:
+        <select name="plan_risk_level">
+          <option value="" {"selected" if plan_risk_level_value == "" else ""}>any</option>
+          <option value="low" {"selected" if plan_risk_level_value == "low" else ""}>low</option>
+          <option value="medium" {"selected" if plan_risk_level_value == "medium" else ""}>medium</option>
+          <option value="high" {"selected" if plan_risk_level_value == "high" else ""}>high</option>
+          <option value="critical" {"selected" if plan_risk_level_value == "critical" else ""}>critical</option>
+        </select>
+      </label>
       <label>sort:
         <select name="sort">
           <option value="createdAtMs" {"selected" if sort_value == "createdAtMs" else ""}>createdAtMs</option>
@@ -2871,6 +2955,7 @@ async def runs_dashboard(
           <option value="pov_context_token_approx" {"selected" if sort_value == "pov_context_token_approx" else ""}>pov_context_token_approx</option>
           <option value="plan_actions" {"selected" if sort_value == "plan_actions" else ""}>plan_actions</option>
           <option value="plan_guardrails" {"selected" if sort_value == "plan_guardrails" else ""}>plan_guardrails</option>
+          <option value="plan_score" {"selected" if sort_value == "plan_score" else ""}>plan_score</option>
           <option value="e2e_count" {"selected" if sort_value == "e2e_count" else ""}>e2e_count</option>
           <option value="ttfa_count" {"selected" if sort_value == "ttfa_count" else ""}>ttfa_count</option>
           <option value="frameCountSent" {"selected" if sort_value == "frameCountSent" else ""}>frameCountSent</option>
@@ -2884,8 +2969,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_plan_guardrails={max_plan_guardrails_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_plan_guardrails={max_plan_guardrails_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_plan_guardrails={max_plan_guardrails_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_plan_guardrails={max_plan_guardrails_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -2911,6 +2996,9 @@ async def runs_dashboard(
           <th>Plan Risk</th>
           <th>Plan Actions</th>
           <th>Plan Guardrails</th>
+          <th>Plan Stop</th>
+          <th>Plan Confirm</th>
+          <th>Plan Score</th>
         </tr>
       </thead>
       <tbody id="runs">{rows_html}</tbody>

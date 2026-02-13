@@ -89,7 +89,13 @@ Audit outputs:
 
 ## Planning API (/api/plan)
 
-Generate an `ActionPlan v1` from POV context + risk events (default planner backend is `mock`):
+Generate an `ActionPlan v1` from POV context + risk events.
+
+Planner backends:
+- `mock` (default): built-in deterministic planner in Gateway.
+- `http`: calls external planner service (reference service in `services/planner_service`).
+
+Default (`mock`) example:
 
 ```powershell
 curl -X POST "http://127.0.0.1:8000/api/plan" `
@@ -131,6 +137,24 @@ Loop events written to `events/events_v1.jsonl`:
 - `ui.command`
 - `ui.confirm_request`
 - `ui.confirm_response`
+
+HTTP planner (reference service) quick demo:
+
+```powershell
+# 1) start planner service
+python Gateway/services/planner_service/app.py
+
+# 2) configure Gateway planner backend
+set BYES_PLANNER_BACKEND=http
+set BYES_PLANNER_ENDPOINT=http://127.0.0.1:19211/plan
+
+# 3) run report/replay and inspect planner metadata + plan quality
+python Gateway/scripts/report_run.py --run-package Gateway/tests/fixtures/run_package_with_plan_http_min
+```
+
+Validation points:
+- `events/events_v1.jsonl` has `plan.generate` payload with planner `backend/model/endpoint`.
+- `report.json` includes `plan` and `planQuality`.
 
 ## Ablation: POV Budget Sweep
 

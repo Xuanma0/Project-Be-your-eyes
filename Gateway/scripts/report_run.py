@@ -38,6 +38,7 @@ from byes.quality_metrics import (  # noqa: E402
 from byes.pov_metrics import compute_pov_metrics, load_pov_ir_from_run_package  # noqa: E402
 from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text  # noqa: E402
 from byes.plan_pipeline import generate_action_plan, summarize_plan_for_report  # noqa: E402
+from byes.plan_quality import compute_plan_quality  # noqa: E402
 
 _LABEL_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=\"((?:\\.|[^\"])*)\"")
 _DEFAULT_POV_CONTEXT_BUDGET = {"maxChars": 2000, "maxTokensApprox": 500}
@@ -963,6 +964,20 @@ def generate_report_outputs(
             summary["plan"] = summarize_plan_for_report(plan_bundle)
         except Exception:
             summary["plan"] = {"present": False}
+    inferred_planner = _infer_planner_meta_from_events(event_rows)
+    plan_payload = summary.get("plan")
+    if isinstance(plan_payload, dict):
+        planner_payload = plan_payload.get("planner")
+        planner_payload = planner_payload if isinstance(planner_payload, dict) else {}
+        for key in ("backend", "model", "endpoint"):
+            current = str(planner_payload.get(key, "")).strip()
+            fallback = inferred_planner.get(key)
+            if not current and isinstance(fallback, str) and fallback.strip():
+                planner_payload[key] = fallback.strip()
+        if planner_payload:
+            plan_payload["planner"] = planner_payload
+        summary["plan"] = plan_payload
+    summary["planQuality"] = compute_plan_quality(summary.get("plan"))
     inferred_summary = extract_inference_summary_from_ws_events(event_source_path)
     events_v1_inferred = infer_inference_summary_from_events_v1(event_rows)
     risk_latency_stats, risk_timings_stats = extract_risk_latency_metrics_from_events_v1(event_rows)
@@ -1148,6 +1163,30 @@ def _pick_plan_frame_seq(event_rows: list[dict[str, Any]]) -> int | None:
                 return frame_seq if frame_seq > 0 else None
     fallback_seq = int(risk_rows[-1].get("frameSeq", 0) or 0)
     return fallback_seq if fallback_seq > 0 else None
+
+
+def _infer_planner_meta_from_events(event_rows: list[dict[str, Any]]) -> dict[str, str | None]:
+    planner_meta: dict[str, str | None] = {"backend": None, "model": None, "endpoint": None}
+    for row in event_rows:
+        if str(row.get("name", "")).strip().lower() != "plan.generate":
+            continue
+        if str(row.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(row.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = row.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        backend = str(payload.get("backend", "")).strip()
+        model = str(payload.get("model", "")).strip()
+        endpoint = str(payload.get("endpoint", "")).strip()
+        if backend:
+            planner_meta["backend"] = backend
+        if model:
+            planner_meta["model"] = model
+        if endpoint:
+            planner_meta["endpoint"] = endpoint
+    return planner_meta
 
 
 def _append_tool_focus(lines: list[str], samples: dict[SeriesKey, float], tool: str, delta: bool) -> None:
