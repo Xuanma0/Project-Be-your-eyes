@@ -1,0 +1,11 @@
+{
+  "runId": "fixture-plan-llm-stub-min",
+  "scenarioTag": "fixture_plan_llm_stub",
+  "startMs": 1709000000000,
+  "endMs": 1709000001000,
+  "eventsV1Jsonl": "events/events_v1.jsonl",
+  "povIrJson": "pov/pov_ir_v1.json",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "frameCountSent": 0
+}

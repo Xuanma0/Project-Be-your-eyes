@@ -156,6 +156,24 @@ Validation points:
 - `events/events_v1.jsonl` has `plan.generate` payload with planner `backend/model/endpoint`.
 - `report.json` includes `plan` and `planQuality`.
 
+### Planner LLM Adapter (Optional)
+
+No key is required by default. LLM mode is opt-in and falls back to reference planner when timeout/HTTP/JSON/schema checks fail.
+
+```powershell
+set BYES_PLANNER_BACKEND=http
+set BYES_PLANNER_ENDPOINT=http://127.0.0.1:19211/plan
+set BYES_PLANNER_PROVIDER=llm
+set BYES_PLANNER_LLM_ENDPOINT=http://127.0.0.1:8088/generate
+set BYES_PLANNER_LLM_TIMEOUT_MS=2500
+set BYES_PLANNER_PROMPT_VERSION=v1
+```
+
+Traceability fields:
+- `events/events_v1.jsonl` (`plan.generate`): `plannerProvider`, `promptVersion`, `fallbackUsed`, `fallbackReason`, `jsonValid`
+- `report.json` (`plan.planner.*`, `planQuality.*`): fallback and JSON validity state
+- `/api/run_packages`: `plan_fallback_used`, `plan_json_valid`, `plan_prompt_version`
+
 ## Ablation: POV Budget Sweep
 
 Run one command to compare context budgets:
@@ -187,6 +205,8 @@ Important leaderboard fields:
 - `confirm_timeouts`
 - `missCriticalCount` / `critical_misses`
 - `risk_latency_p90`, `risk_latency_max`
+- `plan_present`, `plan_risk_level`, `plan_actions`, `plan_guardrails`, `plan_score`
+- `plan_fallback_used`, `plan_json_valid`, `plan_prompt_version`
 
 ## Script Index (Most Used)
 

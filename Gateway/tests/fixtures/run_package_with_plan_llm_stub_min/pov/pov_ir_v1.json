@@ -1,0 +1,63 @@
+{
+  "schemaVersion": "pov.ir.v1",
+  "runId": "fixture-plan-llm-stub-min",
+  "video": {
+    "source": "fixture_demo.mp4",
+    "fps": 30.0,
+    "durationSec": 1.2
+  },
+  "decisionPoints": [
+    {
+      "id": "dp-1",
+      "t0Ms": 100,
+      "t1Ms": 320,
+      "state": "crosswalk_wait",
+      "action": "stop",
+      "outcome": "safe",
+      "confidence": 0.92,
+      "constraints": [
+        "red_light"
+      ],
+      "alternatives": [
+        "go"
+      ]
+    },
+    {
+      "id": "dp-2",
+      "t0Ms": 500,
+      "t1Ms": 860,
+      "state": "obstacle_near",
+      "action": "detour_left",
+      "outcome": "safe",
+      "confidence": 0.88,
+      "constraints": [
+        "narrow_lane"
+      ],
+      "alternatives": [
+        "wait"
+      ]
+    }
+  ],
+  "events": [
+    {
+      "id": "evt-1",
+      "tMs": 260,
+      "kind": "vehicle_detected",
+      "severity": "warning"
+    }
+  ],
+  "highlights": [
+    {
+      "id": "hl-1",
+      "tMs": 620,
+      "text": "detour succeeded"
+    }
+  ],
+  "tokens": [
+    {
+      "id": "tok-1",
+      "tMs": 700,
+      "text": "This is a sample token stream payload for contract fixture validation and should be truncated only if it exceeds configured limits."
+    }
+  ]
+}

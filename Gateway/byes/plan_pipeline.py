@@ -224,6 +224,11 @@ def summarize_plan_for_report(bundle: dict[str, Any]) -> dict[str, Any]:
             "backend": planner_meta.get("backend"),
             "model": planner_meta.get("model"),
             "endpoint": planner_meta.get("endpoint"),
+            "provider": planner_meta.get("plannerProvider") or planner_meta.get("provider"),
+            "promptVersion": planner_meta.get("promptVersion"),
+            "fallbackUsed": planner_meta.get("fallbackUsed"),
+            "fallbackReason": planner_meta.get("fallbackReason"),
+            "jsonValid": planner_meta.get("jsonValid"),
         },
         "riskLevel": str(plan.get("riskLevel", "")).strip() or "low",
         "actions": {

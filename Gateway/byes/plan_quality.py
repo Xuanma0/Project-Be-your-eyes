@@ -16,6 +16,14 @@ def compute_plan_quality(plan_summary: dict[str, Any] | None) -> dict[str, Any]:
     guardrails = [str(item).strip() for item in guardrails] if isinstance(guardrails, list) else []
     guardrails = [item for item in guardrails if item]
     guardrails_count = len(guardrails)
+    planner = plan.get("planner")
+    planner = planner if isinstance(planner, dict) else {}
+    fallback_used = bool(planner.get("fallbackUsed")) if "fallbackUsed" in planner else False
+    fallback_reason_raw = planner.get("fallbackReason")
+    fallback_reason = None if fallback_reason_raw is None else (str(fallback_reason_raw).strip() or None)
+    json_valid_raw = planner.get("jsonValid")
+    json_valid = bool(json_valid_raw) if isinstance(json_valid_raw, bool) else None
+    prompt_version = str(planner.get("promptVersion", "")).strip() or None
     has_stop = "stop" in action_types
     has_confirm = "confirm" in action_types
     guardrail_rate = round(float(guardrails_count) / float(max(1, actions_count)), 4)
@@ -56,5 +64,9 @@ def compute_plan_quality(plan_summary: dict[str, Any] | None) -> dict[str, Any]:
             "critical_requires_stop": critical_requires_stop,
             "critical_requires_confirm": critical_requires_confirm,
         },
+        "fallbackUsed": fallback_used,
+        "fallbackReason": fallback_reason,
+        "jsonValid": json_valid,
+        "promptVersion": prompt_version,
         "score": score,
     }

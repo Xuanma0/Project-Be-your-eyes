@@ -969,11 +969,17 @@ def generate_report_outputs(
     if isinstance(plan_payload, dict):
         planner_payload = plan_payload.get("planner")
         planner_payload = planner_payload if isinstance(planner_payload, dict) else {}
-        for key in ("backend", "model", "endpoint"):
-            current = str(planner_payload.get(key, "")).strip()
+        for key in ("backend", "model", "endpoint", "provider", "promptVersion", "fallbackReason"):
+            current_raw = planner_payload.get(key)
+            current = "" if current_raw is None else str(current_raw).strip()
             fallback = inferred_planner.get(key)
             if not current and isinstance(fallback, str) and fallback.strip():
                 planner_payload[key] = fallback.strip()
+        for key in ("fallbackUsed", "jsonValid"):
+            current = planner_payload.get(key)
+            fallback = inferred_planner.get(key)
+            if not isinstance(current, bool) and isinstance(fallback, bool):
+                planner_payload[key] = fallback
         if planner_payload:
             plan_payload["planner"] = planner_payload
         summary["plan"] = plan_payload
@@ -1165,8 +1171,17 @@ def _pick_plan_frame_seq(event_rows: list[dict[str, Any]]) -> int | None:
     return fallback_seq if fallback_seq > 0 else None
 
 
-def _infer_planner_meta_from_events(event_rows: list[dict[str, Any]]) -> dict[str, str | None]:
-    planner_meta: dict[str, str | None] = {"backend": None, "model": None, "endpoint": None}
+def _infer_planner_meta_from_events(event_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    planner_meta: dict[str, Any] = {
+        "backend": None,
+        "model": None,
+        "endpoint": None,
+        "provider": None,
+        "promptVersion": None,
+        "fallbackUsed": None,
+        "fallbackReason": None,
+        "jsonValid": None,
+    }
     for row in event_rows:
         if str(row.get("name", "")).strip().lower() != "plan.generate":
             continue
@@ -1180,12 +1195,27 @@ def _infer_planner_meta_from_events(event_rows: list[dict[str, Any]]) -> dict[st
         backend = str(payload.get("backend", "")).strip()
         model = str(payload.get("model", "")).strip()
         endpoint = str(payload.get("endpoint", "")).strip()
+        provider = str(payload.get("plannerProvider", "")).strip()
+        prompt_version = str(payload.get("promptVersion", "")).strip()
+        fallback_used = payload.get("fallbackUsed")
+        fallback_reason = str(payload.get("fallbackReason", "")).strip()
+        json_valid = payload.get("jsonValid")
         if backend:
             planner_meta["backend"] = backend
         if model:
             planner_meta["model"] = model
         if endpoint:
             planner_meta["endpoint"] = endpoint
+        if provider:
+            planner_meta["provider"] = provider
+        if prompt_version:
+            planner_meta["promptVersion"] = prompt_version
+        if isinstance(fallback_used, bool):
+            planner_meta["fallbackUsed"] = fallback_used
+        if fallback_reason:
+            planner_meta["fallbackReason"] = fallback_reason
+        if isinstance(json_valid, bool):
+            planner_meta["jsonValid"] = json_valid
     return planner_meta
 
 
