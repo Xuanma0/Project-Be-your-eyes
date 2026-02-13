@@ -11,8 +11,10 @@ from flask import Flask, jsonify, request
 
 try:
     from .validate_action_plan import validate_and_normalize
+    from .pov_adapter import parse_pov_ir, pov_to_action_plan
 except ImportError:  # pragma: no cover - supports running as script
     from validate_action_plan import validate_and_normalize
+    from pov_adapter import parse_pov_ir, pov_to_action_plan
 
 app = Flask(__name__)
 
@@ -87,8 +89,24 @@ def _infer_risk_level(hazards: list[dict[str, Any]]) -> str:
 
 
 def _trim_actions(actions: list[dict[str, Any]], max_actions: int) -> list[dict[str, Any]]:
-    ordered = sorted(actions, key=lambda row: int(row.get("priority", 9999) or 9999))
+    ordered = sorted(actions, key=lambda row: _priority_value(row))
     return ordered[: max(1, int(max_actions))]
+
+
+def _priority_value(action: dict[str, Any]) -> int:
+    parsed = _safe_int(action.get("priority"))
+    if parsed is None:
+        return 9999
+    return parsed
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        return int(value)
+    except Exception:
+        return None
 
 
 def _reference_plan(req: dict[str, Any], endpoint: str) -> dict[str, Any]:
@@ -271,7 +289,8 @@ def _call_llm_provider(req: dict[str, Any], endpoint: str, timeout_ms: int, prom
 def _with_planner_meta(
     plan: dict[str, Any],
     *,
-    endpoint: str,
+    endpoint: str | None,
+    planner_backend: str,
     provider: str,
     prompt_version: str,
     fallback_used: bool,
@@ -284,7 +303,7 @@ def _with_planner_meta(
     meta = meta if isinstance(meta, dict) else {}
     planner = meta.get("planner")
     planner = planner if isinstance(planner, dict) else {}
-    planner["backend"] = "http"
+    planner["backend"] = planner_backend
     planner["model"] = str(planner_model or planner.get("model", "reference-planner-v1") or "reference-planner-v1")
     planner["endpoint"] = endpoint
     planner["plannerProvider"] = provider
@@ -321,9 +340,50 @@ def plan() -> Any:
     fallback_reason: str | None = None
     json_valid = True
     planner_model = "reference-planner-v1"
+    planner_backend = "http"
+    planner_endpoint: str | None = endpoint
+    planner_prompt_version = prompt_version
 
     candidate_plan: dict[str, Any] | None = None
-    if provider == "llm":
+    if provider == "pov":
+        planner_prompt_version = "n/a"
+        run_package_path = str(req_payload.get("runPackagePath", "")).strip()
+        if not run_package_path:
+            fallback_used = True
+            fallback_reason = "missing_pov_ir"
+            json_valid = False
+        else:
+            try:
+                pov_ir = parse_pov_ir(Path(run_package_path) / "pov" / "pov_ir_v1.json")
+                run_id = str(req_payload.get("runId", "")).strip() or str(pov_ir.get("runId", "")).strip() or "pov-run"
+                frame_seq = req_payload.get("frameSeq") if isinstance(req_payload.get("frameSeq"), int) else None
+                pov_plan, _diagnostics = pov_to_action_plan(
+                    pov_ir,
+                    constraints,
+                    run_id=run_id,
+                    frame_seq=frame_seq,
+                    generated_at_ms=_now_ms(),
+                )
+                validated_pov_plan, diagnostics = validate_and_normalize(pov_plan, constraints)
+                json_valid = bool(diagnostics.get("jsonValid"))
+                if validated_pov_plan is None:
+                    fallback_used = True
+                    fallback_reason = "schema_error"
+                    json_valid = False
+                else:
+                    candidate_plan = validated_pov_plan
+                    planner_model = "pov-ir-v1"
+                    planner_backend = "pov"
+                    planner_endpoint = None
+            except FileNotFoundError:
+                fallback_used = True
+                fallback_reason = "missing_pov_ir"
+                json_valid = False
+            except Exception:
+                fallback_used = True
+                fallback_reason = "pov_adapter_error"
+                json_valid = False
+    elif provider == "llm":
         llm_endpoint = str(os.getenv("BYES_PLANNER_LLM_ENDPOINT", "")).strip()
         if not llm_endpoint:
             fallback_used = True
@@ -368,12 +428,15 @@ def plan() -> Any:
         if candidate_plan is None:
             return jsonify({"ok": False, "error": "reference_planner_invalid", "diagnostics": diagnostics}), 500
         planner_model = "reference-planner-v1"
+        planner_backend = "http"
+        planner_endpoint = endpoint
 
     final = _with_planner_meta(
         candidate_plan,
-        endpoint=endpoint,
+        endpoint=planner_endpoint,
+        planner_backend=planner_backend,
         provider=provider,
-        prompt_version=prompt_version,
+        prompt_version=planner_prompt_version,
         fallback_used=fallback_used,
         fallback_reason=fallback_reason,
         json_valid=json_valid,

@@ -156,6 +156,21 @@ Validation points:
 - `events/events_v1.jsonl` has `plan.generate` payload with planner `backend/model/endpoint`.
 - `report.json` includes `plan` and `planQuality`.
 
+POV planner adapter (`provider=pov`) for contract/replay:
+
+```powershell
+set BYES_PLANNER_BACKEND=http
+set BYES_PLANNER_ENDPOINT=http://127.0.0.1:19211/plan
+set BYES_PLANNER_PROVIDER=pov
+set BYES_PLANNER_ALLOW_RUN_PACKAGE_PATH=1
+python Gateway/scripts/report_run.py --run-package Gateway/tests/fixtures/pov_plan_min
+```
+
+Validation points:
+- `report.json.plan.planner.backend == "pov"`
+- `report.json.povPlan` includes `decisionCoverage`, `actionCoverage`, `consistencyWarnings`
+- contract suite includes `fixture_pov_plan_min` to lock this adapter path.
+
 ### Planner LLM Adapter (Optional)
 
 No key is required by default. LLM mode is opt-in and falls back to reference planner when timeout/HTTP/JSON/schema checks fail.

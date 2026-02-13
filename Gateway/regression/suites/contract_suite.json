@@ -17,6 +17,19 @@
       "requireCriticalFnZero": true,
       "requirePovPresent": true,
       "minPovDecisions": 2
+    },
+    {
+      "id": "fixture_pov_plan_min",
+      "runPackage": "Gateway/tests/fixtures/pov_plan_min",
+      "steps": [
+        {
+          "type": "ingest_pov_ir",
+          "strict": 1
+        }
+      ],
+      "requireCriticalFnZero": true,
+      "requirePovPresent": true,
+      "minPovDecisions": 2
     }
   ]
 }

@@ -70,7 +70,7 @@ def validate_and_normalize(plan: Any, constraints: dict[str, Any] | None) -> tup
         parsed = _as_int(constraints.get("maxActions"))
         if parsed is not None and parsed > 0:
             max_actions = parsed
-    ordered_actions = sorted(valid_actions, key=lambda item: int(item.get("priority", 9999) or 9999))
+    ordered_actions = sorted(valid_actions, key=lambda item: _priority_value(item))
     trimmed = max(0, len(ordered_actions) - max_actions)
     if trimmed > 0:
         ordered_actions = ordered_actions[:max_actions]
@@ -88,3 +88,10 @@ def _as_int(value: Any) -> int | None:
         return int(value)
     except Exception:
         return None
+
+
+def _priority_value(action: dict[str, Any]) -> int:
+    parsed = _as_int(action.get("priority"))
+    if parsed is None:
+        return 9999
+    return parsed

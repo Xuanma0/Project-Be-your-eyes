@@ -41,6 +41,7 @@ from byes.pov_context import build_context_pack, finalize_context_pack_text, ren
 from byes.plan_pipeline import generate_action_plan, summarize_plan_for_report  # noqa: E402
 from byes.plan_quality import compute_plan_quality  # noqa: E402
 from byes.plan_eval import compute_plan_eval  # noqa: E402
+from byes.pov_plan_metrics import compute_pov_plan_metrics  # noqa: E402
 
 _LABEL_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=\"((?:\\.|[^\"])*)\"")
 _DEFAULT_POV_CONTEXT_BUDGET = {"maxChars": 2000, "maxTokensApprox": 500}
@@ -983,6 +984,7 @@ def generate_report_outputs(
                 mode="decisions_plus_highlights",
                 constraints={"allowConfirm": True, "allowHaptic": False, "maxActions": 3},
                 events_rows=event_rows,
+                run_package_path=str((run_package_summary or {}).get("runPackageDir", "")),
             )
             summary["plan"] = summarize_plan_for_report(plan_bundle)
         except Exception:
@@ -1008,6 +1010,7 @@ def generate_report_outputs(
         summary["plan"] = plan_payload
     summary["planQuality"] = compute_plan_quality(summary.get("plan"))
     summary["planEval"] = compute_plan_eval(event_rows, summary)
+    summary["povPlan"] = compute_pov_plan_metrics(pov_ir_payload, summary.get("plan"))
     inferred_summary = extract_inference_summary_from_ws_events(event_source_path)
     events_v1_inferred = infer_inference_summary_from_events_v1(event_rows)
     risk_latency_stats, risk_timings_stats = extract_risk_latency_metrics_from_events_v1(event_rows)
@@ -1216,13 +1219,13 @@ def _infer_planner_meta_from_events(event_rows: list[dict[str, Any]]) -> dict[st
         payload = row.get("payload")
         if not isinstance(payload, dict):
             continue
-        backend = str(payload.get("backend", "")).strip()
-        model = str(payload.get("model", "")).strip()
-        endpoint = str(payload.get("endpoint", "")).strip()
-        provider = str(payload.get("plannerProvider", "")).strip()
-        prompt_version = str(payload.get("promptVersion", "")).strip()
+        backend = _normalize_optional_text(payload.get("backend"))
+        model = _normalize_optional_text(payload.get("model"))
+        endpoint = _normalize_optional_text(payload.get("endpoint"))
+        provider = _normalize_optional_text(payload.get("plannerProvider"))
+        prompt_version = _normalize_optional_text(payload.get("promptVersion"))
         fallback_used = payload.get("fallbackUsed")
-        fallback_reason = str(payload.get("fallbackReason", "")).strip()
+        fallback_reason = _normalize_optional_text(payload.get("fallbackReason"))
         json_valid = payload.get("jsonValid")
         if backend:
             planner_meta["backend"] = backend
@@ -1241,6 +1244,15 @@ def _infer_planner_meta_from_events(event_rows: list[dict[str, Any]]) -> dict[st
         if isinstance(json_valid, bool):
             planner_meta["jsonValid"] = json_valid
     return planner_meta
+
+
+def _normalize_optional_text(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() == "none":
+        return ""
+    return text
 
 
 def _append_tool_focus(lines: list[str], samples: dict[SeriesKey, float], tool: str, delta: bool) -> None:

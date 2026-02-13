@@ -105,7 +105,7 @@ def apply_guardrails(
         before = len(safe_actions)
         safe_actions = sorted(
             safe_actions,
-            key=lambda item: (_as_int(item.get("priority")) or 9999, str(item.get("type", ""))),
+            key=lambda item: (_priority_value(item), str(item.get("type", ""))),
         )[:max_actions]
         guardrails.append("max_actions_trimmed")
         findings.append({"type": "trim_actions", "reason": "maxActions", "beforeCount": before, "afterCount": len(safe_actions)})
@@ -130,3 +130,10 @@ def _as_int(value: Any) -> int | None:
         return int(value)
     except Exception:
         return None
+
+
+def _priority_value(action: dict[str, Any]) -> int:
+    parsed = _as_int(action.get("priority"))
+    if parsed is None:
+        return 9999
+    return parsed

@@ -17,8 +17,12 @@ class HttpPlannerBackend(PlannerBackend):
         self.model = os.getenv("BYES_PLANNER_MODEL_ID", "http-planner")
 
     def generate_plan(self, request_payload: dict[str, Any]) -> dict[str, Any]:
+        outbound_payload = dict(request_payload)
+        allow_path = str(os.getenv("BYES_PLANNER_ALLOW_RUN_PACKAGE_PATH", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        if not allow_path:
+            outbound_payload.pop("runPackagePath", None)
         with httpx.Client(timeout=20.0) as client:
-            response = client.post(self.endpoint, json=request_payload, headers={"X-Endpoint": self.endpoint})
+            response = client.post(self.endpoint, json=outbound_payload, headers={"X-Endpoint": self.endpoint})
             response.raise_for_status()
             payload = response.json()
         if not isinstance(payload, dict):

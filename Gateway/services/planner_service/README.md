@@ -5,6 +5,7 @@ Deterministic planner HTTP service for Gateway `BYES_PLANNER_BACKEND=http`.
 ## TL;DR
 - Default provider is `reference` (no model download, deterministic).
 - Optional provider `llm` supports generic HTTP/OpenAI-compatible endpoints.
+- Optional provider `pov` adapts `pov.ir.v1` in a run package directly into `byes.action_plan.v1`.
 - LLM outputs are strictly validated as `byes.action_plan.v1`; invalid output auto-falls back to reference planner.
 
 ## Run
@@ -68,6 +69,28 @@ app.run("127.0.0.1", 8088)
 - `prompts/planner_user.md`
 
 `promptVersion` is propagated into plan metadata for reproducibility.
+
+### POV Adapter (replay/report use)
+
+`pov` provider consumes `runPackagePath/pov/pov_ir_v1.json` and produces deterministic plans.
+
+```powershell
+set BYES_PLANNER_PROVIDER=pov
+```
+
+Input requirement:
+- request body includes `runPackagePath` (for local replay/report workflow only).
+- if missing file, service falls back to reference with:
+  - `meta.planner.fallbackUsed=true`
+  - `meta.planner.fallbackReason=missing_pov_ir`
+
+In Gateway, forwarding `runPackagePath` is gated by:
+
+```powershell
+set BYES_PLANNER_BACKEND=http
+set BYES_PLANNER_ENDPOINT=http://127.0.0.1:19211/plan
+set BYES_PLANNER_ALLOW_RUN_PACKAGE_PATH=1
+```
 
 ## API
 

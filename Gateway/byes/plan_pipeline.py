@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -108,6 +109,7 @@ def build_planner_request(
     context_pack: dict[str, Any],
     risk_summary: dict[str, Any],
     constraints: dict[str, Any],
+    run_package_path: str | None = None,
 ) -> dict[str, Any]:
     normalized_constraints = {
         "allowConfirm": bool(constraints.get("allowConfirm", True)),
@@ -116,7 +118,7 @@ def build_planner_request(
     }
     budget = context_pack.get("budget", {})
     budget = budget if isinstance(budget, dict) else {}
-    return {
+    payload = {
         "schemaVersion": "byes.planner_request.v1",
         "runId": run_id,
         "frameSeq": frame_seq if isinstance(frame_seq, int) else None,
@@ -129,6 +131,11 @@ def build_planner_request(
         "riskSummary": risk_summary,
         "constraints": normalized_constraints,
     }
+    allow_path = str(os.getenv("BYES_PLANNER_ALLOW_RUN_PACKAGE_PATH", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    run_package_path_text = str(run_package_path or "").strip()
+    if allow_path and run_package_path_text:
+        payload["runPackagePath"] = run_package_path_text
+    return payload
 
 
 def generate_action_plan(
@@ -140,6 +147,7 @@ def generate_action_plan(
     mode: str,
     constraints: dict[str, Any],
     events_rows: list[dict[str, Any]],
+    run_package_path: str | None = None,
     backend: PlannerBackend | None = None,
 ) -> dict[str, Any]:
     context_pack = build_context_pack(pov_ir, budget=budget, mode=mode)
@@ -156,6 +164,7 @@ def generate_action_plan(
         context_pack=context_pack,
         risk_summary=risk_summary,
         constraints=constraints,
+        run_package_path=run_package_path,
     )
     draft_plan = planner_backend.generate_plan(planner_request)
     if not isinstance(draft_plan, dict):
@@ -167,7 +176,12 @@ def generate_action_plan(
     draft_plan["frameSeq"] = frame_seq if isinstance(frame_seq, int) else None
     if _as_int(draft_plan.get("generatedAtMs")) is None:
         draft_plan["generatedAtMs"] = _now_ms()
-    draft_plan["riskLevel"] = risk_level
+    backend_risk_level = str(draft_plan.get("riskLevel", "")).strip().lower()
+    if risk_level == "low" and backend_risk_level in {"medium", "high", "critical"}:
+        draft_plan["riskLevel"] = backend_risk_level
+        risk_level = backend_risk_level
+    else:
+        draft_plan["riskLevel"] = risk_level
 
     guarded_plan, guardrails_applied, findings = apply_guardrails(
         draft_plan,
@@ -220,6 +234,19 @@ def summarize_plan_for_report(bundle: dict[str, Any]) -> dict[str, Any]:
     requires_confirm_count = sum(1 for item in actions if bool(item.get("requiresConfirm")))
     planner_meta = bundle.get("planner", {})
     planner_meta = planner_meta if isinstance(planner_meta, dict) else {}
+    action_details: list[dict[str, Any]] = []
+    for item in actions:
+        payload = item.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        action_details.append(
+            {
+                "type": str(item.get("type", "")).strip().lower(),
+                "priority": _as_int(item.get("priority")),
+                "requiresConfirm": bool(item.get("requiresConfirm")),
+                "blocking": bool(item.get("blocking")),
+                "payload": payload,
+            }
+        )
 
     return {
         "present": True,
@@ -244,6 +271,7 @@ def summarize_plan_for_report(bundle: dict[str, Any]) -> dict[str, Any]:
         },
         "guardrailsApplied": guardrails,
         "findingsCount": len(bundle.get("findings", [])) if isinstance(bundle.get("findings"), list) else 0,
+        "actionDetails": action_details,
     }
 
 

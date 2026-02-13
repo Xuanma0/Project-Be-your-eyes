@@ -1464,6 +1464,7 @@ async def generate_plan(request: PlanGenerateRequest) -> dict[str, Any]:
             mode=request.budget.mode,
             constraints=constraints_payload,
             events_rows=events_rows,
+            run_package_path=str(run_package_dir),
         )
         plan_payload = bundle.get("plan")
         if not isinstance(plan_payload, dict):
