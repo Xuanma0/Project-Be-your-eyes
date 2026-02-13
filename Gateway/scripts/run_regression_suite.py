@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import shutil
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -125,6 +127,132 @@ def _load_json(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"expected object json: {path}")
     return payload
+
+
+def _load_manifest_if_any(run_path: Path) -> tuple[Path | None, dict[str, Any] | None]:
+    if not run_path.exists() or not run_path.is_dir():
+        return None, None
+    for name in ("manifest.json", "run_manifest.json"):
+        path = run_path / name
+        if not path.exists():
+            continue
+        try:
+            payload = _load_json(path)
+        except Exception:
+            continue
+        return path, payload
+    return None, None
+
+
+def _jsonl_has_rows(path: Path) -> bool:
+    if not path.exists() or not path.is_file():
+        return False
+    with path.open("r", encoding="utf-8-sig") as fp:
+        for raw in fp:
+            if raw.strip():
+                return True
+    return False
+
+
+def _to_bool01(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _run_pov_ingest_pre_step(run_path: Path, step_cfg: dict[str, Any]) -> None:
+    _manifest_path, manifest = _load_manifest_if_any(run_path)
+    manifest = manifest if isinstance(manifest, dict) else {}
+    events_rel = str(step_cfg.get("eventsV1Jsonl", "")).strip() or str(manifest.get("eventsV1Jsonl", "")).strip() or "events/events_v1.jsonl"
+    events_path = run_path / events_rel
+    if _jsonl_has_rows(events_path):
+        return
+
+    pov_rel = str(step_cfg.get("povIrJson", "")).strip() or str(manifest.get("povIrJson", "")).strip() or "pov/pov_ir_v1.json"
+    pov_path = run_path / pov_rel
+    if not pov_path.exists():
+        raise FileNotFoundError(f"pov ir not found for ingest: {pov_path}")
+
+    strict = "1" if _to_bool01(step_cfg.get("strict"), True) else "0"
+    script = GATEWAY_ROOT / "scripts" / "ingest_pov_ir.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--run-package", str(run_path), "--pov-ir", str(pov_path), "--strict", strict],
+        cwd=GATEWAY_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = f"pov ingest failed rc={result.returncode}; stdout={result.stdout.strip()} stderr={result.stderr.strip()}".strip()
+        raise RuntimeError(detail)
+
+
+def _run_pre_steps(run_cfg: dict[str, Any], run_path: Path) -> None:
+    if not run_path.exists() or not run_path.is_dir():
+        return
+    explicit_ingest = False
+    steps = run_cfg.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if isinstance(step, str):
+                step_type = step.strip().lower()
+                step_cfg: dict[str, Any] = {}
+            elif isinstance(step, dict):
+                step_type = str(step.get("type", step.get("name", ""))).strip().lower()
+                step_cfg = step
+            else:
+                continue
+            if step_type in {"ingest_pov_ir", "pov_ingest", "ingest-pov-ir"}:
+                explicit_ingest = True
+                _run_pov_ingest_pre_step(run_path, step_cfg)
+
+    if explicit_ingest or not _to_bool01(run_cfg.get("autoIngestPovIr"), True):
+        return
+    _manifest_path, manifest = _load_manifest_if_any(run_path)
+    if not isinstance(manifest, dict):
+        return
+    if str(manifest.get("povIrJson", "")).strip():
+        _run_pov_ingest_pre_step(run_path, {})
+
+
+def _has_ingest_step(run_cfg: dict[str, Any]) -> bool:
+    steps = run_cfg.get("steps")
+    if not isinstance(steps, list):
+        return False
+    for step in steps:
+        if isinstance(step, str):
+            step_type = step.strip().lower()
+        elif isinstance(step, dict):
+            step_type = str(step.get("type", step.get("name", ""))).strip().lower()
+        else:
+            continue
+        if step_type in {"ingest_pov_ir", "pov_ingest", "ingest-pov-ir"}:
+            return True
+    return False
+
+
+def _requires_mutating_pre_steps(run_cfg: dict[str, Any], run_path: Path) -> bool:
+    if not run_path.exists() or not run_path.is_dir():
+        return False
+    if _has_ingest_step(run_cfg):
+        return True
+    if not _to_bool01(run_cfg.get("autoIngestPovIr"), True):
+        return False
+    _manifest_path, manifest = _load_manifest_if_any(run_path)
+    if not isinstance(manifest, dict):
+        return False
+    pov_rel = str(manifest.get("povIrJson", "")).strip()
+    if not pov_rel:
+        return False
+    events_rel = str(manifest.get("eventsV1Jsonl", "")).strip() or "events/events_v1.jsonl"
+    return not _jsonl_has_rows(run_path / events_rel)
 
 
 def _collect_baseline_scores(baseline_payload: dict[str, Any]) -> dict[str, float]:
@@ -350,6 +478,8 @@ def run_suite(
             continue
         run_id = str(run_cfg.get("id", "")).strip()
         run_path_text = str(run_cfg.get("path", "")).strip()
+        if not run_path_text:
+            run_path_text = str(run_cfg.get("runPackage", "")).strip()
         if not run_id or not run_path_text:
             continue
         run_require_critical_fn[run_id] = bool(run_cfg.get("requireCriticalFnZero", False))
@@ -361,8 +491,15 @@ def run_suite(
         metrics_after: Path | None = None
         run_package_summary: dict[str, Any] | None = None
         cleanup_dir: Path | None = None
+        pre_step_temp_dir: Path | None = None
+        run_input_path = run_path
         try:
-            ws_jsonl, metrics_before, metrics_after, run_package_summary, cleanup_dir = resolve_run_package_input(run_path)
+            if _requires_mutating_pre_steps(run_cfg, run_path):
+                pre_step_temp_dir = Path(tempfile.mkdtemp(prefix="reg_runpkg_"))
+                run_input_path = pre_step_temp_dir / run_path.name
+                shutil.copytree(run_path, run_input_path)
+            _run_pre_steps(run_cfg, run_input_path)
+            ws_jsonl, metrics_before, metrics_after, run_package_summary, cleanup_dir = resolve_run_package_input(run_input_path)
             report_md = reports_dir / f"{run_id}.md"
             report_json = reports_dir / f"{run_id}.json"
             _output_md, _output_json, summary_payload = generate_report_outputs(
@@ -387,6 +524,8 @@ def run_suite(
         finally:
             if cleanup_dir is not None:
                 shutil.rmtree(cleanup_dir, ignore_errors=True)
+            if pre_step_temp_dir is not None:
+                shutil.rmtree(pre_step_temp_dir, ignore_errors=True)
 
     for run in run_summaries:
         baseline_expect = baseline_expectations.get(run.run_id, {})

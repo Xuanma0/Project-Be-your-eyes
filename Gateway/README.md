@@ -53,6 +53,21 @@ Gate highlights:
 - critical safety gate (`--fail-on-critical-fn`, default enabled)
 - run fails if `report.quality.depthRisk.critical.missCriticalCount > 0`
 
+## POV Contract (POV-compiler -> BYES)
+
+- Contract schema source of truth: `../schemas/pov_ir_v1.schema.json`
+- Ingest one POV IR into a run package:
+
+```powershell
+python scripts/ingest_pov_ir.py --run-package <run_package_dir> --pov-ir <pov_ir.json> --strict 1
+```
+
+- Contract regression suite:
+
+```powershell
+python scripts/run_regression_suite.py --suite regression/suites/contract_suite.json --baseline regression/baselines/baseline.json --fail-on-drop --fail-on-critical-fn
+```
+
 ## Leaderboard And Reports
 
 - API list: `GET /api/run_packages`

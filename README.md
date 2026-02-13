@@ -39,6 +39,21 @@ python Gateway/scripts/report_run.py --run-package Gateway/tests/fixtures/run_pa
 python Gateway/scripts/run_regression_suite.py --suite Gateway/regression/suites/baseline_suite.json --baseline Gateway/regression/baselines/baseline.json --fail-on-drop --fail-on-critical-fn
 ```
 
+## POV-compiler -> BYE Contract
+
+- Single source schema: `schemas/pov_ir_v1.schema.json`
+- Ingest POV IR to BYES events v1:
+
+```powershell
+python Gateway/scripts/ingest_pov_ir.py --run-package <run_package_dir> --pov-ir <pov_ir.json> --strict 1
+```
+
+- Run contract regression suite:
+
+```powershell
+python Gateway/scripts/run_regression_suite.py --suite Gateway/regression/suites/contract_suite.json --baseline Gateway/regression/baselines/baseline.json --fail-on-drop
+```
+
 ## Optional: Real ONNX Depth (Depth Anything V2 Small)
 
 ### Install optional deps

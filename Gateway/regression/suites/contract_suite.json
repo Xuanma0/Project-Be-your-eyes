@@ -1,0 +1,16 @@
+{
+  "name": "contract",
+  "runs": [
+    {
+      "id": "fixture_pov_ir_min",
+      "runPackage": "Gateway/tests/fixtures/pov_ir_v1_min",
+      "steps": [
+        {
+          "type": "ingest_pov_ir",
+          "strict": 1
+        }
+      ],
+      "requireCriticalFnZero": true
+    }
+  ]
+}
