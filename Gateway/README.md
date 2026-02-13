@@ -174,6 +174,30 @@ Traceability fields:
 - `report.json` (`plan.planner.*`, `planQuality.*`): fallback and JSON validity state
 - `/api/run_packages`: `plan_fallback_used`, `plan_json_valid`, `plan_prompt_version`
 
+## Planner Evaluation And Ablation
+
+`report.json` now includes `planEval` with:
+- interaction cost: `confirm.requests/responses/timeouts/pending`
+- safety actions: `actions.stopCount`, `actions.blockingCount`
+- guardrail dependency: `guardrails.appliedCount`, `guardrails.overrideRate`
+- over-cautious behavior: `overcautious.rate` (`riskLevel!=critical` yet `stop/confirm`)
+- latency: `latencyMs` (plan.generate) and `executeLatencyMs` (plan.execute)
+
+One-command sweep (provider/prompt/budget):
+
+```powershell
+python Gateway/scripts/ablate_planner.py --run-package Gateway/tests/fixtures/run_package_with_risk_gt_and_pov_min --providers reference,llm --prompt-versions v1 --pov-budgets 128,256
+```
+
+Output:
+- `%TEMP%\\byes_plan_ablation\\latest.json`
+- `%TEMP%\\byes_plan_ablation\\latest.md`
+
+Recommendation rule:
+- minimize `confirm_timeouts` subject to `critical_fn==0`
+- then minimize `plan_latency_p90`
+- then maximize `qualityScore`
+
 ## Ablation: POV Budget Sweep
 
 Run one command to compare context budgets:

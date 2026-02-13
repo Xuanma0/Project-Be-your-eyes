@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
@@ -39,16 +40,37 @@ from byes.pov_metrics import compute_pov_metrics, load_pov_ir_from_run_package  
 from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text  # noqa: E402
 from byes.plan_pipeline import generate_action_plan, summarize_plan_for_report  # noqa: E402
 from byes.plan_quality import compute_plan_quality  # noqa: E402
+from byes.plan_eval import compute_plan_eval  # noqa: E402
 
 _LABEL_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=\"((?:\\.|[^\"])*)\"")
 _DEFAULT_POV_CONTEXT_BUDGET = {"maxChars": 2000, "maxTokensApprox": 500}
 _DEFAULT_POV_CONTEXT_MODE = "decisions_plus_highlights"
+_DEFAULT_PLAN_BUDGET = {"maxChars": 2000, "maxTokensApprox": 256}
 
 SeriesKey = tuple[str, tuple[tuple[str, str], ...]]
 
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _resolve_plan_budget_from_env() -> dict[str, int]:
+    max_tokens = _coerce_positive_int(os.getenv("BYES_PLAN_BUDGET_MAX_TOKENS"), _DEFAULT_PLAN_BUDGET["maxTokensApprox"])
+    max_chars_default = min(4000, int(max_tokens) * 4)
+    max_chars = _coerce_positive_int(os.getenv("BYES_PLAN_BUDGET_MAX_CHARS"), max_chars_default)
+    return {"maxChars": int(max_chars), "maxTokensApprox": int(max_tokens)}
+
+
+def _coerce_positive_int(raw: Any, fallback: int) -> int:
+    try:
+        if raw is None:
+            return int(fallback)
+        value = int(raw)
+        if value <= 0:
+            return int(fallback)
+        return value
+    except Exception:
+        return int(fallback)
 
 
 def parse_metric_labels(raw_labels: str | None) -> dict[str, str]:
@@ -952,11 +974,12 @@ def generate_report_outputs(
     summary["plan"] = {"present": False}
     if isinstance(pov_ir_payload, dict):
         try:
+            plan_budget = _resolve_plan_budget_from_env()
             plan_bundle = generate_action_plan(
                 pov_ir=pov_ir_payload,
                 run_id=_resolve_plan_run_id(run_package_summary, pov_ir_payload, event_rows),
                 frame_seq=_pick_plan_frame_seq(event_rows),
-                budget={"maxChars": 2000, "maxTokensApprox": 256},
+                budget=plan_budget,
                 mode="decisions_plus_highlights",
                 constraints={"allowConfirm": True, "allowHaptic": False, "maxActions": 3},
                 events_rows=event_rows,
@@ -984,6 +1007,7 @@ def generate_report_outputs(
             plan_payload["planner"] = planner_payload
         summary["plan"] = plan_payload
     summary["planQuality"] = compute_plan_quality(summary.get("plan"))
+    summary["planEval"] = compute_plan_eval(event_rows, summary)
     inferred_summary = extract_inference_summary_from_ws_events(event_source_path)
     events_v1_inferred = infer_inference_summary_from_events_v1(event_rows)
     risk_latency_stats, risk_timings_stats = extract_risk_latency_metrics_from_events_v1(event_rows)

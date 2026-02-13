@@ -1470,6 +1470,15 @@ async def generate_plan(request: PlanGenerateRequest) -> dict[str, Any]:
             raise RuntimeError("planner returned invalid plan payload")
         latency_ms = int(max(0, (time.perf_counter() - started_at) * 1000.0))
         if can_write_events:
+            actions_payload = plan_payload.get("actions")
+            actions_payload = actions_payload if isinstance(actions_payload, list) else []
+            stop_count = sum(
+                1 for action in actions_payload if str(action.get("type", "")).strip().lower() == "stop"
+            )
+            confirm_action_count = sum(
+                1 for action in actions_payload if str(action.get("type", "")).strip().lower() == "confirm"
+            )
+            blocking_count = sum(1 for action in actions_payload if bool(action.get("blocking")))
             planner = bundle.get("planner", {})
             planner = planner if isinstance(planner, dict) else {}
             guardrails = bundle.get("guardrailsApplied", [])
@@ -1484,7 +1493,10 @@ async def generate_plan(request: PlanGenerateRequest) -> dict[str, Any]:
                 latency_ms=latency_ms,
                 planner=planner,
                 risk_level=str(plan_payload.get("riskLevel", "low")),
-                actions_count=len(plan_payload.get("actions", [])) if isinstance(plan_payload.get("actions"), list) else 0,
+                actions_count=len(actions_payload),
+                stop_count=stop_count,
+                confirm_action_count=confirm_action_count,
+                blocking_count=blocking_count,
                 guardrails_applied=[str(item) for item in guardrails if str(item).strip()],
                 findings_count=len(findings),
             )
@@ -1654,6 +1666,9 @@ async def run_packages_list(
     min_pov_context_token_approx: int | None = None,
     has_plan: str = "any",
     plan_fallback_used: str = "any",
+    max_plan_latency_p90: int | None = None,
+    max_plan_overcautious_rate: float | None = None,
+    max_plan_guardrail_override_rate: float | None = None,
     max_plan_guardrails: int | None = None,
     min_plan_score: float | None = None,
     plan_risk_level: str | None = None,
@@ -1679,6 +1694,9 @@ async def run_packages_list(
         min_pov_context_token_approx=min_pov_context_token_approx,
         has_plan=has_plan,
         plan_fallback_used=plan_fallback_used,
+        max_plan_latency_p90=max_plan_latency_p90,
+        max_plan_overcautious_rate=max_plan_overcautious_rate,
+        max_plan_guardrail_override_rate=max_plan_guardrail_override_rate,
         max_plan_guardrails=max_plan_guardrails,
         min_plan_score=min_plan_score,
         plan_risk_level=plan_risk_level,
@@ -1705,6 +1723,9 @@ async def run_packages_list(
             "min_pov_context_token_approx": min_pov_context_token_approx,
             "has_plan": has_plan,
             "plan_fallback_used": plan_fallback_used,
+            "max_plan_latency_p90": max_plan_latency_p90,
+            "max_plan_overcautious_rate": max_plan_overcautious_rate,
+            "max_plan_guardrail_override_rate": max_plan_guardrail_override_rate,
             "max_plan_guardrails": max_plan_guardrails,
             "min_plan_score": min_plan_score,
             "plan_risk_level": plan_risk_level,
@@ -1735,6 +1756,9 @@ async def run_packages_export_json(
     min_pov_context_token_approx: int | None = None,
     has_plan: str = "any",
     plan_fallback_used: str = "any",
+    max_plan_latency_p90: int | None = None,
+    max_plan_overcautious_rate: float | None = None,
+    max_plan_guardrail_override_rate: float | None = None,
     max_plan_guardrails: int | None = None,
     min_plan_score: float | None = None,
     plan_risk_level: str | None = None,
@@ -1760,6 +1784,9 @@ async def run_packages_export_json(
         min_pov_context_token_approx=min_pov_context_token_approx,
         has_plan=has_plan,
         plan_fallback_used=plan_fallback_used,
+        max_plan_latency_p90=max_plan_latency_p90,
+        max_plan_overcautious_rate=max_plan_overcautious_rate,
+        max_plan_guardrail_override_rate=max_plan_guardrail_override_rate,
         max_plan_guardrails=max_plan_guardrails,
         min_plan_score=min_plan_score,
         plan_risk_level=plan_risk_level,
@@ -1792,6 +1819,9 @@ async def run_packages_export_csv(
     min_pov_context_token_approx: int | None = None,
     has_plan: str = "any",
     plan_fallback_used: str = "any",
+    max_plan_latency_p90: int | None = None,
+    max_plan_overcautious_rate: float | None = None,
+    max_plan_guardrail_override_rate: float | None = None,
     max_plan_guardrails: int | None = None,
     min_plan_score: float | None = None,
     plan_risk_level: str | None = None,
@@ -1817,6 +1847,9 @@ async def run_packages_export_csv(
         min_pov_context_token_approx=min_pov_context_token_approx,
         has_plan=has_plan,
         plan_fallback_used=plan_fallback_used,
+        max_plan_latency_p90=max_plan_latency_p90,
+        max_plan_overcautious_rate=max_plan_overcautious_rate,
+        max_plan_guardrail_override_rate=max_plan_guardrail_override_rate,
         max_plan_guardrails=max_plan_guardrails,
         min_plan_score=min_plan_score,
         plan_risk_level=plan_risk_level,
@@ -1865,6 +1898,10 @@ async def run_packages_export_csv(
         "plan_fallback_used",
         "plan_json_valid",
         "plan_prompt_version",
+        "plan_latency_p90",
+        "confirm_requests",
+        "plan_overcautious_rate",
+        "plan_guardrail_override_rate",
         "runUrl",
         "reportUrl",
         "summaryUrl",
@@ -2068,6 +2105,9 @@ def _try_append_plan_events(
     planner: dict[str, Any],
     risk_level: str,
     actions_count: int,
+    stop_count: int,
+    confirm_action_count: int,
+    blocking_count: int,
     guardrails_applied: list[str],
     findings_count: int,
 ) -> bool:
@@ -2085,6 +2125,9 @@ def _try_append_plan_events(
         "jsonValid": planner.get("jsonValid"),
         "riskLevel": str(risk_level or "low"),
         "actionsCount": int(max(0, actions_count)),
+        "stopCount": int(max(0, stop_count)),
+        "confirmActionCount": int(max(0, confirm_action_count)),
+        "blockingCount": int(max(0, blocking_count)),
     }
     safety_payload = {
         "riskLevel": str(risk_level or "low"),
@@ -2386,6 +2429,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     plan_payload = plan_payload if isinstance(plan_payload, dict) else {}
     plan_quality_payload = summary.get("planQuality", {})
     plan_quality_payload = plan_quality_payload if isinstance(plan_quality_payload, dict) else {}
+    plan_eval_payload = summary.get("planEval", {})
+    plan_eval_payload = plan_eval_payload if isinstance(plan_eval_payload, dict) else {}
     critical_misses: int | None = None
     max_delay_frames: int | None = None
     risk_latency_p90: int | None = None
@@ -2413,6 +2458,11 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     plan_fallback_used = False
     plan_json_valid: bool | None = None
     plan_prompt_version: str | None = None
+    plan_latency_p90: int | None = None
+    confirm_requests = int((_read_float(summary, "confirm_request") or 0.0))
+    plan_confirm_timeouts = confirm_timeouts
+    plan_overcautious_rate: float | None = None
+    plan_guardrail_override_rate: float | None = None
     plan_actions_payload = plan_payload.get("actions")
     if isinstance(plan_actions_payload, dict):
         raw_actions = _read_float(plan_actions_payload, "count")
@@ -2448,6 +2498,30 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         prompt_version_raw = str(plan_quality_payload.get("promptVersion", "")).strip()
         if prompt_version_raw:
             plan_prompt_version = prompt_version_raw
+    if isinstance(plan_eval_payload, dict) and bool(plan_eval_payload.get("present")):
+        latency_payload = plan_eval_payload.get("latencyMs")
+        latency_payload = latency_payload if isinstance(latency_payload, dict) else {}
+        p90_raw = _read_float(latency_payload, "p90")
+        if p90_raw is not None:
+            plan_latency_p90 = int(p90_raw)
+        confirm_payload = plan_eval_payload.get("confirm")
+        confirm_payload = confirm_payload if isinstance(confirm_payload, dict) else {}
+        requests_raw = _read_float(confirm_payload, "requests")
+        if requests_raw is not None:
+            confirm_requests = int(requests_raw)
+        timeouts_raw = _read_float(confirm_payload, "timeouts")
+        if timeouts_raw is not None:
+            plan_confirm_timeouts = int(timeouts_raw)
+        guardrail_payload = plan_eval_payload.get("guardrails")
+        guardrail_payload = guardrail_payload if isinstance(guardrail_payload, dict) else {}
+        override_raw = _read_float(guardrail_payload, "overrideRate")
+        if override_raw is not None:
+            plan_guardrail_override_rate = float(override_raw)
+        overcautious_payload = plan_eval_payload.get("overcautious")
+        overcautious_payload = overcautious_payload if isinstance(overcautious_payload, dict) else {}
+        overcautious_raw = _read_float(overcautious_payload, "rate")
+        if overcautious_raw is not None:
+            plan_overcautious_rate = float(overcautious_raw)
     planner_payload = plan_payload.get("planner")
     planner_payload = planner_payload if isinstance(planner_payload, dict) else {}
     if not plan_prompt_version:
@@ -2502,7 +2576,9 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "safety_score": _compute_safety_score(summary),
         "quality_has_gt": has_gt,
         "quality_score": quality_score,
-        "confirm_timeouts": confirm_timeouts,
+        "confirm_timeouts": plan_confirm_timeouts,
+        "confirm_requests": confirm_requests,
+        "plan_confirm_timeouts": plan_confirm_timeouts,
         "missCriticalCount": critical_misses,
         "critical_misses": critical_misses,
         "max_delay_frames": max_delay_frames,
@@ -2528,6 +2604,9 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "plan_fallback_used": plan_fallback_used,
         "plan_json_valid": plan_json_valid,
         "plan_prompt_version": plan_prompt_version,
+        "plan_latency_p90": plan_latency_p90,
+        "plan_overcautious_rate": plan_overcautious_rate,
+        "plan_guardrail_override_rate": plan_guardrail_override_rate,
         "summary": summary,
     }
     row.update(urls)
@@ -2553,6 +2632,9 @@ def _matches_run_filters(
     min_pov_context_token_approx: int | None,
     has_plan: str | None,
     plan_fallback_used: str | None,
+    max_plan_latency_p90: int | None,
+    max_plan_overcautious_rate: float | None,
+    max_plan_guardrail_override_rate: float | None,
     max_plan_guardrails: int | None,
     min_plan_score: float | None,
     plan_risk_level: str | None,
@@ -2638,6 +2720,24 @@ def _matches_run_filters(
             return False
         if normalized in {"false", "0", "no"} and fallback_used:
             return False
+    if max_plan_latency_p90 is not None:
+        value = row.get("plan_latency_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_plan_latency_p90):
+            return False
+    if max_plan_overcautious_rate is not None:
+        value = row.get("plan_overcautious_rate")
+        if value is None:
+            return False
+        if float(value) > float(max_plan_overcautious_rate):
+            return False
+    if max_plan_guardrail_override_rate is not None:
+        value = row.get("plan_guardrail_override_rate")
+        if value is None:
+            return False
+        if float(value) > float(max_plan_guardrail_override_rate):
+            return False
     if max_plan_guardrails is not None:
         value = int(row.get("plan_guardrails", 0) or 0)
         if value > int(max_plan_guardrails):
@@ -2675,6 +2775,8 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "pov_context_token_approx",
         "plan_actions",
         "plan_guardrails",
+        "plan_latency_p90",
+        "confirm_timeouts",
         "plan_score",
         "safemode_enter",
         "throttle_enter",
@@ -2717,6 +2819,9 @@ async def _query_run_package_rows(
     min_pov_context_token_approx: int | None,
     has_plan: str | None,
     plan_fallback_used: str | None,
+    max_plan_latency_p90: int | None,
+    max_plan_overcautious_rate: float | None,
+    max_plan_guardrail_override_rate: float | None,
     max_plan_guardrails: int | None,
     min_plan_score: float | None,
     plan_risk_level: str | None,
@@ -2748,6 +2853,9 @@ async def _query_run_package_rows(
             min_pov_context_token_approx=min_pov_context_token_approx,
             has_plan=has_plan,
             plan_fallback_used=plan_fallback_used,
+            max_plan_latency_p90=max_plan_latency_p90,
+            max_plan_overcautious_rate=max_plan_overcautious_rate,
+            max_plan_guardrail_override_rate=max_plan_guardrail_override_rate,
             max_plan_guardrails=max_plan_guardrails,
             min_plan_score=min_plan_score,
             plan_risk_level=plan_risk_level,
@@ -2807,6 +2915,9 @@ async def runs_dashboard(
     min_pov_context_token_approx: int | None = None,
     has_plan: str = "any",
     plan_fallback_used: str = "any",
+    max_plan_latency_p90: int | None = None,
+    max_plan_overcautious_rate: float | None = None,
+    max_plan_guardrail_override_rate: float | None = None,
     max_plan_guardrails: int | None = None,
     min_plan_score: float | None = None,
     plan_risk_level: str | None = None,
@@ -2833,6 +2944,9 @@ async def runs_dashboard(
         min_pov_context_token_approx=min_pov_context_token_approx,
         has_plan=has_plan,
         plan_fallback_used=plan_fallback_used,
+        max_plan_latency_p90=max_plan_latency_p90,
+        max_plan_overcautious_rate=max_plan_overcautious_rate,
+        max_plan_guardrail_override_rate=max_plan_guardrail_override_rate,
         max_plan_guardrails=max_plan_guardrails,
         min_plan_score=min_plan_score,
         plan_risk_level=plan_risk_level,
@@ -2879,6 +2993,13 @@ async def runs_dashboard(
         plan_json_valid_raw = row.get("plan_json_valid")
         plan_json_valid = "—" if plan_json_valid_raw is None else ("true" if bool(plan_json_valid_raw) else "false")
         plan_prompt_version = str(row.get("plan_prompt_version") or "—")
+        plan_latency_raw = row.get("plan_latency_p90")
+        plan_latency = "—" if plan_latency_raw is None else str(int(plan_latency_raw))
+        confirm_requests = str(int(row.get("confirm_requests", 0) or 0))
+        overcautious_raw = row.get("plan_overcautious_rate")
+        overcautious_rate = "—" if overcautious_raw is None else f"{float(overcautious_raw):.4f}"
+        guardrail_override_raw = row.get("plan_guardrail_override_rate")
+        guardrail_override_rate = "—" if guardrail_override_raw is None else f"{float(guardrail_override_raw):.4f}"
         rows_html += (
             "<tr>"
             f"<td><input type='checkbox' data-run-id='{run_val}' /></td>"
@@ -2907,10 +3028,14 @@ async def runs_dashboard(
             f"<td>{html.escape(plan_fallback_used)}</td>"
             f"<td>{html.escape(plan_json_valid)}</td>"
             f"<td>{html.escape(plan_prompt_version)}</td>"
+            f"<td>{html.escape(plan_latency)}</td>"
+            f"<td>{html.escape(confirm_requests)}</td>"
+            f"<td>{html.escape(overcautious_rate)}</td>"
+            f"<td>{html.escape(guardrail_override_rate)}</td>"
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='26' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='30' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -2931,6 +3056,13 @@ async def runs_dashboard(
     )
     has_plan_value = html.escape(has_plan or "any")
     plan_fallback_used_value = html.escape(plan_fallback_used or "any")
+    max_plan_latency_p90_value = html.escape("" if max_plan_latency_p90 is None else str(max_plan_latency_p90))
+    max_plan_overcautious_rate_value = html.escape(
+        "" if max_plan_overcautious_rate is None else str(max_plan_overcautious_rate)
+    )
+    max_plan_guardrail_override_rate_value = html.escape(
+        "" if max_plan_guardrail_override_rate is None else str(max_plan_guardrail_override_rate)
+    )
     max_plan_guardrails_value = html.escape("" if max_plan_guardrails is None else str(max_plan_guardrails))
     min_plan_score_value = html.escape("" if min_plan_score is None else str(min_plan_score))
     plan_risk_level_value = html.escape(plan_risk_level or "")
@@ -3002,6 +3134,9 @@ async def runs_dashboard(
       <label>max_risk_latency_p90: <input type="number" min="0" name="max_risk_latency_p90" value="{max_risk_latency_p90_value}" /></label>
       <label>max_risk_latency_max: <input type="number" min="0" name="max_risk_latency_max" value="{max_risk_latency_max_value}" /></label>
       <label>max_plan_guardrails: <input type="number" min="0" name="max_plan_guardrails" value="{max_plan_guardrails_value}" /></label>
+      <label>max_plan_latency_p90: <input type="number" min="0" name="max_plan_latency_p90" value="{max_plan_latency_p90_value}" /></label>
+      <label>max_plan_overcautious_rate: <input type="number" step="0.0001" min="0" max="1" name="max_plan_overcautious_rate" value="{max_plan_overcautious_rate_value}" /></label>
+      <label>max_plan_guardrail_override_rate: <input type="number" step="0.0001" min="0" max="1" name="max_plan_guardrail_override_rate" value="{max_plan_guardrail_override_rate_value}" /></label>
       <label>min_plan_score: <input type="number" step="0.01" min="0" max="100" name="min_plan_score" value="{min_plan_score_value}" /></label>
       <label>plan_risk_level:
         <select name="plan_risk_level">
@@ -3024,6 +3159,8 @@ async def runs_dashboard(
           <option value="pov_context_token_approx" {"selected" if sort_value == "pov_context_token_approx" else ""}>pov_context_token_approx</option>
           <option value="plan_actions" {"selected" if sort_value == "plan_actions" else ""}>plan_actions</option>
           <option value="plan_guardrails" {"selected" if sort_value == "plan_guardrails" else ""}>plan_guardrails</option>
+          <option value="plan_latency_p90" {"selected" if sort_value == "plan_latency_p90" else ""}>plan_latency_p90</option>
+          <option value="confirm_timeouts" {"selected" if sort_value == "confirm_timeouts" else ""}>confirm_timeouts</option>
           <option value="plan_score" {"selected" if sort_value == "plan_score" else ""}>plan_score</option>
           <option value="e2e_count" {"selected" if sort_value == "e2e_count" else ""}>e2e_count</option>
           <option value="ttfa_count" {"selected" if sort_value == "ttfa_count" else ""}>ttfa_count</option>
@@ -3038,8 +3175,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_plan_guardrails={max_plan_guardrails_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_plan_guardrails={max_plan_guardrails_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -3071,6 +3208,10 @@ async def runs_dashboard(
           <th>Plan Fallback</th>
           <th>Plan JSON</th>
           <th>Plan Prompt</th>
+          <th>Plan p90(ms)</th>
+          <th>Confirm Req</th>
+          <th>Overcautious</th>
+          <th>Guardrail Override</th>
         </tr>
       </thead>
       <tbody id="runs">{rows_html}</tbody>

@@ -214,6 +214,9 @@ def summarize_plan_for_report(bundle: dict[str, Any]) -> dict[str, Any]:
     guardrails = bundle.get("guardrailsApplied", [])
     guardrails = guardrails if isinstance(guardrails, list) else []
     types = [str(item.get("type", "")).strip() for item in actions if str(item.get("type", "")).strip()]
+    stop_count = sum(1 for item in actions if str(item.get("type", "")).strip().lower() == "stop")
+    confirm_action_count = sum(1 for item in actions if str(item.get("type", "")).strip().lower() == "confirm")
+    blocking_count = sum(1 for item in actions if bool(item.get("blocking")))
     requires_confirm_count = sum(1 for item in actions if bool(item.get("requiresConfirm")))
     planner_meta = bundle.get("planner", {})
     planner_meta = planner_meta if isinstance(planner_meta, dict) else {}
@@ -234,6 +237,9 @@ def summarize_plan_for_report(bundle: dict[str, Any]) -> dict[str, Any]:
         "actions": {
             "count": len(actions),
             "types": types,
+            "stopCount": stop_count,
+            "confirmActionCount": confirm_action_count,
+            "blockingCount": blocking_count,
             "requiresConfirmCount": requires_confirm_count,
         },
         "guardrailsApplied": guardrails,
