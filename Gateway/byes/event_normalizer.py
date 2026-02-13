@@ -435,7 +435,7 @@ def _normalize_component(value: str) -> str:
 
 def _normalize_category(value: str) -> str:
     v = str(value or "").strip().lower()
-    if v in {"tool", "safety", "system", "scenario", "metric"}:
+    if v in {"tool", "safety", "system", "scenario", "metric", "ui"}:
         return v
     return "unknown"
 

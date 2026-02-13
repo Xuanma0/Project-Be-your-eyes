@@ -107,6 +107,31 @@ Audit outputs:
 - `report.json`: check `plan` for `riskLevel`, action counts/types, and `guardrailsApplied`.
 - leaderboard (`/api/run_packages`, `/runs`): `plan_present`, `plan_risk_level`, `plan_actions`, `plan_guardrails`.
 
+Minimal execute + confirm loop:
+
+```powershell
+# 1) generate plan
+$plan = curl -X POST "http://127.0.0.1:8000/api/plan" `
+  -H "Content-Type: application/json" `
+  -d '{"runPackage":"Gateway/tests/fixtures/run_package_with_risk_gt_and_pov_min","frameSeq":2,"budget":{"maxChars":2000,"maxTokensApprox":256,"mode":"decisions_plus_highlights"},"constraints":{"allowConfirm":true,"allowHaptic":false,"maxActions":3}}'
+
+# 2) execute plan -> returns uiCommands / pendingConfirms
+curl -X POST "http://127.0.0.1:8000/api/plan/execute" `
+  -H "Content-Type: application/json" `
+  -d "{\"runPackage\":\"Gateway/tests/fixtures/run_package_with_risk_gt_and_pov_min\",\"frameSeq\":2,\"plan\":$plan}"
+
+# 3) submit confirm response
+curl -X POST "http://127.0.0.1:8000/api/confirm/response" `
+  -H "Content-Type: application/json" `
+  -d '{"runId":"fixture-risk-gt","frameSeq":2,"confirmId":"confirm-a1","accepted":true,"runPackage":"Gateway/tests/fixtures/run_package_with_risk_gt_and_pov_min"}'
+```
+
+Loop events written to `events/events_v1.jsonl`:
+- `plan.execute`
+- `ui.command`
+- `ui.confirm_request`
+- `ui.confirm_response`
+
 ## Ablation: POV Budget Sweep
 
 Run one command to compare context budgets:

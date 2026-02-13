@@ -278,7 +278,7 @@ def _extract_safety_behavior_from_normalized(
         if not request_id:
             request_id = str(payload.get("confirmId", "")).strip() if isinstance(payload, dict) else ""
 
-        if name == "safety.confirm":
+        if name in {"safety.confirm", "ui.confirm_request", "ui.confirm_response"}:
             timeout_reason = ""
             if isinstance(payload, dict):
                 timeout_reason = str(payload.get("reason", "")).strip().lower()
@@ -286,10 +286,14 @@ def _extract_safety_behavior_from_normalized(
             if isinstance(payload, dict):
                 has_choice_payload = any(key in payload for key in ("choice", "confirmed", "answer", "yes", "no"))
 
+            is_ui_request = name == "ui.confirm_request"
+            is_ui_response = name == "ui.confirm_response"
             is_timeout = status == "timeout" or phase == "error" or "timeout" in timeout_reason or "expired" in timeout_reason
-            is_response = (phase == "result" or has_choice_payload) and not is_timeout
+            is_response = (is_ui_response or ((not is_ui_request) and (phase == "result" or has_choice_payload))) and not is_timeout
             # Older events sometimes normalize to safety.confirm without an explicit phase.
-            is_request = not is_response and not is_timeout and (phase == "start" or not phase)
+            is_request = is_ui_request or (
+                not is_response and not is_timeout and (phase == "start" or not phase)
+            )
             if is_request:
                 if seq is not None:
                     frames_with_intent.add(seq)
@@ -309,6 +313,10 @@ def _extract_safety_behavior_from_normalized(
                     start_ms = _parse_int(matched.get("timeMs"))
                     if start_ms is not None:
                         latency = max(0, ts_ms - start_ms)
+                if latency is None and isinstance(payload, dict):
+                    payload_latency = _parse_int(payload.get("latencyMs"))
+                    if payload_latency is not None and payload_latency >= 0:
+                        latency = payload_latency
                 if latency is not None and latency >= 0:
                     response_latencies.append(int(latency))
                 if matched is not None:

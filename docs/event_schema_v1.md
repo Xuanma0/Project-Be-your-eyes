@@ -7,7 +7,7 @@
 - `runId`: optional run id.
 - `frameSeq`: optional frame sequence id.
 - `component`: `unity|gateway|cloud|sim|unknown`.
-- `category`: `tool|safety|system|scenario|metric|unknown`.
+- `category`: `tool|safety|system|scenario|metric|ui|unknown`.
 - `name`: normalized event name (`ocr.scan_text`, `risk.hazards`, `safety.confirm`, etc.).
 - `phase`: optional lifecycle stage (`start|result|error|info`).
 - `status`: optional normalized status (`ok|timeout|cancel|error`).
@@ -18,6 +18,35 @@
     - `model`: model identifier (optional)
     - `endpoint`: sanitized endpoint URL/path (optional)
 - `raw`: optional raw event (debug use only).
+
+## Name Catalog (v4.35 additions included)
+- `ocr.scan_text`
+- `risk.hazards`
+- `safety.confirm`
+- `safety.latch`
+- `safety.preempt`
+- `safety.local_fallback`
+- `plan.generate`
+- `plan.execute`
+- `ui.command`
+- `ui.confirm_request`
+- `ui.confirm_response`
+
+## UI Payload Recommendations
+- `ui.command` payload:
+  - `commandType`: `speak|overlay|haptic|stop`
+  - `actionId`: stable action id
+  - `text`: optional speech text
+  - `label`: optional overlay label
+  - `reason`: optional reason tag
+- `ui.confirm_request` payload:
+  - `confirmId`
+  - `text`
+  - `timeoutMs`
+- `ui.confirm_response` payload:
+  - `confirmId`
+  - `accepted`: bool
+  - `latencyMs`: optional (derived from request/response delta when available)
 
 ## Examples
 

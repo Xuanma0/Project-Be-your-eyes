@@ -47,6 +47,7 @@ from byes.tools.base import FrameInput, ToolLane
 from byes.world_state import WorldState
 from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text
 from byes.plan_pipeline import generate_action_plan, load_events_v1_rows
+from byes.plan_executor import execute_plan as execute_action_plan
 from byes.schemas.pov_ir_schema import validate_pov_ir
 from scripts.report_run import generate_report_outputs, load_run_package, safe_extract_zip
 
@@ -231,6 +232,25 @@ class PlanExecuteRequest(BaseModel):
     runPackage: str | None = None
     runId: str | None = None
     frameSeq: int | None = None
+
+
+class ConfirmResponseRequest(BaseModel):
+    runId: str
+    frameSeq: int
+    confirmId: str
+    accepted: bool
+    runPackage: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_confirm(self) -> "ConfirmResponseRequest":
+        if not str(self.runId or "").strip():
+            raise ValueError("runId is required")
+        if int(self.frameSeq) <= 0:
+            raise ValueError("frameSeq must be >= 1")
+        if not str(self.confirmId or "").strip():
+            raise ValueError("confirmId is required")
+        return self
+
 
 class ConnectionManager:
     def __init__(self) -> None:
@@ -1490,7 +1510,12 @@ async def execute_plan(request: PlanExecuteRequest) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail="plan must be object")
         if str(plan.get("schemaVersion", "")).strip() != "byes.action_plan.v1":
             raise HTTPException(status_code=400, detail="plan.schemaVersion must be byes.action_plan.v1")
-        result = _simulate_plan_execute(plan)
+        command_rows: list[dict[str, Any]] = []
+
+        def _emit_command(command: dict[str, Any]) -> None:
+            command_rows.append(dict(command))
+
+        result = execute_action_plan(plan, emit_event_fn=_emit_command, now_ms_fn=_now_ms)
         run_package_text = str(request.runPackage or "").strip()
         run_id_text = str(request.runId or "").strip()
         if run_package_text or run_id_text:
@@ -1507,6 +1532,7 @@ async def execute_plan(request: PlanExecuteRequest) -> dict[str, Any]:
                 frame_seq = int(plan.get("frameSeq", 0))
             latency_ms = int(max(0, (time.perf_counter() - started_at) * 1000.0))
             if can_write_events:
+                ui_events = _build_ui_events_from_commands(command_rows)
                 _try_append_plan_execute_event(
                     run_package_dir=run_package_dir,
                     manifest=manifest,
@@ -1515,13 +1541,94 @@ async def execute_plan(request: PlanExecuteRequest) -> dict[str, Any]:
                     latency_ms=latency_ms,
                     executed_count=int(result.get("executedCount", 0) or 0),
                     blocked_count=int(result.get("blockedCount", 0) or 0),
-                    stop_triggered=bool(result.get("stopTriggered")),
+                    pending_confirm_count=int(result.get("pendingConfirmCount", 0) or 0),
+                    ui_events=ui_events,
                 )
         return result
     except HTTPException:
         raise
     except Exception as ex:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"plan execution failed: {ex}") from ex
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
+@app.post("/api/confirm/response")
+async def confirm_response(request: ConfirmResponseRequest) -> dict[str, Any]:
+    cleanup_dir: Path | None = None
+    try:
+        run_package_dir, cleanup_dir, _can_write_events = await _resolve_context_run_package_dir_async(
+            run_package_raw=request.runPackage,
+            run_id=request.runId,
+        )
+        _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+        events_path = _resolve_events_v1_path(run_package_dir, manifest)
+        if not events_path.exists() or not events_path.is_file():
+            raise HTTPException(status_code=404, detail="eventsV1Jsonl not found")
+
+        run_id = str(request.runId).strip()
+        frame_seq = int(request.frameSeq)
+        confirm_id = str(request.confirmId).strip()
+        accepted = bool(request.accepted)
+        now_ms = _now_ms()
+        request_ts = _find_confirm_request_ts_ms(
+            events_path,
+            run_id=run_id,
+            frame_seq=frame_seq,
+            confirm_id=confirm_id,
+        )
+        latency_ms: int | None = None
+        if request_ts is not None and now_ms >= request_ts:
+            latency_ms = int(now_ms - request_ts)
+
+        rows: list[dict[str, Any]] = [
+            _build_byes_event(
+                run_id=run_id,
+                frame_seq=frame_seq,
+                category="ui",
+                name="ui.confirm_response",
+                latency_ms=latency_ms,
+                payload={
+                    "confirmId": confirm_id,
+                    "accepted": accepted,
+                    "latencyMs": latency_ms,
+                },
+            )
+        ]
+        wrote_guardrail_stop = False
+        if not accepted and _is_latest_risk_level_critical(events_path, run_id=run_id, frame_seq=frame_seq):
+            rows.append(
+                _build_byes_event(
+                    run_id=run_id,
+                    frame_seq=frame_seq,
+                    category="ui",
+                    name="ui.command",
+                    payload={
+                        "commandType": "stop",
+                        "actionId": f"guardrail-stop-{confirm_id}",
+                        "reason": "confirm_rejected_critical",
+                    },
+                )
+            )
+            wrote_guardrail_stop = True
+
+        _append_events_v1_rows(events_path, rows)
+        return {
+            "ok": True,
+            "runId": run_id,
+            "frameSeq": frame_seq,
+            "confirmId": confirm_id,
+            "accepted": accepted,
+            "latencyMs": latency_ms,
+            "guardrailStopIssued": wrote_guardrail_stop,
+        }
+    except HTTPException:
+        raise
+    except ValidationError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"confirm response failed: {ex}") from ex
     finally:
         if cleanup_dir is not None and cleanup_dir.exists():
             shutil.rmtree(cleanup_dir, ignore_errors=True)
@@ -1992,57 +2099,173 @@ def _try_append_plan_execute_event(
     latency_ms: int,
     executed_count: int,
     blocked_count: int,
-    stop_triggered: bool,
+    pending_confirm_count: int,
+    ui_events: list[dict[str, Any]],
 ) -> bool:
     events_path = _resolve_events_v1_path(run_package_dir, manifest)
     safe_frame_seq = int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1
-    row = {
+    rows: list[dict[str, Any]] = [
+        _build_byes_event(
+            run_id=run_id,
+            frame_seq=safe_frame_seq,
+            category="plan",
+            name="plan.execute",
+            latency_ms=int(max(0, latency_ms)),
+            payload={
+                "executedCount": int(max(0, executed_count)),
+                "blockedCount": int(max(0, blocked_count)),
+                "pendingConfirmCount": int(max(0, pending_confirm_count)),
+            },
+        )
+    ]
+    for ui_event in ui_events:
+        event_name = str(ui_event.get("name", "")).strip().lower()
+        if event_name == "ui.command":
+            rows.append(
+                _build_byes_event(
+                    run_id=run_id,
+                    frame_seq=safe_frame_seq,
+                    category="ui",
+                    name="ui.command",
+                    payload=ui_event.get("payload", {}),
+                )
+            )
+        elif event_name == "ui.confirm_request":
+            rows.append(
+                _build_byes_event(
+                    run_id=run_id,
+                    frame_seq=safe_frame_seq,
+                    category="ui",
+                    name="ui.confirm_request",
+                    payload=ui_event.get("payload", {}),
+                    phase="start",
+                )
+            )
+    return _append_events_v1_rows(events_path, rows)
+
+
+def _build_byes_event(
+    *,
+    run_id: str,
+    frame_seq: int,
+    category: str,
+    name: str,
+    payload: dict[str, Any] | None = None,
+    latency_ms: int | None = None,
+    phase: str = "result",
+) -> dict[str, Any]:
+    return {
         "schemaVersion": "byes.event.v1",
         "tsMs": _now_ms(),
         "runId": run_id,
-        "frameSeq": safe_frame_seq,
+        "frameSeq": int(max(1, frame_seq)),
         "component": "gateway",
-        "category": "plan",
-        "name": "plan.execute",
-        "phase": "result",
+        "category": str(category),
+        "name": str(name),
+        "phase": str(phase or "result"),
         "status": "ok",
-        "latencyMs": int(max(0, latency_ms)),
-        "payload": {
-            "executedCount": int(max(0, executed_count)),
-            "blockedCount": int(max(0, blocked_count)),
-            "stopTriggered": bool(stop_triggered),
-        },
+        "latencyMs": int(latency_ms) if isinstance(latency_ms, int) and latency_ms >= 0 else None,
+        "payload": payload if isinstance(payload, dict) else {},
     }
-    return _append_events_v1_rows(events_path, [row])
+ 
+
+def _build_ui_events_from_commands(commands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for command in commands:
+        kind = str(command.get("kind", "")).strip().lower()
+        if kind == "ui.command":
+            payload = {
+                "commandType": str(command.get("commandType", "")).strip(),
+                "actionId": str(command.get("actionId", "")).strip(),
+                "text": str(command.get("text", "")).strip(),
+                "label": str(command.get("label", "")).strip(),
+                "reason": str(command.get("reason", "")).strip(),
+            }
+            out.append({"name": "ui.command", "payload": payload})
+        elif kind == "ui.confirm_request":
+            payload = {
+                "confirmId": str(command.get("confirmId", "")).strip(),
+                "text": str(command.get("text", "")).strip(),
+                "timeoutMs": int(command.get("timeoutMs", 0) or 0),
+                "actionId": str(command.get("actionId", "")).strip(),
+            }
+            out.append({"name": "ui.confirm_request", "payload": payload})
+    return out
 
 
-def _simulate_plan_execute(plan: dict[str, Any]) -> dict[str, Any]:
-    actions_raw = plan.get("actions")
-    actions_raw = actions_raw if isinstance(actions_raw, list) else []
-    actions = [dict(item) for item in actions_raw if isinstance(item, dict)]
-    ordered = sorted(actions, key=lambda item: int(item.get("priority", 9999) or 9999))
-    executed: list[dict[str, Any]] = []
-    blocked: list[dict[str, Any]] = []
-    blocked_mode = False
-    stop_triggered = False
-    for action in ordered:
-        if blocked_mode:
-            blocked.append(action)
-            continue
-        executed.append(action)
-        action_type = str(action.get("type", "")).strip().lower()
-        if action_type == "stop":
-            stop_triggered = True
-        if bool(action.get("blocking")):
-            blocked_mode = True
-    return {
-        "ok": True,
-        "executed": executed,
-        "blocked": blocked,
-        "executedCount": len(executed),
-        "blockedCount": len(blocked),
-        "stopTriggered": stop_triggered,
-    }
+def _find_confirm_request_ts_ms(
+    events_path: Path,
+    *,
+    run_id: str,
+    frame_seq: int,
+    confirm_id: str,
+) -> int | None:
+    if not events_path.exists() or not events_path.is_file():
+        return None
+    latest_ts: int | None = None
+    with events_path.open("r", encoding="utf-8-sig") as fp:
+        for raw in fp:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("name", "")).strip().lower() != "ui.confirm_request":
+                continue
+            if str(row.get("runId", "")).strip() != run_id:
+                continue
+            row_frame = int(row.get("frameSeq", 0) or 0)
+            if row_frame != int(frame_seq):
+                continue
+            payload = row.get("payload", {})
+            payload = payload if isinstance(payload, dict) else {}
+            row_confirm_id = str(payload.get("confirmId", "")).strip()
+            if row_confirm_id != confirm_id:
+                continue
+            ts_ms = int(row.get("tsMs", 0) or 0)
+            if ts_ms > 0:
+                latest_ts = ts_ms
+    return latest_ts
+
+
+def _is_latest_risk_level_critical(
+    events_path: Path,
+    *,
+    run_id: str,
+    frame_seq: int,
+) -> bool:
+    if not events_path.exists() or not events_path.is_file():
+        return False
+    latest_payload: dict[str, Any] | None = None
+    with events_path.open("r", encoding="utf-8-sig") as fp:
+        for raw in fp:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("name", "")).strip().lower() != "plan.generate":
+                continue
+            if str(row.get("runId", "")).strip() != run_id:
+                continue
+            row_frame = int(row.get("frameSeq", 0) or 0)
+            if row_frame != int(frame_seq):
+                continue
+            payload = row.get("payload", {})
+            if isinstance(payload, dict):
+                latest_payload = payload
+    if not isinstance(latest_payload, dict):
+        return False
+    risk_level = str(latest_payload.get("riskLevel", "")).strip().lower()
+    return risk_level == "critical"
 
 
 def _read_float(payload: dict[str, Any], key: str) -> float | None:
