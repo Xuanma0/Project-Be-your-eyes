@@ -87,6 +87,22 @@ Audit outputs:
 - `events/events_v1.jsonl`: appends `pov.context` event with output/truncation stats.
 - `report.json`: check `povContext` for default-budget output stats and truncation.
 
+## Ablation: POV Budget Sweep
+
+Run one command to compare context budgets:
+
+```powershell
+python scripts/run_ablation_pov_budget.py --run-package tests/fixtures/run_package_with_risk_gt_and_pov_min --budgets 256,512,1024 --mode decisions_plus_highlights --use-http 0
+```
+
+Outputs:
+- `%TEMP%\byes_pov_ablation\latest.json`
+- `%TEMP%\byes_pov_ablation\latest.md`
+
+How to read recommendation:
+- default rule is `minimize riskLatencyP90` with `critical_fn==0`, then maximize `qualityScore`.
+- use `latest.md` table to inspect context compression (`ctxTok`, `ctxChars`) against quality/latency metrics.
+
 ## Leaderboard And Reports
 
 - API list: `GET /api/run_packages`
