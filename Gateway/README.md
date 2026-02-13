@@ -87,6 +87,26 @@ Audit outputs:
 - `events/events_v1.jsonl`: appends `pov.context` event with output/truncation stats.
 - `report.json`: check `povContext` for default-budget output stats and truncation.
 
+## Planning API (/api/plan)
+
+Generate an `ActionPlan v1` from POV context + risk events (default planner backend is `mock`):
+
+```powershell
+curl -X POST "http://127.0.0.1:8000/api/plan" `
+  -H "Content-Type: application/json" `
+  -d '{"runPackage":"Gateway/tests/fixtures/run_package_with_risk_gt_and_pov_min","frameSeq":2,"budget":{"maxChars":2000,"maxTokensApprox":256,"mode":"decisions_plus_highlights"},"constraints":{"allowConfirm":true,"allowHaptic":false,"maxActions":3}}'
+```
+
+SafetyKernel guardrails:
+- `critical`: injects `stop` when missing and forces non-stop actions to `requiresConfirm=true`.
+- `high`: forces `requiresConfirm=true` for actions that were not gated.
+- trims actions to `constraints.maxActions` and fills default `ttlMs=2000` when absent.
+
+Audit outputs:
+- `events/events_v1.jsonl`: appends `plan.generate` and `safety.kernel` events (and `plan.execute` when using `/api/plan/execute`).
+- `report.json`: check `plan` for `riskLevel`, action counts/types, and `guardrailsApplied`.
+- leaderboard (`/api/run_packages`, `/runs`): `plan_present`, `plan_risk_level`, `plan_actions`, `plan_guardrails`.
+
 ## Ablation: POV Budget Sweep
 
 Run one command to compare context budgets:

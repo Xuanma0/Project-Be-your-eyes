@@ -46,6 +46,7 @@ from byes.tools import MockOcrTool, MockRiskTool, RealDepthTool, RealDetTool, Re
 from byes.tools.base import FrameInput, ToolLane
 from byes.world_state import WorldState
 from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text
+from byes.plan_pipeline import generate_action_plan, load_events_v1_rows
 from byes.schemas.pov_ir_schema import validate_pov_ir
 from scripts.report_run import generate_report_outputs, load_run_package, safe_extract_zip
 
@@ -180,6 +181,56 @@ class PovContextRequest(BaseModel):
             raise ValueError("runPackage or runId is required")
         return self
 
+
+class PlanBudgetRequest(BaseModel):
+    maxChars: int = 2000
+    maxTokensApprox: int = 256
+    mode: Literal["decisions_only", "decisions_plus_highlights", "full"] = "decisions_plus_highlights"
+
+    @model_validator(mode="after")
+    def _validate_budget(self) -> "PlanBudgetRequest":
+        if int(self.maxChars) < 0:
+            raise ValueError("budget.maxChars must be >= 0")
+        if int(self.maxTokensApprox) < 0:
+            raise ValueError("budget.maxTokensApprox must be >= 0")
+        return self
+
+
+class PlanConstraintsRequest(BaseModel):
+    allowConfirm: bool = True
+    allowHaptic: bool = False
+    maxActions: int = 3
+
+    @model_validator(mode="after")
+    def _validate_constraints(self) -> "PlanConstraintsRequest":
+        if int(self.maxActions) <= 0:
+            raise ValueError("constraints.maxActions must be >= 1")
+        return self
+
+
+class PlanGenerateRequest(BaseModel):
+    runPackage: str | None = None
+    runId: str | None = None
+    frameSeq: int | None = 1
+    budget: PlanBudgetRequest = PlanBudgetRequest()
+    constraints: PlanConstraintsRequest = PlanConstraintsRequest()
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> "PlanGenerateRequest":
+        run_package = str(self.runPackage or "").strip()
+        run_id = str(self.runId or "").strip()
+        if not run_package and not run_id:
+            raise ValueError("runPackage or runId is required")
+        if self.frameSeq is not None and int(self.frameSeq) <= 0:
+            raise ValueError("frameSeq must be >= 1 when provided")
+        return self
+
+
+class PlanExecuteRequest(BaseModel):
+    plan: dict[str, Any]
+    runPackage: str | None = None
+    runId: str | None = None
+    frameSeq: int | None = None
 
 class ConnectionManager:
     def __init__(self) -> None:
@@ -1358,6 +1409,124 @@ async def build_pov_context(request: PovContextRequest) -> dict[str, Any]:
             shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
+@app.post("/api/plan")
+async def generate_plan(request: PlanGenerateRequest) -> dict[str, Any]:
+    started_at = time.perf_counter()
+    cleanup_dir: Path | None = None
+    try:
+        run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
+            run_package_raw=request.runPackage,
+            run_id=request.runId,
+        )
+        manifest, pov_ir, _ = _load_pov_ir_for_context(run_package_dir)
+        events_rows, _ = load_events_v1_rows(run_package_dir, manifest)
+        frame_seq = int(request.frameSeq) if isinstance(request.frameSeq, int) and request.frameSeq > 0 else None
+        run_id = (
+            str(manifest.get("runId", "")).strip()
+            or str(pov_ir.get("runId", "")).strip()
+            or str(request.runId or "").strip()
+            or run_package_dir.name
+        )
+        budget_payload = {
+            "maxChars": int(request.budget.maxChars),
+            "maxTokensApprox": int(request.budget.maxTokensApprox),
+        }
+        constraints_payload = {
+            "allowConfirm": bool(request.constraints.allowConfirm),
+            "allowHaptic": bool(request.constraints.allowHaptic),
+            "maxActions": int(request.constraints.maxActions),
+        }
+        bundle = generate_action_plan(
+            pov_ir=pov_ir,
+            run_id=run_id,
+            frame_seq=frame_seq,
+            budget=budget_payload,
+            mode=request.budget.mode,
+            constraints=constraints_payload,
+            events_rows=events_rows,
+        )
+        plan_payload = bundle.get("plan")
+        if not isinstance(plan_payload, dict):
+            raise RuntimeError("planner returned invalid plan payload")
+        latency_ms = int(max(0, (time.perf_counter() - started_at) * 1000.0))
+        if can_write_events:
+            planner = bundle.get("planner", {})
+            planner = planner if isinstance(planner, dict) else {}
+            guardrails = bundle.get("guardrailsApplied", [])
+            guardrails = guardrails if isinstance(guardrails, list) else []
+            findings = bundle.get("findings", [])
+            findings = findings if isinstance(findings, list) else []
+            _try_append_plan_events(
+                run_package_dir=run_package_dir,
+                manifest=manifest,
+                run_id=run_id,
+                frame_seq=frame_seq,
+                latency_ms=latency_ms,
+                planner=planner,
+                risk_level=str(plan_payload.get("riskLevel", "low")),
+                actions_count=len(plan_payload.get("actions", [])) if isinstance(plan_payload.get("actions"), list) else 0,
+                guardrails_applied=[str(item) for item in guardrails if str(item).strip()],
+                findings_count=len(findings),
+            )
+        return plan_payload
+    except HTTPException:
+        raise
+    except ValidationError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"plan generation failed: {ex}") from ex
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
+@app.post("/api/plan/execute")
+async def execute_plan(request: PlanExecuteRequest) -> dict[str, Any]:
+    started_at = time.perf_counter()
+    cleanup_dir: Path | None = None
+    try:
+        plan = request.plan if isinstance(request.plan, dict) else None
+        if not isinstance(plan, dict):
+            raise HTTPException(status_code=400, detail="plan must be object")
+        if str(plan.get("schemaVersion", "")).strip() != "byes.action_plan.v1":
+            raise HTTPException(status_code=400, detail="plan.schemaVersion must be byes.action_plan.v1")
+        result = _simulate_plan_execute(plan)
+        run_package_text = str(request.runPackage or "").strip()
+        run_id_text = str(request.runId or "").strip()
+        if run_package_text or run_id_text:
+            run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
+                run_package_raw=run_package_text or None,
+                run_id=run_id_text or None,
+            )
+            _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+            run_id = str(plan.get("runId", "")).strip() or str(manifest.get("runId", "")).strip() or run_package_dir.name
+            frame_seq: int | None = None
+            if isinstance(request.frameSeq, int) and request.frameSeq > 0:
+                frame_seq = int(request.frameSeq)
+            elif isinstance(plan.get("frameSeq"), int) and int(plan.get("frameSeq", 0)) > 0:
+                frame_seq = int(plan.get("frameSeq", 0))
+            latency_ms = int(max(0, (time.perf_counter() - started_at) * 1000.0))
+            if can_write_events:
+                _try_append_plan_execute_event(
+                    run_package_dir=run_package_dir,
+                    manifest=manifest,
+                    run_id=run_id,
+                    frame_seq=frame_seq,
+                    latency_ms=latency_ms,
+                    executed_count=int(result.get("executedCount", 0) or 0),
+                    blocked_count=int(result.get("blockedCount", 0) or 0),
+                    stop_triggered=bool(result.get("stopTriggered")),
+                )
+        return result
+    except HTTPException:
+        raise
+    except Exception as ex:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"plan execution failed: {ex}") from ex
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
 @app.get("/api/run_packages")
 async def run_packages_list(
     request: Request,
@@ -1376,6 +1545,8 @@ async def run_packages_list(
     min_pov_decisions: int | None = None,
     has_pov_context: str = "any",
     min_pov_context_token_approx: int | None = None,
+    has_plan: str = "any",
+    max_plan_guardrails: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> dict[str, Any]:
@@ -1396,6 +1567,8 @@ async def run_packages_list(
         min_pov_decisions=min_pov_decisions,
         has_pov_context=has_pov_context,
         min_pov_context_token_approx=min_pov_context_token_approx,
+        has_plan=has_plan,
+        max_plan_guardrails=max_plan_guardrails,
         sort=sort,
         order=order,
     )
@@ -1417,6 +1590,8 @@ async def run_packages_list(
             "min_pov_decisions": min_pov_decisions,
             "has_pov_context": has_pov_context,
             "min_pov_context_token_approx": min_pov_context_token_approx,
+            "has_plan": has_plan,
+            "max_plan_guardrails": max_plan_guardrails,
             "sort": sort,
             "order": order,
             "limit": limit,
@@ -1442,6 +1617,8 @@ async def run_packages_export_json(
     min_pov_decisions: int | None = None,
     has_pov_context: str = "any",
     min_pov_context_token_approx: int | None = None,
+    has_plan: str = "any",
+    max_plan_guardrails: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> dict[str, Any]:
@@ -1462,6 +1639,8 @@ async def run_packages_export_json(
         min_pov_decisions=min_pov_decisions,
         has_pov_context=has_pov_context,
         min_pov_context_token_approx=min_pov_context_token_approx,
+        has_plan=has_plan,
+        max_plan_guardrails=max_plan_guardrails,
         sort=sort,
         order=order,
     )
@@ -1489,6 +1668,8 @@ async def run_packages_export_csv(
     min_pov_decisions: int | None = None,
     has_pov_context: str = "any",
     min_pov_context_token_approx: int | None = None,
+    has_plan: str = "any",
+    max_plan_guardrails: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> Response:
@@ -1509,6 +1690,8 @@ async def run_packages_export_csv(
         min_pov_decisions=min_pov_decisions,
         has_pov_context=has_pov_context,
         min_pov_context_token_approx=min_pov_context_token_approx,
+        has_plan=has_plan,
+        max_plan_guardrails=max_plan_guardrails,
         sort=sort,
         order=order,
     )
@@ -1544,6 +1727,10 @@ async def run_packages_export_csv(
         "pov_decision_per_min",
         "pov_context_token_approx",
         "pov_context_chars",
+        "plan_present",
+        "plan_risk_level",
+        "plan_actions",
+        "plan_guardrails",
         "runUrl",
         "reportUrl",
         "summaryUrl",
@@ -1723,6 +1910,141 @@ def _try_append_pov_context_event(
     return True
 
 
+def _resolve_events_v1_path(run_package_dir: Path, manifest: dict[str, Any]) -> Path:
+    events_rel = str(manifest.get("eventsV1Jsonl", "")).strip() or "events/events_v1.jsonl"
+    return run_package_dir / events_rel
+
+
+def _append_events_v1_rows(events_path: Path, rows: list[dict[str, Any]]) -> bool:
+    if not events_path.exists() or not events_path.is_file():
+        return False
+    with events_path.open("a", encoding="utf-8") as fp:
+        for row in rows:
+            fp.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return True
+
+
+def _try_append_plan_events(
+    *,
+    run_package_dir: Path,
+    manifest: dict[str, Any],
+    run_id: str,
+    frame_seq: int | None,
+    latency_ms: int,
+    planner: dict[str, Any],
+    risk_level: str,
+    actions_count: int,
+    guardrails_applied: list[str],
+    findings_count: int,
+) -> bool:
+    events_path = _resolve_events_v1_path(run_package_dir, manifest)
+    now_ms = _now_ms()
+    safe_frame_seq = int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1
+    planner_payload = {
+        "backend": planner.get("backend"),
+        "model": planner.get("model"),
+        "endpoint": planner.get("endpoint"),
+        "riskLevel": str(risk_level or "low"),
+        "actionsCount": int(max(0, actions_count)),
+    }
+    safety_payload = {
+        "riskLevel": str(risk_level or "low"),
+        "guardrailsApplied": [str(item) for item in guardrails_applied if str(item).strip()],
+        "findingsCount": int(max(0, findings_count)),
+    }
+    rows = [
+        {
+            "schemaVersion": "byes.event.v1",
+            "tsMs": now_ms,
+            "runId": run_id,
+            "frameSeq": safe_frame_seq,
+            "component": "gateway",
+            "category": "plan",
+            "name": "plan.generate",
+            "phase": "result",
+            "status": "ok",
+            "latencyMs": int(max(0, latency_ms)),
+            "payload": planner_payload,
+        },
+        {
+            "schemaVersion": "byes.event.v1",
+            "tsMs": now_ms,
+            "runId": run_id,
+            "frameSeq": safe_frame_seq,
+            "component": "gateway",
+            "category": "safety",
+            "name": "safety.kernel",
+            "phase": "result",
+            "status": "ok",
+            "latencyMs": int(max(0, latency_ms)),
+            "payload": safety_payload,
+        },
+    ]
+    return _append_events_v1_rows(events_path, rows)
+
+
+def _try_append_plan_execute_event(
+    *,
+    run_package_dir: Path,
+    manifest: dict[str, Any],
+    run_id: str,
+    frame_seq: int | None,
+    latency_ms: int,
+    executed_count: int,
+    blocked_count: int,
+    stop_triggered: bool,
+) -> bool:
+    events_path = _resolve_events_v1_path(run_package_dir, manifest)
+    safe_frame_seq = int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1
+    row = {
+        "schemaVersion": "byes.event.v1",
+        "tsMs": _now_ms(),
+        "runId": run_id,
+        "frameSeq": safe_frame_seq,
+        "component": "gateway",
+        "category": "plan",
+        "name": "plan.execute",
+        "phase": "result",
+        "status": "ok",
+        "latencyMs": int(max(0, latency_ms)),
+        "payload": {
+            "executedCount": int(max(0, executed_count)),
+            "blockedCount": int(max(0, blocked_count)),
+            "stopTriggered": bool(stop_triggered),
+        },
+    }
+    return _append_events_v1_rows(events_path, [row])
+
+
+def _simulate_plan_execute(plan: dict[str, Any]) -> dict[str, Any]:
+    actions_raw = plan.get("actions")
+    actions_raw = actions_raw if isinstance(actions_raw, list) else []
+    actions = [dict(item) for item in actions_raw if isinstance(item, dict)]
+    ordered = sorted(actions, key=lambda item: int(item.get("priority", 9999) or 9999))
+    executed: list[dict[str, Any]] = []
+    blocked: list[dict[str, Any]] = []
+    blocked_mode = False
+    stop_triggered = False
+    for action in ordered:
+        if blocked_mode:
+            blocked.append(action)
+            continue
+        executed.append(action)
+        action_type = str(action.get("type", "")).strip().lower()
+        if action_type == "stop":
+            stop_triggered = True
+        if bool(action.get("blocking")):
+            blocked_mode = True
+    return {
+        "ok": True,
+        "executed": executed,
+        "blocked": blocked,
+        "executedCount": len(executed),
+        "blockedCount": len(blocked),
+        "stopTriggered": stop_triggered,
+    }
+
+
 def _read_float(payload: dict[str, Any], key: str) -> float | None:
     raw = payload.get(key)
     if raw is None:
@@ -1805,6 +2127,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     pov_context = pov_context if isinstance(pov_context, dict) else {}
     pov_context_out = pov_context.get("out", {})
     pov_context_out = pov_context_out if isinstance(pov_context_out, dict) else {}
+    plan_payload = summary.get("plan", {})
+    plan_payload = plan_payload if isinstance(plan_payload, dict) else {}
     critical_misses: int | None = None
     max_delay_frames: int | None = None
     risk_latency_p90: int | None = None
@@ -1822,6 +2146,18 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     pov_context_token_approx = int(pov_context_token_approx_raw) if pov_context_token_approx_raw is not None else None
     pov_context_chars = int(pov_context_chars_raw) if pov_context_chars_raw is not None else None
     has_pov_context = bool(pov_context_token_approx is not None)
+    plan_present = bool(plan_payload.get("present"))
+    plan_risk_level = str(plan_payload.get("riskLevel", "")).strip() or None
+    plan_actions = 0
+    plan_guardrails = 0
+    plan_actions_payload = plan_payload.get("actions")
+    if isinstance(plan_actions_payload, dict):
+        raw_actions = _read_float(plan_actions_payload, "count")
+        if raw_actions is not None:
+            plan_actions = int(raw_actions)
+    plan_guardrails_payload = plan_payload.get("guardrailsApplied")
+    if isinstance(plan_guardrails_payload, list):
+        plan_guardrails = len([item for item in plan_guardrails_payload if str(item).strip()])
     if isinstance(depth_risk, dict):
         critical = depth_risk.get("critical", {})
         delay = depth_risk.get("detectionDelayFrames", {})
@@ -1880,6 +2216,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "has_pov_context": has_pov_context,
         "pov_context_token_approx": pov_context_token_approx,
         "pov_context_chars": pov_context_chars,
+        "plan_present": plan_present,
+        "plan_risk_level": plan_risk_level,
+        "plan_actions": plan_actions,
+        "plan_guardrails": plan_guardrails,
         "summary": summary,
     }
     row.update(urls)
@@ -1903,6 +2243,8 @@ def _matches_run_filters(
     min_pov_decisions: int | None,
     has_pov_context: str | None,
     min_pov_context_token_approx: int | None,
+    has_plan: str | None,
+    max_plan_guardrails: int | None,
 ) -> bool:
     if scenario:
         if scenario.lower() not in str(row.get("scenarioTag", "")).lower():
@@ -1971,6 +2313,17 @@ def _matches_run_filters(
             return False
         if int(value) < int(min_pov_context_token_approx):
             return False
+    if has_plan:
+        normalized = has_plan.strip().lower()
+        present = bool(row.get("plan_present"))
+        if normalized in {"true", "1", "yes"} and not present:
+            return False
+        if normalized in {"false", "0", "no"} and present:
+            return False
+    if max_plan_guardrails is not None:
+        value = int(row.get("plan_guardrails", 0) or 0)
+        if value > int(max_plan_guardrails):
+            return False
     return True
 
 
@@ -1991,6 +2344,8 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "pov_token_approx",
         "pov_decision_per_min",
         "pov_context_token_approx",
+        "plan_actions",
+        "plan_guardrails",
         "safemode_enter",
         "throttle_enter",
         "preempt_enter",
@@ -2030,6 +2385,8 @@ async def _query_run_package_rows(
     min_pov_decisions: int | None,
     has_pov_context: str | None,
     min_pov_context_token_approx: int | None,
+    has_plan: str | None,
+    max_plan_guardrails: int | None,
     sort: str,
     order: str,
 ) -> list[dict[str, Any]]:
@@ -2056,6 +2413,8 @@ async def _query_run_package_rows(
             min_pov_decisions=min_pov_decisions,
             has_pov_context=has_pov_context,
             min_pov_context_token_approx=min_pov_context_token_approx,
+            has_plan=has_plan,
+            max_plan_guardrails=max_plan_guardrails,
         ):
             continue
         rows.append(row)
@@ -2110,6 +2469,8 @@ async def runs_dashboard(
     min_pov_decisions: int | None = None,
     has_pov_context: str = "any",
     min_pov_context_token_approx: int | None = None,
+    has_plan: str = "any",
+    max_plan_guardrails: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> HTMLResponse:
@@ -2131,6 +2492,8 @@ async def runs_dashboard(
         min_pov_decisions=min_pov_decisions,
         has_pov_context=has_pov_context,
         min_pov_context_token_approx=min_pov_context_token_approx,
+        has_plan=has_plan,
+        max_plan_guardrails=max_plan_guardrails,
         sort=sort,
         order=order,
     )
@@ -2162,6 +2525,10 @@ async def runs_dashboard(
         pov_ctx_token = "—" if pov_ctx_token_raw is None else str(int(pov_ctx_token_raw))
         pov_ctx_chars_raw = row.get("pov_context_chars")
         pov_ctx_chars = "—" if pov_ctx_chars_raw is None else str(int(pov_ctx_chars_raw))
+        plan_present = "yes" if bool(row.get("plan_present")) else "no"
+        plan_risk_level = str(row.get("plan_risk_level") or "—")
+        plan_actions = str(int(row.get("plan_actions", 0) or 0))
+        plan_guardrails = str(int(row.get("plan_guardrails", 0) or 0))
         rows_html += (
             "<tr>"
             f"<td><input type='checkbox' data-run-id='{run_val}' /></td>"
@@ -2180,10 +2547,14 @@ async def runs_dashboard(
             f"<td>{html.escape(pov_dpm)}</td>"
             f"<td>{html.escape(pov_ctx_token)}</td>"
             f"<td>{html.escape(pov_ctx_chars)}</td>"
+            f"<td>{html.escape(plan_present)}</td>"
+            f"<td>{html.escape(plan_risk_level)}</td>"
+            f"<td>{html.escape(plan_actions)}</td>"
+            f"<td>{html.escape(plan_guardrails)}</td>"
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='16' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='20' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -2202,6 +2573,8 @@ async def runs_dashboard(
     min_pov_context_token_approx_value = html.escape(
         "" if min_pov_context_token_approx is None else str(min_pov_context_token_approx)
     )
+    has_plan_value = html.escape(has_plan or "any")
+    max_plan_guardrails_value = html.escape("" if max_plan_guardrails is None else str(max_plan_guardrails))
     html_page = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -2248,6 +2621,13 @@ async def runs_dashboard(
           <option value="false" {"selected" if has_pov_context_value == "false" else ""}>false</option>
         </select>
       </label>
+      <label>has_plan:
+        <select name="has_plan">
+          <option value="any" {"selected" if has_plan_value == "any" else ""}>any</option>
+          <option value="true" {"selected" if has_plan_value == "true" else ""}>true</option>
+          <option value="false" {"selected" if has_plan_value == "false" else ""}>false</option>
+        </select>
+      </label>
       <label>min_quality: <input type="number" step="0.01" name="min_quality" value="{min_quality_value}" /></label>
       <label>min_pov_decisions: <input type="number" min="0" name="min_pov_decisions" value="{min_pov_decisions_value}" /></label>
       <label>min_pov_context_token_approx: <input type="number" min="0" name="min_pov_context_token_approx" value="{min_pov_context_token_approx_value}" /></label>
@@ -2255,6 +2635,7 @@ async def runs_dashboard(
       <label>max_critical_misses: <input type="number" min="0" name="max_critical_misses" value="{max_critical_misses_value}" /></label>
       <label>max_risk_latency_p90: <input type="number" min="0" name="max_risk_latency_p90" value="{max_risk_latency_p90_value}" /></label>
       <label>max_risk_latency_max: <input type="number" min="0" name="max_risk_latency_max" value="{max_risk_latency_max_value}" /></label>
+      <label>max_plan_guardrails: <input type="number" min="0" name="max_plan_guardrails" value="{max_plan_guardrails_value}" /></label>
       <label>sort:
         <select name="sort">
           <option value="createdAtMs" {"selected" if sort_value == "createdAtMs" else ""}>createdAtMs</option>
@@ -2265,6 +2646,8 @@ async def runs_dashboard(
           <option value="pov_token_approx" {"selected" if sort_value == "pov_token_approx" else ""}>pov_token_approx</option>
           <option value="pov_decision_per_min" {"selected" if sort_value == "pov_decision_per_min" else ""}>pov_decision_per_min</option>
           <option value="pov_context_token_approx" {"selected" if sort_value == "pov_context_token_approx" else ""}>pov_context_token_approx</option>
+          <option value="plan_actions" {"selected" if sort_value == "plan_actions" else ""}>plan_actions</option>
+          <option value="plan_guardrails" {"selected" if sort_value == "plan_guardrails" else ""}>plan_guardrails</option>
           <option value="e2e_count" {"selected" if sort_value == "e2e_count" else ""}>e2e_count</option>
           <option value="ttfa_count" {"selected" if sort_value == "ttfa_count" else ""}>ttfa_count</option>
           <option value="frameCountSent" {"selected" if sort_value == "frameCountSent" else ""}>frameCountSent</option>
@@ -2278,8 +2661,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_plan_guardrails={max_plan_guardrails_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_plan_guardrails={max_plan_guardrails_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -2301,6 +2684,10 @@ async def runs_dashboard(
           <th>POV DPM</th>
           <th>POV Ctx Token~</th>
           <th>POV Ctx Chars</th>
+          <th>Plan</th>
+          <th>Plan Risk</th>
+          <th>Plan Actions</th>
+          <th>Plan Guardrails</th>
         </tr>
       </thead>
       <tbody id="runs">{rows_html}</tbody>

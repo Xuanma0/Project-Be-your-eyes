@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-be-your-eyes/schemas/planner_request_v1.schema.json",
+  "title": "Planner Request v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "frameSeq",
+    "contextPack",
+    "riskSummary",
+    "constraints"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "byes.planner_request.v1" },
+    "runId": { "type": "string", "minLength": 1 },
+    "frameSeq": { "type": ["integer", "null"] },
+    "contextPack": { "type": "object", "additionalProperties": true },
+    "riskSummary": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["hazardsTop"],
+      "properties": {
+        "hazardsTop": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["hazardKind", "severity"],
+            "properties": {
+              "hazardKind": { "type": "string" },
+              "severity": { "type": "string" },
+              "score": { "type": ["number", "null"] }
+            }
+          }
+        },
+        "missCriticalCount": { "type": ["integer", "null"] },
+        "critical_fn": { "type": ["integer", "null"] },
+        "riskLatencyP90": { "type": ["integer", "null"] }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["allowConfirm", "allowHaptic", "maxActions"],
+      "properties": {
+        "allowConfirm": { "type": "boolean" },
+        "allowHaptic": { "type": "boolean" },
+        "maxActions": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

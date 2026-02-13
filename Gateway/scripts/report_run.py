@@ -37,6 +37,7 @@ from byes.quality_metrics import (  # noqa: E402
 )
 from byes.pov_metrics import compute_pov_metrics, load_pov_ir_from_run_package  # noqa: E402
 from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text  # noqa: E402
+from byes.plan_pipeline import generate_action_plan, summarize_plan_for_report  # noqa: E402
 
 _LABEL_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=\"((?:\\.|[^\"])*)\"")
 _DEFAULT_POV_CONTEXT_BUDGET = {"maxChars": 2000, "maxTokensApprox": 500}
@@ -947,6 +948,21 @@ def generate_report_outputs(
             pov_context_payload = None
     if pov_context_payload is not None:
         summary["povContext"] = pov_context_payload
+    summary["plan"] = {"present": False}
+    if isinstance(pov_ir_payload, dict):
+        try:
+            plan_bundle = generate_action_plan(
+                pov_ir=pov_ir_payload,
+                run_id=_resolve_plan_run_id(run_package_summary, pov_ir_payload, event_rows),
+                frame_seq=_pick_plan_frame_seq(event_rows),
+                budget={"maxChars": 2000, "maxTokensApprox": 256},
+                mode="decisions_plus_highlights",
+                constraints={"allowConfirm": True, "allowHaptic": False, "maxActions": 3},
+                events_rows=event_rows,
+            )
+            summary["plan"] = summarize_plan_for_report(plan_bundle)
+        except Exception:
+            summary["plan"] = {"present": False}
     inferred_summary = extract_inference_summary_from_ws_events(event_source_path)
     events_v1_inferred = infer_inference_summary_from_events_v1(event_rows)
     risk_latency_stats, risk_timings_stats = extract_risk_latency_metrics_from_events_v1(event_rows)
@@ -1075,6 +1091,63 @@ def _coalesce_inference_field(
     if fallback_value:
         return fallback_value
     return None
+
+
+def _resolve_plan_run_id(
+    run_package_summary: dict[str, Any] | None,
+    pov_ir_payload: dict[str, Any] | None,
+    event_rows: list[dict[str, Any]],
+) -> str:
+    if isinstance(pov_ir_payload, dict):
+        run_id = str(pov_ir_payload.get("runId", "")).strip()
+        if run_id:
+            return run_id
+    if isinstance(run_package_summary, dict):
+        for key in ("runId", "sessionId"):
+            run_id = str(run_package_summary.get(key, "")).strip()
+            if run_id:
+                return run_id
+    for row in event_rows:
+        run_id = str(row.get("runId", "")).strip()
+        if run_id:
+            return run_id
+    return "plan-report"
+
+
+def _pick_plan_frame_seq(event_rows: list[dict[str, Any]]) -> int | None:
+    risk_rows: list[dict[str, Any]] = []
+    for row in event_rows:
+        if str(row.get("name", "")).strip().lower() != "risk.hazards":
+            continue
+        if str(row.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(row.get("status", "")).strip().lower() != "ok":
+            continue
+        if not isinstance(row.get("payload"), dict):
+            continue
+        risk_rows.append(row)
+    if not risk_rows:
+        return None
+    risk_rows = sorted(
+        risk_rows,
+        key=lambda item: (
+            int(item.get("tsMs", 0) or 0),
+            int(item.get("frameSeq", 0) or 0),
+        ),
+    )
+    for row in risk_rows:
+        payload = row.get("payload", {})
+        hazards = payload.get("hazards", []) if isinstance(payload, dict) else []
+        if not isinstance(hazards, list):
+            continue
+        for hazard in hazards:
+            if not isinstance(hazard, dict):
+                continue
+            if str(hazard.get("severity", "")).strip().lower() == "critical":
+                frame_seq = int(row.get("frameSeq", 0) or 0)
+                return frame_seq if frame_seq > 0 else None
+    fallback_seq = int(risk_rows[-1].get("frameSeq", 0) or 0)
+    return fallback_seq if fallback_seq > 0 else None
 
 
 def _append_tool_focus(lines: list[str], samples: dict[SeriesKey, float], tool: str, delta: bool) -> None:
