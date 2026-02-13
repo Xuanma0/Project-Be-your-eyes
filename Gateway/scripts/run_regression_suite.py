@@ -1,0 +1,529 @@
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+THIS_DIR = Path(__file__).resolve().parent
+GATEWAY_ROOT = THIS_DIR.parent
+REPO_ROOT = GATEWAY_ROOT.parent
+if str(GATEWAY_ROOT) not in sys.path:
+    sys.path.insert(0, str(GATEWAY_ROOT))
+
+from scripts.report_run import generate_report_outputs, resolve_run_package_input  # noqa: E402
+
+
+@dataclass
+class RunSummary:
+    run_id: str
+    run_path: str
+    scenario_tag: str
+    report_md: str
+    report_json: str
+    quality_score: float | None
+    has_ground_truth: bool
+    ocr_cer: float | None
+    ocr_wer: float | None
+    ocr_exact_match_rate: float | None
+    depth_risk_f1: float | None
+    miss_critical_count: int | None
+    depth_risk_delay_p90: int | None
+    depth_risk_delay_max: int | None
+    risk_latency_p90: int | None
+    risk_latency_max: int | None
+    confirm_timeouts: int
+    confirm_missing_response: int
+    event_schema_source: str
+    event_schema_normalized_events: int
+    event_schema_warnings_count: int
+    top_findings: list[dict[str, Any]]
+    ocr_backend: str | None = None
+    risk_backend: str | None = None
+    ocr_model: str | None = None
+    risk_model: str | None = None
+    score_delta: float | None = None
+    baseline_score: float | None = None
+    critical_fn_gate_required: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.run_id,
+            "runPath": self.run_path,
+            "scenarioTag": self.scenario_tag,
+            "reportMd": self.report_md,
+            "reportJson": self.report_json,
+            "qualityScore": self.quality_score,
+            "hasGroundTruth": self.has_ground_truth,
+            "ocr": {
+                "cer": self.ocr_cer,
+                "wer": self.ocr_wer,
+                "exactMatchRate": self.ocr_exact_match_rate,
+            },
+            "depthRisk": {
+                "f1": self.depth_risk_f1,
+                "missCriticalCount": self.miss_critical_count,
+                "delayP90": self.depth_risk_delay_p90,
+                "delayMax": self.depth_risk_delay_max,
+            },
+            "missCriticalCount": self.miss_critical_count,
+            "riskLatency": {
+                "p90": self.risk_latency_p90,
+                "max": self.risk_latency_max,
+            },
+            "riskLatencyP90": self.risk_latency_p90,
+            "riskLatencyMax": self.risk_latency_max,
+            "safetyBehavior": {
+                "confirmTimeouts": self.confirm_timeouts,
+                "confirmMissingResponse": self.confirm_missing_response,
+            },
+            "eventSchema": {
+                "source": self.event_schema_source,
+                "normalizedEvents": self.event_schema_normalized_events,
+                "warningsCount": self.event_schema_warnings_count,
+            },
+            "inference": {
+                "ocr": {
+                    "backend": self.ocr_backend,
+                    "model": self.ocr_model,
+                },
+                "risk": {
+                    "backend": self.risk_backend,
+                    "model": self.risk_model,
+                },
+            },
+            "topFindings": self.top_findings,
+            "baselineScore": self.baseline_score,
+            "scoreDelta": self.score_delta,
+            "criticalFnGateRequired": self.critical_fn_gate_required,
+        }
+
+
+def _resolve_input_path(path_text: str, suite_dir: Path) -> Path:
+    candidate = Path(path_text)
+    if candidate.exists():
+        return candidate.resolve()
+
+    candidates = [
+        suite_dir / path_text,
+        GATEWAY_ROOT / path_text,
+        REPO_ROOT / path_text,
+        Path.cwd() / path_text,
+    ]
+    for item in candidates:
+        if item.exists():
+            return item.resolve()
+    return candidate
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"expected object json: {path}")
+    return payload
+
+
+def _collect_baseline_scores(baseline_payload: dict[str, Any]) -> dict[str, float]:
+    scores: dict[str, float] = {}
+    runs = baseline_payload.get("runs")
+    if isinstance(runs, list):
+        for row in runs:
+            if not isinstance(row, dict):
+                continue
+            run_id = str(row.get("id", "")).strip()
+            score = row.get("qualityScore")
+            if not run_id or score is None:
+                continue
+            try:
+                scores[run_id] = float(score)
+            except Exception:
+                continue
+    return scores
+
+
+def _collect_baseline_expectations(baseline_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    expectations: dict[str, dict[str, Any]] = {}
+    runs = baseline_payload.get("runs")
+    if not isinstance(runs, list):
+        return expectations
+    for row in runs:
+        if not isinstance(row, dict):
+            continue
+        run_id = str(row.get("id", "")).strip()
+        if not run_id:
+            continue
+        item: dict[str, Any] = {}
+        min_quality = _try_float(row.get("minQualityScore"))
+        if min_quality is not None:
+            item["minQualityScore"] = float(min_quality)
+        if "criticalFnMustBeZero" in row:
+            item["criticalFnMustBeZero"] = bool(row.get("criticalFnMustBeZero"))
+        if "requireCriticalFnZero" in row:
+            item["criticalFnMustBeZero"] = bool(row.get("requireCriticalFnZero"))
+        if item:
+            expectations[run_id] = item
+    return expectations
+
+
+def _extract_run_summary(
+    run_id: str,
+    run_path: Path,
+    report_md: Path,
+    report_json: Path,
+    report_payload: dict[str, Any],
+) -> RunSummary:
+    quality = report_payload.get("quality")
+    quality = quality if isinstance(quality, dict) else {}
+    ocr = quality.get("ocr")
+    ocr = ocr if isinstance(ocr, dict) else {}
+    depth_risk = quality.get("depthRisk")
+    depth_risk = depth_risk if isinstance(depth_risk, dict) else {}
+    depth_overall = depth_risk.get("overall")
+    depth_overall = depth_overall if isinstance(depth_overall, dict) else {}
+    depth_critical = depth_risk.get("critical")
+    depth_critical = depth_critical if isinstance(depth_critical, dict) else {}
+    depth_delay = depth_risk.get("detectionDelayFrames")
+    depth_delay = depth_delay if isinstance(depth_delay, dict) else {}
+    risk_latency = quality.get("riskLatencyMs")
+    risk_latency = risk_latency if isinstance(risk_latency, dict) else {}
+    safety = quality.get("safetyBehavior")
+    safety = safety if isinstance(safety, dict) else {}
+    confirm = safety.get("confirm")
+    confirm = confirm if isinstance(confirm, dict) else {}
+    event_schema = quality.get("eventSchema")
+    event_schema = event_schema if isinstance(event_schema, dict) else {}
+    inference = report_payload.get("inference")
+    inference = inference if isinstance(inference, dict) else {}
+    inference_ocr = inference.get("ocr")
+    inference_ocr = inference_ocr if isinstance(inference_ocr, dict) else {}
+    inference_risk = inference.get("risk")
+    inference_risk = inference_risk if isinstance(inference_risk, dict) else {}
+    top_findings = quality.get("topFindings")
+    if not isinstance(top_findings, list):
+        top_findings = []
+
+    quality_score = quality.get("qualityScore")
+    if quality_score is not None:
+        try:
+            quality_score = float(quality_score)
+        except Exception:
+            quality_score = None
+
+    return RunSummary(
+        run_id=run_id,
+        run_path=str(run_path),
+        scenario_tag=str(report_payload.get("scenarioTag", "")),
+        report_md=str(report_md),
+        report_json=str(report_json),
+        quality_score=quality_score,
+        has_ground_truth=bool(quality.get("hasGroundTruth")),
+        ocr_cer=_try_float(ocr.get("cer")),
+        ocr_wer=_try_float(ocr.get("wer")),
+        ocr_exact_match_rate=_try_float(ocr.get("exactMatchRate")),
+        depth_risk_f1=_try_float(depth_overall.get("f1")),
+        miss_critical_count=_try_int(depth_critical.get("missCriticalCount")),
+        depth_risk_delay_p90=_try_int(depth_delay.get("p90")),
+        depth_risk_delay_max=_try_int(depth_delay.get("max")),
+        risk_latency_p90=_try_int(risk_latency.get("p90")),
+        risk_latency_max=_try_int(risk_latency.get("max")),
+        confirm_timeouts=int(confirm.get("timeouts", 0) or 0),
+        confirm_missing_response=int(confirm.get("missingResponseCount", 0) or 0),
+        event_schema_source=str(event_schema.get("source", "")),
+        event_schema_normalized_events=int(event_schema.get("normalizedEvents", 0) or 0),
+        event_schema_warnings_count=int(event_schema.get("warningsCount", 0) or 0),
+        ocr_backend=str(inference_ocr.get("backend", "")).strip() or None,
+        risk_backend=str(inference_risk.get("backend", "")).strip() or None,
+        ocr_model=str(inference_ocr.get("model", "")).strip() or None,
+        risk_model=str(inference_risk.get("model", "")).strip() or None,
+        top_findings=[item for item in top_findings if isinstance(item, dict)],
+    )
+
+
+def _try_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _try_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _render_markdown(result: dict[str, Any]) -> str:
+    lines: list[str] = []
+    lines.append(f"# Regression Suite - {result.get('suiteName', '')}")
+    lines.append("")
+    lines.append(f"- generatedAtMs: `{result.get('generatedAtMs', 0)}`")
+    lines.append(f"- failOnDrop: `{result.get('failOnDrop', False)}`")
+    lines.append(f"- failOnCriticalFn: `{result.get('failOnCriticalFn', True)}`")
+    lines.append(f"- baselinePath: `{result.get('baselinePath', '')}`")
+    lines.append(f"- exitCode: `{result.get('exitCode', 0)}`")
+    lines.append("")
+    lines.append("## Runs")
+    for run in result.get("runs", []):
+        if not isinstance(run, dict):
+            continue
+        lines.append(
+            "- `{id}` score=`{score}` baseline=`{baseline}` delta=`{delta}` confirmTimeouts=`{ct}` criticalFn=`{cfn}` riskDelayMax=`{dmax}` riskLatencyP90=`{rlp90}` riskLatencyMax=`{rlmax}` schema=`{schema}`".format(
+                id=run.get("id", ""),
+                score=run.get("qualityScore", None),
+                baseline=run.get("baselineScore", None),
+                delta=run.get("scoreDelta", None),
+                ct=run.get("safetyBehavior", {}).get("confirmTimeouts", 0),
+                cfn=run.get("depthRisk", {}).get("missCriticalCount", None),
+                dmax=run.get("depthRisk", {}).get("delayMax", None),
+                rlp90=run.get("riskLatency", {}).get("p90", None),
+                rlmax=run.get("riskLatency", {}).get("max", None),
+                schema=run.get("eventSchema", {}).get("source", ""),
+            )
+        )
+    failures = result.get("failures", [])
+    lines.append("")
+    lines.append("## Failures")
+    if not failures:
+        lines.append("- none")
+    else:
+        for item in failures:
+            lines.append(f"- {item}")
+    return "\n".join(lines) + "\n"
+
+
+def run_suite(
+    suite_path: Path,
+    out_path: Path,
+    baseline_path: Path | None = None,
+    fail_on_drop: bool = False,
+    fail_on_critical_fn: bool = True,
+    write_baseline: bool = False,
+) -> tuple[dict[str, Any], int]:
+    suite = _load_json(suite_path)
+    suite_name = str(suite.get("name", suite_path.stem))
+    runs_cfg = suite.get("runs")
+    if not isinstance(runs_cfg, list) or not runs_cfg:
+        raise ValueError("suite.runs must be a non-empty list")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    reports_dir = out_path.parent / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    suite_dir = suite_path.parent
+
+    baseline_scores: dict[str, float] = {}
+    baseline_expectations: dict[str, dict[str, Any]] = {}
+    if baseline_path is not None and baseline_path.exists():
+        baseline_payload = _load_json(baseline_path)
+        baseline_scores = _collect_baseline_scores(baseline_payload)
+        baseline_expectations = _collect_baseline_expectations(baseline_payload)
+
+    expected = suite.get("expected")
+    expected = expected if isinstance(expected, dict) else {}
+    min_quality = _try_float(expected.get("minQualityScore"))
+    max_confirm_timeouts = expected.get("maxConfirmTimeouts")
+    try:
+        max_confirm_timeouts = int(max_confirm_timeouts) if max_confirm_timeouts is not None else None
+    except Exception:
+        max_confirm_timeouts = None
+    max_risk_delay = expected.get("maxRiskDelay")
+    try:
+        max_risk_delay = int(max_risk_delay) if max_risk_delay is not None else None
+    except Exception:
+        max_risk_delay = None
+
+    run_summaries: list[RunSummary] = []
+    run_require_critical_fn: dict[str, bool] = {}
+    run_min_quality_override: dict[str, float | None] = {}
+    failures: list[str] = []
+
+    for run_cfg in runs_cfg:
+        if not isinstance(run_cfg, dict):
+            continue
+        run_id = str(run_cfg.get("id", "")).strip()
+        run_path_text = str(run_cfg.get("path", "")).strip()
+        if not run_id or not run_path_text:
+            continue
+        run_require_critical_fn[run_id] = bool(run_cfg.get("requireCriticalFnZero", False))
+        run_min_quality_override[run_id] = _try_float(run_cfg.get("minQualityScore"))
+        run_path = _resolve_input_path(run_path_text, suite_dir)
+
+        ws_jsonl: Path | None = None
+        metrics_before: Path | None = None
+        metrics_after: Path | None = None
+        run_package_summary: dict[str, Any] | None = None
+        cleanup_dir: Path | None = None
+        try:
+            ws_jsonl, metrics_before, metrics_after, run_package_summary, cleanup_dir = resolve_run_package_input(run_path)
+            report_md = reports_dir / f"{run_id}.md"
+            report_json = reports_dir / f"{run_id}.json"
+            _output_md, _output_json, summary_payload = generate_report_outputs(
+                ws_jsonl=ws_jsonl,
+                output=report_md,
+                metrics_url="http://127.0.0.1:8000/metrics",
+                metrics_before_path=metrics_before,
+                metrics_after_path=metrics_after,
+                external_readiness_url=None,
+                run_package_summary=run_package_summary,
+                output_json=report_json,
+            )
+            run_summary = _extract_run_summary(run_id, run_path, report_md, report_json, summary_payload)
+
+            baseline_score = baseline_scores.get(run_id)
+            run_summary.baseline_score = baseline_score
+            if baseline_score is not None and run_summary.quality_score is not None:
+                run_summary.score_delta = round(run_summary.quality_score - baseline_score, 3)
+            run_summaries.append(run_summary)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"{run_id}: report generation failed: {exc}")
+        finally:
+            if cleanup_dir is not None:
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+    for run in run_summaries:
+        baseline_expect = baseline_expectations.get(run.run_id, {})
+        effective_min_quality = run_min_quality_override.get(run.run_id)
+        if effective_min_quality is None:
+            baseline_min_quality = _try_float(baseline_expect.get("minQualityScore"))
+            effective_min_quality = baseline_min_quality if baseline_min_quality is not None else min_quality
+        if effective_min_quality is not None and run.quality_score is not None and run.quality_score < effective_min_quality:
+            failures.append(
+                f"{run.run_id}: qualityScore {run.quality_score:.3f} < minQualityScore {effective_min_quality:.3f}"
+            )
+        if max_confirm_timeouts is not None and run.confirm_timeouts > max_confirm_timeouts:
+            failures.append(f"{run.run_id}: confirmTimeouts {run.confirm_timeouts} > maxConfirmTimeouts {max_confirm_timeouts}")
+        if max_risk_delay is not None and run.depth_risk_delay_max is not None and run.depth_risk_delay_max > max_risk_delay:
+            failures.append(f"{run.run_id}: riskDelayMax {run.depth_risk_delay_max} > maxRiskDelay {max_risk_delay}")
+        baseline_require_critical = bool(baseline_expect.get("criticalFnMustBeZero", False))
+        require_critical_fn_zero = bool(fail_on_critical_fn) or run_require_critical_fn.get(run.run_id, False) or baseline_require_critical
+        run.critical_fn_gate_required = require_critical_fn_zero
+        if require_critical_fn_zero and int(run.miss_critical_count or 0) > 0:
+            failures.append(f"{run.run_id}: missCriticalCount {int(run.miss_critical_count or 0)} > 0")
+        if fail_on_drop and run.baseline_score is not None and run.quality_score is not None:
+            delta = run.quality_score - run.baseline_score
+            if delta < -2.0:
+                findings = ", ".join(
+                    str(item.get("type", "unknown")) for item in run.top_findings[:3] if isinstance(item, dict)
+                )
+                suffix = f" topFindings={findings}" if findings else ""
+                failures.append(
+                    f"{run.run_id}: qualityScore drop {run.baseline_score:.3f}->{run.quality_score:.3f} (delta={delta:.3f}){suffix}"
+                )
+
+    result = {
+        "suiteName": suite_name,
+        "suitePath": str(suite_path),
+        "generatedAtMs": int(datetime.now(timezone.utc).timestamp() * 1000),
+        "failOnDrop": bool(fail_on_drop),
+        "failOnCriticalFn": bool(fail_on_critical_fn),
+        "baselinePath": str(baseline_path) if baseline_path is not None else "",
+        "runs": [run.to_dict() for run in run_summaries],
+        "failures": failures,
+    }
+
+    if write_baseline and baseline_path is not None:
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        baseline_payload = {
+            "suiteName": suite_name,
+            "generatedAtMs": result["generatedAtMs"],
+            "runs": [run.to_dict() for run in run_summaries],
+        }
+        baseline_path.write_text(json.dumps(baseline_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    exit_code = 1 if failures else 0
+    result["exitCode"] = exit_code
+    out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    md_path = out_path.with_suffix(".md")
+    md_path.write_text(_render_markdown(result), encoding="utf-8")
+    return result, exit_code
+
+
+def _print_summary(result: dict[str, Any]) -> None:
+    print(f"[suite] {result.get('suiteName', '')}")
+    runs = result.get("runs", [])
+    if isinstance(runs, list):
+        for row in runs:
+            if not isinstance(row, dict):
+                continue
+            run_id = str(row.get("id", ""))
+            score = row.get("qualityScore")
+            baseline = row.get("baselineScore")
+            delta = row.get("scoreDelta")
+            confirm_timeouts = row.get("safetyBehavior", {}).get("confirmTimeouts", 0)
+            schema_src = row.get("eventSchema", {}).get("source", "")
+            inference = row.get("inference", {}) if isinstance(row.get("inference"), dict) else {}
+            inference_ocr = inference.get("ocr", {}) if isinstance(inference.get("ocr"), dict) else {}
+            inference_risk = inference.get("risk", {}) if isinstance(inference.get("risk"), dict) else {}
+            ocr_backend = inference_ocr.get("backend", "")
+            risk_backend = inference_risk.get("backend", "")
+            ocr_model = inference_ocr.get("model", "")
+            risk_model = inference_risk.get("model", "")
+            print(
+                "[run] {run_id}: score={score} baseline={baseline} delta={delta} "
+                "confirmTimeouts={confirm_timeouts} critical_fn={critical_fn} riskDelayP90={risk_delay_p90} riskDelayMax={risk_delay_max} "
+                "riskLatencyP90={risk_latency_p90} riskLatencyMax={risk_latency_max} source={schema_src} "
+                "ocr={ocr_backend}/{ocr_model} risk={risk_backend}/{risk_model}".format(
+                    run_id=run_id,
+                    score=score,
+                    baseline=baseline,
+                    delta=delta,
+                    confirm_timeouts=confirm_timeouts,
+                    critical_fn=row.get("depthRisk", {}).get("missCriticalCount", None),
+                    risk_delay_p90=row.get("depthRisk", {}).get("delayP90", None),
+                    risk_delay_max=row.get("depthRisk", {}).get("delayMax", None),
+                    risk_latency_p90=row.get("riskLatency", {}).get("p90", None),
+                    risk_latency_max=row.get("riskLatency", {}).get("max", None),
+                    schema_src=schema_src,
+                    ocr_backend=ocr_backend,
+                    ocr_model=ocr_model,
+                    risk_backend=risk_backend,
+                    risk_model=risk_model,
+                )
+            )
+    failures = result.get("failures", [])
+    if isinstance(failures, list) and failures:
+        print("[failures]")
+        for item in failures:
+            print(f"- {item}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run BYES regression suite over run packages and compare against baseline.")
+    parser.add_argument("--suite", required=True, help="Path to suite JSON file")
+    parser.add_argument("--out", default=str(GATEWAY_ROOT / "regression" / "out" / "latest.json"))
+    parser.add_argument("--baseline", default=str(GATEWAY_ROOT / "regression" / "baselines" / "baseline.json"))
+    parser.add_argument("--fail-on-drop", action="store_true", default=False)
+    parser.add_argument("--fail-on-critical-fn", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--write-baseline", action="store_true", default=False)
+    args = parser.parse_args(argv)
+
+    suite_path = Path(args.suite)
+    out_path = Path(args.out)
+    baseline_path = Path(args.baseline) if args.baseline else None
+    try:
+        result, exit_code = run_suite(
+            suite_path=suite_path,
+            out_path=out_path,
+            baseline_path=baseline_path,
+            fail_on_drop=bool(args.fail_on_drop),
+            fail_on_critical_fn=bool(args.fail_on_critical_fn),
+            write_baseline=bool(args.write_baseline),
+        )
+        _print_summary(result)
+        print(f"[out] {out_path}")
+        return exit_code
+    except Exception as exc:  # noqa: BLE001
+        print(f"run_regression_suite failed: {exc}")
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

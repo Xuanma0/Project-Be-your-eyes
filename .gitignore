@@ -11,6 +11,7 @@
 
 # MemoryCaptures can get excessive in size.
 /[Mm]emoryCaptures/
+/[Rr]ecordings/
 
 # Asset meta data should only be ignored when the corresponding asset is also ignored
 !/[Aa]ssets/**/*.meta
@@ -58,3 +59,15 @@ sysinfo.txt
 
 # Crashlytics generated file
 crashlytics-build.properties
+
+Gateway/.venv/
+Gateway/__pycache__/
+Gateway/artifacts/
+Gateway/run*.jsonl
+Gateway/frames/
+Gateway/external/modelpack/weights/
+Gateway/external/modelpack/weights_test/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd

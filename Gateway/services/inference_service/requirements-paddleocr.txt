@@ -1,0 +1,5 @@
+fastapi>=0.110,<1
+uvicorn>=0.30,<1
+pillow>=10,<12
+paddleocr>=2.8.1
+paddlepaddle>=2.6.0

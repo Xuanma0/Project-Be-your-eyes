@@ -1,0 +1,43 @@
+name: Gateway CI
+
+on:
+  push:
+    branches:
+      - main
+      - feature/**
+      - feature/unity-skeleton
+  pull_request:
+    branches:
+      - main
+      - feature/**
+      - feature/unity-skeleton
+
+jobs:
+  gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r Gateway/requirements.txt
+
+      - name: Pytest
+        run: |
+          cd Gateway
+          python -m pytest -q
+
+      - name: Lint Run Package
+        run: |
+          python Gateway/scripts/lint_run_package.py --run-package Gateway/tests/fixtures/run_package_with_events_v1_min
+
+      - name: Regression Suite
+        run: |
+          python Gateway/scripts/run_regression_suite.py --suite Gateway/regression/suites/baseline_suite.json --baseline Gateway/regression/baselines/baseline.json --fail-on-drop --fail-on-critical-fn

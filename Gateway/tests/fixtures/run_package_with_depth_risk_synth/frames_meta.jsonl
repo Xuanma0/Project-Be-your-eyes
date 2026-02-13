@@ -1,0 +1,3 @@
+{"seq": 1, "framePath": "frames/frame_1.jpg", "meta": {"sessionId": "fixture-depth-synth", "seq": 1, "timestampMs": 1702600000200, "ttlMs": 3000, "width": 320, "height": 180}}
+{"seq": 2, "framePath": "frames/frame_2.jpg", "meta": {"sessionId": "fixture-depth-synth", "seq": 2, "timestampMs": 1702600000400, "ttlMs": 3000, "width": 320, "height": 180}}
+{"seq": 3, "framePath": "frames/frame_3.jpg", "meta": {"sessionId": "fixture-depth-synth", "seq": 3, "timestampMs": 1702600000600, "ttlMs": 3000, "width": 320, "height": 180}}

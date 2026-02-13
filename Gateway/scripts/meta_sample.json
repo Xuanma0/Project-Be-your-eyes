@@ -1,0 +1,16 @@
+﻿{
+  "frameMeta": {
+    "coordFrame": "World",
+    "deviceTsMs": 1700000000000,
+    "intrinsics": {
+      "fx": 560.0,
+      "fy": 560.0,
+      "cx": 320.0,
+      "cy": 180.0,
+      "width": 640,
+      "height": 360
+    }
+  },
+  "preserveOld": true,
+  "ttlMs": 5000
+}

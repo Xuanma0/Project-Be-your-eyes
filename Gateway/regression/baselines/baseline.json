@@ -1,0 +1,251 @@
+{
+  "suiteName": "baseline",
+  "generatedAtMs": 1770732378074,
+  "runs": [
+    {
+      "id": "fixture_with_gt",
+      "runPath": "D:\\Unity\\Project\\Project-Be-your-eyes\\Gateway\\tests\\fixtures\\run_package_with_gt_min",
+      "scenarioTag": "fixture_with_gt",
+      "reportMd": "D:\\Unity\\Project\\Project-Be-your-eyes\\Gateway\\regression\\out\\reports\\fixture_with_gt.md",
+      "reportJson": "D:\\Unity\\Project\\Project-Be-your-eyes\\Gateway\\regression\\out\\reports\\fixture_with_gt.json",
+      "qualityScore": 100.0,
+      "hasGroundTruth": true,
+      "ocr": {
+        "cer": 0.08333333333333333,
+        "wer": 0.3333333333333333,
+        "exactMatchRate": 0.5
+      },
+      "depthRisk": {
+        "f1": 1.0,
+        "delayP90": 0,
+        "delayMax": 0
+      },
+      "safetyBehavior": {
+        "confirmTimeouts": 0,
+        "confirmMissingResponse": 0
+      },
+      "eventSchema": {
+        "source": "wsEventsJsonl",
+        "normalizedEvents": 4,
+        "warningsCount": 0
+      },
+      "inference": {
+        "ocr": {
+          "backend": "None",
+          "model": "None"
+        },
+        "risk": {
+          "backend": "None",
+          "model": "None"
+        }
+      },
+      "topFindings": [
+        {
+          "severity": "info",
+          "type": "ocr_top_mismatch",
+          "frameSeq": 2,
+          "message": "ocr mismatch observed",
+          "evidence": {
+            "frameSeq": 2,
+            "gtText": "NO ENTRY",
+            "predText": "NO ENTRI",
+            "cer": 0.125,
+            "wer": 0.5
+          }
+        }
+      ],
+      "baselineScore": 100.0,
+      "scoreDelta": 0.0
+    },
+    {
+      "id": "fixture_with_safety",
+      "runPath": "D:\\Unity\\Project\\Project-Be-your-eyes\\Gateway\\tests\\fixtures\\run_package_with_safety_events_min",
+      "scenarioTag": "fixture_with_safety_events",
+      "reportMd": "D:\\Unity\\Project\\Project-Be-your-eyes\\Gateway\\regression\\out\\reports\\fixture_with_safety.md",
+      "reportJson": "D:\\Unity\\Project\\Project-Be-your-eyes\\Gateway\\regression\\out\\reports\\fixture_with_safety.json",
+      "qualityScore": 76.0,
+      "hasGroundTruth": true,
+      "ocr": {
+        "cer": 0.08333333333333333,
+        "wer": 0.3333333333333333,
+        "exactMatchRate": 0.5
+      },
+      "depthRisk": {
+        "f1": 1.0,
+        "delayP90": 0,
+        "delayMax": 0
+      },
+      "safetyBehavior": {
+        "confirmTimeouts": 1,
+        "confirmMissingResponse": 1
+      },
+      "eventSchema": {
+        "source": "wsEventsJsonl",
+        "normalizedEvents": 12,
+        "warningsCount": 0
+      },
+      "inference": {
+        "ocr": {
+          "backend": "None",
+          "model": "None"
+        },
+        "risk": {
+          "backend": "None",
+          "model": "None"
+        }
+      },
+      "topFindings": [
+        {
+          "severity": "critical",
+          "type": "confirm_timeout",
+          "frameSeq": 1,
+          "message": "confirm timeout count=1",
+          "evidence": {
+            "timeouts": 1
+          }
+        },
+        {
+          "severity": "warning",
+          "type": "missing_confirm_response",
+          "frameSeq": 2,
+          "message": "missing confirm responses=1",
+          "evidence": {
+            "missingResponseCount": 1
+          }
+        },
+        {
+          "severity": "info",
+          "type": "ocr_top_mismatch",
+          "frameSeq": 2,
+          "message": "ocr mismatch observed",
+          "evidence": {
+            "frameSeq": 2,
+            "gtText": "NO ENTRY",
+            "predText": "NO ENTRI",
+            "cer": 0.125,
+            "wer": 0.5
+          }
+        }
+      ],
+      "baselineScore": 76.0,
+      "scoreDelta": 0.0
+    },
+    {
+      "id": "fixture_events_v1",
+      "runPath": "D:\\Unity\\Project\\Project-Be-your-eyes\\Gateway\\tests\\fixtures\\run_package_with_events_v1_min",
+      "scenarioTag": "fixture_with_events_v1",
+      "reportMd": "D:\\Unity\\Project\\Project-Be-your-eyes\\Gateway\\regression\\out\\reports\\fixture_events_v1.md",
+      "reportJson": "D:\\Unity\\Project\\Project-Be-your-eyes\\Gateway\\regression\\out\\reports\\fixture_events_v1.json",
+      "qualityScore": 76.0,
+      "hasGroundTruth": true,
+      "ocr": {
+        "cer": 0.08333333333333333,
+        "wer": 0.3333333333333333,
+        "exactMatchRate": 0.5
+      },
+      "depthRisk": {
+        "f1": 1.0,
+        "delayP90": 0,
+        "delayMax": 0
+      },
+      "safetyBehavior": {
+        "confirmTimeouts": 1,
+        "confirmMissingResponse": 1
+      },
+      "eventSchema": {
+        "source": "eventsV1Jsonl",
+        "normalizedEvents": 12,
+        "warningsCount": 0
+      },
+      "inference": {
+        "ocr": {
+          "backend": "None",
+          "model": "None"
+        },
+        "risk": {
+          "backend": "None",
+          "model": "None"
+        }
+      },
+      "topFindings": [
+        {
+          "severity": "critical",
+          "type": "confirm_timeout",
+          "frameSeq": 1,
+          "message": "confirm timeout count=1",
+          "evidence": {
+            "timeouts": 1
+          }
+        },
+        {
+          "severity": "warning",
+          "type": "missing_confirm_response",
+          "frameSeq": 2,
+          "message": "missing confirm responses=1",
+          "evidence": {
+            "missingResponseCount": 1
+          }
+        },
+        {
+          "severity": "info",
+          "type": "ocr_top_mismatch",
+          "frameSeq": 2,
+          "message": "ocr mismatch observed",
+          "evidence": {
+            "frameSeq": 2,
+            "gtText": "NO ENTRY",
+            "predText": "NO ENTRI",
+            "cer": 0.125,
+            "wer": 0.5
+          }
+        }
+      ],
+      "baselineScore": 76.0,
+      "scoreDelta": 0.0
+    },
+    {
+      "id": "fixture_with_risk_gt",
+      "runPath": "D:\\Unity\\Project\\Project-Be-your-eyes\\Gateway\\tests\\fixtures\\run_package_with_risk_gt_min",
+      "minQualityScore": 85.0,
+      "criticalFnMustBeZero": true,
+      "riskLatencyP90": 120,
+      "scenarioTag": "fixture_with_risk_gt",
+      "reportMd": "D:\\Unity\\Project\\Project-Be-your-eyes\\Gateway\\regression\\out\\reports\\fixture_with_risk_gt.md",
+      "reportJson": "D:\\Unity\\Project\\Project-Be-your-eyes\\Gateway\\regression\\out\\reports\\fixture_with_risk_gt.json",
+      "qualityScore": 99.0,
+      "hasGroundTruth": true,
+      "ocr": {
+        "cer": null,
+        "wer": null,
+        "exactMatchRate": null
+      },
+      "depthRisk": {
+        "f1": 0.8,
+        "delayP90": 0,
+        "delayMax": 0
+      },
+      "safetyBehavior": {
+        "confirmTimeouts": 0,
+        "confirmMissingResponse": 0
+      },
+      "eventSchema": {
+        "source": "eventsV1Jsonl",
+        "normalizedEvents": 3,
+        "warningsCount": 1
+      },
+      "inference": {
+        "ocr": {
+          "backend": "None",
+          "model": "None"
+        },
+        "risk": {
+          "backend": "None",
+          "model": "None"
+        }
+      },
+      "topFindings": [],
+      "baselineScore": 99.0,
+      "scoreDelta": 0.0
+    }
+  ]
+}

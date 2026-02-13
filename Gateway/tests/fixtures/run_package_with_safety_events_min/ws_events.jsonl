@@ -1,0 +1,12 @@
+﻿{"receivedAtMs":1704000000100,"event":{"type":"health","summary":"gateway_normal (ok)","healthStatus":"NORMAL","seq":1}}
+{"receivedAtMs":1704000000120,"event":{"type":"tool_call","name":"scan_text_request","toolName":"real_ocr","frameSeq":1,"requestId":"ocr-1"}}
+{"receivedAtMs":1704000000180,"event":{"type":"perception","frameSeq":1,"tool":"real_ocr","summary":"EXIT","payload":{"text":"EXIT"},"latencyMs":110}}
+{"receivedAtMs":1704000000200,"event":{"type":"action_plan","name":"confirm_request","summary":"please confirm obstacle","frameSeq":1,"requestId":"conf-1","confirmId":"conf-1"}}
+{"receivedAtMs":1704000000600,"event":{"type":"health","summary":"confirm_timeout","name":"confirm_timeout","frameSeq":1,"requestId":"conf-1"}}
+{"receivedAtMs":1704000000800,"event":{"type":"action_plan","name":"double_check","summary":"clarify path","frameSeq":2,"requestId":"conf-2","confirmId":"conf-2"}}
+{"receivedAtMs":1704000000820,"event":{"type":"health","summary":"critical_latch_enter","name":"critical_latch","frameSeq":1,"durationMs":300}}
+{"receivedAtMs":1704000000840,"event":{"type":"health","summary":"preempt_window_enter","name":"preempt","frameSeq":1}}
+{"receivedAtMs":1704000000860,"event":{"type":"health","summary":"local_fallback triggered","name":"local_fallback"}}
+{"receivedAtMs":1704000000900,"event":{"type":"risk","frameSeq":1,"riskText":"stairs","payload":{"hazards":[{"hazardKind":"stair_down"}]}}}
+{"receivedAtMs":1704000000920,"event":{"type":"tool_call","name":"scan_text_request","toolName":"real_ocr","frameSeq":2,"requestId":"ocr-2"}}
+{"receivedAtMs":1704000000980,"event":{"type":"perception","frameSeq":2,"tool":"real_ocr","summary":"NO ENTRI","payload":{"text":"NO ENTRI"},"latencyMs":140}}

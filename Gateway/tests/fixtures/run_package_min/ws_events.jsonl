@@ -1,0 +1,3 @@
+{"receivedAtMs":1700000000100,"ttlMs":3000,"event":{"type":"health","summary":"gateway_normal (ok)","healthStatus":"NORMAL","healthReason":"ok","seq":1,"timestampMs":1700000000000,"ttlMs":3000}}
+{"receivedAtMs":1700000000200,"ttlMs":3000,"event":{"type":"risk","riskText":"front obstacle","summary":"front obstacle","riskLevel":"warn","seq":1,"stage":1,"timestampMs":1700000000000,"ttlMs":3000}}
+{"receivedAtMs":1700000000300,"ttlMs":3000,"event":{"type":"action_plan","summary":"stop and scan","seq":1,"stage":2,"timestampMs":1700000000000,"ttlMs":3000}}

@@ -1,0 +1,10 @@
+﻿{"seq": 1, "framePath": "frames/frame_0001.jpg", "meta": {"sessionId": "fixture-risk-calib-10f", "seq": 1, "timestampMs": 1702600000100, "ttlMs": 3000, "width": 320, "height": 180}}
+{"seq": 2, "framePath": "frames/frame_0002.jpg", "meta": {"sessionId": "fixture-risk-calib-10f", "seq": 2, "timestampMs": 1702600000200, "ttlMs": 3000, "width": 320, "height": 180}}
+{"seq": 3, "framePath": "frames/frame_0003.jpg", "meta": {"sessionId": "fixture-risk-calib-10f", "seq": 3, "timestampMs": 1702600000300, "ttlMs": 3000, "width": 320, "height": 180}}
+{"seq": 4, "framePath": "frames/frame_0004.jpg", "meta": {"sessionId": "fixture-risk-calib-10f", "seq": 4, "timestampMs": 1702600000400, "ttlMs": 3000, "width": 320, "height": 180}}
+{"seq": 5, "framePath": "frames/frame_0005.jpg", "meta": {"sessionId": "fixture-risk-calib-10f", "seq": 5, "timestampMs": 1702600000500, "ttlMs": 3000, "width": 320, "height": 180}}
+{"seq": 6, "framePath": "frames/frame_0006.jpg", "meta": {"sessionId": "fixture-risk-calib-10f", "seq": 6, "timestampMs": 1702600000600, "ttlMs": 3000, "width": 320, "height": 180}}
+{"seq": 7, "framePath": "frames/frame_0007.jpg", "meta": {"sessionId": "fixture-risk-calib-10f", "seq": 7, "timestampMs": 1702600000700, "ttlMs": 3000, "width": 320, "height": 180}}
+{"seq": 8, "framePath": "frames/frame_0008.jpg", "meta": {"sessionId": "fixture-risk-calib-10f", "seq": 8, "timestampMs": 1702600000800, "ttlMs": 3000, "width": 320, "height": 180}}
+{"seq": 9, "framePath": "frames/frame_0009.jpg", "meta": {"sessionId": "fixture-risk-calib-10f", "seq": 9, "timestampMs": 1702600000900, "ttlMs": 3000, "width": 320, "height": 180}}
+{"seq": 10, "framePath": "frames/frame_0010.jpg", "meta": {"sessionId": "fixture-risk-calib-10f", "seq": 10, "timestampMs": 1702600001000, "ttlMs": 3000, "width": 320, "height": 180}}

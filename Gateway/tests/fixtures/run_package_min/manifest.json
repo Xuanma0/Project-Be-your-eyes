@@ -1,0 +1,18 @@
+{
+  "scenarioTag": "fixture_baseline",
+  "startMs": 1700000000000,
+  "endMs": 1700000001200,
+  "baseUrl": "http://127.0.0.1:8000",
+  "wsUrl": "ws://127.0.0.1:8000/ws/events",
+  "sessionId": "fixture-session",
+  "wsJsonl": "ws_events.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "frameCountSent": 2,
+  "eventCountAccepted": 3,
+  "localSafetyFallbackEnterCount": 0,
+  "healthStatusCounts": {
+    "NORMAL": 1
+  },
+  "errors": []
+}

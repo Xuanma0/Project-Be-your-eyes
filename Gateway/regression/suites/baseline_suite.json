@@ -1,0 +1,27 @@
+{
+  "name": "baseline",
+  "runs": [
+    {
+      "id": "fixture_with_gt",
+      "path": "Gateway/tests/fixtures/run_package_with_gt_min"
+    },
+    {
+      "id": "fixture_with_safety",
+      "path": "Gateway/tests/fixtures/run_package_with_safety_events_min"
+    },
+    {
+      "id": "fixture_events_v1",
+      "path": "Gateway/tests/fixtures/run_package_with_events_v1_min"
+    },
+    {
+      "id": "fixture_with_risk_gt",
+      "path": "Gateway/tests/fixtures/run_package_with_risk_gt_min",
+      "requireCriticalFnZero": true
+    }
+  ],
+  "expected": {
+    "minQualityScore": 60,
+    "maxConfirmTimeouts": 1,
+    "maxRiskDelay": 0
+  }
+}

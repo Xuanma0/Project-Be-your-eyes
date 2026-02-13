@@ -1,0 +1,53 @@
+﻿{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://byes.local/schemas/byes_event_v1.schema.json",
+  "title": "BYES Event Schema v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schemaVersion", "component", "category", "name", "payload"],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "byes.event.v1"
+    },
+    "tsMs": {
+      "type": ["integer", "null"]
+    },
+    "runId": {
+      "type": ["string", "null"]
+    },
+    "frameSeq": {
+      "type": ["integer", "null"]
+    },
+    "component": {
+      "type": "string",
+      "enum": ["unity", "gateway", "cloud", "sim", "unknown"]
+    },
+    "category": {
+      "type": "string",
+      "enum": ["tool", "safety", "system", "scenario", "metric", "unknown"]
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "phase": {
+      "type": ["string", "null"],
+      "enum": ["start", "result", "error", "info", null]
+    },
+    "status": {
+      "type": ["string", "null"],
+      "enum": ["ok", "timeout", "cancel", "error", null]
+    },
+    "latencyMs": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "payload": {
+      "type": "object"
+    },
+    "raw": {
+      "type": ["object", "null"]
+    }
+  }
+}

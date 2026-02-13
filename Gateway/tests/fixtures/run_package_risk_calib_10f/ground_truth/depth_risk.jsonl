@@ -1,0 +1,10 @@
+﻿{"frameSeq": 1, "hazards": [{"hazardKind": "obstacle_close", "severity": "critical"}]}
+{"frameSeq": 2, "hazards": [{"hazardKind": "obstacle_close", "severity": "critical"}]}
+{"frameSeq": 3, "hazards": [{"hazardKind": "dropoff", "severity": "critical"}]}
+{"frameSeq": 4, "hazards": [{"hazardKind": "dropoff", "severity": "critical"}]}
+{"frameSeq": 5, "hazards": [{"hazardKind": "unknown_depth", "severity": "warning"}]}
+{"frameSeq": 6, "hazards": []}
+{"frameSeq": 7, "hazards": [{"hazardKind": "obstacle_close", "severity": "warning"}]}
+{"frameSeq": 8, "hazards": []}
+{"frameSeq": 9, "hazards": [{"hazardKind": "stair_down", "severity": "warning"}]}
+{"frameSeq": 10, "hazards": []}
