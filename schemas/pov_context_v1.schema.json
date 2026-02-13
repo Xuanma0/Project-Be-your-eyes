@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-be-your-eyes/schemas/pov_context_v1.schema.json",
+  "title": "POV Context Pack v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "generatedAtMs",
+    "budget",
+    "stats",
+    "content",
+    "text"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "pov.context.v1"
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generatedAtMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "maxChars",
+        "maxTokensApprox",
+        "mode"
+      ],
+      "properties": {
+        "maxChars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxTokensApprox": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "decisions_only",
+            "decisions_plus_highlights",
+            "full"
+          ]
+        }
+      }
+    },
+    "stats": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "in",
+        "out",
+        "truncation"
+      ],
+      "properties": {
+        "in": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "decisions",
+            "events",
+            "highlights",
+            "tokens",
+            "tokenChars",
+            "highlightsChars"
+          ],
+          "properties": {
+            "decisions": {"type": "integer", "minimum": 0},
+            "events": {"type": "integer", "minimum": 0},
+            "highlights": {"type": "integer", "minimum": 0},
+            "tokens": {"type": "integer", "minimum": 0},
+            "tokenChars": {"type": "integer", "minimum": 0},
+            "highlightsChars": {"type": "integer", "minimum": 0}
+          }
+        },
+        "out": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "decisions",
+            "highlights",
+            "tokens",
+            "charsTotal",
+            "tokenApprox"
+          ],
+          "properties": {
+            "decisions": {"type": "integer", "minimum": 0},
+            "highlights": {"type": "integer", "minimum": 0},
+            "tokens": {"type": "integer", "minimum": 0},
+            "charsTotal": {"type": "integer", "minimum": 0},
+            "tokenApprox": {"type": "integer", "minimum": 0}
+          }
+        },
+        "truncation": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "decisionsDropped",
+            "highlightsDropped",
+            "tokensDropped",
+            "charsDropped"
+          ],
+          "properties": {
+            "decisionsDropped": {"type": "integer", "minimum": 0},
+            "highlightsDropped": {"type": "integer", "minimum": 0},
+            "tokensDropped": {"type": "integer", "minimum": 0},
+            "charsDropped": {"type": "integer", "minimum": 0}
+          }
+        }
+      }
+    },
+    "content": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "decisions",
+        "highlights",
+        "tokens"
+      ],
+      "properties": {
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "id",
+              "t0Ms",
+              "t1Ms",
+              "state",
+              "action",
+              "outcome"
+            ]
+          }
+        },
+        "highlights": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "tMs",
+              "text"
+            ],
+            "properties": {
+              "tMs": {"type": "integer", "minimum": 0},
+              "text": {"type": "string"}
+            }
+          }
+        },
+        "tokens": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "tMs",
+              "text"
+            ],
+            "properties": {
+              "tMs": {"type": "integer", "minimum": 0},
+              "text": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "text": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "prompt"
+      ],
+      "properties": {
+        "prompt": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

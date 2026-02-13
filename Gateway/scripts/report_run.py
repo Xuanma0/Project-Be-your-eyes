@@ -6,6 +6,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import zipfile
 from collections import Counter
 from pathlib import Path
@@ -35,10 +36,17 @@ from byes.quality_metrics import (  # noqa: E402
     load_gt_risk_jsonl,
 )
 from byes.pov_metrics import compute_pov_metrics, load_pov_ir_from_run_package  # noqa: E402
+from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text  # noqa: E402
 
 _LABEL_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=\"((?:\\.|[^\"])*)\"")
+_DEFAULT_POV_CONTEXT_BUDGET = {"maxChars": 2000, "maxTokensApprox": 500}
+_DEFAULT_POV_CONTEXT_MODE = "decisions_plus_highlights"
 
 SeriesKey = tuple[str, tuple[tuple[str, str], ...]]
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 
 def parse_metric_labels(raw_labels: str | None) -> dict[str, str]:
@@ -894,11 +902,51 @@ def generate_report_outputs(
     summary = build_summary_payload(ws_stats, after_samples, delta_samples, run_package_summary)
     event_rows = load_jsonl(event_source_path)
     pov_ir_payload: dict[str, Any] | None = None
+    pov_context_payload: dict[str, Any] | None = None
     if isinstance(run_package_summary, dict):
         run_package_dir = str(run_package_summary.get("runPackageDir", "")).strip()
         if run_package_dir:
             pov_ir_payload = load_pov_ir_from_run_package(Path(run_package_dir))
     summary["pov"] = compute_pov_metrics(pov_ir_payload, event_rows)
+    if isinstance(pov_ir_payload, dict):
+        try:
+            pov_context = build_context_pack(
+                pov_ir_payload,
+                budget=dict(_DEFAULT_POV_CONTEXT_BUDGET),
+                mode=_DEFAULT_POV_CONTEXT_MODE,
+            )
+            pov_text = render_context_text(pov_context)
+            pov_context = finalize_context_pack_text(pov_context, pov_text, _now_ms())
+            stats = pov_context.get("stats", {})
+            stats = stats if isinstance(stats, dict) else {}
+            out_stats = stats.get("out", {})
+            out_stats = out_stats if isinstance(out_stats, dict) else {}
+            truncation = stats.get("truncation", {})
+            truncation = truncation if isinstance(truncation, dict) else {}
+            pov_context_payload = {
+                "defaultBudget": {
+                    "maxChars": int(_DEFAULT_POV_CONTEXT_BUDGET["maxChars"]),
+                    "maxTokensApprox": int(_DEFAULT_POV_CONTEXT_BUDGET["maxTokensApprox"]),
+                    "mode": _DEFAULT_POV_CONTEXT_MODE,
+                },
+                "out": {
+                    "charsTotal": int(out_stats.get("charsTotal", 0) or 0),
+                    "tokenApprox": int(out_stats.get("tokenApprox", 0) or 0),
+                    "decisions": int(out_stats.get("decisions", 0) or 0),
+                    "highlights": int(out_stats.get("highlights", 0) or 0),
+                    "tokens": int(out_stats.get("tokens", 0) or 0),
+                },
+                "truncation": {
+                    "decisionsDropped": int(truncation.get("decisionsDropped", 0) or 0),
+                    "highlightsDropped": int(truncation.get("highlightsDropped", 0) or 0),
+                    "tokensDropped": int(truncation.get("tokensDropped", 0) or 0),
+                    "charsDropped": int(truncation.get("charsDropped", 0) or 0),
+                },
+            }
+        except Exception:
+            pov_context_payload = None
+    if pov_context_payload is not None:
+        summary["povContext"] = pov_context_payload
     inferred_summary = extract_inference_summary_from_ws_events(event_source_path)
     events_v1_inferred = infer_inference_summary_from_events_v1(event_rows)
     risk_latency_stats, risk_timings_stats = extract_risk_latency_metrics_from_events_v1(event_rows)

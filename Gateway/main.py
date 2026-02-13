@@ -8,6 +8,8 @@ import html
 import io
 import json
 import re
+import shutil
+import tempfile
 import time
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -43,6 +45,8 @@ from byes.tool_registry import ToolRegistry
 from byes.tools import MockOcrTool, MockRiskTool, RealDepthTool, RealDetTool, RealOcrTool, RealVlmTool
 from byes.tools.base import FrameInput, ToolLane
 from byes.world_state import WorldState
+from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text
+from byes.schemas.pov_ir_schema import validate_pov_ir
 from scripts.report_run import generate_report_outputs, load_run_package, safe_extract_zip
 
 
@@ -147,6 +151,34 @@ class ConfirmSubmitRequest(BaseModel):
     confirmId: str
     answer: Literal["yes", "no", "unknown"]
     source: str | None = "api"
+
+
+class PovContextBudgetRequest(BaseModel):
+    maxChars: int = 2000
+    maxTokensApprox: int = 500
+
+    @model_validator(mode="after")
+    def _validate_budget(self) -> "PovContextBudgetRequest":
+        if int(self.maxChars) < 0:
+            raise ValueError("budget.maxChars must be >= 0")
+        if int(self.maxTokensApprox) < 0:
+            raise ValueError("budget.maxTokensApprox must be >= 0")
+        return self
+
+
+class PovContextRequest(BaseModel):
+    runPackage: str | None = None
+    runId: str | None = None
+    budget: PovContextBudgetRequest = PovContextBudgetRequest()
+    mode: Literal["decisions_only", "decisions_plus_highlights", "full"] = "decisions_plus_highlights"
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> "PovContextRequest":
+        run_package = str(self.runPackage or "").strip()
+        run_id = str(self.runId or "").strip()
+        if not run_package and not run_id:
+            raise ValueError("runPackage or runId is required")
+        return self
 
 
 class ConnectionManager:
@@ -1274,6 +1306,58 @@ async def run_package_upload(
         raise HTTPException(status_code=500, detail=f"run package processing failed: {ex}") from ex
 
 
+@app.post("/api/pov/context")
+async def build_pov_context(request: PovContextRequest) -> dict[str, Any]:
+    started_at = time.perf_counter()
+    cleanup_dir: Path | None = None
+    try:
+        run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
+            run_package_raw=request.runPackage,
+            run_id=request.runId,
+        )
+        manifest, pov_ir, _pov_path = _load_pov_ir_for_context(run_package_dir)
+        budget_payload = {
+            "maxChars": int(request.budget.maxChars),
+            "maxTokensApprox": int(request.budget.maxTokensApprox),
+        }
+        context_pack = build_context_pack(pov_ir, budget=budget_payload, mode=request.mode)
+        text_payload = render_context_text(context_pack)
+        context_pack = finalize_context_pack_text(context_pack, text_payload, _now_ms())
+
+        run_id = str(context_pack.get("runId", "")).strip()
+        if not run_id:
+            run_id = str(manifest.get("runId", "")).strip() or run_package_dir.name
+            context_pack["runId"] = run_id
+
+        latency_ms = int(max(0, (time.perf_counter() - started_at) * 1000.0))
+        if can_write_events:
+            stats = context_pack.get("stats", {})
+            stats = stats if isinstance(stats, dict) else {}
+            out_stats = stats.get("out", {})
+            out_stats = out_stats if isinstance(out_stats, dict) else {}
+            truncation = stats.get("truncation", {})
+            truncation = truncation if isinstance(truncation, dict) else {}
+            _try_append_pov_context_event(
+                run_package_dir=run_package_dir,
+                manifest=manifest,
+                run_id=run_id,
+                latency_ms=latency_ms,
+                budget=context_pack.get("budget", {}),
+                out_stats=out_stats,
+                truncation=truncation,
+            )
+        return context_pack
+    except HTTPException:
+        raise
+    except ValidationError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"pov context build failed: {ex}") from ex
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
 @app.get("/api/run_packages")
 async def run_packages_list(
     request: Request,
@@ -1290,6 +1374,8 @@ async def run_packages_list(
     max_risk_latency_max: int | None = None,
     has_pov: str = "any",
     min_pov_decisions: int | None = None,
+    has_pov_context: str = "any",
+    min_pov_context_token_approx: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> dict[str, Any]:
@@ -1308,6 +1394,8 @@ async def run_packages_list(
         max_risk_latency_max=max_risk_latency_max,
         has_pov=has_pov,
         min_pov_decisions=min_pov_decisions,
+        has_pov_context=has_pov_context,
+        min_pov_context_token_approx=min_pov_context_token_approx,
         sort=sort,
         order=order,
     )
@@ -1327,6 +1415,8 @@ async def run_packages_list(
             "max_risk_latency_max": max_risk_latency_max,
             "has_pov": has_pov,
             "min_pov_decisions": min_pov_decisions,
+            "has_pov_context": has_pov_context,
+            "min_pov_context_token_approx": min_pov_context_token_approx,
             "sort": sort,
             "order": order,
             "limit": limit,
@@ -1350,6 +1440,8 @@ async def run_packages_export_json(
     max_risk_latency_max: int | None = None,
     has_pov: str = "any",
     min_pov_decisions: int | None = None,
+    has_pov_context: str = "any",
+    min_pov_context_token_approx: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> dict[str, Any]:
@@ -1368,6 +1460,8 @@ async def run_packages_export_json(
         max_risk_latency_max=max_risk_latency_max,
         has_pov=has_pov,
         min_pov_decisions=min_pov_decisions,
+        has_pov_context=has_pov_context,
+        min_pov_context_token_approx=min_pov_context_token_approx,
         sort=sort,
         order=order,
     )
@@ -1393,6 +1487,8 @@ async def run_packages_export_csv(
     max_risk_latency_max: int | None = None,
     has_pov: str = "any",
     min_pov_decisions: int | None = None,
+    has_pov_context: str = "any",
+    min_pov_context_token_approx: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> Response:
@@ -1411,6 +1507,8 @@ async def run_packages_export_csv(
         max_risk_latency_max=max_risk_latency_max,
         has_pov=has_pov,
         min_pov_decisions=min_pov_decisions,
+        has_pov_context=has_pov_context,
+        min_pov_context_token_approx=min_pov_context_token_approx,
         sort=sort,
         order=order,
     )
@@ -1444,6 +1542,8 @@ async def run_packages_export_csv(
         "pov_duration_ms",
         "pov_token_approx",
         "pov_decision_per_min",
+        "pov_context_token_approx",
+        "pov_context_chars",
         "runUrl",
         "reportUrl",
         "summaryUrl",
@@ -1500,6 +1600,127 @@ def _load_run_manifest_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
         if isinstance(payload, dict):
             return payload
     return {}
+
+
+def _load_run_package_manifest(run_package_dir: Path) -> tuple[Path, dict[str, Any]]:
+    for name in ("manifest.json", "run_manifest.json"):
+        path = run_package_dir / name
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"manifest parse failed: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="manifest must be object")
+        return path, payload
+    raise HTTPException(status_code=404, detail="manifest not found in run package")
+
+
+def _find_package_dir_with_manifest(root: Path) -> Path:
+    candidates = list(root.rglob("manifest.json")) + list(root.rglob("run_manifest.json"))
+    if not candidates:
+        raise HTTPException(status_code=404, detail="manifest not found in extracted run package")
+    candidates.sort(key=lambda item: len(str(item)))
+    return candidates[0].parent
+
+
+def _resolve_context_run_package_input(run_package_raw: str) -> tuple[Path, Path | None, bool]:
+    run_package_text = str(run_package_raw or "").strip()
+    source_path = Path(run_package_text)
+    if not source_path.exists():
+        raise HTTPException(status_code=404, detail=f"runPackage not found: {run_package_text}")
+    if source_path.is_dir():
+        return source_path.resolve(), None, True
+    if source_path.is_file() and source_path.suffix.lower() == ".zip":
+        extract_root = Path(tempfile.mkdtemp(prefix="pov_context_extract_"))
+        safe_extract_zip(source_path, extract_root)
+        package_dir = extract_root
+        try:
+            load_run_package(package_dir)
+        except Exception:
+            package_dir = _find_package_dir_with_manifest(extract_root)
+        return package_dir.resolve(), extract_root, False
+    raise HTTPException(status_code=400, detail="runPackage must be directory or .zip")
+
+
+async def _resolve_context_run_package_dir_async(
+    *,
+    run_package_raw: str | None,
+    run_id: str | None,
+) -> tuple[Path, Path | None, bool]:
+    run_package_text = str(run_package_raw or "").strip()
+    run_id_text = str(run_id or "").strip()
+    if run_package_text:
+        return _resolve_context_run_package_input(run_package_text)
+    if not run_id_text:
+        raise HTTPException(status_code=400, detail="runPackage or runId is required")
+    entry = await gateway.get_run_package(run_id_text)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"runId not found: {run_id_text}")
+    report_path = gateway._resolve_run_packages_path(str(entry.get("reportMdPath", "")))  # noqa: SLF001
+    package_dir = report_path.parent
+    if not package_dir.exists():
+        raise HTTPException(status_code=404, detail=f"run package dir not found for runId: {run_id_text}")
+    return package_dir.resolve(), None, True
+
+
+def _load_pov_ir_for_context(run_package_dir: Path) -> tuple[dict[str, Any], dict[str, Any], Path]:
+    _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+    pov_rel = str(manifest.get("povIrJson", "")).strip()
+    if not pov_rel:
+        raise HTTPException(status_code=404, detail="povIrJson missing in manifest")
+    pov_path = run_package_dir / pov_rel
+    if not pov_path.exists():
+        raise HTTPException(status_code=404, detail=f"povIrJson not found: {pov_rel}")
+    try:
+        payload = json.loads(pov_path.read_text(encoding="utf-8-sig"))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"povIrJson parse failed: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="povIrJson must be object")
+    ok, errors = validate_pov_ir(payload, strict=True)
+    if not ok:
+        raise HTTPException(status_code=400, detail={"message": "pov ir schema invalid", "errors": errors})
+    return manifest, payload, pov_path
+
+
+def _try_append_pov_context_event(
+    *,
+    run_package_dir: Path,
+    manifest: dict[str, Any],
+    run_id: str,
+    latency_ms: int,
+    budget: dict[str, Any],
+    out_stats: dict[str, Any],
+    truncation: dict[str, Any],
+) -> bool:
+    events_rel = str(manifest.get("eventsV1Jsonl", "")).strip() or "events/events_v1.jsonl"
+    events_path = run_package_dir / events_rel
+    if not events_path.exists() or not events_path.is_file():
+        return False
+    payload = {
+        "schemaVersion": "pov.context.v1",
+        "budget": budget,
+        "outStats": out_stats,
+        "truncation": truncation,
+    }
+    event = {
+        "schemaVersion": "byes.event.v1",
+        "tsMs": _now_ms(),
+        "runId": run_id,
+        "frameSeq": 1,
+        "component": "gateway",
+        "category": "pov",
+        "name": "pov.context",
+        "phase": "result",
+        "status": "ok",
+        "latencyMs": int(max(0, latency_ms)),
+        "payload": payload,
+    }
+    with events_path.open("a", encoding="utf-8") as fp:
+        fp.write(json.dumps(event, ensure_ascii=False) + "\n")
+    return True
 
 
 def _read_float(payload: dict[str, Any], key: str) -> float | None:
@@ -1580,6 +1801,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     risk_latency = quality_payload.get("riskLatencyMs", {}) if isinstance(quality_payload, dict) else {}
     pov_payload = summary.get("pov", {})
     pov_payload = pov_payload if isinstance(pov_payload, dict) else {}
+    pov_context = summary.get("povContext", {})
+    pov_context = pov_context if isinstance(pov_context, dict) else {}
+    pov_context_out = pov_context.get("out", {})
+    pov_context_out = pov_context_out if isinstance(pov_context_out, dict) else {}
     critical_misses: int | None = None
     max_delay_frames: int | None = None
     risk_latency_p90: int | None = None
@@ -1592,6 +1817,11 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     pov_duration_ms = _read_float(pov_time, "durationMs")
     pov_decision_per_min = _read_float(pov_time, "decisionPerMin")
     pov_token_approx = int(_read_float(pov_budget, "tokenApprox") or 0)
+    pov_context_token_approx_raw = _read_float(pov_context_out, "tokenApprox")
+    pov_context_chars_raw = _read_float(pov_context_out, "charsTotal")
+    pov_context_token_approx = int(pov_context_token_approx_raw) if pov_context_token_approx_raw is not None else None
+    pov_context_chars = int(pov_context_chars_raw) if pov_context_chars_raw is not None else None
+    has_pov_context = bool(pov_context_token_approx is not None)
     if isinstance(depth_risk, dict):
         critical = depth_risk.get("critical", {})
         delay = depth_risk.get("detectionDelayFrames", {})
@@ -1647,6 +1877,9 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "pov_duration_ms": int(pov_duration_ms) if pov_duration_ms is not None else None,
         "pov_token_approx": pov_token_approx,
         "pov_decision_per_min": pov_decision_per_min,
+        "has_pov_context": has_pov_context,
+        "pov_context_token_approx": pov_context_token_approx,
+        "pov_context_chars": pov_context_chars,
         "summary": summary,
     }
     row.update(urls)
@@ -1668,6 +1901,8 @@ def _matches_run_filters(
     max_risk_latency_max: int | None,
     has_pov: str | None,
     min_pov_decisions: int | None,
+    has_pov_context: str | None,
+    min_pov_context_token_approx: int | None,
 ) -> bool:
     if scenario:
         if scenario.lower() not in str(row.get("scenarioTag", "")).lower():
@@ -1723,6 +1958,19 @@ def _matches_run_filters(
     if min_pov_decisions is not None:
         if int(row.get("pov_decisions", 0) or 0) < int(min_pov_decisions):
             return False
+    if has_pov_context:
+        normalized = has_pov_context.strip().lower()
+        present = bool(row.get("has_pov_context"))
+        if normalized in {"true", "1", "yes"} and not present:
+            return False
+        if normalized in {"false", "0", "no"} and present:
+            return False
+    if min_pov_context_token_approx is not None:
+        value = row.get("pov_context_token_approx")
+        if value is None:
+            return False
+        if int(value) < int(min_pov_context_token_approx):
+            return False
     return True
 
 
@@ -1742,6 +1990,7 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "pov_decisions",
         "pov_token_approx",
         "pov_decision_per_min",
+        "pov_context_token_approx",
         "safemode_enter",
         "throttle_enter",
         "preempt_enter",
@@ -1779,6 +2028,8 @@ async def _query_run_package_rows(
     max_risk_latency_max: int | None,
     has_pov: str | None,
     min_pov_decisions: int | None,
+    has_pov_context: str | None,
+    min_pov_context_token_approx: int | None,
     sort: str,
     order: str,
 ) -> list[dict[str, Any]]:
@@ -1803,6 +2054,8 @@ async def _query_run_package_rows(
             max_risk_latency_max=max_risk_latency_max,
             has_pov=has_pov,
             min_pov_decisions=min_pov_decisions,
+            has_pov_context=has_pov_context,
+            min_pov_context_token_approx=min_pov_context_token_approx,
         ):
             continue
         rows.append(row)
@@ -1855,6 +2108,8 @@ async def runs_dashboard(
     max_risk_latency_max: int | None = None,
     has_pov: str = "any",
     min_pov_decisions: int | None = None,
+    has_pov_context: str = "any",
+    min_pov_context_token_approx: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> HTMLResponse:
@@ -1874,6 +2129,8 @@ async def runs_dashboard(
         max_risk_latency_max=max_risk_latency_max,
         has_pov=has_pov,
         min_pov_decisions=min_pov_decisions,
+        has_pov_context=has_pov_context,
+        min_pov_context_token_approx=min_pov_context_token_approx,
         sort=sort,
         order=order,
     )
@@ -1901,6 +2158,10 @@ async def runs_dashboard(
         pov_token_approx = str(int(row.get("pov_token_approx", 0) or 0))
         pov_dpm_raw = row.get("pov_decision_per_min")
         pov_dpm = "—" if pov_dpm_raw is None else f"{float(pov_dpm_raw):.3f}"
+        pov_ctx_token_raw = row.get("pov_context_token_approx")
+        pov_ctx_token = "—" if pov_ctx_token_raw is None else str(int(pov_ctx_token_raw))
+        pov_ctx_chars_raw = row.get("pov_context_chars")
+        pov_ctx_chars = "—" if pov_ctx_chars_raw is None else str(int(pov_ctx_chars_raw))
         rows_html += (
             "<tr>"
             f"<td><input type='checkbox' data-run-id='{run_val}' /></td>"
@@ -1917,10 +2178,12 @@ async def runs_dashboard(
             f"<td>{html.escape(pov_decisions)}</td>"
             f"<td>{html.escape(pov_token_approx)}</td>"
             f"<td>{html.escape(pov_dpm)}</td>"
+            f"<td>{html.escape(pov_ctx_token)}</td>"
+            f"<td>{html.escape(pov_ctx_chars)}</td>"
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='14' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='16' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -1935,6 +2198,10 @@ async def runs_dashboard(
     max_risk_latency_max_value = html.escape("" if max_risk_latency_max is None else str(max_risk_latency_max))
     has_pov_value = html.escape(has_pov or "any")
     min_pov_decisions_value = html.escape("" if min_pov_decisions is None else str(min_pov_decisions))
+    has_pov_context_value = html.escape(has_pov_context or "any")
+    min_pov_context_token_approx_value = html.escape(
+        "" if min_pov_context_token_approx is None else str(min_pov_context_token_approx)
+    )
     html_page = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1974,8 +2241,16 @@ async def runs_dashboard(
           <option value="false" {"selected" if has_pov_value == "false" else ""}>false</option>
         </select>
       </label>
+      <label>has_pov_context:
+        <select name="has_pov_context">
+          <option value="any" {"selected" if has_pov_context_value == "any" else ""}>any</option>
+          <option value="true" {"selected" if has_pov_context_value == "true" else ""}>true</option>
+          <option value="false" {"selected" if has_pov_context_value == "false" else ""}>false</option>
+        </select>
+      </label>
       <label>min_quality: <input type="number" step="0.01" name="min_quality" value="{min_quality_value}" /></label>
       <label>min_pov_decisions: <input type="number" min="0" name="min_pov_decisions" value="{min_pov_decisions_value}" /></label>
+      <label>min_pov_context_token_approx: <input type="number" min="0" name="min_pov_context_token_approx" value="{min_pov_context_token_approx_value}" /></label>
       <label>max_confirm_timeouts: <input type="number" min="0" name="max_confirm_timeouts" value="{max_confirm_timeouts_value}" /></label>
       <label>max_critical_misses: <input type="number" min="0" name="max_critical_misses" value="{max_critical_misses_value}" /></label>
       <label>max_risk_latency_p90: <input type="number" min="0" name="max_risk_latency_p90" value="{max_risk_latency_p90_value}" /></label>
@@ -1989,6 +2264,7 @@ async def runs_dashboard(
           <option value="pov_decisions" {"selected" if sort_value == "pov_decisions" else ""}>pov_decisions</option>
           <option value="pov_token_approx" {"selected" if sort_value == "pov_token_approx" else ""}>pov_token_approx</option>
           <option value="pov_decision_per_min" {"selected" if sort_value == "pov_decision_per_min" else ""}>pov_decision_per_min</option>
+          <option value="pov_context_token_approx" {"selected" if sort_value == "pov_context_token_approx" else ""}>pov_context_token_approx</option>
           <option value="e2e_count" {"selected" if sort_value == "e2e_count" else ""}>e2e_count</option>
           <option value="ttfa_count" {"selected" if sort_value == "ttfa_count" else ""}>ttfa_count</option>
           <option value="frameCountSent" {"selected" if sort_value == "frameCountSent" else ""}>frameCountSent</option>
@@ -2002,8 +2278,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -2023,6 +2299,8 @@ async def runs_dashboard(
           <th>POV Decisions</th>
           <th>POV Token~</th>
           <th>POV DPM</th>
+          <th>POV Ctx Token~</th>
+          <th>POV Ctx Chars</th>
         </tr>
       </thead>
       <tbody id="runs">{rows_html}</tbody>

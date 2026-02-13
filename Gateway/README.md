@@ -68,6 +68,25 @@ python scripts/ingest_pov_ir.py --run-package <run_package_dir> --pov-ir <pov_ir
 python scripts/run_regression_suite.py --suite regression/suites/contract_suite.json --baseline regression/baselines/baseline.json --fail-on-drop --fail-on-critical-fn
 ```
 
+## POV Context API
+
+Build a budget-controlled context pack from POV IR:
+
+```powershell
+curl -X POST "http://127.0.0.1:8000/api/pov/context" `
+  -H "Content-Type: application/json" `
+  -d '{"runPackage":"Gateway/tests/fixtures/pov_ir_v1_min","budget":{"maxChars":2000,"maxTokensApprox":500},"mode":"decisions_plus_highlights"}'
+```
+
+Request knobs:
+- `mode`: `decisions_only` | `decisions_plus_highlights` | `full`
+- `budget.maxChars`: prompt character cap
+- `budget.maxTokensApprox`: approximate token cap (`ceil(chars/4)`)
+
+Audit outputs:
+- `events/events_v1.jsonl`: appends `pov.context` event with output/truncation stats.
+- `report.json`: check `povContext` for default-budget output stats and truncation.
+
 ## Leaderboard And Reports
 
 - API list: `GET /api/run_packages`
