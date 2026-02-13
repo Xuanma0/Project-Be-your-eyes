@@ -1288,6 +1288,8 @@ async def run_packages_list(
     max_critical_misses: int | None = None,
     max_risk_latency_p90: int | None = None,
     max_risk_latency_max: int | None = None,
+    has_pov: str = "any",
+    min_pov_decisions: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> dict[str, Any]:
@@ -1304,6 +1306,8 @@ async def run_packages_list(
         max_critical_misses=max_critical_misses,
         max_risk_latency_p90=max_risk_latency_p90,
         max_risk_latency_max=max_risk_latency_max,
+        has_pov=has_pov,
+        min_pov_decisions=min_pov_decisions,
         sort=sort,
         order=order,
     )
@@ -1321,6 +1325,8 @@ async def run_packages_list(
             "max_critical_misses": max_critical_misses,
             "max_risk_latency_p90": max_risk_latency_p90,
             "max_risk_latency_max": max_risk_latency_max,
+            "has_pov": has_pov,
+            "min_pov_decisions": min_pov_decisions,
             "sort": sort,
             "order": order,
             "limit": limit,
@@ -1342,6 +1348,8 @@ async def run_packages_export_json(
     max_critical_misses: int | None = None,
     max_risk_latency_p90: int | None = None,
     max_risk_latency_max: int | None = None,
+    has_pov: str = "any",
+    min_pov_decisions: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> dict[str, Any]:
@@ -1358,6 +1366,8 @@ async def run_packages_export_json(
         max_critical_misses=max_critical_misses,
         max_risk_latency_p90=max_risk_latency_p90,
         max_risk_latency_max=max_risk_latency_max,
+        has_pov=has_pov,
+        min_pov_decisions=min_pov_decisions,
         sort=sort,
         order=order,
     )
@@ -1381,6 +1391,8 @@ async def run_packages_export_csv(
     max_critical_misses: int | None = None,
     max_risk_latency_p90: int | None = None,
     max_risk_latency_max: int | None = None,
+    has_pov: str = "any",
+    min_pov_decisions: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> Response:
@@ -1397,6 +1409,8 @@ async def run_packages_export_csv(
         max_critical_misses=max_critical_misses,
         max_risk_latency_p90=max_risk_latency_p90,
         max_risk_latency_max=max_risk_latency_max,
+        has_pov=has_pov,
+        min_pov_decisions=min_pov_decisions,
         sort=sort,
         order=order,
     )
@@ -1425,6 +1439,11 @@ async def run_packages_export_csv(
         "max_delay_frames",
         "risk_latency_p90",
         "risk_latency_max",
+        "pov_present",
+        "pov_decisions",
+        "pov_duration_ms",
+        "pov_token_approx",
+        "pov_decision_per_min",
         "runUrl",
         "reportUrl",
         "summaryUrl",
@@ -1559,10 +1578,20 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     confirm_timeouts = int(confirm_behavior.get("timeouts", 0) or 0) if isinstance(confirm_behavior, dict) else 0
     depth_risk = quality_payload.get("depthRisk", {}) if isinstance(quality_payload, dict) else {}
     risk_latency = quality_payload.get("riskLatencyMs", {}) if isinstance(quality_payload, dict) else {}
+    pov_payload = summary.get("pov", {})
+    pov_payload = pov_payload if isinstance(pov_payload, dict) else {}
     critical_misses: int | None = None
     max_delay_frames: int | None = None
     risk_latency_p90: int | None = None
     risk_latency_max: int | None = None
+    pov_present = bool(pov_payload.get("present")) if isinstance(pov_payload, dict) else False
+    pov_counts = pov_payload.get("counts", {}) if isinstance(pov_payload.get("counts"), dict) else {}
+    pov_time = pov_payload.get("time", {}) if isinstance(pov_payload.get("time"), dict) else {}
+    pov_budget = pov_payload.get("budget", {}) if isinstance(pov_payload.get("budget"), dict) else {}
+    pov_decisions = int(_read_float(pov_counts, "decisions") or 0)
+    pov_duration_ms = _read_float(pov_time, "durationMs")
+    pov_decision_per_min = _read_float(pov_time, "decisionPerMin")
+    pov_token_approx = int(_read_float(pov_budget, "tokenApprox") or 0)
     if isinstance(depth_risk, dict):
         critical = depth_risk.get("critical", {})
         delay = depth_risk.get("detectionDelayFrames", {})
@@ -1613,6 +1642,11 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "riskLatencyMax": risk_latency_max,
         "risk_latency_p90": risk_latency_p90,
         "risk_latency_max": risk_latency_max,
+        "pov_present": pov_present,
+        "pov_decisions": pov_decisions,
+        "pov_duration_ms": int(pov_duration_ms) if pov_duration_ms is not None else None,
+        "pov_token_approx": pov_token_approx,
+        "pov_decision_per_min": pov_decision_per_min,
         "summary": summary,
     }
     row.update(urls)
@@ -1632,6 +1666,8 @@ def _matches_run_filters(
     max_critical_misses: int | None,
     max_risk_latency_p90: int | None,
     max_risk_latency_max: int | None,
+    has_pov: str | None,
+    min_pov_decisions: int | None,
 ) -> bool:
     if scenario:
         if scenario.lower() not in str(row.get("scenarioTag", "")).lower():
@@ -1677,6 +1713,16 @@ def _matches_run_filters(
             return False
         if int(value) > int(max_risk_latency_max):
             return False
+    if has_pov:
+        normalized = has_pov.strip().lower()
+        present = bool(row.get("pov_present"))
+        if normalized in {"true", "1", "yes"} and not present:
+            return False
+        if normalized in {"false", "0", "no"} and present:
+            return False
+    if min_pov_decisions is not None:
+        if int(row.get("pov_decisions", 0) or 0) < int(min_pov_decisions):
+            return False
     return True
 
 
@@ -1693,6 +1739,9 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "quality",
         "quality_score",
         "risk_latency_p90",
+        "pov_decisions",
+        "pov_token_approx",
+        "pov_decision_per_min",
         "safemode_enter",
         "throttle_enter",
         "preempt_enter",
@@ -1728,6 +1777,8 @@ async def _query_run_package_rows(
     max_critical_misses: int | None,
     max_risk_latency_p90: int | None,
     max_risk_latency_max: int | None,
+    has_pov: str | None,
+    min_pov_decisions: int | None,
     sort: str,
     order: str,
 ) -> list[dict[str, Any]]:
@@ -1750,6 +1801,8 @@ async def _query_run_package_rows(
             max_critical_misses=max_critical_misses,
             max_risk_latency_p90=max_risk_latency_p90,
             max_risk_latency_max=max_risk_latency_max,
+            has_pov=has_pov,
+            min_pov_decisions=min_pov_decisions,
         ):
             continue
         rows.append(row)
@@ -1800,6 +1853,8 @@ async def runs_dashboard(
     max_critical_misses: int | None = None,
     max_risk_latency_p90: int | None = None,
     max_risk_latency_max: int | None = None,
+    has_pov: str = "any",
+    min_pov_decisions: int | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> HTMLResponse:
@@ -1817,6 +1872,8 @@ async def runs_dashboard(
         max_critical_misses=max_critical_misses,
         max_risk_latency_p90=max_risk_latency_p90,
         max_risk_latency_max=max_risk_latency_max,
+        has_pov=has_pov,
+        min_pov_decisions=min_pov_decisions,
         sort=sort,
         order=order,
     )
@@ -1839,6 +1896,11 @@ async def runs_dashboard(
         max_delay = "—" if max_delay_raw is None else str(max_delay_raw)
         risk_p90_raw = row.get("risk_latency_p90")
         risk_p90 = "—" if risk_p90_raw is None else str(risk_p90_raw)
+        pov_present = "yes" if bool(row.get("pov_present")) else "no"
+        pov_decisions = str(int(row.get("pov_decisions", 0) or 0))
+        pov_token_approx = str(int(row.get("pov_token_approx", 0) or 0))
+        pov_dpm_raw = row.get("pov_decision_per_min")
+        pov_dpm = "—" if pov_dpm_raw is None else f"{float(pov_dpm_raw):.3f}"
         rows_html += (
             "<tr>"
             f"<td><input type='checkbox' data-run-id='{run_val}' /></td>"
@@ -1851,10 +1913,14 @@ async def runs_dashboard(
             f"<td>{html.escape(critical_misses)}</td>"
             f"<td>{html.escape(max_delay)}</td>"
             f"<td>{html.escape(risk_p90)}</td>"
+            f"<td>{html.escape(pov_present)}</td>"
+            f"<td>{html.escape(pov_decisions)}</td>"
+            f"<td>{html.escape(pov_token_approx)}</td>"
+            f"<td>{html.escape(pov_dpm)}</td>"
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='10' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='14' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -1867,6 +1933,8 @@ async def runs_dashboard(
     max_critical_misses_value = html.escape("" if max_critical_misses is None else str(max_critical_misses))
     max_risk_latency_p90_value = html.escape("" if max_risk_latency_p90 is None else str(max_risk_latency_p90))
     max_risk_latency_max_value = html.escape("" if max_risk_latency_max is None else str(max_risk_latency_max))
+    has_pov_value = html.escape(has_pov or "any")
+    min_pov_decisions_value = html.escape("" if min_pov_decisions is None else str(min_pov_decisions))
     html_page = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1899,7 +1967,15 @@ async def runs_dashboard(
           <option value="false" {"selected" if has_gt_value == "false" else ""}>false</option>
         </select>
       </label>
+      <label>has_pov:
+        <select name="has_pov">
+          <option value="any" {"selected" if has_pov_value == "any" else ""}>any</option>
+          <option value="true" {"selected" if has_pov_value == "true" else ""}>true</option>
+          <option value="false" {"selected" if has_pov_value == "false" else ""}>false</option>
+        </select>
+      </label>
       <label>min_quality: <input type="number" step="0.01" name="min_quality" value="{min_quality_value}" /></label>
+      <label>min_pov_decisions: <input type="number" min="0" name="min_pov_decisions" value="{min_pov_decisions_value}" /></label>
       <label>max_confirm_timeouts: <input type="number" min="0" name="max_confirm_timeouts" value="{max_confirm_timeouts_value}" /></label>
       <label>max_critical_misses: <input type="number" min="0" name="max_critical_misses" value="{max_critical_misses_value}" /></label>
       <label>max_risk_latency_p90: <input type="number" min="0" name="max_risk_latency_p90" value="{max_risk_latency_p90_value}" /></label>
@@ -1910,6 +1986,9 @@ async def runs_dashboard(
           <option value="safety_score" {"selected" if sort_value == "safety_score" else ""}>safety_score</option>
           <option value="quality" {"selected" if sort_value == "quality" else ""}>quality</option>
           <option value="risk_latency_p90" {"selected" if sort_value == "risk_latency_p90" else ""}>risk_latency_p90</option>
+          <option value="pov_decisions" {"selected" if sort_value == "pov_decisions" else ""}>pov_decisions</option>
+          <option value="pov_token_approx" {"selected" if sort_value == "pov_token_approx" else ""}>pov_token_approx</option>
+          <option value="pov_decision_per_min" {"selected" if sort_value == "pov_decision_per_min" else ""}>pov_decision_per_min</option>
           <option value="e2e_count" {"selected" if sort_value == "e2e_count" else ""}>e2e_count</option>
           <option value="ttfa_count" {"selected" if sort_value == "ttfa_count" else ""}>ttfa_count</option>
           <option value="frameCountSent" {"selected" if sort_value == "frameCountSent" else ""}>frameCountSent</option>
@@ -1923,8 +2002,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&min_quality={min_quality_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&min_quality={min_quality_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -1940,6 +2019,10 @@ async def runs_dashboard(
           <th>Critical FN</th>
           <th>MaxDelay(fr)</th>
           <th>Risk p90(ms)</th>
+          <th>POV</th>
+          <th>POV Decisions</th>
+          <th>POV Token~</th>
+          <th>POV DPM</th>
         </tr>
       </thead>
       <tbody id="runs">{rows_html}</tbody>

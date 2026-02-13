@@ -34,6 +34,7 @@ def test_ingest_pov_ir_to_events_v1(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
+    assert "warnings: 0" in result.stdout
 
     pov_obj = json.loads(pov_ir_path.read_text(encoding="utf-8-sig"))
     expected_count = (

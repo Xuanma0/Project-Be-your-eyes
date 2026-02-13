@@ -29,6 +29,7 @@ def ingest_pov_ir(
     dry_run: bool,
 ) -> tuple[dict[str, Any], int]:
     warnings: list[str] = []
+    infos: list[str] = []
     errors: list[str] = []
 
     if not run_package.exists() or not run_package.is_dir():
@@ -141,7 +142,7 @@ def ingest_pov_ir(
             sha_files = _discover_sha_lists(run_package)
             sha_manifest_found = bool(sha_files)
             if not sha_manifest_found:
-                warnings.append("sha manifest not found (skipped)")
+                infos.append("sha manifest not found (skipped)")
             for sha_file in sha_files:
                 changed, fmt = _update_sha_manifest(sha_file, updates)
                 sha_updates.append({"file": sha_file.name, "updated": changed, "format": fmt})
@@ -164,6 +165,7 @@ def ingest_pov_ir(
             "highlights": len(highlights),
             "tokens": len(tokens),
         },
+        "infos": infos,
         "warnings": warnings,
         "errors": errors,
         "shaManifestFound": sha_manifest_found,
@@ -386,6 +388,7 @@ def _to_posix_relative(path: Any) -> str:
 def _print_summary(summary: dict[str, Any]) -> None:
     errors = summary.get("errors", [])
     warnings = summary.get("warnings", [])
+    infos = summary.get("infos", [])
     written = summary.get("written", {})
     counts = summary.get("counts", {})
     print(f"source: {summary.get('source', '')}")
@@ -407,8 +410,15 @@ def _print_summary(summary: dict[str, Any]) -> None:
             tokens=int(counts.get("tokens", 0) or 0),
         )
     )
+    print(f"infos: {len(infos)}")
     print(f"warnings: {len(warnings)}")
     print(f"errors: {1 if errors else 0}")
+    if infos:
+        for item in infos[:10]:
+            print(f"- info: {item}")
+    if warnings:
+        for item in warnings[:10]:
+            print(f"- warning: {item}")
     if errors:
         for item in errors:
             print(f"- error: {item}")

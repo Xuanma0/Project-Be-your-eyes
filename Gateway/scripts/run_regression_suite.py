@@ -43,6 +43,11 @@ class RunSummary:
     event_schema_source: str
     event_schema_normalized_events: int
     event_schema_warnings_count: int
+    pov_present: bool
+    pov_decisions: int
+    pov_token_approx: int
+    pov_duration_ms: int | None
+    pov_decision_per_min: float | None
     top_findings: list[dict[str, Any]]
     ocr_backend: str | None = None
     risk_backend: str | None = None
@@ -88,6 +93,16 @@ class RunSummary:
                 "normalizedEvents": self.event_schema_normalized_events,
                 "warningsCount": self.event_schema_warnings_count,
             },
+            "pov": {
+                "present": self.pov_present,
+                "decisions": self.pov_decisions,
+                "tokenApprox": self.pov_token_approx,
+                "durationMs": self.pov_duration_ms,
+                "decisionPerMin": self.pov_decision_per_min,
+            },
+            "povPresent": self.pov_present,
+            "povDecisions": self.pov_decisions,
+            "povTokenApprox": self.pov_token_approx,
             "inference": {
                 "ocr": {
                     "backend": self.ocr_backend,
@@ -324,6 +339,14 @@ def _extract_run_summary(
     confirm = confirm if isinstance(confirm, dict) else {}
     event_schema = quality.get("eventSchema")
     event_schema = event_schema if isinstance(event_schema, dict) else {}
+    pov = report_payload.get("pov")
+    pov = pov if isinstance(pov, dict) else {}
+    pov_counts = pov.get("counts")
+    pov_counts = pov_counts if isinstance(pov_counts, dict) else {}
+    pov_time = pov.get("time")
+    pov_time = pov_time if isinstance(pov_time, dict) else {}
+    pov_budget = pov.get("budget")
+    pov_budget = pov_budget if isinstance(pov_budget, dict) else {}
     inference = report_payload.get("inference")
     inference = inference if isinstance(inference, dict) else {}
     inference_ocr = inference.get("ocr")
@@ -363,6 +386,11 @@ def _extract_run_summary(
         event_schema_source=str(event_schema.get("source", "")),
         event_schema_normalized_events=int(event_schema.get("normalizedEvents", 0) or 0),
         event_schema_warnings_count=int(event_schema.get("warningsCount", 0) or 0),
+        pov_present=bool(pov.get("present")),
+        pov_decisions=int(pov_counts.get("decisions", 0) or 0),
+        pov_token_approx=int(pov_budget.get("tokenApprox", 0) or 0),
+        pov_duration_ms=_try_int(pov_time.get("durationMs")),
+        pov_decision_per_min=_try_float(pov_time.get("decisionPerMin")),
         ocr_backend=str(inference_ocr.get("backend", "")).strip() or None,
         risk_backend=str(inference_risk.get("backend", "")).strip() or None,
         ocr_model=str(inference_ocr.get("model", "")).strip() or None,
@@ -404,7 +432,7 @@ def _render_markdown(result: dict[str, Any]) -> str:
         if not isinstance(run, dict):
             continue
         lines.append(
-            "- `{id}` score=`{score}` baseline=`{baseline}` delta=`{delta}` confirmTimeouts=`{ct}` criticalFn=`{cfn}` riskDelayMax=`{dmax}` riskLatencyP90=`{rlp90}` riskLatencyMax=`{rlmax}` schema=`{schema}`".format(
+            "- `{id}` score=`{score}` baseline=`{baseline}` delta=`{delta}` confirmTimeouts=`{ct}` criticalFn=`{cfn}` riskDelayMax=`{dmax}` riskLatencyP90=`{rlp90}` riskLatencyMax=`{rlmax}` povPresent=`{pov_present}` povDecisions=`{pov_decisions}` schema=`{schema}`".format(
                 id=run.get("id", ""),
                 score=run.get("qualityScore", None),
                 baseline=run.get("baselineScore", None),
@@ -414,6 +442,8 @@ def _render_markdown(result: dict[str, Any]) -> str:
                 dmax=run.get("depthRisk", {}).get("delayMax", None),
                 rlp90=run.get("riskLatency", {}).get("p90", None),
                 rlmax=run.get("riskLatency", {}).get("max", None),
+                pov_present=run.get("pov", {}).get("present", False),
+                pov_decisions=run.get("pov", {}).get("decisions", 0),
                 schema=run.get("eventSchema", {}).get("source", ""),
             )
         )
@@ -467,10 +497,19 @@ def run_suite(
         max_risk_delay = int(max_risk_delay) if max_risk_delay is not None else None
     except Exception:
         max_risk_delay = None
+    expected_require_pov_present = _to_bool01(expected.get("requirePovPresent"), False)
+    expected_min_pov_decisions = _try_int(expected.get("minPovDecisions"))
+    if suite_name.strip().lower() == "contract":
+        if "requirePovPresent" not in expected:
+            expected_require_pov_present = True
+        if expected_min_pov_decisions is None:
+            expected_min_pov_decisions = 2
 
     run_summaries: list[RunSummary] = []
     run_require_critical_fn: dict[str, bool] = {}
     run_min_quality_override: dict[str, float | None] = {}
+    run_require_pov_present: dict[str, bool] = {}
+    run_min_pov_decisions_override: dict[str, int | None] = {}
     failures: list[str] = []
 
     for run_cfg in runs_cfg:
@@ -484,6 +523,8 @@ def run_suite(
             continue
         run_require_critical_fn[run_id] = bool(run_cfg.get("requireCriticalFnZero", False))
         run_min_quality_override[run_id] = _try_float(run_cfg.get("minQualityScore"))
+        run_require_pov_present[run_id] = _to_bool01(run_cfg.get("requirePovPresent"), False)
+        run_min_pov_decisions_override[run_id] = _try_int(run_cfg.get("minPovDecisions"))
         run_path = _resolve_input_path(run_path_text, suite_dir)
 
         ws_jsonl: Path | None = None
@@ -546,6 +587,16 @@ def run_suite(
         run.critical_fn_gate_required = require_critical_fn_zero
         if require_critical_fn_zero and int(run.miss_critical_count or 0) > 0:
             failures.append(f"{run.run_id}: missCriticalCount {int(run.miss_critical_count or 0)} > 0")
+        require_pov_present = run_require_pov_present.get(run.run_id, False) or expected_require_pov_present
+        if require_pov_present and not bool(run.pov_present):
+            failures.append(f"{run.run_id}: pov.present is false")
+        effective_min_pov_decisions = run_min_pov_decisions_override.get(run.run_id)
+        if effective_min_pov_decisions is None:
+            effective_min_pov_decisions = expected_min_pov_decisions
+        if effective_min_pov_decisions is not None and int(run.pov_decisions or 0) < int(effective_min_pov_decisions):
+            failures.append(
+                f"{run.run_id}: pov.decisions {int(run.pov_decisions or 0)} < minPovDecisions {int(effective_min_pov_decisions)}"
+            )
         if fail_on_drop and run.baseline_score is not None and run.quality_score is not None:
             delta = run.quality_score - run.baseline_score
             if delta < -2.0:
@@ -608,7 +659,7 @@ def _print_summary(result: dict[str, Any]) -> None:
             print(
                 "[run] {run_id}: score={score} baseline={baseline} delta={delta} "
                 "confirmTimeouts={confirm_timeouts} critical_fn={critical_fn} riskDelayP90={risk_delay_p90} riskDelayMax={risk_delay_max} "
-                "riskLatencyP90={risk_latency_p90} riskLatencyMax={risk_latency_max} source={schema_src} "
+                "riskLatencyP90={risk_latency_p90} riskLatencyMax={risk_latency_max} povPresent={pov_present} povDecisions={pov_decisions} povTokenApprox={pov_token_approx} source={schema_src} "
                 "ocr={ocr_backend}/{ocr_model} risk={risk_backend}/{risk_model}".format(
                     run_id=run_id,
                     score=score,
@@ -620,6 +671,9 @@ def _print_summary(result: dict[str, Any]) -> None:
                     risk_delay_max=row.get("depthRisk", {}).get("delayMax", None),
                     risk_latency_p90=row.get("riskLatency", {}).get("p90", None),
                     risk_latency_max=row.get("riskLatency", {}).get("max", None),
+                    pov_present=row.get("pov", {}).get("present", False),
+                    pov_decisions=row.get("pov", {}).get("decisions", 0),
+                    pov_token_approx=row.get("pov", {}).get("tokenApprox", 0),
                     schema_src=schema_src,
                     ocr_backend=ocr_backend,
                     ocr_model=ocr_model,

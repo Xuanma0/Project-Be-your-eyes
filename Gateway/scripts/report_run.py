@@ -34,6 +34,7 @@ from byes.quality_metrics import (  # noqa: E402
     load_gt_ocr_jsonl,
     load_gt_risk_jsonl,
 )
+from byes.pov_metrics import compute_pov_metrics, load_pov_ir_from_run_package  # noqa: E402
 
 _LABEL_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=\"((?:\\.|[^\"])*)\"")
 
@@ -892,6 +893,12 @@ def generate_report_outputs(
 
     summary = build_summary_payload(ws_stats, after_samples, delta_samples, run_package_summary)
     event_rows = load_jsonl(event_source_path)
+    pov_ir_payload: dict[str, Any] | None = None
+    if isinstance(run_package_summary, dict):
+        run_package_dir = str(run_package_summary.get("runPackageDir", "")).strip()
+        if run_package_dir:
+            pov_ir_payload = load_pov_ir_from_run_package(Path(run_package_dir))
+    summary["pov"] = compute_pov_metrics(pov_ir_payload, event_rows)
     inferred_summary = extract_inference_summary_from_ws_events(event_source_path)
     events_v1_inferred = infer_inference_summary_from_events_v1(event_rows)
     risk_latency_stats, risk_timings_stats = extract_risk_latency_metrics_from_events_v1(event_rows)

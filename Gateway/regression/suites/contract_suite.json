@@ -1,5 +1,9 @@
 {
   "name": "contract",
+  "expected": {
+    "requirePovPresent": true,
+    "minPovDecisions": 2
+  },
   "runs": [
     {
       "id": "fixture_pov_ir_min",
@@ -10,7 +14,9 @@
           "strict": 1
         }
       ],
-      "requireCriticalFnZero": true
+      "requireCriticalFnZero": true,
+      "requirePovPresent": true,
+      "minPovDecisions": 2
     }
   ]
 }

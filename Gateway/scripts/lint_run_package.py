@@ -17,6 +17,7 @@ if str(GATEWAY_ROOT) not in sys.path:
 
 from byes.event_normalizer import collect_normalized_ws_events
 from byes.hazards.taxonomy_v1 import normalize_hazards
+from byes.schemas.pov_ir_schema import validate_pov_ir
 
 _SHA_LINE_RE = re.compile(r"^([a-fA-F0-9]{64})\s+\*?(.+)$")
 
@@ -275,6 +276,9 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
         events_v1_schema_ok = 0
         events_v1_normalized = 0
         events_v1_path: Path | None = None
+        events_v1_rows: list[dict[str, Any]] = []
+        pov_events_count = 0
+        pov_decision_events_count = 0
         if events_v1_rel:
             events_v1_path = run_root / events_v1_rel
             if not events_v1_path.exists():
@@ -291,13 +295,62 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
                                 obj = json.loads(line)
                             except Exception:
                                 continue
-                            if isinstance(obj, dict) and str(obj.get("schemaVersion", "")).strip() == "byes.event.v1":
-                                events_v1_schema_ok += 1
+                            if isinstance(obj, dict):
+                                events_v1_rows.append(obj)
+                                if str(obj.get("schemaVersion", "")).strip() == "byes.event.v1":
+                                    events_v1_schema_ok += 1
+                                name = str(obj.get("name", "")).strip().lower()
+                                if name.startswith("pov."):
+                                    pov_events_count += 1
+                                if name == "pov.decision":
+                                    pov_decision_events_count += 1
                 except Exception as exc:  # noqa: BLE001
                     warnings.append(f"eventsV1 read failed: {exc}")
                 events_v1_norm = collect_normalized_ws_events(events_v1_path)
                 events_v1_normalized = int(events_v1_norm.get("normalizedEvents", 0) or 0)
                 warnings.extend(events_v1_norm.get("warnings", []))
+
+        pov_ir_present = 0
+        pov_ir_schema_ok = 0
+        pov_ir_decisions = 0
+        pov_consistency_warnings = 0
+        pov_rel = str(manifest.get("povIrJson", "") or "").strip()
+        if pov_rel:
+            pov_ir_present = 1
+            pov_path = run_root / pov_rel
+            if not pov_path.exists():
+                errors.append(f"povIrJson missing: {pov_rel}")
+            else:
+                try:
+                    pov_payload = json.loads(pov_path.read_text(encoding="utf-8-sig"))
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"povIrJson parse failed: {pov_rel} ({exc})")
+                    pov_payload = None
+                if isinstance(pov_payload, dict):
+                    decisions = pov_payload.get("decisionPoints")
+                    if isinstance(decisions, list):
+                        pov_ir_decisions = len([row for row in decisions if isinstance(row, dict)])
+                    schema_ok, schema_errors = validate_pov_ir(pov_payload, strict=True)
+                    if schema_ok:
+                        pov_ir_schema_ok = int(pov_ir_decisions)
+                    else:
+                        for item in schema_errors:
+                            errors.append(f"povIrJson schema: {item}")
+
+        if pov_ir_decisions > 0 and events_v1_lines > 0 and pov_decision_events_count == 0:
+            msg = "pov consistency: decisionPoints present but events_v1 has no pov.decision"
+            if strict:
+                errors.append(msg)
+            else:
+                warnings.append(msg)
+                pov_consistency_warnings += 1
+        if pov_events_count > 0 and pov_ir_present == 0:
+            msg = "pov consistency: events_v1 contains pov.* but manifest has no povIrJson"
+            if strict:
+                errors.append(msg)
+            else:
+                warnings.append(msg)
+                pov_consistency_warnings += 1
 
         ws_rel = str(manifest.get("wsJsonl", "ws_events.jsonl") or "ws_events.jsonl")
         ws_path = run_root / ws_rel
@@ -373,6 +426,11 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
             "eventsV1Lines": events_v1_lines,
             "eventsV1SchemaOk": events_v1_schema_ok,
             "eventsV1Normalized": events_v1_normalized,
+            "povIrPresent": int(pov_ir_present),
+            "povIrSchemaOk": int(pov_ir_schema_ok),
+            "povIrDecisions": int(pov_ir_decisions),
+            "povEventsCount": int(pov_events_count),
+            "povConsistencyWarnings": int(pov_consistency_warnings),
             "hazardUnknownKinds": len(hazard_unknown_kinds),
             "hazardAliasHits": int(hazard_alias_hits),
             "riskEventMissingFrameSeq": int(risk_event_missing_frame_seq),
@@ -389,6 +447,11 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
         print(f"eventsV1Lines: {events_v1_lines}")
         print(f"eventsV1SchemaOk: {events_v1_schema_ok}")
         print(f"eventsV1Normalized: {events_v1_normalized}")
+        print(f"povIrPresent: {summary['povIrPresent']}")
+        print(f"povIrSchemaOk: {summary['povIrSchemaOk']}")
+        print(f"povIrDecisions: {summary['povIrDecisions']}")
+        print(f"povEventsCount: {summary['povEventsCount']}")
+        print(f"povConsistencyWarnings: {summary['povConsistencyWarnings']}")
         print(f"hazardUnknownKinds: {summary['hazardUnknownKinds']}")
         print(f"hazardAliasHits: {summary['hazardAliasHits']}")
         print(f"riskEventMissingFrameSeq: {summary['riskEventMissingFrameSeq']}")
