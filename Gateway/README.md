@@ -171,6 +171,21 @@ Validation points:
 - `report.json.povPlan` includes `decisionCoverage`, `actionCoverage`, `consistencyWarnings`
 - contract suite includes `fixture_pov_plan_min` to lock this adapter path.
 
+Live POV ingest demo (no `runPackagePath` dependency):
+
+```powershell
+# 1) planner service
+set BYES_PLANNER_PROVIDER=pov
+python Gateway/services/planner_service/app.py
+
+# 2) gateway
+python Gateway/main.py
+
+# 3) ingest POV IR and generate plan
+curl -X POST "http://127.0.0.1:8000/api/pov/ingest" -H "Content-Type: application/json" -d @Gateway/tests/fixtures/pov_ir_v1_min/pov/pov_ir_v1.json
+curl -X POST "http://127.0.0.1:8000/api/plan?provider=pov" -H "Content-Type: application/json" -d "{\"runId\":\"fixture-pov-ir-min\",\"frameSeq\":1,\"budget\":{\"maxChars\":2000,\"maxTokensApprox\":256,\"mode\":\"decisions_plus_highlights\"},\"constraints\":{\"allowConfirm\":true,\"allowHaptic\":false,\"maxActions\":3}}"
+```
+
 ### Planner LLM Adapter (Optional)
 
 No key is required by default. LLM mode is opt-in and falls back to reference planner when timeout/HTTP/JSON/schema checks fail.

@@ -9,10 +9,27 @@ def parse_pov_ir(path: Path) -> dict[str, Any]:
     if not path.exists() or not path.is_file():
         raise FileNotFoundError(f"pov_ir_not_found:{path}")
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    return parse_pov_ir_obj(payload)
+
+
+def parse_pov_ir_obj(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("pov_ir_not_object")
     if str(payload.get("schemaVersion", "")).strip() != "pov.ir.v1":
         raise ValueError("pov_ir_schema_version_invalid")
+    run_id = str(payload.get("runId", "")).strip()
+    if not run_id:
+        raise ValueError("pov_ir_run_id_missing")
+    decisions = payload.get("decisionPoints")
+    if not isinstance(decisions, list):
+        raise ValueError("pov_ir_decision_points_missing")
+    for key in ("events", "highlights", "tokens"):
+        rows = payload.get(key)
+        if rows is None:
+            payload[key] = []
+            continue
+        if not isinstance(rows, list):
+            raise ValueError(f"pov_ir_{key}_invalid")
     return payload
 
 

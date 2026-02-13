@@ -110,6 +110,8 @@ def build_planner_request(
     risk_summary: dict[str, Any],
     constraints: dict[str, Any],
     run_package_path: str | None = None,
+    planner_provider: str | None = None,
+    pov_ir_inline: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_constraints = {
         "allowConfirm": bool(constraints.get("allowConfirm", True)),
@@ -131,6 +133,11 @@ def build_planner_request(
         "riskSummary": risk_summary,
         "constraints": normalized_constraints,
     }
+    planner_provider_text = str(planner_provider or "").strip().lower()
+    if planner_provider_text in {"reference", "llm", "pov"}:
+        payload["provider"] = planner_provider_text
+    if isinstance(pov_ir_inline, dict):
+        payload["povIr"] = pov_ir_inline
     allow_path = str(os.getenv("BYES_PLANNER_ALLOW_RUN_PACKAGE_PATH", "0")).strip().lower() in {"1", "true", "yes", "on"}
     run_package_path_text = str(run_package_path or "").strip()
     if allow_path and run_package_path_text:
@@ -148,6 +155,8 @@ def generate_action_plan(
     constraints: dict[str, Any],
     events_rows: list[dict[str, Any]],
     run_package_path: str | None = None,
+    planner_provider: str | None = None,
+    planner_pov_ir: dict[str, Any] | None = None,
     backend: PlannerBackend | None = None,
 ) -> dict[str, Any]:
     context_pack = build_context_pack(pov_ir, budget=budget, mode=mode)
@@ -165,6 +174,8 @@ def generate_action_plan(
         risk_summary=risk_summary,
         constraints=constraints,
         run_package_path=run_package_path,
+        planner_provider=planner_provider,
+        pov_ir_inline=planner_pov_ir,
     )
     draft_plan = planner_backend.generate_plan(planner_request)
     if not isinstance(draft_plan, dict):

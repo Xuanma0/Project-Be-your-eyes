@@ -7,6 +7,7 @@ import hashlib
 import html
 import io
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -45,6 +46,7 @@ from byes.tool_registry import ToolRegistry
 from byes.tools import MockOcrTool, MockRiskTool, RealDepthTool, RealDetTool, RealOcrTool, RealVlmTool
 from byes.tools.base import FrameInput, ToolLane
 from byes.world_state import WorldState
+from byes.pov.store import PovStore
 from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text
 from byes.plan_pipeline import generate_action_plan, load_events_v1_rows
 from byes.plan_executor import execute_plan as execute_action_plan
@@ -371,6 +373,7 @@ class GatewayApp:
         self.run_packages_root = Path(__file__).resolve().parent / "artifacts" / "run_packages"
         self.run_packages_index_path = self.run_packages_root / "index.json"
         self._run_packages_lock = asyncio.Lock()
+        self.pov_store = PovStore()
 
     async def startup(self) -> None:
         self.run_packages_root.mkdir(parents=True, exist_ok=True)
@@ -1377,6 +1380,106 @@ async def run_package_upload(
         raise HTTPException(status_code=500, detail=f"run package processing failed: {ex}") from ex
 
 
+def _summarize_pov_ir(payload: dict[str, Any], run_id: str) -> dict[str, Any]:
+    decisions = payload.get("decisionPoints")
+    events = payload.get("events")
+    highlights = payload.get("highlights")
+    tokens = payload.get("tokens")
+    return {
+        "runId": run_id,
+        "counts": {
+            "decisions": sum(1 for item in decisions if isinstance(item, dict)) if isinstance(decisions, list) else 0,
+            "events": sum(1 for item in events if isinstance(item, dict)) if isinstance(events, list) else 0,
+            "highlights": sum(1 for item in highlights if isinstance(item, dict)) if isinstance(highlights, list) else 0,
+            "tokens": sum(1 for item in tokens if isinstance(item, dict)) if isinstance(tokens, list) else 0,
+        },
+        "createdAtMs": _now_ms(),
+        "present": True,
+    }
+
+
+@app.post("/api/pov/ingest")
+async def ingest_pov_ir(
+    payload: dict[str, Any],
+    runPackage: str | None = None,
+    runId: str | None = None,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="request body must be object")
+    ok, errors = validate_pov_ir(payload, strict=True)
+    if not ok:
+        raise HTTPException(status_code=400, detail={"message": "pov ir schema invalid", "errors": errors})
+
+    event_run_id = str(payload.get("runId", "")).strip()
+    if not event_run_id:
+        raise HTTPException(status_code=400, detail="pov ir runId is required")
+    gateway.pov_store.set(event_run_id, payload)
+    summary = _summarize_pov_ir(payload, event_run_id)
+
+    event_row = _build_byes_event(
+        run_id=event_run_id,
+        frame_seq=1,
+        category="pov",
+        name="pov.ingest",
+        payload={
+            "runId": event_run_id,
+            "decisions": int(summary["counts"]["decisions"]),
+            "events": int(summary["counts"]["events"]),
+            "highlights": int(summary["counts"]["highlights"]),
+            "tokens": int(summary["counts"]["tokens"]),
+        },
+    )
+    await gateway._emit_inference_event(event_row)  # noqa: SLF001
+
+    cleanup_dir: Path | None = None
+    run_package_dir: Path | None = None
+    can_write_events = False
+    try:
+        run_package_text = str(runPackage or "").strip()
+        run_id_text = str(runId or "").strip() or event_run_id
+        if run_package_text:
+            run_package_dir, cleanup_dir, can_write_events = _resolve_context_run_package_input(run_package_text)
+        else:
+            try:
+                run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
+                    run_package_raw=None,
+                    run_id=run_id_text,
+                )
+            except HTTPException:
+                run_package_dir = None
+                can_write_events = False
+        if run_package_dir is not None and can_write_events:
+            _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+            events_path = _resolve_events_v1_path(run_package_dir, manifest)
+            _append_events_v1_rows(events_path, [event_row])
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+    return {"ok": True, **summary}
+
+
+@app.get("/api/pov/latest")
+async def get_latest_pov(runId: str) -> dict[str, Any]:
+    run_id = str(runId or "").strip()
+    if not run_id:
+        raise HTTPException(status_code=400, detail="runId is required")
+    summary = gateway.pov_store.summary(run_id)
+    if not bool(summary.get("present")):
+        raise HTTPException(status_code=404, detail=f"pov not found for runId: {run_id}")
+    return {"ok": True, **summary}
+
+
+def _resolve_planner_provider(request_provider: str | None) -> str:
+    provider_text = str(request_provider or "").strip().lower()
+    if provider_text in {"reference", "llm", "pov"}:
+        return provider_text
+    env_provider = str(os.getenv("BYES_PLANNER_PROVIDER", "")).strip().lower()
+    if env_provider in {"reference", "llm", "pov"}:
+        return env_provider
+    return "reference"
+
+
 @app.post("/api/pov/context")
 async def build_pov_context(request: PovContextRequest) -> dict[str, Any]:
     started_at = time.perf_counter()
@@ -1430,23 +1533,51 @@ async def build_pov_context(request: PovContextRequest) -> dict[str, Any]:
 
 
 @app.post("/api/plan")
-async def generate_plan(request: PlanGenerateRequest) -> dict[str, Any]:
+async def generate_plan(request: PlanGenerateRequest, provider: str | None = None) -> dict[str, Any]:
     started_at = time.perf_counter()
     cleanup_dir: Path | None = None
     try:
-        run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
-            run_package_raw=request.runPackage,
-            run_id=request.runId,
-        )
-        manifest, pov_ir, _ = _load_pov_ir_for_context(run_package_dir)
-        events_rows, _ = load_events_v1_rows(run_package_dir, manifest)
+        run_package_dir: Path | None = None
+        can_write_events = False
+        manifest: dict[str, Any] = {}
+        pov_ir_from_package: dict[str, Any] | None = None
+        events_rows: list[dict[str, Any]] = []
+        run_package_text = str(request.runPackage or "").strip()
+        run_id_text = str(request.runId or "").strip()
+
+        if run_package_text:
+            run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
+                run_package_raw=run_package_text,
+                run_id=run_id_text or None,
+            )
+        elif run_id_text:
+            try:
+                run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
+                    run_package_raw=None,
+                    run_id=run_id_text,
+                )
+            except HTTPException as ex:
+                if int(ex.status_code) != 404:
+                    raise
+                run_package_dir = None
+                can_write_events = False
+
+        if run_package_dir is not None:
+            manifest, pov_ir_from_package, _ = _load_pov_ir_for_context(run_package_dir)
+            events_rows, _ = load_events_v1_rows(run_package_dir, manifest)
+
         frame_seq = int(request.frameSeq) if isinstance(request.frameSeq, int) and request.frameSeq > 0 else None
         run_id = (
-            str(manifest.get("runId", "")).strip()
-            or str(pov_ir.get("runId", "")).strip()
-            or str(request.runId or "").strip()
-            or run_package_dir.name
+            str(request.runId or "").strip()
+            or str(manifest.get("runId", "")).strip()
+            or str((pov_ir_from_package or {}).get("runId", "")).strip()
+            or (run_package_dir.name if run_package_dir is not None else "")
         )
+        planner_provider = _resolve_planner_provider(provider)
+        inline_pov_ir = gateway.pov_store.get(run_id) if planner_provider == "pov" else None
+        pov_ir = inline_pov_ir if isinstance(inline_pov_ir, dict) else pov_ir_from_package
+        if not isinstance(pov_ir, dict):
+            raise HTTPException(status_code=404, detail=f"pov ir not found for runId: {run_id}")
         budget_payload = {
             "maxChars": int(request.budget.maxChars),
             "maxTokensApprox": int(request.budget.maxTokensApprox),
@@ -1464,13 +1595,15 @@ async def generate_plan(request: PlanGenerateRequest) -> dict[str, Any]:
             mode=request.budget.mode,
             constraints=constraints_payload,
             events_rows=events_rows,
-            run_package_path=str(run_package_dir),
+            run_package_path=str(run_package_dir) if run_package_dir is not None else None,
+            planner_provider=planner_provider,
+            planner_pov_ir=inline_pov_ir if isinstance(inline_pov_ir, dict) else None,
         )
         plan_payload = bundle.get("plan")
         if not isinstance(plan_payload, dict):
             raise RuntimeError("planner returned invalid plan payload")
         latency_ms = int(max(0, (time.perf_counter() - started_at) * 1000.0))
-        if can_write_events:
+        if can_write_events and run_package_dir is not None:
             actions_payload = plan_payload.get("actions")
             actions_payload = actions_payload if isinstance(actions_payload, list) else []
             stop_count = sum(
@@ -1501,6 +1634,48 @@ async def generate_plan(request: PlanGenerateRequest) -> dict[str, Any]:
                 guardrails_applied=[str(item) for item in guardrails if str(item).strip()],
                 findings_count=len(findings),
             )
+        else:
+            planner = bundle.get("planner", {})
+            planner = planner if isinstance(planner, dict) else {}
+            actions_payload = plan_payload.get("actions")
+            actions_payload = actions_payload if isinstance(actions_payload, list) else []
+            guardrails = bundle.get("guardrailsApplied", [])
+            guardrails = guardrails if isinstance(guardrails, list) else []
+            findings = bundle.get("findings", [])
+            findings = findings if isinstance(findings, list) else []
+            plan_row = _build_byes_event(
+                run_id=run_id or "pov-live",
+                frame_seq=frame_seq or 1,
+                category="plan",
+                name="plan.generate",
+                latency_ms=latency_ms,
+                payload={
+                    "backend": planner.get("backend"),
+                    "model": planner.get("model"),
+                    "endpoint": planner.get("endpoint"),
+                    "plannerProvider": planner.get("plannerProvider") or planner.get("provider"),
+                    "promptVersion": planner.get("promptVersion"),
+                    "fallbackUsed": planner.get("fallbackUsed"),
+                    "fallbackReason": planner.get("fallbackReason"),
+                    "jsonValid": planner.get("jsonValid"),
+                    "riskLevel": str(plan_payload.get("riskLevel", "low")),
+                    "actionsCount": len(actions_payload),
+                },
+            )
+            safety_row = _build_byes_event(
+                run_id=run_id or "pov-live",
+                frame_seq=frame_seq or 1,
+                category="safety",
+                name="safety.kernel",
+                latency_ms=latency_ms,
+                payload={
+                    "riskLevel": str(plan_payload.get("riskLevel", "low")),
+                    "guardrailsApplied": [str(item) for item in guardrails if str(item).strip()],
+                    "findingsCount": len(findings),
+                },
+            )
+            await gateway._emit_inference_event(plan_row)  # noqa: SLF001
+            await gateway._emit_inference_event(safety_row)  # noqa: SLF001
         return plan_payload
     except HTTPException:
         raise

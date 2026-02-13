@@ -5,7 +5,9 @@ This document defines the deterministic adapter from `pov.ir.v1` to `byes.action
 ## Scope
 
 - Provider: `BYES_PLANNER_PROVIDER=pov` in `Gateway/services/planner_service`.
-- Input: `runPackagePath` pointing to a run package with `pov/pov_ir_v1.json`.
+- Input:
+  - preferred: inline `povIr` object in planner request body,
+  - compatibility: `runPackagePath` pointing to a run package with `pov/pov_ir_v1.json`.
 - Output: strict `byes.action_plan.v1` validated by `validate_action_plan.py`.
 
 ## Mapping Rules (MVP)
@@ -36,6 +38,16 @@ If `pov/pov_ir_v1.json` is missing or invalid:
   - `fallbackUsed=true`
   - `fallbackReason=missing_pov_ir` or `pov_adapter_error`
   - `jsonValid=false`
+
+## Live Ingest Flow
+
+1. `POST /api/pov/ingest` on Gateway with full `pov.ir.v1` payload.
+2. Gateway stores latest POV per `runId` in-memory (`PovStore`).
+3. `POST /api/plan?provider=pov` can forward inline `povIr` to planner service.
+4. Events emitted:
+   - `pov.ingest`
+   - `plan.generate`
+   - `safety.kernel`
 
 ## Alignment Metrics
 

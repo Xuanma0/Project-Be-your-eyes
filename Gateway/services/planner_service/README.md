@@ -79,7 +79,8 @@ set BYES_PLANNER_PROVIDER=pov
 ```
 
 Input requirement:
-- request body includes `runPackagePath` (for local replay/report workflow only).
+- preferred: request body includes `povIr` object inline.
+- compatibility: request body includes `runPackagePath` (for local replay/report workflow).
 - if missing file, service falls back to reference with:
   - `meta.planner.fallbackUsed=true`
   - `meta.planner.fallbackReason=missing_pov_ir`

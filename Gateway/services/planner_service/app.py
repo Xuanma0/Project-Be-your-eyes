@@ -11,10 +11,10 @@ from flask import Flask, jsonify, request
 
 try:
     from .validate_action_plan import validate_and_normalize
-    from .pov_adapter import parse_pov_ir, pov_to_action_plan
+    from .pov_adapter import parse_pov_ir, parse_pov_ir_obj, pov_to_action_plan
 except ImportError:  # pragma: no cover - supports running as script
     from validate_action_plan import validate_and_normalize
-    from pov_adapter import parse_pov_ir, pov_to_action_plan
+    from pov_adapter import parse_pov_ir, parse_pov_ir_obj, pov_to_action_plan
 
 app = Flask(__name__)
 
@@ -330,7 +330,10 @@ def plan() -> Any:
         return jsonify({"ok": False, "error": "schemaVersion must be byes.planner_request.v1"}), 400
 
     endpoint = request.headers.get("X-Endpoint") or os.getenv("PLANNER_SERVICE_ENDPOINT", _DEFAULT_ENDPOINT)
-    provider = str(os.getenv("BYES_PLANNER_PROVIDER", "reference")).strip().lower() or "reference"
+    provider_from_body = str(req_payload.get("provider", "")).strip().lower()
+    provider = provider_from_body if provider_from_body in {"reference", "llm", "pov"} else str(
+        os.getenv("BYES_PLANNER_PROVIDER", "reference")
+    ).strip().lower() or "reference"
     prompt_version = str(os.getenv("BYES_PLANNER_PROMPT_VERSION", "v1")).strip() or "v1"
     timeout_ms = int(os.getenv("BYES_PLANNER_LLM_TIMEOUT_MS", "2500") or "2500")
     constraints = req_payload.get("constraints")
@@ -347,14 +350,24 @@ def plan() -> Any:
     candidate_plan: dict[str, Any] | None = None
     if provider == "pov":
         planner_prompt_version = "n/a"
+        inline_pov = req_payload.get("povIr")
         run_package_path = str(req_payload.get("runPackagePath", "")).strip()
-        if not run_package_path:
+        if isinstance(inline_pov, dict):
+            pov_source = "inline"
+        elif run_package_path:
+            pov_source = "run_package_path"
+        else:
+            pov_source = "missing"
+        if pov_source == "missing":
             fallback_used = True
             fallback_reason = "missing_pov_ir"
             json_valid = False
         else:
             try:
-                pov_ir = parse_pov_ir(Path(run_package_path) / "pov" / "pov_ir_v1.json")
+                if pov_source == "inline":
+                    pov_ir = parse_pov_ir_obj(inline_pov)
+                else:
+                    pov_ir = parse_pov_ir(Path(run_package_path) / "pov" / "pov_ir_v1.json")
                 run_id = str(req_payload.get("runId", "")).strip() or str(pov_ir.get("runId", "")).strip() or "pov-run"
                 frame_seq = req_payload.get("frameSeq") if isinstance(req_payload.get("frameSeq"), int) else None
                 pov_plan, _diagnostics = pov_to_action_plan(
