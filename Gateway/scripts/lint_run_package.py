@@ -22,6 +22,7 @@ except Exception:  # noqa: BLE001
 
 from byes.event_normalizer import collect_normalized_ws_events
 from byes.hazards.taxonomy_v1 import normalize_hazards
+from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events
 from byes.schemas.pov_ir_schema import validate_pov_ir
 
 _SHA_LINE_RE = re.compile(r"^([a-fA-F0-9]{64})\s+\*?(.+)$")
@@ -361,6 +362,44 @@ def _validate_seg_mask(mask: Any) -> tuple[bool, int, int]:
     return True, 0, 0
 
 
+def _seg_context_schema_ok(payload: dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if str(payload.get("schemaVersion", "")).strip() != "seg.context.v1":
+        return False
+    budget = payload.get("budget")
+    budget = budget if isinstance(budget, dict) else {}
+    stats = payload.get("stats")
+    stats = stats if isinstance(stats, dict) else {}
+    stats_out = stats.get("out")
+    stats_out = stats_out if isinstance(stats_out, dict) else {}
+    stats_truncation = stats.get("truncation")
+    stats_truncation = stats_truncation if isinstance(stats_truncation, dict) else {}
+    text = payload.get("text")
+    text = text if isinstance(text, dict) else {}
+    if not isinstance(text.get("promptFragment"), str):
+        return False
+    for key in ("maxChars", "maxSegments"):
+        try:
+            if int(budget.get(key, -1)) < 0:
+                return False
+        except Exception:
+            return False
+    for key in ("segments", "uniqueLabels", "charsTotal", "tokenApprox"):
+        try:
+            if int(stats_out.get(key, -1)) < 0:
+                return False
+        except Exception:
+            return False
+    for key in ("segmentsDropped", "labelsDropped", "charsDropped"):
+        try:
+            if int(stats_truncation.get(key, -1)) < 0:
+                return False
+        except Exception:
+            return False
+    return True
+
+
 def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = False) -> tuple[int, dict[str, Any]]:
     warnings: list[str] = []
     errors: list[str] = []
@@ -459,6 +498,11 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         seg_mask_schema_ok = 0
         seg_mask_size_mismatch_count = 0
         seg_mask_bad_counts_count = 0
+        seg_context_present = 0
+        seg_context_schema_ok = 0
+        seg_context_chars = 0
+        seg_context_segments_out = 0
+        seg_context_trunc_segments_dropped = 0
         seg_schema = _load_seg_contract_schema()
         if events_v1_rel:
             events_v1_path = run_root / events_v1_rel
@@ -621,6 +665,23 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                         if isinstance(event, dict) and str(event.get("name", "")).strip().lower() == "seg.segment"
                     ]
                 )
+                seg_context_budget = {
+                    "maxChars": int(DEFAULT_SEG_CONTEXT_BUDGET["maxChars"]),
+                    "maxSegments": int(DEFAULT_SEG_CONTEXT_BUDGET["maxSegments"]),
+                    "mode": str(DEFAULT_SEG_CONTEXT_BUDGET["mode"]),
+                }
+                seg_context_payload = build_seg_context_from_events(events_v1_rows, budget=seg_context_budget)
+                seg_context_stats = seg_context_payload.get("stats")
+                seg_context_stats = seg_context_stats if isinstance(seg_context_stats, dict) else {}
+                seg_context_out = seg_context_stats.get("out")
+                seg_context_out = seg_context_out if isinstance(seg_context_out, dict) else {}
+                seg_context_truncation = seg_context_stats.get("truncation")
+                seg_context_truncation = seg_context_truncation if isinstance(seg_context_truncation, dict) else {}
+                seg_context_segments_out = int(seg_context_out.get("segments", 0) or 0)
+                seg_context_chars = int(seg_context_out.get("charsTotal", 0) or 0)
+                seg_context_trunc_segments_dropped = int(seg_context_truncation.get("segmentsDropped", 0) or 0)
+                seg_context_present = int(seg_context_segments_out > 0)
+                seg_context_schema_ok = int(_seg_context_schema_ok(seg_context_payload))
 
         pov_ir_present = 0
         pov_ir_schema_ok = 0
@@ -765,6 +826,11 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "segMaskSchemaOk": int(seg_mask_schema_ok),
             "segMaskSizeMismatchCount": int(seg_mask_size_mismatch_count),
             "segMaskBadCountsCount": int(seg_mask_bad_counts_count),
+            "segContextPresent": int(seg_context_present),
+            "segContextSchemaOk": int(seg_context_schema_ok),
+            "segContextChars": int(seg_context_chars),
+            "segContextSegmentsOut": int(seg_context_segments_out),
+            "segContextTruncSegmentsDropped": int(seg_context_trunc_segments_dropped),
             "hazardUnknownKinds": len(hazard_unknown_kinds),
             "hazardAliasHits": int(hazard_alias_hits),
             "riskEventMissingFrameSeq": int(risk_event_missing_frame_seq),
@@ -809,6 +875,11 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"segMaskSchemaOk: {summary['segMaskSchemaOk']}")
             print(f"segMaskSizeMismatchCount: {summary['segMaskSizeMismatchCount']}")
             print(f"segMaskBadCountsCount: {summary['segMaskBadCountsCount']}")
+            print(f"segContextPresent: {summary['segContextPresent']}")
+            print(f"segContextSchemaOk: {summary['segContextSchemaOk']}")
+            print(f"segContextChars: {summary['segContextChars']}")
+            print(f"segContextSegmentsOut: {summary['segContextSegmentsOut']}")
+            print(f"segContextTruncSegmentsDropped: {summary['segContextTruncSegmentsDropped']}")
             print(f"hazardUnknownKinds: {summary['hazardUnknownKinds']}")
             print(f"hazardAliasHits: {summary['hazardAliasHits']}")
             print(f"riskEventMissingFrameSeq: {summary['riskEventMissingFrameSeq']}")

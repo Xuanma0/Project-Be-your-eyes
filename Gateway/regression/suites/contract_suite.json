@@ -73,6 +73,17 @@
       "requireSegPromptBudgetPresent": true,
       "requireSegPromptTruncationPresent": true,
       "requireSegPromptPacked": true
+    },
+    {
+      "id": "fixture_with_seg_context_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_seg_context_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireSegEventsPresent": true,
+      "requireSegPayloadSchemaOk": true,
+      "requireSegContextPresent": true,
+      "requireSegContextSchemaOk": true
     }
   ]
 }

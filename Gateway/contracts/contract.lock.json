@@ -1,6 +1,6 @@
 {
   "schemaVersion": "byes.contract.lock.v1",
-  "generatedAtMs": 1771076068883,
+  "generatedAtMs": 1771095191768,
   "versions": {
     "byes.action_plan.v1": {
       "version": "byes.action_plan.v1",
@@ -37,6 +37,12 @@
       "path": "Gateway/contracts/pov.ir.v1.json",
       "sha256": "e030d83d6c319ad3f6c84106b2bc9c322122b7c1bbcecf7fbf38269c918718e1",
       "updatedAtMs": 1771052841590
+    },
+    "seg.context.v1": {
+      "version": "seg.context.v1",
+      "path": "Gateway/contracts/seg.context.v1.json",
+      "sha256": "d94df64cc6370a7b4c27dad7726521ec5441cbf504778976e7dfe86ee0bb46d7",
+      "updatedAtMs": 1771094322805
     }
   }
 }

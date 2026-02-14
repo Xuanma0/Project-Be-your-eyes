@@ -200,6 +200,19 @@ Outputs:
 - `%TEMP%\byes_seg_prompt_budget\latest.json`
 - `%TEMP%\byes_seg_prompt_budget\latest.md`
 
+Seg context pack (budgeted) from existing `seg.segment` events:
+
+```powershell
+curl "http://127.0.0.1:8000/api/seg/context?runId=<run_id>&maxChars=512&maxSegments=16&mode=topk_by_score"
+```
+
+Response is `seg.context.v1`:
+- `budget`: applied budget (`maxChars/maxSegments/mode`)
+- `stats.in/out/truncation`: retained vs dropped segment/text counts
+- `text.promptFragment`: concise segmentation summary that can be appended to planner prompts
+
+`report.json` also includes `segContext` (for leaderboard/regression visibility).
+
 ## Planning API (/api/plan)
 
 Generate an `ActionPlan v1` from POV context + risk events.
@@ -311,6 +324,10 @@ set BYES_PLANNER_LLM_ENDPOINT=http://127.0.0.1:8088/generate
 set BYES_PLANNER_LLM_TIMEOUT_MS=2500
 set BYES_PLANNER_PROMPT_VERSION=v1
 ```
+
+Prompt version notes:
+- `v1`: POV context only (existing behavior).
+- `v2`: includes `segContext.text.promptFragment` when available; if no seg context, behavior remains identical to `v1`.
 
 Traceability fields:
 - `events/events_v1.jsonl` (`plan.generate`): `plannerProvider`, `promptVersion`, `fallbackUsed`, `fallbackReason`, `jsonValid`

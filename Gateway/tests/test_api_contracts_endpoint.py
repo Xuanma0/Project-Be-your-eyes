@@ -13,7 +13,7 @@ def test_api_contracts_endpoint_returns_lock_and_runtime_defaults() -> None:
 
     versions = payload.get("versions", {})
     assert isinstance(versions, dict)
-    for key in ("pov.ir.v1", "byes.event.v1", "byes.action_plan.v1", "byes.seg.v1", "byes.seg_request.v1"):
+    for key in ("pov.ir.v1", "byes.event.v1", "byes.action_plan.v1", "byes.seg.v1", "byes.seg_request.v1", "seg.context.v1"):
         assert key in versions
         row = versions[key]
         assert isinstance(row, dict)
@@ -34,3 +34,9 @@ def test_api_contracts_endpoint_returns_lock_and_runtime_defaults() -> None:
     assert isinstance(default_budget, dict)
     assert int(default_budget.get("maxChars", 0)) > 0
     assert int(default_budget.get("maxTargets", 0)) > 0
+    seg_context = runtime_defaults.get("segContext", {})
+    assert isinstance(seg_context, dict)
+    seg_ctx_budget = seg_context.get("defaultBudget", {})
+    assert isinstance(seg_ctx_budget, dict)
+    assert int(seg_ctx_budget.get("maxChars", 0)) > 0
+    assert int(seg_ctx_budget.get("maxSegments", 0)) > 0

@@ -46,6 +46,7 @@ from byes.plan_pipeline import generate_action_plan, summarize_plan_for_report  
 from byes.plan_quality import compute_plan_quality  # noqa: E402
 from byes.plan_eval import compute_plan_eval  # noqa: E402
 from byes.pov_plan_metrics import compute_pov_plan_metrics  # noqa: E402
+from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events  # noqa: E402
 
 _LABEL_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=\"((?:\\.|[^\"])*)\"")
 _DEFAULT_POV_CONTEXT_BUDGET = {"maxChars": 2000, "maxTokensApprox": 500}
@@ -1020,6 +1021,35 @@ def generate_report_outputs(
     risk_latency_stats, risk_timings_stats = extract_risk_latency_metrics_from_events_v1(event_rows)
     summary["inference"] = _merge_inference_summary(inferred_summary, events_v1_inferred)
     summary["segPrompt"] = extract_seg_prompt_summary_from_events_v1(event_rows)
+    seg_context_budget = {
+        "maxChars": int(DEFAULT_SEG_CONTEXT_BUDGET["maxChars"]),
+        "maxSegments": int(DEFAULT_SEG_CONTEXT_BUDGET["maxSegments"]),
+        "mode": str(DEFAULT_SEG_CONTEXT_BUDGET["mode"]),
+    }
+    seg_context_raw = build_seg_context_from_events(event_rows, budget=seg_context_budget)
+    seg_context_stats = seg_context_raw.get("stats")
+    seg_context_stats = seg_context_stats if isinstance(seg_context_stats, dict) else {}
+    seg_context_out = seg_context_stats.get("out")
+    seg_context_out = seg_context_out if isinstance(seg_context_out, dict) else {}
+    seg_context_truncation = seg_context_stats.get("truncation")
+    seg_context_truncation = seg_context_truncation if isinstance(seg_context_truncation, dict) else {}
+    seg_context_text = seg_context_raw.get("text")
+    seg_context_text = seg_context_text if isinstance(seg_context_text, dict) else {}
+    seg_context_prompt_fragment = str(seg_context_text.get("promptFragment", ""))
+    seg_context_segments_out = int(seg_context_out.get("segments", 0) or 0)
+    summary["segContext"] = {
+        "present": bool(seg_context_segments_out > 0),
+        "budget": seg_context_raw.get("budget", seg_context_budget),
+        "stats": {
+            "out": seg_context_out,
+            "truncation": seg_context_truncation,
+        },
+        "text": {
+            "summary": str(seg_context_text.get("summary", "")),
+            "promptFragmentLength": len(seg_context_prompt_fragment),
+            "promptFragment": seg_context_prompt_fragment,
+        },
+    }
     event_schema_stats = extract_event_schema_stats(event_source_path)
     event_schema_stats["source"] = event_schema_source
     event_schema_stats["eventsV1Path"] = events_v1_rel if event_schema_source == "eventsV1Jsonl" else None

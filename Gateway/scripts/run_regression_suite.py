@@ -69,6 +69,11 @@ class RunSummary:
     seg_prompt_truncation_present: bool = False
     seg_prompt_out_present: bool = False
     seg_prompt_packed_true_count: int = 0
+    seg_context_present: bool = False
+    seg_context_schema_ok: bool = False
+    seg_context_chars: int = 0
+    seg_context_segments_out: int = 0
+    seg_context_trunc_segments_dropped: int = 0
     score_delta: float | None = None
     baseline_score: float | None = None
     critical_fn_gate_required: bool = False
@@ -151,6 +156,11 @@ class RunSummary:
                 "segPromptTruncationPresent": self.seg_prompt_truncation_present,
                 "segPromptOutPresent": self.seg_prompt_out_present,
                 "segPromptPackedTrueCount": self.seg_prompt_packed_true_count,
+                "segContextPresent": self.seg_context_present,
+                "segContextSchemaOk": self.seg_context_schema_ok,
+                "segContextChars": self.seg_context_chars,
+                "segContextSegmentsOut": self.seg_context_segments_out,
+                "segContextTruncSegmentsDropped": self.seg_context_trunc_segments_dropped,
             },
             "baselineScore": self.baseline_score,
             "scoreDelta": self.score_delta,
@@ -496,7 +506,7 @@ def _render_markdown(result: dict[str, Any]) -> str:
         if not isinstance(run, dict):
             continue
         lines.append(
-            "- `{id}` score=`{score}` baseline=`{baseline}` delta=`{delta}` confirmTimeouts=`{ct}` criticalFn=`{cfn}` riskDelayMax=`{dmax}` riskLatencyP90=`{rlp90}` riskLatencyMax=`{rlmax}` segF1@0.5=`{seg_f1}` segCoverage=`{seg_cov}` segLatencyP90=`{seg_p90}` povPresent=`{pov_present}` povDecisions=`{pov_decisions}` schema=`{schema}`".format(
+            "- `{id}` score=`{score}` baseline=`{baseline}` delta=`{delta}` confirmTimeouts=`{ct}` criticalFn=`{cfn}` riskDelayMax=`{dmax}` riskLatencyP90=`{rlp90}` riskLatencyMax=`{rlmax}` segF1@0.5=`{seg_f1}` segCoverage=`{seg_cov}` segLatencyP90=`{seg_p90}` segCtxPresent=`{seg_ctx_present}` segCtxSchemaOk=`{seg_ctx_schema_ok}` segCtxChars=`{seg_ctx_chars}` povPresent=`{pov_present}` povDecisions=`{pov_decisions}` schema=`{schema}`".format(
                 id=run.get("id", ""),
                 score=run.get("qualityScore", None),
                 baseline=run.get("baselineScore", None),
@@ -509,6 +519,9 @@ def _render_markdown(result: dict[str, Any]) -> str:
                 seg_f1=run.get("seg", {}).get("f1At50", None),
                 seg_cov=run.get("seg", {}).get("coverage", None),
                 seg_p90=run.get("seg", {}).get("latencyP90", None),
+                seg_ctx_present=run.get("segLint", {}).get("segContextPresent", False),
+                seg_ctx_schema_ok=run.get("segLint", {}).get("segContextSchemaOk", False),
+                seg_ctx_chars=run.get("segLint", {}).get("segContextChars", 0),
                 pov_present=run.get("pov", {}).get("present", False),
                 pov_decisions=run.get("pov", {}).get("decisions", 0),
                 schema=run.get("eventSchema", {}).get("source", ""),
@@ -584,6 +597,8 @@ def run_suite(
     run_require_seg_prompt_budget_present: dict[str, bool] = {}
     run_require_seg_prompt_truncation_present: dict[str, bool] = {}
     run_require_seg_prompt_packed: dict[str, bool] = {}
+    run_require_seg_context_present: dict[str, bool] = {}
+    run_require_seg_context_schema_ok: dict[str, bool] = {}
     failures: list[str] = []
     contract_lock_ok: bool | None = None
     contract_lock_detail = ""
@@ -611,6 +626,8 @@ def run_suite(
             False,
         )
         run_require_seg_prompt_packed[run_id] = _to_bool01(run_cfg.get("requireSegPromptPacked"), False)
+        run_require_seg_context_present[run_id] = _to_bool01(run_cfg.get("requireSegContextPresent"), False)
+        run_require_seg_context_schema_ok[run_id] = _to_bool01(run_cfg.get("requireSegContextSchemaOk"), False)
         run_path = _resolve_input_path(run_path_text, suite_dir)
 
         ws_jsonl: Path | None = None
@@ -655,6 +672,13 @@ def run_suite(
                     run_summary.seg_prompt_truncation_present = bool(lint_summary.get("segPromptTruncationPresent", 0))
                     run_summary.seg_prompt_out_present = bool(lint_summary.get("segPromptOutPresent", 0))
                     run_summary.seg_prompt_packed_true_count = int(lint_summary.get("segPromptPackedTrueCount", 0) or 0)
+                    run_summary.seg_context_present = bool(lint_summary.get("segContextPresent", 0))
+                    run_summary.seg_context_schema_ok = bool(lint_summary.get("segContextSchemaOk", 0))
+                    run_summary.seg_context_chars = int(lint_summary.get("segContextChars", 0) or 0)
+                    run_summary.seg_context_segments_out = int(lint_summary.get("segContextSegmentsOut", 0) or 0)
+                    run_summary.seg_context_trunc_segments_dropped = int(
+                        lint_summary.get("segContextTruncSegmentsDropped", 0) or 0
+                    )
             except Exception:
                 # Lint stats are best-effort; report generation should remain authoritative.
                 pass
@@ -715,6 +739,10 @@ def run_suite(
             failures.append(f"{run.run_id}: seg prompt payload truncation fields missing")
         if run_require_seg_prompt_packed.get(run.run_id, False) and int(run.seg_prompt_packed_true_count or 0) <= 0:
             failures.append(f"{run.run_id}: seg prompt payload packed=true missing")
+        if run_require_seg_context_present.get(run.run_id, False) and not bool(run.seg_context_present):
+            failures.append(f"{run.run_id}: seg context missing")
+        if run_require_seg_context_schema_ok.get(run.run_id, False) and not bool(run.seg_context_schema_ok):
+            failures.append(f"{run.run_id}: seg context schema check failed")
         if fail_on_drop and run.baseline_score is not None and run.quality_score is not None:
             delta = run.quality_score - run.baseline_score
             if delta < -2.0:
@@ -794,6 +822,8 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "segPromptEventsPresent={seg_prompt_events_present} segPromptPayloadSchemaOk={seg_prompt_payload_schema_ok} "
                 "segPromptBudgetPresent={seg_prompt_budget_present} segPromptTruncationPresent={seg_prompt_truncation_present} "
                 "segPromptPackedTrueCount={seg_prompt_packed_true_count} "
+                "segContextPresent={seg_context_present} segContextSchemaOk={seg_context_schema_ok} "
+                "segContextChars={seg_context_chars} segContextSegmentsOut={seg_context_segments_out} "
                 "povPresent={pov_present} povDecisions={pov_decisions} povTokenApprox={pov_token_approx} source={schema_src} "
                 "ocr={ocr_backend}/{ocr_model} risk={risk_backend}/{risk_model}".format(
                     run_id=run_id,
@@ -816,6 +846,10 @@ def _print_summary(result: dict[str, Any]) -> None:
                     seg_prompt_budget_present=row.get("segLint", {}).get("segPromptBudgetPresent", False),
                     seg_prompt_truncation_present=row.get("segLint", {}).get("segPromptTruncationPresent", False),
                     seg_prompt_packed_true_count=row.get("segLint", {}).get("segPromptPackedTrueCount", 0),
+                    seg_context_present=row.get("segLint", {}).get("segContextPresent", False),
+                    seg_context_schema_ok=row.get("segLint", {}).get("segContextSchemaOk", False),
+                    seg_context_chars=row.get("segLint", {}).get("segContextChars", 0),
+                    seg_context_segments_out=row.get("segLint", {}).get("segContextSegmentsOut", 0),
                     pov_present=row.get("pov", {}).get("present", False),
                     pov_decisions=row.get("pov", {}).get("decisions", 0),
                     pov_token_approx=row.get("pov", {}).get("tokenApprox", 0),

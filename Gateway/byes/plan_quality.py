@@ -24,6 +24,15 @@ def compute_plan_quality(plan_summary: dict[str, Any] | None) -> dict[str, Any]:
     json_valid_raw = planner.get("jsonValid")
     json_valid = bool(json_valid_raw) if isinstance(json_valid_raw, bool) else None
     prompt_version = str(planner.get("promptVersion", "")).strip() or None
+    seg_context_included = bool(plan.get("segContextIncluded")) if "segContextIncluded" in plan else False
+    try:
+        seg_context_chars = max(0, int(plan.get("segContextChars", 0) or 0))
+    except Exception:
+        seg_context_chars = 0
+    try:
+        seg_context_trunc_dropped = max(0, int(plan.get("segContextTruncSegmentsDropped", 0) or 0))
+    except Exception:
+        seg_context_trunc_dropped = 0
     has_stop = "stop" in action_types
     has_confirm = "confirm" in action_types
     guardrail_rate = round(float(guardrails_count) / float(max(1, actions_count)), 4)
@@ -68,5 +77,8 @@ def compute_plan_quality(plan_summary: dict[str, Any] | None) -> dict[str, Any]:
         "fallbackReason": fallback_reason,
         "jsonValid": json_valid,
         "promptVersion": prompt_version,
+        "segContextIncluded": seg_context_included,
+        "segContextChars": seg_context_chars,
+        "segContextTruncSegmentsDropped": seg_context_trunc_dropped,
         "score": score,
     }

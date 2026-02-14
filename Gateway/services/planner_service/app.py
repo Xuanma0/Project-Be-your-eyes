@@ -43,6 +43,16 @@ def _render_prompts(req: dict[str, Any], prompt_version: str) -> tuple[str, str]
     context_text = context_pack.get("text")
     context_text = context_text if isinstance(context_text, dict) else {}
     prompt_text = str(context_text.get("prompt", "")).strip()
+    seg_context = req.get("segContext")
+    seg_context = seg_context if isinstance(seg_context, dict) else {}
+    seg_context_text = seg_context.get("text")
+    seg_context_text = seg_context_text if isinstance(seg_context_text, dict) else {}
+    seg_context_fragment = str(seg_context_text.get("promptFragment", "")).strip()
+    if str(prompt_version).strip().lower() == "v2" and seg_context_fragment:
+        if prompt_text:
+            prompt_text = f"{prompt_text}\n\n{seg_context_fragment}"
+        else:
+            prompt_text = seg_context_fragment
 
     risk_summary = req.get("riskSummary")
     risk_summary = risk_summary if isinstance(risk_summary, dict) else {}

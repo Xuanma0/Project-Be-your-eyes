@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text
+from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events
 from byes.planner_backends.base import PlannerBackend
 from byes.planner_registry import get_planner_backend
 from byes.safety_kernel import apply_guardrails, classify_risk_level
@@ -112,6 +113,7 @@ def build_planner_request(
     run_package_path: str | None = None,
     planner_provider: str | None = None,
     pov_ir_inline: dict[str, Any] | None = None,
+    seg_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_constraints = {
         "allowConfirm": bool(constraints.get("allowConfirm", True)),
@@ -138,6 +140,8 @@ def build_planner_request(
         payload["provider"] = planner_provider_text
     if isinstance(pov_ir_inline, dict):
         payload["povIr"] = pov_ir_inline
+    if isinstance(seg_context, dict):
+        payload["segContext"] = seg_context
     allow_path = str(os.getenv("BYES_PLANNER_ALLOW_RUN_PACKAGE_PATH", "0")).strip().lower() in {"1", "true", "yes", "on"}
     run_package_path_text = str(run_package_path or "").strip()
     if allow_path and run_package_path_text:
@@ -166,6 +170,19 @@ def generate_action_plan(
     risk_summary = extract_risk_summary(events_rows, frame_seq=frame_seq)
     risk_level = str(risk_summary.get("riskLevel", "low")).strip().lower() or "low"
 
+    seg_context_budget = {
+        "maxChars": int(DEFAULT_SEG_CONTEXT_BUDGET["maxChars"]),
+        "maxSegments": int(DEFAULT_SEG_CONTEXT_BUDGET["maxSegments"]),
+        "mode": str(DEFAULT_SEG_CONTEXT_BUDGET["mode"]),
+    }
+    seg_context_payload = build_seg_context_from_events(events_rows, budget=seg_context_budget)
+    seg_context_stats = seg_context_payload.get("stats")
+    seg_context_stats = seg_context_stats if isinstance(seg_context_stats, dict) else {}
+    seg_context_out = seg_context_stats.get("out")
+    seg_context_out = seg_context_out if isinstance(seg_context_out, dict) else {}
+    seg_context_segments = _as_int(seg_context_out.get("segments")) or 0
+    seg_context = seg_context_payload if seg_context_segments > 0 else None
+
     planner_backend = backend if backend is not None else get_planner_backend()
     planner_request = build_planner_request(
         run_id=run_id,
@@ -176,6 +193,7 @@ def generate_action_plan(
         run_package_path=run_package_path,
         planner_provider=planner_provider,
         pov_ir_inline=planner_pov_ir,
+        seg_context=seg_context,
     )
     draft_plan = planner_backend.generate_plan(planner_request)
     if not isinstance(draft_plan, dict):
@@ -224,6 +242,7 @@ def generate_action_plan(
     return {
         "plan": guarded_plan,
         "contextPack": context_pack,
+        "segContext": seg_context,
         "riskSummary": risk_summary,
         "guardrailsApplied": list(guardrails_applied),
         "findings": findings,
@@ -245,6 +264,20 @@ def summarize_plan_for_report(bundle: dict[str, Any]) -> dict[str, Any]:
     requires_confirm_count = sum(1 for item in actions if bool(item.get("requiresConfirm")))
     planner_meta = bundle.get("planner", {})
     planner_meta = planner_meta if isinstance(planner_meta, dict) else {}
+    seg_context = bundle.get("segContext")
+    seg_context = seg_context if isinstance(seg_context, dict) else {}
+    seg_context_text = seg_context.get("text")
+    seg_context_text = seg_context_text if isinstance(seg_context_text, dict) else {}
+    seg_context_fragment = str(seg_context_text.get("promptFragment", ""))
+    seg_context_stats = seg_context.get("stats")
+    seg_context_stats = seg_context_stats if isinstance(seg_context_stats, dict) else {}
+    seg_context_out = seg_context_stats.get("out")
+    seg_context_out = seg_context_out if isinstance(seg_context_stats.get("out"), dict) else {}
+    seg_context_trunc = seg_context_stats.get("truncation")
+    seg_context_trunc = seg_context_trunc if isinstance(seg_context_trunc, dict) else {}
+    seg_context_segments = _as_int(seg_context_out.get("segments")) or 0
+    seg_context_trunc_dropped = _as_int(seg_context_trunc.get("segmentsDropped")) or 0
+    seg_context_included = seg_context_segments > 0 and bool(seg_context_fragment.strip())
     action_details: list[dict[str, Any]] = []
     for item in actions:
         payload = item.get("payload")
@@ -283,6 +316,9 @@ def summarize_plan_for_report(bundle: dict[str, Any]) -> dict[str, Any]:
         "guardrailsApplied": guardrails,
         "findingsCount": len(bundle.get("findings", [])) if isinstance(bundle.get("findings"), list) else 0,
         "actionDetails": action_details,
+        "segContextIncluded": bool(seg_context_included),
+        "segContextChars": len(seg_context_fragment) if seg_context_included else 0,
+        "segContextTruncSegmentsDropped": int(max(0, seg_context_trunc_dropped)),
     }
 
 
