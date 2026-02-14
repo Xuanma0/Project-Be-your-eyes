@@ -1115,7 +1115,7 @@ def _merge_inference_summary(
     fallback: dict[str, dict[str, str | None]],
 ) -> dict[str, dict[str, str | None]]:
     merged: dict[str, dict[str, str | None]] = {}
-    for tool_name in ("ocr", "risk"):
+    for tool_name in ("ocr", "risk", "seg"):
         primary_bucket = primary.get(tool_name, {}) if isinstance(primary, dict) else {}
         fallback_bucket = fallback.get(tool_name, {}) if isinstance(fallback, dict) else {}
         bucket = {

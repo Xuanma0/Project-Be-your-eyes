@@ -11,7 +11,8 @@ from fastapi import FastAPI, HTTPException
 from PIL import Image
 from pydantic import BaseModel
 
-from services.inference_service.providers.base import OCRProvider, RiskProvider
+from services.inference_service.providers.base import OCRProvider, RiskProvider, SegProvider
+from services.inference_service.providers import create_seg_provider
 from services.inference_service.providers.depth_base import DepthProvider
 from services.inference_service.providers.depth_none import NoneDepthProvider
 from services.inference_service.providers.depth_synth import SynthDepthProvider
@@ -38,6 +39,7 @@ app = FastAPI(title="BYES Reference Inference Service")
 _OCR_PROVIDER: OCRProvider | None = None
 _RISK_PROVIDER: RiskProvider | None = None
 _DEPTH_PROVIDER: DepthProvider | None = None
+_SEG_PROVIDER: SegProvider | None = None
 
 
 def _decode_image_b64(value: str) -> bytes:
@@ -93,6 +95,11 @@ def _select_depth_provider() -> DepthProvider:
     return NoneDepthProvider()
 
 
+def _select_seg_provider() -> SegProvider:
+    name = str(os.getenv("BYES_SERVICE_SEG_PROVIDER", "mock")).strip().lower()
+    return create_seg_provider(name=name)
+
+
 def get_ocr_provider() -> OCRProvider:
     global _OCR_PROVIDER  # noqa: PLW0603
     if _OCR_PROVIDER is None:
@@ -117,11 +124,20 @@ def get_depth_provider() -> DepthProvider:
     return _DEPTH_PROVIDER
 
 
+def get_seg_provider() -> SegProvider:
+    global _SEG_PROVIDER  # noqa: PLW0603
+    if _SEG_PROVIDER is None:
+        _SEG_PROVIDER = _select_seg_provider()
+        print(f"[inference_service] selected SEG provider={_SEG_PROVIDER.name} model={_SEG_PROVIDER.model}")
+    return _SEG_PROVIDER
+
+
 @app.on_event("startup")
 def _startup_provider() -> None:
     get_depth_provider()
     get_ocr_provider()
     get_risk_provider()
+    get_seg_provider()
 
 
 @app.get("/healthz")
@@ -129,6 +145,7 @@ def healthz() -> dict[str, Any]:
     ocr_provider = get_ocr_provider()
     risk_provider = get_risk_provider()
     depth_provider = get_depth_provider()
+    seg_provider = get_seg_provider()
     return {
         "ok": True,
         "ocrProvider": ocr_provider.name,
@@ -137,6 +154,8 @@ def healthz() -> dict[str, Any]:
         "riskModel": risk_provider.model,
         "depthProvider": depth_provider.name,
         "depthModel": depth_provider.model,
+        "segProvider": seg_provider.name,
+        "segModel": seg_provider.model,
     }
 
 
@@ -235,6 +254,44 @@ def infer_risk(request: InferenceRequest) -> dict[str, Any]:
         merged_debug["timings"] = timings_payload
         response["debug"] = merged_debug
     return response
+
+
+@app.post("/seg")
+def infer_seg(request: InferenceRequest) -> dict[str, Any]:
+    started = _now_ms()
+    image = _decode_pil_image(request.image_b64)
+    provider = get_seg_provider()
+    try:
+        result = provider.infer(image, request.frameSeq)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"seg_infer_failed:{exc.__class__.__name__}") from exc
+
+    segments_raw = result.get("segments")
+    segments_raw = segments_raw if isinstance(segments_raw, list) else []
+    segments: list[dict[str, Any]] = []
+    for item in segments_raw:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label", "")).strip() or "unknown"
+        try:
+            score = float(item.get("score", 0.0))
+        except Exception:  # noqa: BLE001
+            score = 0.0
+        bbox = item.get("bbox")
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            continue
+        normalized_bbox: list[float] = []
+        try:
+            normalized_bbox = [float(value) for value in bbox]
+        except Exception:  # noqa: BLE001
+            continue
+        segments.append({"label": label, "score": score, "bbox": normalized_bbox})
+
+    model = str(result.get("model", provider.model)).strip() or provider.model
+    latency_ms = max(0, _now_ms() - started)
+    return {"segments": segments, "latencyMs": latency_ms, "model": model}
 
 
 # TODO: replace infer_ocr and infer_risk internals with real model pipelines:

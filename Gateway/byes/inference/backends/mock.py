@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from byes.inference.backends.base import OCRResult, RiskResult
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult
 
 
 def _now_ms() -> int:
@@ -55,6 +55,30 @@ class MockRiskBackend:
             status="ok",
             payload={
                 "hazards": list(self._hazards),
+                "backend": "mock",
+            },
+        )
+
+
+class MockSegBackend:
+    name = "mock"
+
+    def __init__(self, segments: list[dict[str, Any]] | None = None, model_id: str = "mock-seg") -> None:
+        self._segments = list(segments) if segments is not None else []
+        self.model_id: str | None = str(model_id or "").strip() or "mock-seg"
+        self.endpoint: str | None = None
+
+    async def infer(self, image_bytes: bytes, frame_seq: int | None, ts_ms: int) -> SegResult:
+        started = _now_ms()
+        del image_bytes, frame_seq, ts_ms
+        latency = max(0, _now_ms() - started)
+        return SegResult(
+            segments=list(self._segments),
+            latency_ms=latency,
+            status="ok",
+            payload={
+                "segments": list(self._segments),
+                "segmentsCount": len(self._segments),
                 "backend": "mock",
             },
         )

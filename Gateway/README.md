@@ -87,6 +87,28 @@ Audit outputs:
 - `events/events_v1.jsonl`: appends `pov.context` event with output/truncation stats.
 - `report.json`: check `povContext` for default-budget output stats and truncation.
 
+## Segmentation (mock/http)
+
+Enable segmentation event emission in Gateway:
+
+```powershell
+cd Gateway
+$env:BYES_ENABLE_SEG="1"
+$env:BYES_SEG_BACKEND="mock"   # or http
+$env:BYES_SEG_MODEL_ID="mock-seg-v1"
+# when using http backend:
+# $env:BYES_SEG_HTTP_URL="http://127.0.0.1:19120/seg"
+```
+
+Expected evidence:
+- `events/events_v1.jsonl` contains `name="seg.segment"` with payload `segmentsCount`, `backend`, `model`, `endpoint`.
+- `report.json` contains `inference.seg` inferred from `events_v1`.
+
+Future SAM3 path:
+- keep `BYES_SEG_BACKEND=http`;
+- point `BYES_SEG_HTTP_URL` to external SAM3-compatible service exposing `POST /seg`;
+- return `segments` as `{label, score, bbox}`.
+
 ## Planning API (/api/plan)
 
 Generate an `ActionPlan v1` from POV context + risk events.

@@ -1484,6 +1484,7 @@ def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict
     summary: dict[str, dict[str, str | None]] = {
         "ocr": {"backend": None, "model": None, "endpoint": None},
         "risk": {"backend": None, "model": None, "endpoint": None},
+        "seg": {"backend": None, "model": None, "endpoint": None},
     }
 
     normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
@@ -1496,6 +1497,8 @@ def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict
             bucket = summary["ocr"]
         elif name in {"risk.hazards", "risk.depth"}:
             bucket = summary["risk"]
+        elif name == "seg.segment":
+            bucket = summary["seg"]
         else:
             continue
         payload = event.get("payload")
@@ -1518,6 +1521,8 @@ def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict
             _merge_inference_fields(summary["ocr"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
         if "risk" in blob or "hazard" in blob or "depth" in blob:
             _merge_inference_fields(summary["risk"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
+        if "seg" in blob or "segment" in blob:
+            _merge_inference_fields(summary["seg"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
 
     return summary
 
@@ -1526,6 +1531,7 @@ def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> 
     summary: dict[str, dict[str, str | None]] = {
         "ocr": {"backend": None, "model": None, "endpoint": None},
         "risk": {"backend": None, "model": None, "endpoint": None},
+        "seg": {"backend": None, "model": None, "endpoint": None},
     }
     for row in events:
         if not isinstance(row, dict):
@@ -1545,6 +1551,8 @@ def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> 
             bucket = summary["ocr"]
         elif name == "risk.hazards":
             bucket = summary["risk"]
+        elif name == "seg.segment":
+            bucket = summary["seg"]
         else:
             continue
 
@@ -1623,7 +1631,7 @@ def _merge_inference_fields(target: dict[str, str | None], payload: dict[str, An
 
 
 def _has_any_inference(summary: dict[str, dict[str, str | None]]) -> bool:
-    for tool in ("ocr", "risk"):
+    for tool in ("ocr", "risk", "seg"):
         bucket = summary.get(tool, {})
         if not isinstance(bucket, dict):
             continue

@@ -8,7 +8,7 @@ from urllib.parse import urlparse, urlunparse
 
 import httpx
 
-from byes.inference.backends.base import OCRResult, RiskResult
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult
 
 
 def _now_ms() -> int:
@@ -148,6 +148,78 @@ class HttpRiskBackend:
                 status="error",
                 error=exc.__class__.__name__,
                 payload={"error": exc.__class__.__name__},
+            )
+
+    def _update_model_id(self, payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        value = payload.get("model")
+        if value is None:
+            return
+        text = str(value).strip()
+        if text:
+            self.model_id = text
+
+
+class HttpSegBackend:
+    name = "http"
+
+    def __init__(self, url: str, timeout_ms: int = 1200, model_id: str | None = None) -> None:
+        self.url = str(url).strip()
+        self.timeout_ms = max(1, int(timeout_ms))
+        self.model_id = str(model_id or "").strip() or None
+        self.endpoint = _sanitize_endpoint(self.url)
+
+    async def infer(self, image_bytes: bytes, frame_seq: int | None, ts_ms: int) -> SegResult:
+        started = _now_ms()
+        request_payload = {
+            "frameSeq": frame_seq,
+            "tsMs": ts_ms,
+            "image_b64": base64.b64encode(image_bytes).decode("ascii"),
+        }
+        try:
+            timeout_s = max(0.05, self.timeout_ms / 1000.0)
+            async with httpx.AsyncClient(timeout=timeout_s) as client:
+                response = await client.post(self.url, json=request_payload)
+            latency = max(0, _now_ms() - started)
+            if response.status_code >= 400:
+                return SegResult(
+                    segments=[],
+                    latency_ms=latency,
+                    status="timeout" if response.status_code == 408 else "error",
+                    error=f"http_{response.status_code}",
+                    payload={"error": f"http_{response.status_code}", "segmentsCount": 0},
+                )
+            payload = response.json()
+            self._update_model_id(payload)
+            segments: list[dict[str, Any]] = []
+            if isinstance(payload, dict) and isinstance(payload.get("segments"), list):
+                for item in payload["segments"]:
+                    if isinstance(item, dict):
+                        segments.append(dict(item))
+            return SegResult(
+                segments=segments,
+                latency_ms=latency,
+                status="ok",
+                payload=_normalize_payload(payload),
+            )
+        except httpx.TimeoutException as exc:
+            latency = max(0, _now_ms() - started)
+            return SegResult(
+                segments=[],
+                latency_ms=latency,
+                status="timeout",
+                error=exc.__class__.__name__,
+                payload={"error": exc.__class__.__name__, "segmentsCount": 0},
+            )
+        except Exception as exc:  # noqa: BLE001
+            latency = max(0, _now_ms() - started)
+            return SegResult(
+                segments=[],
+                latency_ms=latency,
+                status="error",
+                error=exc.__class__.__name__,
+                payload={"error": exc.__class__.__name__, "segmentsCount": 0},
             )
 
     def _update_model_id(self, payload: Any) -> None:

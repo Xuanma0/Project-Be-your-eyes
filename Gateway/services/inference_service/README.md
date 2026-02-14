@@ -1,7 +1,7 @@
 # Inference Service Deployment Guide
 
 TL;DR:
-- `inference_service` provides pluggable `/ocr` and `/risk` endpoints (reference + optional real providers).
+- `inference_service` provides pluggable `/ocr`, `/risk`, and `/seg` endpoints.
 - Keep CI lightweight: optional OCR/depth dependencies are split into extra requirements files.
 - For replay/report/regression usage, read `Gateway/README.md`.
 
@@ -24,6 +24,7 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
 
 - `POST /ocr` -> `{"text": "...", "latencyMs": <int>, "model": "<id>"}`
 - `POST /risk` -> `{"hazards": [...], "latencyMs": <int>, "model": "<id>"}`
+- `POST /seg` -> `{"segments": [{"label":"...","score":0.0,"bbox":[x0,y0,x1,y1]}], "latencyMs": <int>, "model": "<id>"}`
 
 ## Provider Matrix
 
@@ -34,7 +35,28 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
 | OCR | paddleocr | `BYES_SERVICE_OCR_PROVIDER=paddleocr` | `requirements-paddleocr.txt` |
 | Risk | reference | `BYES_SERVICE_RISK_PROVIDER=reference` | none |
 | Risk | heuristic | `BYES_SERVICE_RISK_PROVIDER=heuristic` | `requirements-heuristic-risk.txt` |
+| Seg | mock | `BYES_SERVICE_SEG_PROVIDER=mock` | none |
+| Seg | http | `BYES_SERVICE_SEG_PROVIDER=http` | none (calls external endpoint) |
 | Depth (for heuristic risk) | none/synth/midas/onnx | `BYES_SERVICE_DEPTH_PROVIDER=<...>` | midas/onnx are optional |
+
+## Seg Provider (mock/http)
+
+- `mock` (default): returns deterministic empty segments for contract/testing paths.
+- `http`: forwards image to external segmentation endpoint and normalizes output.
+
+Required env for `http`:
+
+```powershell
+$env:BYES_SERVICE_SEG_PROVIDER="http"
+$env:BYES_SERVICE_SEG_ENDPOINT="http://127.0.0.1:19120/seg"
+```
+
+Optional:
+
+```powershell
+$env:BYES_SERVICE_SEG_MODEL_ID="sam3-seg-v1"
+$env:BYES_SERVICE_SEG_TIMEOUT_MS="1200"
+```
 
 ## Calibrated Risk Defaults (v4.28 -> v4.29)
 
@@ -85,9 +107,13 @@ Recommended default input size is `256` (can test `384`/`518` with sweep tools).
 |---|---|---|
 | `BYES_SERVICE_OCR_PROVIDER` | `reference` | OCR provider selection |
 | `BYES_SERVICE_RISK_PROVIDER` | `reference` | risk provider selection |
+| `BYES_SERVICE_SEG_PROVIDER` | `mock` | segmentation provider selection (`mock|http`) |
 | `BYES_SERVICE_DEPTH_PROVIDER` | `none` | depth provider for heuristic risk |
 | `BYES_SERVICE_OCR_MODEL_ID` | provider default | OCR model metadata tag |
 | `BYES_SERVICE_RISK_MODEL_ID` | provider default | risk model metadata tag |
+| `BYES_SERVICE_SEG_MODEL_ID` | provider default | seg model metadata tag |
+| `BYES_SERVICE_SEG_ENDPOINT` | empty | seg endpoint URL (`http` provider) |
+| `BYES_SERVICE_SEG_TIMEOUT_MS` | `1200` | seg HTTP timeout ms |
 | `BYES_SERVICE_DEPTH_MODEL_ID` | provider default | depth model metadata tag |
 | `BYES_SERVICE_DEPTH_ONNX_PATH` | empty | ONNX depth model path (`onnx` provider) |
 | `BYES_SERVICE_DEPTH_INPUT_SIZE` | `256` | ONNX depth input resolution |

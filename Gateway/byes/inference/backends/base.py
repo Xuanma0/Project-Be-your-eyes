@@ -22,6 +22,15 @@ class RiskResult:
     payload: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class SegResult:
+    segments: list[dict[str, Any]] = field(default_factory=list)
+    latency_ms: int | None = None
+    status: str = "ok"
+    error: str | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
 class OCRBackend(Protocol):
     name: str
     model_id: str | None
@@ -37,4 +46,13 @@ class RiskBackend(Protocol):
     endpoint: str | None
 
     async def infer(self, image_bytes: bytes, frame_seq: int | None, ts_ms: int) -> RiskResult:
+        ...
+
+
+class SegBackend(Protocol):
+    name: str
+    model_id: str | None
+    endpoint: str | None
+
+    async def infer(self, image_bytes: bytes, frame_seq: int | None, ts_ms: int) -> SegResult:
         ...

@@ -30,9 +30,9 @@ from byes.frame_tracker import FrameTracker
 from byes.fusion import FusionEngine
 from byes.governor import SloGovernor
 from byes.intent import IntentManager
-from byes.inference.event_emitters import emit_ocr_events, emit_risk_events
-from byes.inference.registry import get_ocr_backend, get_risk_backend
-from byes.inference.backends.base import OCRResult, RiskResult
+from byes.inference.event_emitters import emit_ocr_events, emit_risk_events, emit_seg_events
+from byes.inference.registry import get_ocr_backend, get_risk_backend, get_seg_backend
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult
 from byes.metrics import GatewayMetrics
 from byes.observability import Observability
 from byes.planner import PolicyPlannerV0, PolicyPlannerV1
@@ -403,6 +403,7 @@ class GatewayApp:
         self.connections = ConnectionManager()
         self.ocr_backend = get_ocr_backend(self.config)
         self.risk_backend = get_risk_backend(self.config)
+        self.seg_backend = get_seg_backend(self.config)
         self._inference_events: list[dict[str, Any]] = []
         self._inference_events_limit = 2048
         self.scheduler = Scheduler(
@@ -442,6 +443,7 @@ class GatewayApp:
         self.run_packages_root.mkdir(parents=True, exist_ok=True)
         self.ocr_backend = get_ocr_backend(self.config)
         self.risk_backend = get_risk_backend(self.config)
+        self.seg_backend = get_seg_backend(self.config)
         self._inference_events.clear()
         self._external_readiness = {}
         self.registry.clear()
@@ -647,6 +649,30 @@ class GatewayApp:
                 backend=getattr(self.risk_backend, "name", None),
                 model=getattr(self.risk_backend, "model_id", None),
                 endpoint=getattr(self.risk_backend, "endpoint", None),
+            )
+
+        if self.config.inference_enable_seg:
+            seg_started_ms = _now_ms()
+            try:
+                seg_result = await self.seg_backend.infer(frame_bytes, seq, ts_ms)
+            except Exception as exc:  # noqa: BLE001
+                seg_result = SegResult(
+                    status="error",
+                    error=exc.__class__.__name__,
+                    payload={"reason": exc.__class__.__name__, "segmentsCount": 0},
+                    latency_ms=max(0, _now_ms() - seg_started_ms),
+                )
+            await emit_seg_events(
+                seg_result,
+                frame_seq=event_frame_seq,
+                ts_ms=_now_ms(),
+                started_ts_ms=seg_started_ms,
+                sink=self._emit_inference_event,
+                run_id=run_id,
+                component=component,
+                backend=getattr(self.seg_backend, "name", None),
+                model=getattr(self.seg_backend, "model_id", None),
+                endpoint=getattr(self.seg_backend, "endpoint", None),
             )
 
     async def submit_frame(

@@ -5,7 +5,7 @@ import inspect
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse, urlunparse
 
-from byes.inference.backends.base import OCRResult, RiskResult
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult
 
 SCHEMA_VERSION = "byes.event.v1"
 
@@ -130,6 +130,52 @@ async def emit_risk_events(
             component=component,
             category="tool",
             name="risk.hazards",
+            phase=phase,
+            status=normalized_status,
+            latency_ms=latency_ms,
+            payload=payload,
+            run_id=run_id,
+        ),
+    )
+
+
+async def emit_seg_events(
+    result: SegResult,
+    *,
+    frame_seq: int | None,
+    ts_ms: int,
+    sink: EventSink,
+    run_id: str | None = None,
+    component: str = "gateway",
+    started_ts_ms: int | None = None,
+    backend: str | None = None,
+    model: str | None = None,
+    endpoint: str | None = None,
+) -> None:
+    payload = _sanitize_payload(result.payload)
+    payload = _with_inference_metadata(payload, backend=backend, model=model, endpoint=endpoint)
+    if "backend" not in payload:
+        payload["backend"] = str(backend or "").strip().lower() or None
+    if "model" not in payload:
+        payload["model"] = str(model or "").strip() or None
+    if "endpoint" not in payload:
+        payload["endpoint"] = _sanitize_endpoint(endpoint)
+    segments = list(result.segments)
+    payload["segments"] = segments
+    payload["segmentsCount"] = len(segments)
+    if result.error and "reason" not in payload:
+        payload["reason"] = result.error
+    normalized_status = _normalize_status(result.status, result.error)
+    phase = _phase_for_status(normalized_status)
+    latency_ms = _resolve_latency_ms(result.latency_ms, started_ts_ms, ts_ms)
+    await _emit(
+        sink,
+        _base_event(
+            ts_ms=ts_ms,
+            frame_seq=frame_seq,
+            component=component,
+            category="tool",
+            name="seg.segment",
             phase=phase,
             status=normalized_status,
             latency_ms=latency_ms,

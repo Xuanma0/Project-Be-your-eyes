@@ -28,6 +28,7 @@
 - `safety.local_fallback`
 - `plan.generate`
 - `plan.execute`
+- `seg.segment`
 - `ui.command`
 - `ui.confirm_request`
 - `ui.confirm_response`

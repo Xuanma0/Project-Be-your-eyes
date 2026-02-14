@@ -19,3 +19,12 @@ class RiskProvider(Protocol):
 
     def infer(self, image: Image.Image, frame_seq: int | None) -> dict[str, Any]:
         ...
+
+
+class SegProvider(Protocol):
+    name: str
+    model: str
+    endpoint: str | None
+
+    def infer(self, image: Image.Image, frame_seq: int | None) -> dict[str, Any]:
+        ...
