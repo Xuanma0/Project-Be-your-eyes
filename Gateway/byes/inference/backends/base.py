@@ -61,5 +61,6 @@ class SegBackend(Protocol):
         ts_ms: int,
         run_id: str | None = None,
         targets: list[str] | None = None,
+        prompt: dict[str, Any] | None = None,
     ) -> SegResult:
         ...

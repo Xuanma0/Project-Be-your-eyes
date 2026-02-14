@@ -13,7 +13,7 @@ def test_api_contracts_endpoint_returns_lock_and_runtime_defaults() -> None:
 
     versions = payload.get("versions", {})
     assert isinstance(versions, dict)
-    for key in ("pov.ir.v1", "byes.event.v1", "byes.action_plan.v1", "byes.seg.v1"):
+    for key in ("pov.ir.v1", "byes.event.v1", "byes.action_plan.v1", "byes.seg.v1", "byes.seg_request.v1"):
         assert key in versions
         row = versions[key]
         assert isinstance(row, dict)
@@ -27,3 +27,6 @@ def test_api_contracts_endpoint_returns_lock_and_runtime_defaults() -> None:
     default_budget = pov_context.get("defaultBudget", {})
     assert isinstance(default_budget, dict)
     assert int(default_budget.get("maxTokensApprox", 0)) > 0
+    seg_prompt = runtime_defaults.get("segPrompt", {})
+    assert isinstance(seg_prompt, dict)
+    assert "promptPresent" in seg_prompt

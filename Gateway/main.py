@@ -112,6 +112,7 @@ def _load_contract_lock() -> tuple[Path, dict[str, Any]]:
 
 
 def _runtime_contract_defaults() -> dict[str, Any]:
+    runtime_cfg = load_config()
     pov_budget = PovContextBudgetRequest().model_dump()
     plan_budget = PlanBudgetRequest().model_dump()
     plan_constraints = PlanConstraintsRequest().model_dump()
@@ -132,6 +133,9 @@ def _runtime_contract_defaults() -> dict[str, Any]:
         "provider": str(os.getenv("BYES_PLANNER_PROVIDER", "reference")).strip() or "reference",
         "endpoint": str(os.getenv("BYES_PLANNER_ENDPOINT", "")).strip() or None,
     }
+    seg_targets = [str(item).strip() for item in runtime_cfg.inference_seg_targets if str(item).strip()]
+    seg_prompt = runtime_cfg.inference_seg_prompt
+    seg_prompt_present = isinstance(seg_prompt, dict)
     return {
         "povContext": {
             "defaultBudget": {
@@ -152,6 +156,11 @@ def _runtime_contract_defaults() -> dict[str, Any]:
                 "maxActions": int(plan_constraints.get("maxActions", 3)),
             },
             "plannerDefaults": planner_defaults,
+        },
+        "segPrompt": {
+            "targets": seg_targets,
+            "promptPresent": seg_prompt_present,
+            "promptTextChars": len(str(seg_prompt.get("text", ""))) if seg_prompt_present else 0,
         },
         "riskThresholdDefaults": risk_threshold_defaults,
     }
@@ -593,6 +602,107 @@ class GatewayApp:
                 return text
         return None
 
+    @staticmethod
+    def _normalize_seg_prompt(prompt: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(prompt, dict):
+            return None
+        out: dict[str, Any] = {}
+
+        targets_raw = prompt.get("targets")
+        if isinstance(targets_raw, list):
+            targets: list[str] = []
+            seen: set[str] = set()
+            for item in targets_raw:
+                text = str(item or "").strip()
+                key = text.lower()
+                if text and key not in seen:
+                    seen.add(key)
+                    targets.append(text)
+            if targets:
+                out["targets"] = targets
+
+        text_raw = str(prompt.get("text", "")).strip()
+        if text_raw:
+            out["text"] = text_raw
+
+        boxes_raw = prompt.get("boxes")
+        if isinstance(boxes_raw, list):
+            boxes: list[list[float]] = []
+            for row in boxes_raw:
+                if not isinstance(row, list) or len(row) != 4:
+                    continue
+                try:
+                    boxes.append([float(row[0]), float(row[1]), float(row[2]), float(row[3])])
+                except Exception:
+                    continue
+            if boxes:
+                out["boxes"] = boxes
+
+        points_raw = prompt.get("points")
+        if isinstance(points_raw, list):
+            points: list[dict[str, Any]] = []
+            for row in points_raw:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    x = float(row.get("x"))
+                    y = float(row.get("y"))
+                    label = int(row.get("label"))
+                except Exception:
+                    continue
+                if label not in {0, 1}:
+                    continue
+                points.append({"x": x, "y": y, "label": label})
+            if points:
+                out["points"] = points
+
+        for key in ("imageWidth", "imageHeight"):
+            raw_value = prompt.get(key)
+            try:
+                parsed = int(raw_value)
+            except Exception:
+                continue
+            if parsed > 0:
+                out[key] = parsed
+
+        meta_raw = prompt.get("meta")
+        if isinstance(meta_raw, dict):
+            prompt_version_raw = meta_raw.get("promptVersion")
+            prompt_version = None if prompt_version_raw is None else str(prompt_version_raw).strip()
+            if prompt_version:
+                out["meta"] = {"promptVersion": prompt_version}
+
+        return out or None
+
+    @staticmethod
+    def _build_seg_prompt_payload(
+        prompt: dict[str, Any],
+        *,
+        backend: str | None,
+        model: str | None,
+        endpoint: str | None,
+    ) -> dict[str, Any]:
+        targets_raw = prompt.get("targets")
+        text_raw = str(prompt.get("text", ""))
+        boxes_raw = prompt.get("boxes")
+        points_raw = prompt.get("points")
+        meta_raw = prompt.get("meta")
+        prompt_version = None
+        if isinstance(meta_raw, dict):
+            raw_prompt_version = meta_raw.get("promptVersion")
+            text_version = "" if raw_prompt_version is None else str(raw_prompt_version).strip()
+            prompt_version = text_version or None
+        return {
+            "targetsCount": len(targets_raw) if isinstance(targets_raw, list) else 0,
+            "textChars": len(text_raw),
+            "boxesCount": len(boxes_raw) if isinstance(boxes_raw, list) else 0,
+            "pointsCount": len(points_raw) if isinstance(points_raw, list) else 0,
+            "promptVersion": prompt_version,
+            "backend": (str(backend or "").strip().lower() or None),
+            "endpoint": (str(endpoint or "").strip() or None),
+            "model": (str(model or "").strip() or None),
+        }
+
     async def _run_inference_for_frame(self, frame_bytes: bytes, seq: int, ts_ms: int, meta: dict[str, Any]) -> None:
         run_id = self._extract_run_id(meta)
         component = str(self.config.inference_event_component or "gateway")
@@ -654,6 +764,32 @@ class GatewayApp:
         if self.config.inference_enable_seg:
             seg_started_ms = _now_ms()
             seg_targets = [str(item).strip() for item in self.config.inference_seg_targets if str(item).strip()]
+            seg_prompt = self._normalize_seg_prompt(self.config.inference_seg_prompt)
+            seg_backend_name = getattr(self.seg_backend, "name", None)
+            seg_model_id = getattr(self.seg_backend, "model_id", None)
+            seg_endpoint = getattr(self.seg_backend, "endpoint", None)
+            if seg_prompt is not None:
+                seg_prompt_payload = self._build_seg_prompt_payload(
+                    seg_prompt,
+                    backend=seg_backend_name,
+                    model=seg_model_id,
+                    endpoint=seg_endpoint,
+                )
+                await self._emit_inference_event(
+                    {
+                        "schemaVersion": "byes.event.v1",
+                        "tsMs": seg_started_ms,
+                        "runId": run_id,
+                        "frameSeq": event_frame_seq,
+                        "component": component,
+                        "category": "tool",
+                        "name": "seg.prompt",
+                        "phase": "result",
+                        "status": "ok",
+                        "latencyMs": None,
+                        "payload": seg_prompt_payload,
+                    }
+                )
             try:
                 seg_result = await self.seg_backend.infer(
                     frame_bytes,
@@ -661,6 +797,7 @@ class GatewayApp:
                     ts_ms,
                     run_id=run_id,
                     targets=seg_targets or None,
+                    prompt=seg_prompt,
                 )
             except Exception as exc:  # noqa: BLE001
                 seg_result = SegResult(
@@ -682,9 +819,9 @@ class GatewayApp:
                 sink=self._emit_inference_event,
                 run_id=run_id,
                 component=component,
-                backend=getattr(self.seg_backend, "name", None),
-                model=getattr(self.seg_backend, "model_id", None),
-                endpoint=getattr(self.seg_backend, "endpoint", None),
+                backend=seg_backend_name,
+                model=seg_model_id,
+                endpoint=seg_endpoint,
             )
 
     async def submit_frame(
@@ -1960,6 +2097,7 @@ async def run_packages_list(
     min_seg_f1_50: float | None = None,
     min_seg_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
+    min_seg_prompt_text_chars: int | None = None,
     has_pov: str = "any",
     min_pov_decisions: int | None = None,
     has_pov_context: str = "any",
@@ -1991,6 +2129,7 @@ async def run_packages_list(
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
+        min_seg_prompt_text_chars=min_seg_prompt_text_chars,
         has_pov=has_pov,
         min_pov_decisions=min_pov_decisions,
         has_pov_context=has_pov_context,
@@ -2023,6 +2162,7 @@ async def run_packages_list(
             "min_seg_f1_50": min_seg_f1_50,
             "min_seg_coverage": min_seg_coverage,
             "max_seg_latency_p90": max_seg_latency_p90,
+            "min_seg_prompt_text_chars": min_seg_prompt_text_chars,
             "has_pov": has_pov,
             "min_pov_decisions": min_pov_decisions,
             "has_pov_context": has_pov_context,
@@ -2059,6 +2199,7 @@ async def run_packages_export_json(
     min_seg_f1_50: float | None = None,
     min_seg_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
+    min_seg_prompt_text_chars: int | None = None,
     has_pov: str = "any",
     min_pov_decisions: int | None = None,
     has_pov_context: str = "any",
@@ -2090,6 +2231,7 @@ async def run_packages_export_json(
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
+        min_seg_prompt_text_chars=min_seg_prompt_text_chars,
         has_pov=has_pov,
         min_pov_decisions=min_pov_decisions,
         has_pov_context=has_pov_context,
@@ -2128,6 +2270,7 @@ async def run_packages_export_csv(
     min_seg_f1_50: float | None = None,
     min_seg_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
+    min_seg_prompt_text_chars: int | None = None,
     has_pov: str = "any",
     min_pov_decisions: int | None = None,
     has_pov_context: str = "any",
@@ -2159,6 +2302,7 @@ async def run_packages_export_csv(
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
+        min_seg_prompt_text_chars=min_seg_prompt_text_chars,
         has_pov=has_pov,
         min_pov_decisions=min_pov_decisions,
         has_pov_context=has_pov_context,
@@ -2202,6 +2346,8 @@ async def run_packages_export_csv(
         "seg_f1_50",
         "seg_latency_p90",
         "seg_coverage",
+        "seg_prompt_present",
+        "seg_prompt_text_chars_total",
         "pov_present",
         "pov_decisions",
         "pov_duration_ms",
@@ -2749,6 +2895,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     pov_context_out = pov_context_out if isinstance(pov_context_out, dict) else {}
     plan_payload = summary.get("plan", {})
     plan_payload = plan_payload if isinstance(plan_payload, dict) else {}
+    seg_prompt_payload = summary.get("segPrompt", {})
+    seg_prompt_payload = seg_prompt_payload if isinstance(seg_prompt_payload, dict) else {}
     plan_quality_payload = summary.get("planQuality", {})
     plan_quality_payload = plan_quality_payload if isinstance(plan_quality_payload, dict) else {}
     plan_eval_payload = summary.get("planEval", {})
@@ -2760,6 +2908,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     seg_f1_50: float | None = None
     seg_latency_p90: int | None = None
     seg_coverage: float | None = None
+    seg_prompt_present = bool(seg_prompt_payload.get("present")) if isinstance(seg_prompt_payload, dict) else False
+    seg_prompt_text_chars_total: int | None = None
     pov_present = bool(pov_payload.get("present")) if isinstance(pov_payload, dict) else False
     pov_counts = pov_payload.get("counts", {}) if isinstance(pov_payload.get("counts"), dict) else {}
     pov_time = pov_payload.get("time", {}) if isinstance(pov_payload.get("time"), dict) else {}
@@ -2889,6 +3039,9 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         raw_cov = _read_float(seg_quality, "coverage")
         if raw_cov is not None:
             seg_coverage = float(raw_cov)
+    seg_prompt_text_raw = _read_float(seg_prompt_payload, "textCharsTotal")
+    if seg_prompt_text_raw is not None:
+        seg_prompt_text_chars_total = int(seg_prompt_text_raw)
 
     row = {
         "run_id": run_id,
@@ -2926,6 +3079,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "seg_f1_50": seg_f1_50,
         "seg_latency_p90": seg_latency_p90,
         "seg_coverage": seg_coverage,
+        "seg_prompt_present": seg_prompt_present,
+        "seg_prompt_text_chars_total": seg_prompt_text_chars_total,
         "pov_present": pov_present,
         "pov_decisions": pov_decisions,
         "pov_duration_ms": int(pov_duration_ms) if pov_duration_ms is not None else None,
@@ -2969,6 +3124,7 @@ def _matches_run_filters(
     min_seg_f1_50: float | None,
     min_seg_coverage: float | None,
     max_seg_latency_p90: int | None,
+    min_seg_prompt_text_chars: int | None,
     has_pov: str | None,
     min_pov_decisions: int | None,
     has_pov_context: str | None,
@@ -3043,6 +3199,12 @@ def _matches_run_filters(
         if value is None:
             return False
         if int(value) > int(max_seg_latency_p90):
+            return False
+    if min_seg_prompt_text_chars is not None:
+        value = row.get("seg_prompt_text_chars_total")
+        if value is None:
+            return False
+        if int(value) < int(min_seg_prompt_text_chars):
             return False
     if has_pov:
         normalized = has_pov.strip().lower()
@@ -3180,6 +3342,7 @@ async def _query_run_package_rows(
     min_seg_f1_50: float | None,
     min_seg_coverage: float | None,
     max_seg_latency_p90: int | None,
+    min_seg_prompt_text_chars: int | None,
     has_pov: str | None,
     min_pov_decisions: int | None,
     has_pov_context: str | None,
@@ -3217,6 +3380,7 @@ async def _query_run_package_rows(
             min_seg_f1_50=min_seg_f1_50,
             min_seg_coverage=min_seg_coverage,
             max_seg_latency_p90=max_seg_latency_p90,
+            min_seg_prompt_text_chars=min_seg_prompt_text_chars,
             has_pov=has_pov,
             min_pov_decisions=min_pov_decisions,
             has_pov_context=has_pov_context,
@@ -3282,6 +3446,7 @@ async def runs_dashboard(
     min_seg_f1_50: float | None = None,
     min_seg_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
+    min_seg_prompt_text_chars: int | None = None,
     has_pov: str = "any",
     min_pov_decisions: int | None = None,
     has_pov_context: str = "any",
@@ -3314,6 +3479,7 @@ async def runs_dashboard(
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
+        min_seg_prompt_text_chars=min_seg_prompt_text_chars,
         has_pov=has_pov,
         min_pov_decisions=min_pov_decisions,
         has_pov_context=has_pov_context,
@@ -3354,6 +3520,9 @@ async def runs_dashboard(
         seg_cov = "—" if seg_cov_raw is None else f"{float(seg_cov_raw):.4f}"
         seg_p90_raw = row.get("seg_latency_p90")
         seg_p90 = "—" if seg_p90_raw is None else str(int(seg_p90_raw))
+        seg_prompt_present = "yes" if bool(row.get("seg_prompt_present")) else "no"
+        seg_prompt_chars_raw = row.get("seg_prompt_text_chars_total")
+        seg_prompt_chars = "—" if seg_prompt_chars_raw is None else str(int(seg_prompt_chars_raw))
         pov_present = "yes" if bool(row.get("pov_present")) else "no"
         pov_decisions = str(int(row.get("pov_decisions", 0) or 0))
         pov_token_approx = str(int(row.get("pov_token_approx", 0) or 0))
@@ -3397,6 +3566,8 @@ async def runs_dashboard(
             f"<td>{html.escape(seg_f1)}</td>"
             f"<td>{html.escape(seg_cov)}</td>"
             f"<td>{html.escape(seg_p90)}</td>"
+            f"<td>{html.escape(seg_prompt_present)}</td>"
+            f"<td>{html.escape(seg_prompt_chars)}</td>"
             f"<td>{html.escape(pov_present)}</td>"
             f"<td>{html.escape(pov_decisions)}</td>"
             f"<td>{html.escape(pov_token_approx)}</td>"
@@ -3420,7 +3591,7 @@ async def runs_dashboard(
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='33' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='35' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -3436,6 +3607,7 @@ async def runs_dashboard(
     min_seg_f1_50_value = html.escape("" if min_seg_f1_50 is None else str(min_seg_f1_50))
     min_seg_coverage_value = html.escape("" if min_seg_coverage is None else str(min_seg_coverage))
     max_seg_latency_p90_value = html.escape("" if max_seg_latency_p90 is None else str(max_seg_latency_p90))
+    min_seg_prompt_text_chars_value = html.escape("" if min_seg_prompt_text_chars is None else str(min_seg_prompt_text_chars))
     has_pov_value = html.escape(has_pov or "any")
     min_pov_decisions_value = html.escape("" if min_pov_decisions is None else str(min_pov_decisions))
     has_pov_context_value = html.escape(has_pov_context or "any")
@@ -3524,6 +3696,7 @@ async def runs_dashboard(
       <label>min_seg_f1_50: <input type="number" step="0.0001" min="0" max="1" name="min_seg_f1_50" value="{min_seg_f1_50_value}" /></label>
       <label>min_seg_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_seg_coverage" value="{min_seg_coverage_value}" /></label>
       <label>max_seg_latency_p90: <input type="number" min="0" name="max_seg_latency_p90" value="{max_seg_latency_p90_value}" /></label>
+      <label>min_seg_prompt_text_chars: <input type="number" min="0" name="min_seg_prompt_text_chars" value="{min_seg_prompt_text_chars_value}" /></label>
       <label>max_plan_guardrails: <input type="number" min="0" name="max_plan_guardrails" value="{max_plan_guardrails_value}" /></label>
       <label>max_plan_latency_p90: <input type="number" min="0" name="max_plan_latency_p90" value="{max_plan_latency_p90_value}" /></label>
       <label>max_plan_overcautious_rate: <input type="number" step="0.0001" min="0" max="1" name="max_plan_overcautious_rate" value="{max_plan_overcautious_rate_value}" /></label>
@@ -3547,6 +3720,7 @@ async def runs_dashboard(
           <option value="seg_f1_50" {"selected" if sort_value == "seg_f1_50" else ""}>seg_f1_50</option>
           <option value="seg_coverage" {"selected" if sort_value == "seg_coverage" else ""}>seg_coverage</option>
           <option value="seg_latency_p90" {"selected" if sort_value == "seg_latency_p90" else ""}>seg_latency_p90</option>
+          <option value="seg_prompt_text_chars_total" {"selected" if sort_value == "seg_prompt_text_chars_total" else ""}>seg_prompt_text_chars_total</option>
           <option value="pov_decisions" {"selected" if sort_value == "pov_decisions" else ""}>pov_decisions</option>
           <option value="pov_token_approx" {"selected" if sort_value == "pov_token_approx" else ""}>pov_token_approx</option>
           <option value="pov_decision_per_min" {"selected" if sort_value == "pov_decision_per_min" else ""}>pov_decision_per_min</option>
@@ -3569,8 +3743,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -3589,6 +3763,8 @@ async def runs_dashboard(
           <th>Seg F1@0.5</th>
           <th>Seg Coverage</th>
           <th>Seg p90(ms)</th>
+          <th>Seg Prompt</th>
+          <th>Seg Prompt Chars</th>
           <th>POV</th>
           <th>POV Decisions</th>
           <th>POV Token~</th>

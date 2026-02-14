@@ -32,6 +32,7 @@ class HttpSegProvider:
         frame_seq: int | None,
         run_id: str | None = None,
         targets: list[str] | None = None,
+        prompt: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         started = _now_ms()
         payload = {
@@ -44,6 +45,8 @@ class HttpSegProvider:
         targets_used = [str(item).strip() for item in (targets or []) if str(item).strip()]
         if targets_used:
             payload["targets"] = targets_used
+        if isinstance(prompt, dict):
+            payload["prompt"] = prompt
         try:
             timeout_s = max(0.05, self.timeout_ms / 1000.0)
             with httpx.Client(timeout=timeout_s) as client:

@@ -99,6 +99,9 @@ $env:BYES_SEG_MODEL_ID="mock-seg-v1"
 # optional open-vocabulary targets:
 # $env:BYES_SEG_TARGETS="person,car,stairs"
 # $env:BYES_SEG_TARGETS_JSON='["person","car","stairs"]'
+# optional seg prompt (JSON has higher priority than TEXT):
+# $env:BYES_SEG_PROMPT_TEXT="find stairs and handrail"
+# $env:BYES_SEG_PROMPT_JSON='{\"schemaVersion\":\"byes.seg_request.v1\",\"targets\":[\"stairs\"],\"text\":\"find stairs and handrail\",\"meta\":{\"promptVersion\":\"v1\"}}'
 # when using http backend:
 # $env:BYES_SEG_HTTP_URL="http://127.0.0.1:19120/seg"
 ```
@@ -130,6 +133,7 @@ Future SAM3 path:
 - point `BYES_SEG_HTTP_URL` to external SAM3-compatible service exposing `POST /seg`;
 - return `segments` as `{label, score, bbox}`.
 - optional `targets` prompt passthrough is already wired end-to-end (`BYES_SEG_TARGETS` / `BYES_SEG_TARGETS_JSON`).
+- optional rich prompt passthrough is supported via `BYES_SEG_PROMPT_TEXT` / `BYES_SEG_PROMPT_JSON` and recorded as `seg.prompt` events.
 
 Reference seg HTTP chain (Gateway -> inference_service -> reference_seg_service):
 

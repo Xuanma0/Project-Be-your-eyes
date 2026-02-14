@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -1814,8 +1814,8 @@ def extract_event_schema_stats(ws_events_jsonl_path: Path) -> dict[str, Any]:
     }
 
 
-def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict[str, dict[str, str | None]]:
-    summary: dict[str, dict[str, str | None]] = {
+def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict[str, dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {
         "ocr": {"backend": None, "model": None, "endpoint": None},
         "risk": {"backend": None, "model": None, "endpoint": None},
         "seg": {"backend": None, "model": None, "endpoint": None},
@@ -1833,12 +1833,18 @@ def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict
             bucket = summary["risk"]
         elif name == "seg.segment":
             bucket = summary["seg"]
+        elif name == "seg.prompt":
+            payload = event.get("payload")
+            if isinstance(payload, dict):
+                _merge_seg_prompt_fields(summary["seg"], payload)
+            continue
         else:
             continue
         payload = event.get("payload")
         if not isinstance(payload, dict):
             continue
         _merge_inference_fields(bucket, payload)
+    _finalize_seg_prompt_bucket(summary["seg"])
 
     if _has_any_inference(summary):
         return summary
@@ -1855,14 +1861,17 @@ def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict
             _merge_inference_fields(summary["ocr"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
         if "risk" in blob or "hazard" in blob or "depth" in blob:
             _merge_inference_fields(summary["risk"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
+        if "seg.prompt" in blob and isinstance(event.get("payload"), dict):
+            _merge_seg_prompt_fields(summary["seg"], event.get("payload"))
         if "seg" in blob or "segment" in blob:
             _merge_inference_fields(summary["seg"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
 
+    _finalize_seg_prompt_bucket(summary["seg"])
     return summary
 
 
-def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, dict[str, str | None]]:
-    summary: dict[str, dict[str, str | None]] = {
+def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {
         "ocr": {"backend": None, "model": None, "endpoint": None},
         "risk": {"backend": None, "model": None, "endpoint": None},
         "seg": {"backend": None, "model": None, "endpoint": None},
@@ -1887,6 +1896,11 @@ def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> 
             bucket = summary["risk"]
         elif name == "seg.segment":
             bucket = summary["seg"]
+        elif name == "seg.prompt":
+            payload = event.get("payload")
+            if isinstance(payload, dict):
+                _merge_seg_prompt_fields(summary["seg"], payload)
+            continue
         else:
             continue
 
@@ -1894,7 +1908,44 @@ def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> 
         if not isinstance(payload, dict):
             continue
         _merge_inference_fields(bucket, payload)
+    _finalize_seg_prompt_bucket(summary["seg"])
     return summary
+
+
+def extract_seg_prompt_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    summary = infer_inference_summary_from_events_v1(events).get("seg", {})
+    summary = summary if isinstance(summary, dict) else {}
+    present = bool(summary.get("promptPresent"))
+    if not present:
+        return {
+            "present": False,
+            "events": 0,
+            "targetsCountTotal": 0,
+            "textCharsTotal": 0,
+            "boxesTotal": 0,
+            "pointsTotal": 0,
+            "promptVersion": None,
+            "promptVersionDiversityCount": 0,
+            "budget": {"textCharsTotal": 0, "boxesTotal": 0, "pointsTotal": 0},
+        }
+    text_chars = int(summary.get("promptTextCharsTotal", 0) or 0)
+    boxes_total = int(summary.get("promptBoxesTotal", 0) or 0)
+    points_total = int(summary.get("promptPointsTotal", 0) or 0)
+    return {
+        "present": True,
+        "events": int(summary.get("promptEventCount", 0) or 0),
+        "targetsCountTotal": int(summary.get("promptTargetsTotal", 0) or 0),
+        "textCharsTotal": text_chars,
+        "boxesTotal": boxes_total,
+        "pointsTotal": points_total,
+        "promptVersion": summary.get("promptVersion"),
+        "promptVersionDiversityCount": int(summary.get("promptVersionDiversityCount", 0) or 0),
+        "budget": {
+            "textCharsTotal": text_chars,
+            "boxesTotal": boxes_total,
+            "pointsTotal": points_total,
+        },
+    }
 
 
 def extract_risk_latency_metrics_from_events_v1(
@@ -1949,7 +2000,7 @@ def extract_risk_latency_metrics_from_events_v1(
     return latency_stats, timings_summary or None
 
 
-def _merge_inference_fields(target: dict[str, str | None], payload: dict[str, Any]) -> None:
+def _merge_inference_fields(target: dict[str, Any], payload: dict[str, Any]) -> None:
     backend_value = payload.get("backend")
     model_value = payload.get("model")
     endpoint_value = payload.get("endpoint")
@@ -1964,11 +2015,54 @@ def _merge_inference_fields(target: dict[str, str | None], payload: dict[str, An
         target["endpoint"] = endpoint
 
 
-def _has_any_inference(summary: dict[str, dict[str, str | None]]) -> bool:
+def _merge_seg_prompt_fields(target: dict[str, Any], payload: dict[str, Any]) -> None:
+    target["promptPresent"] = True
+    target["promptTextCharsTotal"] = int(target.get("promptTextCharsTotal", 0) or 0) + _to_nonnegative_int(
+        payload.get("textChars")
+    )
+    target["promptBoxesTotal"] = int(target.get("promptBoxesTotal", 0) or 0) + _to_nonnegative_int(payload.get("boxesCount"))
+    target["promptPointsTotal"] = int(target.get("promptPointsTotal", 0) or 0) + _to_nonnegative_int(payload.get("pointsCount"))
+    target["promptTargetsTotal"] = int(target.get("promptTargetsTotal", 0) or 0) + _to_nonnegative_int(
+        payload.get("targetsCount")
+    )
+    target["promptEventCount"] = int(target.get("promptEventCount", 0) or 0) + 1
+    prompt_version = payload.get("promptVersion")
+    version_text = "" if prompt_version is None else str(prompt_version).strip()
+    if version_text:
+        versions = target.get("_promptVersionCounts")
+        if not isinstance(versions, Counter):
+            versions = Counter()
+        versions[version_text] += 1
+        target["_promptVersionCounts"] = versions
+        target["promptVersion"] = version_text
+
+
+def _finalize_seg_prompt_bucket(target: dict[str, Any]) -> None:
+    versions = target.pop("_promptVersionCounts", None)
+    if isinstance(versions, Counter) and versions:
+        most_common = versions.most_common(1)[0][0]
+        target["promptVersion"] = most_common
+        target["promptVersionDiversityCount"] = len(versions)
+    elif bool(target.get("promptPresent")):
+        if "promptVersion" not in target:
+            target["promptVersion"] = None
+        target["promptVersionDiversityCount"] = 0
+
+
+def _to_nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except Exception:
+        return 0
+
+
+def _has_any_inference(summary: dict[str, dict[str, Any]]) -> bool:
     for tool in ("ocr", "risk", "seg"):
         bucket = summary.get(tool, {})
         if not isinstance(bucket, dict):
             continue
+        if tool == "seg" and bool(bucket.get("promptPresent")):
+            return True
         if any(str(bucket.get(key, "")).strip() for key in ("backend", "model", "endpoint")):
             return True
     return False

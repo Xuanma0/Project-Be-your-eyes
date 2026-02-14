@@ -3,6 +3,7 @@
 import json
 import os
 from dataclasses import dataclass
+from typing import Any
 
 
 def _env_int(name: str, default: int) -> int:
@@ -60,6 +61,21 @@ def _env_string_list(csv_name: str, json_name: str) -> tuple[str, ...]:
                 values.append(text)
 
     return tuple(values)
+
+
+def _env_seg_prompt() -> dict[str, Any] | None:
+    raw_json = str(os.getenv("BYES_SEG_PROMPT_JSON", "")).strip()
+    if raw_json:
+        try:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    raw_text = str(os.getenv("BYES_SEG_PROMPT_TEXT", "")).strip()
+    if raw_text:
+        return {"text": raw_text}
+    return None
 
 
 @dataclass(frozen=True)
@@ -183,6 +199,7 @@ class GatewayConfig:
     inference_risk_http_url: str = "http://127.0.0.1:9002/risk"
     inference_seg_http_url: str = "http://127.0.0.1:9003/seg"
     inference_seg_targets: tuple[str, ...] = ()
+    inference_seg_prompt: dict[str, Any] | None = None
     inference_ocr_timeout_ms: int = 1500
     inference_risk_timeout_ms: int = 1200
     inference_seg_timeout_ms: int = 1200
@@ -324,6 +341,7 @@ def load_config() -> GatewayConfig:
         inference_risk_http_url=os.getenv("BYES_RISK_HTTP_URL", "http://127.0.0.1:9002/risk"),
         inference_seg_http_url=os.getenv("BYES_SEG_HTTP_URL", "http://127.0.0.1:9003/seg"),
         inference_seg_targets=_env_string_list("BYES_SEG_TARGETS", "BYES_SEG_TARGETS_JSON"),
+        inference_seg_prompt=_env_seg_prompt(),
         inference_ocr_timeout_ms=_env_int("BYES_OCR_HTTP_TIMEOUT_MS", 1500),
         inference_risk_timeout_ms=_env_int("BYES_RISK_HTTP_TIMEOUT_MS", 1200),
         inference_seg_timeout_ms=_env_int("BYES_SEG_HTTP_TIMEOUT_MS", 1200),

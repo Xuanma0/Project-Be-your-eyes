@@ -62,3 +62,12 @@ def test_seg_targets_config_parsing(monkeypatch) -> None:
     monkeypatch.setenv("BYES_SEG_TARGETS", "stairs,person")
     config = load_config()
     assert config.inference_seg_targets == ("person", "car", "stairs")
+
+
+def test_seg_prompt_config_json_precedence(monkeypatch) -> None:
+    monkeypatch.setenv("BYES_SEG_PROMPT_TEXT", "find stairs")
+    monkeypatch.setenv("BYES_SEG_PROMPT_JSON", '{"text":"find person","targets":["person"],"meta":{"promptVersion":"v1"}}')
+    config = load_config()
+    assert isinstance(config.inference_seg_prompt, dict)
+    assert config.inference_seg_prompt.get("text") == "find person"
+    assert config.inference_seg_prompt.get("meta", {}).get("promptVersion") == "v1"

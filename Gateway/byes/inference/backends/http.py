@@ -177,6 +177,7 @@ class HttpSegBackend:
         ts_ms: int,
         run_id: str | None = None,
         targets: list[str] | None = None,
+        prompt: dict[str, Any] | None = None,
     ) -> SegResult:
         started = _now_ms()
         request_payload = {
@@ -190,6 +191,8 @@ class HttpSegBackend:
         targets_normalized = [str(item).strip() for item in (targets or []) if str(item).strip()]
         if targets_normalized:
             request_payload["targets"] = targets_normalized
+        if isinstance(prompt, dict):
+            request_payload["prompt"] = prompt
         try:
             timeout_s = max(0.05, self.timeout_ms / 1000.0)
             async with httpx.AsyncClient(timeout=timeout_s) as client:

@@ -1,0 +1,6 @@
+﻿# HELP byes_frame_received_total total received frames
+# TYPE byes_frame_received_total counter
+byes_frame_received_total 0
+byes_frame_completed_total 0
+byes_e2e_latency_ms_count 0
+byes_e2e_latency_ms_sum 0

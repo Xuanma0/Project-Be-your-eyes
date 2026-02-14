@@ -380,6 +380,9 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         seg_schema_ok = 0
         seg_normalized = 0
         seg_warnings_count = 0
+        seg_prompt_events_present = 0
+        seg_prompt_lines = 0
+        seg_prompt_warnings_count = 0
         seg_payload_schema_ok = 0
         seg_bbox_out_of_range_count = 0
         seg_score_out_of_range_count = 0
@@ -410,6 +413,22 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                     pov_events_count += 1
                                 if name == "pov.decision":
                                     pov_decision_events_count += 1
+                                if name == "seg.prompt":
+                                    seg_prompt_events_present = 1
+                                    seg_prompt_lines += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    for key in ("targetsCount", "textChars", "boxesCount", "pointsCount"):
+                                        try:
+                                            value = int(payload.get(key, 0))
+                                        except Exception:
+                                            seg_prompt_warnings_count += 1
+                                            continue
+                                        if value < 0:
+                                            seg_prompt_warnings_count += 1
+                                    prompt_version = payload.get("promptVersion")
+                                    if prompt_version is not None and not isinstance(prompt_version, str):
+                                        seg_prompt_warnings_count += 1
                                 if name == "seg.segment":
                                     seg_events_present = 1
                                     seg_lines += 1
@@ -575,6 +594,9 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "segPayloadSchemaOk": int(seg_lines > 0 and seg_payload_schema_ok == seg_lines),
             "segNormalized": int(seg_normalized),
             "segWarningsCount": int(seg_warnings_count),
+            "segPromptEventsPresent": int(seg_prompt_events_present),
+            "segPromptLines": int(seg_prompt_lines),
+            "segPromptWarningsCount": int(seg_prompt_warnings_count),
             "segBboxOutOfRangeCount": int(seg_bbox_out_of_range_count),
             "segScoreOutOfRangeCount": int(seg_score_out_of_range_count),
             "segEmptyLabelCount": int(seg_empty_label_count),
@@ -606,6 +628,9 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"segPayloadSchemaOk: {summary['segPayloadSchemaOk']}")
             print(f"segNormalized: {summary['segNormalized']}")
             print(f"segWarningsCount: {summary['segWarningsCount']}")
+            print(f"segPromptEventsPresent: {summary['segPromptEventsPresent']}")
+            print(f"segPromptLines: {summary['segPromptLines']}")
+            print(f"segPromptWarningsCount: {summary['segPromptWarningsCount']}")
             print(f"segBboxOutOfRangeCount: {summary['segBboxOutOfRangeCount']}")
             print(f"segScoreOutOfRangeCount: {summary['segScoreOutOfRangeCount']}")
             print(f"segEmptyLabelCount: {summary['segEmptyLabelCount']}")

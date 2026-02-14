@@ -34,6 +34,7 @@ class InferenceRequest(BaseModel):
     frameSeq: int | None = None
     runId: str | None = None
     targets: list[str] | None = None
+    prompt: dict[str, Any] | None = None
     riskThresholds: dict[str, float] | None = None
 
 
@@ -264,8 +265,12 @@ def infer_seg(request: InferenceRequest) -> dict[str, Any]:
     image = _decode_pil_image(request.image_b64)
     provider = get_seg_provider()
     targets = [str(item).strip() for item in (request.targets or []) if str(item).strip()]
+    prompt = dict(request.prompt) if isinstance(request.prompt, dict) else None
     try:
-        result = provider.infer(image, request.frameSeq, request.runId, targets=targets or None)
+        try:
+            result = provider.infer(image, request.frameSeq, request.runId, targets=targets or None, prompt=prompt)
+        except TypeError:
+            result = provider.infer(image, request.frameSeq, request.runId, targets=targets or None)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001

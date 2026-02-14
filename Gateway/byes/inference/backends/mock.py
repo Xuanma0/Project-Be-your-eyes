@@ -75,11 +75,13 @@ class MockSegBackend:
         ts_ms: int,
         run_id: str | None = None,
         targets: list[str] | None = None,
+        prompt: dict[str, Any] | None = None,
     ) -> SegResult:
         started = _now_ms()
         del image_bytes, frame_seq, ts_ms, run_id
         latency = max(0, _now_ms() - started)
         normalized_targets = [str(item).strip() for item in (targets or []) if str(item).strip()]
+        del prompt
         return SegResult(
             segments=list(self._segments),
             latency_ms=latency,

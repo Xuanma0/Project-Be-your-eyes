@@ -18,9 +18,11 @@ class MockSegProvider:
         frame_seq: int | None,
         run_id: str | None = None,
         targets: list[str] | None = None,
+        prompt: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         del image, frame_seq, run_id
         targets_used = [str(item).strip() for item in (targets or []) if str(item).strip()]
+        del prompt
         return {
             "segments": [],
             "model": self.model,

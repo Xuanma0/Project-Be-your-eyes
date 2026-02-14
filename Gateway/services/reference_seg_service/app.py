@@ -20,6 +20,7 @@ class SegRequest(BaseModel):
     runId: str | None = None
     tsMs: int | None = None
     targets: list[str] | None = None
+    prompt: dict[str, Any] | None = None
 
 
 app = FastAPI(title=APP_TITLE)

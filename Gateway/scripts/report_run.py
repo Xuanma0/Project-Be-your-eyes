@@ -27,6 +27,7 @@ from byes.quality_metrics import (  # noqa: E402
     compute_ocr_metrics,
     compute_quality_score,
     extract_risk_latency_metrics_from_events_v1,
+    extract_seg_prompt_summary_from_events_v1,
     extract_event_schema_stats,
     extract_inference_summary_from_ws_events,
     infer_inference_summary_from_events_v1,
@@ -1018,6 +1019,7 @@ def generate_report_outputs(
     events_v1_inferred = infer_inference_summary_from_events_v1(event_rows)
     risk_latency_stats, risk_timings_stats = extract_risk_latency_metrics_from_events_v1(event_rows)
     summary["inference"] = _merge_inference_summary(inferred_summary, events_v1_inferred)
+    summary["segPrompt"] = extract_seg_prompt_summary_from_events_v1(event_rows)
     event_schema_stats = extract_event_schema_stats(event_source_path)
     event_schema_stats["source"] = event_schema_source
     event_schema_stats["eventsV1Path"] = events_v1_rel if event_schema_source == "eventsV1Jsonl" else None
@@ -1131,18 +1133,47 @@ def generate_report_outputs(
 
 
 def _merge_inference_summary(
-    primary: dict[str, dict[str, str | None]],
-    fallback: dict[str, dict[str, str | None]],
-) -> dict[str, dict[str, str | None]]:
-    merged: dict[str, dict[str, str | None]] = {}
+    primary: dict[str, dict[str, Any]],
+    fallback: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
     for tool_name in ("ocr", "risk", "seg"):
         primary_bucket = primary.get(tool_name, {}) if isinstance(primary, dict) else {}
         fallback_bucket = fallback.get(tool_name, {}) if isinstance(fallback, dict) else {}
-        bucket = {
+        bucket: dict[str, Any] = {
             "backend": _coalesce_inference_field(primary_bucket, fallback_bucket, "backend"),
             "model": _coalesce_inference_field(primary_bucket, fallback_bucket, "model"),
             "endpoint": _coalesce_inference_field(primary_bucket, fallback_bucket, "endpoint"),
         }
+        if tool_name == "seg":
+            prompt_present = bool(primary_bucket.get("promptPresent")) or bool(fallback_bucket.get("promptPresent"))
+            if prompt_present:
+                bucket["promptPresent"] = True
+                bucket["promptTextCharsTotal"] = max(
+                    _coalesce_nonnegative_int(primary_bucket, "promptTextCharsTotal"),
+                    _coalesce_nonnegative_int(fallback_bucket, "promptTextCharsTotal"),
+                )
+                bucket["promptBoxesTotal"] = max(
+                    _coalesce_nonnegative_int(primary_bucket, "promptBoxesTotal"),
+                    _coalesce_nonnegative_int(fallback_bucket, "promptBoxesTotal"),
+                )
+                bucket["promptPointsTotal"] = max(
+                    _coalesce_nonnegative_int(primary_bucket, "promptPointsTotal"),
+                    _coalesce_nonnegative_int(fallback_bucket, "promptPointsTotal"),
+                )
+                bucket["promptTargetsTotal"] = max(
+                    _coalesce_nonnegative_int(primary_bucket, "promptTargetsTotal"),
+                    _coalesce_nonnegative_int(fallback_bucket, "promptTargetsTotal"),
+                )
+                bucket["promptEventCount"] = max(
+                    _coalesce_nonnegative_int(primary_bucket, "promptEventCount"),
+                    _coalesce_nonnegative_int(fallback_bucket, "promptEventCount"),
+                )
+                bucket["promptVersion"] = _coalesce_inference_field(primary_bucket, fallback_bucket, "promptVersion")
+                bucket["promptVersionDiversityCount"] = max(
+                    _coalesce_nonnegative_int(primary_bucket, "promptVersionDiversityCount"),
+                    _coalesce_nonnegative_int(fallback_bucket, "promptVersionDiversityCount"),
+                )
         merged[tool_name] = bucket
     return merged
 
@@ -1159,6 +1190,13 @@ def _coalesce_inference_field(
     if fallback_value:
         return fallback_value
     return None
+
+
+def _coalesce_nonnegative_int(bucket: dict[str, Any], key: str) -> int:
+    try:
+        return max(0, int(bucket.get(key, 0)))
+    except Exception:
+        return 0
 
 
 def _resolve_plan_run_id(
