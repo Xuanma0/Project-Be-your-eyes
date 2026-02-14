@@ -24,7 +24,7 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
 
 - `POST /ocr` -> `{"text": "...", "latencyMs": <int>, "model": "<id>"}`
 - `POST /risk` -> `{"hazards": [...], "latencyMs": <int>, "model": "<id>"}`
-- `POST /seg` -> `{"segments": [{"label":"...","score":0.0,"bbox":[x0,y0,x1,y1]}], "latencyMs": <int>, "model": "<id>"}`
+- `POST /seg` -> `{"segments": [{"label":"...","score":0.0,"bbox":[x0,y0,x1,y1],"mask?":{"format":"rle_v1","size":[H,W],"counts":[...]}}], "latencyMs": <int>, "model": "<id>"}`
   - request supports optional:
     - `targets: string[]`
     - `prompt: {"schemaVersion":"byes.seg_request.v1","targets":[...],"text":"...","boxes":[...],"points":[...],"meta":{"promptVersion":"v1"}}`
@@ -47,7 +47,7 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
 - `mock` (default): returns deterministic empty segments for contract/testing paths.
 - `http`: forwards image to external segmentation endpoint and normalizes output.
 - Response shape must stay stable for Gateway metrics:
-  - `segments`: list of `{label, score, bbox:[x0,y0,x1,y1]}`
+  - `segments`: list of `{label, score, bbox:[x0,y0,x1,y1], mask?}`
   - `latencyMs`: service-side latency
   - `model`: provider/model id tag
 - Optional request field:
@@ -55,6 +55,7 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
   - `prompt`: rich prompt object for future SAM2/SAM3 adapters (forwarded to HTTP provider)
 - Optional response metadata:
   - `targetsCount`, `targetsUsed`
+- If downstream returns `mask` (`rle_v1`), `http` provider keeps it and passes through to Gateway events/report.
 - Gateway records `seg.segment` events and computes `quality.seg` (`IoU/F1@0.5/coverage/latency`) during `report_run`.
 
 Required env for `http`:

@@ -39,6 +39,15 @@
       "minPovDecisions": 0,
       "requireSegEventsPresent": true,
       "requireSegPayloadSchemaOk": true
+    },
+    {
+      "id": "fixture_with_seg_mask_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_seg_mask_gt_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireSegEventsPresent": true,
+      "requireSegPayloadSchemaOk": true
     }
   ]
 }

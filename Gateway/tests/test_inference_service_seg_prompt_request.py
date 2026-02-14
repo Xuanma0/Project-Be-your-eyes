@@ -31,7 +31,14 @@ class CaptureSegProvider:
         self.last_targets = [str(item).strip() for item in (targets or []) if str(item).strip()]
         self.last_prompt = dict(prompt) if isinstance(prompt, dict) else None
         return {
-            "segments": [{"label": "person", "score": 0.9, "bbox": [0, 0, 10, 10]}],
+            "segments": [
+                {
+                    "label": "person",
+                    "score": 0.9,
+                    "bbox": [0, 0, 10, 10],
+                    "mask": {"format": "rle_v1", "size": [2, 2], "counts": [0, 1, 1, 1, 1]},
+                }
+            ],
             "model": self.model,
             "targetsCount": len(self.last_targets),
             "targetsUsed": self.last_targets,
@@ -74,5 +81,6 @@ def test_inference_service_seg_prompt_request_passthrough() -> None:
         assert provider.last_targets == ["person", "stairs"]
         assert body.get("model") == "capture-seg-v1"
         assert isinstance(body.get("segments"), list)
+        assert isinstance(body["segments"][0].get("mask"), dict)
     finally:
         inference_app._SEG_PROVIDER = original  # type: ignore[attr-defined]

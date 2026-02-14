@@ -12,6 +12,7 @@ python -m uvicorn services.reference_seg_service.app:app --app-dir ../../ --host
 
 ## Environment
 
+- `BYES_REF_SEG_FIXTURE_DIR`: run package directory containing `gt/seg_gt_v1.json` (preferred)
 - `BYES_REF_SEG_FIXTURE_PATH`: path to seg GT fixture json (default: `Gateway/tests/fixtures/run_package_with_seg_gt_min/gt/seg_gt_v1.json`)
 - `BYES_REF_SEG_RUN_ID`: expected run id key (default: `fixture-seg-gt`)
 - `BYES_REF_SEG_ENDPOINT`: optional endpoint string echoed in response
@@ -21,7 +22,7 @@ python -m uvicorn services.reference_seg_service.app:app --app-dir ../../ --host
 - `POST /seg`
   - request: `{ "runId": "...", "frameSeq": 1, "image_b64": "...", "targets": ["person","chair"] }`
   - response (byes.seg.v1 compatible):
-    - `segments`: `[{label, score, bbox}]`
+    - `segments`: `[{label, score, bbox, mask?}]`
     - `segmentsCount`
     - `backend="reference"`
     - `model="reference-seg-v1"`
@@ -33,3 +34,4 @@ python -m uvicorn services.reference_seg_service.app:app --app-dir ../../ --host
 - empty or missing `targets`: return all fixture segments for `(runId, frameSeq)`.
 - non-empty `targets`: filter by `label` (case-insensitive).
 - default fixture (`run_package_with_seg_gt_min`) has labels: `person`, `chair`.
+- when fixture objects include `mask` (`rle_v1`), the mask is returned and can flow through the HTTP chain.

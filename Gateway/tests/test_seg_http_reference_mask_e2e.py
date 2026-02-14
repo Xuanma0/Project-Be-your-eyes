@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -7,12 +7,14 @@ import socket
 import subprocess
 import sys
 import time
+import io
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from byes.inference.backends.http import HttpSegBackend
 from main import app, gateway
@@ -39,6 +41,13 @@ def _wait_health(url: str, timeout_sec: float = 20.0) -> None:
             last_error = str(exc.__class__.__name__)
         time.sleep(0.2)
     raise RuntimeError(f"service_not_ready:{url}:{last_error}")
+
+
+def _encode_test_png() -> bytes:
+    image = Image.new("RGB", (16, 16), (32, 64, 96))
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def _start_uvicorn(
@@ -85,17 +94,17 @@ def _stop_process(proc: subprocess.Popen[bytes] | None, log_file: Any | None) ->
         log_file.close()
 
 
-def test_seg_http_reference_service_e2e(tmp_path: Path) -> None:
+def test_seg_http_reference_mask_service_e2e(tmp_path: Path) -> None:
     tests_dir = Path(__file__).resolve().parent
     gateway_root = tests_dir.parent
-    fixture_src = tests_dir / "fixtures" / "run_package_with_seg_gt_min"
-    run_pkg = tmp_path / "run_pkg_seg_e2e"
+    fixture_src = tests_dir / "fixtures" / "run_package_with_seg_mask_gt_min"
+    run_pkg = tmp_path / "run_pkg_seg_mask_e2e"
     shutil.copytree(fixture_src, run_pkg)
 
     ref_port = _pick_port()
     inf_port = _pick_port()
-    ref_log = tmp_path / "reference_seg_service.log"
-    inf_log = tmp_path / "inference_service.log"
+    ref_log = tmp_path / "reference_seg_service_mask.log"
+    inf_log = tmp_path / "inference_service_mask.log"
 
     ref_proc: subprocess.Popen[bytes] | None = None
     inf_proc: subprocess.Popen[bytes] | None = None
@@ -112,8 +121,8 @@ def test_seg_http_reference_service_e2e(tmp_path: Path) -> None:
 
     try:
         ref_env = dict(os.environ)
-        ref_env["BYES_REF_SEG_FIXTURE_PATH"] = str(run_pkg / "gt" / "seg_gt_v1.json")
-        ref_env["BYES_REF_SEG_RUN_ID"] = "fixture-seg-gt"
+        ref_env["BYES_REF_SEG_FIXTURE_DIR"] = str(run_pkg)
+        ref_env["BYES_REF_SEG_RUN_ID"] = "fixture-seg-mask-gt"
         ref_proc, ref_log_file = _start_uvicorn(
             module_path="services.reference_seg_service.app:app",
             gateway_root=gateway_root,
@@ -122,16 +131,20 @@ def test_seg_http_reference_service_e2e(tmp_path: Path) -> None:
             log_path=ref_log,
         )
         _wait_health(f"http://127.0.0.1:{ref_port}/healthz")
+
         schema_path = gateway_root / "contracts" / "byes.seg.v1.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8-sig"))
         ref_probe = httpx.post(
             f"http://127.0.0.1:{ref_port}/seg",
-            json={"runId": "fixture-seg-gt", "frameSeq": 1, "image_b64": ""},
+            json={"runId": "fixture-seg-mask-gt", "frameSeq": 1, "image_b64": ""},
             timeout=3.0,
         )
         assert ref_probe.status_code == 200, ref_probe.text
         ref_payload = ref_probe.json()
         jsonschema.validate(ref_payload, schema)
+        ref_segments = ref_payload.get("segments", [])
+        assert isinstance(ref_segments, list) and ref_segments
+        assert isinstance(ref_segments[0].get("mask"), dict)
 
         inf_env = dict(os.environ)
         inf_env["BYES_SERVICE_SEG_PROVIDER"] = "http"
@@ -146,31 +159,30 @@ def test_seg_http_reference_service_e2e(tmp_path: Path) -> None:
         )
         _wait_health(f"http://127.0.0.1:{inf_port}/healthz")
 
-        object.__setattr__(gateway.config, "inference_enable_seg", True)
-        object.__setattr__(gateway.config, "inference_enable_ocr", False)
-        object.__setattr__(gateway.config, "inference_enable_risk", False)
-        object.__setattr__(gateway.config, "inference_seg_targets", ("person", "chair"))
-        gateway.seg_backend = HttpSegBackend(
-            url=f"http://127.0.0.1:{inf_port}/seg",
-            timeout_ms=2000,
-            model_id="seg-http-e2e",
-        )
-        setattr(gateway.scheduler, "_seq", 0)
-        setattr(gateway.scheduler, "_latest_seq", 0)
-
-        gateway.drain_inference_events()
         with TestClient(app) as client:
             reset = client.post("/api/dev/reset")
             assert reset.status_code == 200, reset.text
+            object.__setattr__(gateway.config, "inference_enable_seg", True)
+            object.__setattr__(gateway.config, "inference_enable_ocr", False)
+            object.__setattr__(gateway.config, "inference_enable_risk", False)
+            object.__setattr__(gateway.config, "inference_seg_targets", ())
+            gateway.seg_backend = HttpSegBackend(
+                url=f"http://127.0.0.1:{inf_port}/seg",
+                timeout_ms=2000,
+                model_id="seg-http-mask-e2e",
+            )
+            setattr(gateway.scheduler, "_seq", 0)
+            setattr(gateway.scheduler, "_latest_seq", 0)
+            gateway.drain_inference_events()
+            image_bytes = _encode_test_png()
             for frame_seq in (1, 2):
                 frame_path = run_pkg / "frames" / f"frame_{frame_seq}.png"
-                meta = json.dumps({"runId": "fixture-seg-gt", "sessionId": "fixture-seg-gt", "frameSeq": frame_seq})
-                with frame_path.open("rb") as fp:
-                    response = client.post(
-                        "/api/frame",
-                        files={"image": (frame_path.name, fp.read(), "image/png")},
-                        data={"meta": meta},
-                    )
+                meta = json.dumps({"runId": "fixture-seg-mask-gt", "sessionId": "fixture-seg-mask-gt", "frameSeq": frame_seq})
+                response = client.post(
+                    "/api/frame",
+                    files={"image": (frame_path.name, image_bytes, "image/png")},
+                    data={"meta": meta},
+                )
                 assert response.status_code == 200, response.text
 
         events = gateway.drain_inference_events()
@@ -183,12 +195,17 @@ def test_seg_http_reference_service_e2e(tmp_path: Path) -> None:
             and str(row.get("status", "")).strip() == "ok"
         ]
         assert len(seg_rows) >= 2
-        for row in seg_rows[:2]:
+
+        mask_seen = False
+        for row in seg_rows:
             payload = row.get("payload", {})
             assert isinstance(payload, dict)
-            assert isinstance(payload.get("segments"), list)
-            assert int(payload.get("targetsCount", 0)) == 2
-            assert payload.get("targetsUsed") == ["person", "chair"]
+            segments = payload.get("segments")
+            assert isinstance(segments, list)
+            for seg in segments:
+                if isinstance(seg, dict) and isinstance(seg.get("mask"), dict):
+                    mask_seen = True
+        assert mask_seen is True, json.dumps(seg_rows, ensure_ascii=False)
 
         events_path = run_pkg / "events" / "events_v1.jsonl"
         events_path.write_text(
@@ -197,8 +214,8 @@ def test_seg_http_reference_service_e2e(tmp_path: Path) -> None:
         )
 
         report_script = gateway_root / "scripts" / "report_run.py"
-        report_md = tmp_path / "report_seg_http_e2e.md"
-        report_json = tmp_path / "report_seg_http_e2e.json"
+        report_md = tmp_path / "report_seg_http_mask_e2e.md"
+        report_json = tmp_path / "report_seg_http_mask_e2e.json"
         result = subprocess.run(
             [
                 sys.executable,
@@ -221,7 +238,9 @@ def test_seg_http_reference_service_e2e(tmp_path: Path) -> None:
         seg = quality.get("seg", {})
         assert isinstance(seg, dict)
         assert bool(seg.get("present")) is True
-        assert float(seg.get("coverage", 0.0)) == 1.0
+        assert float(seg.get("maskCoverage", 0.0)) == 1.0
+        assert int(seg.get("maskFramesWithGt", 0)) == 2
+        assert int(seg.get("maskFramesWithPred", 0)) == 2
     finally:
         _stop_process(inf_proc, inf_log_file)
         _stop_process(ref_proc, ref_log_file)

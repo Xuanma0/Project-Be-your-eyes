@@ -295,7 +295,11 @@ def infer_seg(request: InferenceRequest) -> dict[str, Any]:
             normalized_bbox = [float(value) for value in bbox]
         except Exception:  # noqa: BLE001
             continue
-        segments.append({"label": label, "score": score, "bbox": normalized_bbox})
+        segment: dict[str, Any] = {"label": label, "score": score, "bbox": normalized_bbox}
+        mask = _normalize_seg_mask(item.get("mask"))
+        if isinstance(mask, dict):
+            segment["mask"] = mask
+        segments.append(segment)
 
     model = str(result.get("model", provider.model)).strip() or provider.model
     latency_ms = max(0, _now_ms() - started)
@@ -332,3 +336,37 @@ def infer_seg(request: InferenceRequest) -> dict[str, Any]:
 def _env_bool(name: str, default: bool) -> bool:
     raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _normalize_seg_mask(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    if str(raw.get("format", "")).strip() != "rle_v1":
+        return None
+    size_raw = raw.get("size")
+    if not isinstance(size_raw, list) or len(size_raw) != 2:
+        return None
+    try:
+        h = int(size_raw[0])
+        w = int(size_raw[1])
+    except Exception:
+        return None
+    if h <= 0 or w <= 0:
+        return None
+    counts_raw = raw.get("counts")
+    if not isinstance(counts_raw, list):
+        return None
+    counts: list[int] = []
+    total = 0
+    for value in counts_raw:
+        try:
+            parsed = int(value)
+        except Exception:
+            return None
+        if parsed < 0:
+            return None
+        counts.append(parsed)
+        total += parsed
+    if total != h * w:
+        return None
+    return {"format": "rle_v1", "size": [h, w], "counts": counts}

@@ -30,8 +30,12 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def _default_fixture_path() -> Path:
-    return _repo_root() / "Gateway" / "tests" / "fixtures" / "run_package_with_seg_gt_min" / "gt" / "seg_gt_v1.json"
+def _default_fixture_dir() -> Path:
+    return _repo_root() / "Gateway" / "tests" / "fixtures" / "run_package_with_seg_gt_min"
+
+
+def _fixture_path_from_dir(fixture_dir: Path) -> Path:
+    return fixture_dir / "gt" / "seg_gt_v1.json"
 
 
 def _to_float(value: Any) -> float | None:
@@ -73,7 +77,45 @@ def _normalize_segment(item: Any) -> dict[str, Any] | None:
         return None
     score_raw = _to_float(item.get("score"))
     score = 1.0 if score_raw is None else max(0.0, min(1.0, float(score_raw)))
-    return {"label": label, "score": score, "bbox": bbox}
+    out: dict[str, Any] = {"label": label, "score": score, "bbox": bbox}
+    mask = _normalize_mask(item.get("mask"))
+    if isinstance(mask, dict):
+        out["mask"] = mask
+    return out
+
+
+def _normalize_mask(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    if str(raw.get("format", "")).strip() != "rle_v1":
+        return None
+    size_raw = raw.get("size")
+    if not isinstance(size_raw, list) or len(size_raw) != 2:
+        return None
+    try:
+        h = int(size_raw[0])
+        w = int(size_raw[1])
+    except Exception:
+        return None
+    if h <= 0 or w <= 0:
+        return None
+    counts_raw = raw.get("counts")
+    if not isinstance(counts_raw, list):
+        return None
+    counts: list[int] = []
+    total = 0
+    for value in counts_raw:
+        try:
+            parsed = int(value)
+        except Exception:
+            return None
+        if parsed < 0:
+            return None
+        counts.append(parsed)
+        total += parsed
+    if total != h * w:
+        return None
+    return {"format": "rle_v1", "size": [h, w], "counts": counts}
 
 
 def _normalize_targets(raw_targets: list[Any] | None) -> list[str]:
@@ -136,15 +178,36 @@ def _load_fixture_mapping(path: Path, default_run_id: str) -> tuple[dict[str, di
     raise ValueError("unsupported fixture payload format")
 
 
-def _load_state() -> dict[str, Any]:
+def _resolve_fixture_inputs() -> tuple[Path, Path]:
+    fixture_dir_text = str(os.getenv("BYES_REF_SEG_FIXTURE_DIR", "")).strip()
     fixture_path_text = str(os.getenv("BYES_REF_SEG_FIXTURE_PATH", "")).strip()
-    fixture_path = Path(fixture_path_text) if fixture_path_text else _default_fixture_path()
+
+    if fixture_dir_text:
+        fixture_dir = Path(fixture_dir_text)
+        fixture_path = _fixture_path_from_dir(fixture_dir)
+        return fixture_dir, fixture_path
+
+    if fixture_path_text:
+        fixture_path = Path(fixture_path_text)
+        if fixture_path.parent.name.lower() == "gt":
+            fixture_dir = fixture_path.parent.parent
+        else:
+            fixture_dir = fixture_path.parent
+        return fixture_dir, fixture_path
+
+    fixture_dir = _default_fixture_dir()
+    return fixture_dir, _fixture_path_from_dir(fixture_dir)
+
+
+def _load_state() -> dict[str, Any]:
+    fixture_dir, fixture_path = _resolve_fixture_inputs()
     expected_run_id = str(os.getenv("BYES_REF_SEG_RUN_ID", "fixture-seg-gt")).strip() or "fixture-seg-gt"
     endpoint_override = str(os.getenv("BYES_REF_SEG_ENDPOINT", "")).strip() or None
     if not fixture_path.exists():
         raise RuntimeError(f"fixture_not_found:{fixture_path}")
     mapping, warnings_count = _load_fixture_mapping(fixture_path, expected_run_id)
     return {
+        "fixtureDir": str(fixture_dir),
         "fixturePath": str(fixture_path),
         "expectedRunId": expected_run_id,
         "endpoint": endpoint_override,
@@ -167,6 +230,7 @@ def healthz() -> dict[str, Any]:
         "ok": True,
         "backend": BACKEND,
         "model": MODEL_ID,
+        "fixtureDir": state.get("fixtureDir"),
         "fixturePath": state.get("fixturePath"),
         "expectedRunId": state.get("expectedRunId"),
         "runIds": run_ids,
