@@ -35,6 +35,36 @@
             "items": {
               "type": "number"
             }
+          },
+          "mask": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "format",
+              "size",
+              "counts"
+            ],
+            "properties": {
+              "format": {
+                "const": "rle_v1"
+              },
+              "size": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "counts": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
           }
         }
       }

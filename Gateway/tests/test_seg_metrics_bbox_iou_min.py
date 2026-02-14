@@ -65,3 +65,6 @@ def test_seg_metrics_bbox_iou_min(tmp_path: Path) -> None:
 
     assert isinstance(seg.get("topMisses", []), list)
     assert isinstance(seg.get("topFP", []), list)
+    assert seg.get("maskF1_50") is None
+    assert seg.get("maskCoverage") is None
+    assert seg.get("maskMeanIoU") is None

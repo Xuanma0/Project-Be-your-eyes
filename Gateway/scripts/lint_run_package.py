@@ -231,11 +231,18 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
-def _validate_seg_payload(payload: dict[str, Any], schema: dict[str, Any] | None) -> tuple[bool, int, int, int]:
+def _validate_seg_payload(
+    payload: dict[str, Any],
+    schema: dict[str, Any] | None,
+) -> tuple[bool, int, int, int, int, int, int, int]:
     payload_ok = True
     bbox_out_of_range = 0
     score_out_of_range = 0
     empty_label = 0
+    mask_present = 0
+    mask_schema_ok = 0
+    mask_size_mismatch = 0
+    mask_bad_counts = 0
 
     if schema is not None and jsonschema is not None:
         try:
@@ -245,7 +252,7 @@ def _validate_seg_payload(payload: dict[str, Any], schema: dict[str, Any] | None
 
     segments_raw = payload.get("segments")
     if not isinstance(segments_raw, list):
-        return False, bbox_out_of_range, score_out_of_range, empty_label
+        return False, bbox_out_of_range, score_out_of_range, empty_label, mask_present, mask_schema_ok, mask_size_mismatch, mask_bad_counts
 
     image_width_raw = payload.get("imageWidth")
     image_height_raw = payload.get("imageHeight")
@@ -295,7 +302,63 @@ def _validate_seg_payload(payload: dict[str, Any], schema: dict[str, Any] | None
             bbox_out_of_range += 1
             payload_ok = False
 
-    return payload_ok, bbox_out_of_range, score_out_of_range, empty_label
+        if "mask" in row:
+            mask_present += 1
+            mask = row.get("mask")
+            mask_ok, size_mismatch, bad_counts = _validate_seg_mask(mask)
+            if mask_ok:
+                mask_schema_ok += 1
+            else:
+                payload_ok = False
+            mask_size_mismatch += int(size_mismatch)
+            mask_bad_counts += int(bad_counts)
+
+    return (
+        payload_ok,
+        bbox_out_of_range,
+        score_out_of_range,
+        empty_label,
+        mask_present,
+        mask_schema_ok,
+        mask_size_mismatch,
+        mask_bad_counts,
+    )
+
+
+def _validate_seg_mask(mask: Any) -> tuple[bool, int, int]:
+    if not isinstance(mask, dict):
+        return False, 1, 1
+    fmt = str(mask.get("format", "")).strip()
+    if fmt != "rle_v1":
+        return False, 1, 1
+
+    size_raw = mask.get("size")
+    if not isinstance(size_raw, list) or len(size_raw) != 2:
+        return False, 1, 1
+    try:
+        h = int(size_raw[0])
+        w = int(size_raw[1])
+    except Exception:
+        return False, 1, 1
+    if h <= 0 or w <= 0:
+        return False, 1, 1
+
+    counts_raw = mask.get("counts")
+    if not isinstance(counts_raw, list):
+        return False, 0, 1
+    total = 0
+    for value in counts_raw:
+        try:
+            parsed = int(value)
+        except Exception:
+            return False, 0, 1
+        if parsed < 0:
+            return False, 0, 1
+        total += parsed
+
+    if total != h * w:
+        return False, 1, 1
+    return True, 0, 0
 
 
 def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = False) -> tuple[int, dict[str, Any]]:
@@ -387,6 +450,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         seg_bbox_out_of_range_count = 0
         seg_score_out_of_range_count = 0
         seg_empty_label_count = 0
+        seg_mask_present = 0
+        seg_mask_schema_ok = 0
+        seg_mask_size_mismatch_count = 0
+        seg_mask_bad_counts_count = 0
         seg_schema = _load_seg_contract_schema()
         if events_v1_rel:
             events_v1_path = run_root / events_v1_rel
@@ -446,7 +513,16 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                         seg_schema_ok += 1
                                     else:
                                         seg_warnings_count += 1
-                                    payload_ok, bbox_oor, score_oor, empty_label = _validate_seg_payload(payload, seg_schema)
+                                    (
+                                        payload_ok,
+                                        bbox_oor,
+                                        score_oor,
+                                        empty_label,
+                                        mask_present,
+                                        mask_schema_ok,
+                                        mask_size_mismatch,
+                                        mask_bad_counts,
+                                    ) = _validate_seg_payload(payload, seg_schema)
                                     if payload_ok:
                                         seg_payload_schema_ok += 1
                                     else:
@@ -454,6 +530,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                     seg_bbox_out_of_range_count += int(bbox_oor)
                                     seg_score_out_of_range_count += int(score_oor)
                                     seg_empty_label_count += int(empty_label)
+                                    seg_mask_present += int(mask_present)
+                                    seg_mask_schema_ok += int(mask_schema_ok)
+                                    seg_mask_size_mismatch_count += int(mask_size_mismatch)
+                                    seg_mask_bad_counts_count += int(mask_bad_counts)
                 except Exception as exc:  # noqa: BLE001
                     warnings.append(f"eventsV1 read failed: {exc}")
                 events_v1_norm = collect_normalized_ws_events(events_v1_path)
@@ -600,6 +680,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "segBboxOutOfRangeCount": int(seg_bbox_out_of_range_count),
             "segScoreOutOfRangeCount": int(seg_score_out_of_range_count),
             "segEmptyLabelCount": int(seg_empty_label_count),
+            "segMaskPresent": int(seg_mask_present),
+            "segMaskSchemaOk": int(seg_mask_schema_ok),
+            "segMaskSizeMismatchCount": int(seg_mask_size_mismatch_count),
+            "segMaskBadCountsCount": int(seg_mask_bad_counts_count),
             "hazardUnknownKinds": len(hazard_unknown_kinds),
             "hazardAliasHits": int(hazard_alias_hits),
             "riskEventMissingFrameSeq": int(risk_event_missing_frame_seq),
@@ -634,6 +718,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"segBboxOutOfRangeCount: {summary['segBboxOutOfRangeCount']}")
             print(f"segScoreOutOfRangeCount: {summary['segScoreOutOfRangeCount']}")
             print(f"segEmptyLabelCount: {summary['segEmptyLabelCount']}")
+            print(f"segMaskPresent: {summary['segMaskPresent']}")
+            print(f"segMaskSchemaOk: {summary['segMaskSchemaOk']}")
+            print(f"segMaskSizeMismatchCount: {summary['segMaskSizeMismatchCount']}")
+            print(f"segMaskBadCountsCount: {summary['segMaskBadCountsCount']}")
             print(f"hazardUnknownKinds: {summary['hazardUnknownKinds']}")
             print(f"hazardAliasHits: {summary['hazardAliasHits']}")
             print(f"riskEventMissingFrameSeq: {summary['riskEventMissingFrameSeq']}")

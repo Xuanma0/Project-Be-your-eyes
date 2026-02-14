@@ -328,13 +328,17 @@ def _normalize_seg_payload(payload: dict[str, Any], raw_segments: Any) -> dict[s
             y1 = min(float(image_height), y0 + 1.0) if image_height is not None else y0 + 1.0
             warnings_count += 1
 
-        normalized_segments.append(
-            {
-                "label": label,
-                "score": score,
-                "bbox": [x0, y0, x1, y1],
-            }
-        )
+        normalized_row: dict[str, Any] = {
+            "label": label,
+            "score": score,
+            "bbox": [x0, y0, x1, y1],
+        }
+        normalized_mask, mask_warnings = _normalize_seg_mask(row.get("mask"))
+        warnings_count += int(mask_warnings)
+        if isinstance(normalized_mask, dict):
+            normalized_row["mask"] = normalized_mask
+
+        normalized_segments.append(normalized_row)
 
     out["segments"] = normalized_segments
     out["segmentsCount"] = len(normalized_segments)
@@ -371,3 +375,45 @@ def _to_float(value: Any) -> float | None:
 
 def _clamp_float(value: float, min_value: float, max_value: float) -> float:
     return max(min_value, min(max_value, float(value)))
+
+
+def _normalize_seg_mask(mask_raw: Any) -> tuple[dict[str, Any] | None, int]:
+    if mask_raw is None:
+        return None, 0
+    if not isinstance(mask_raw, dict):
+        return None, 1
+
+    fmt = str(mask_raw.get("format", "")).strip()
+    if fmt != "rle_v1":
+        return None, 1
+
+    size = mask_raw.get("size")
+    if not isinstance(size, list) or len(size) != 2:
+        return None, 1
+    try:
+        h = int(size[0])
+        w = int(size[1])
+    except Exception:
+        return None, 1
+    if h <= 0 or w <= 0:
+        return None, 1
+
+    counts_raw = mask_raw.get("counts")
+    if not isinstance(counts_raw, list):
+        return None, 1
+    counts: list[int] = []
+    total = 0
+    for value in counts_raw:
+        try:
+            parsed = int(value)
+        except Exception:
+            return None, 1
+        if parsed < 0:
+            return None, 1
+        counts.append(parsed)
+        total += parsed
+
+    if total != h * w:
+        return None, 1
+
+    return {"format": "rle_v1", "size": [h, w], "counts": counts}, 0

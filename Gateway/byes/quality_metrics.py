@@ -5,7 +5,7 @@ import math
 import re
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from byes.event_normalizer import collect_normalized_ws_events
 from byes.hazards.taxonomy_v1 import normalize_hazard_kind, normalize_hazards
@@ -1029,6 +1029,13 @@ def compute_seg_metrics(
     iou_hits: list[float] = []
     top_misses: list[dict[str, Any]] = []
     top_fp: list[dict[str, Any]] = []
+    mask_tp = 0
+    mask_fp = 0
+    mask_fn = 0
+    mask_iou_hits: list[float] = []
+    mask_top_misses: list[dict[str, Any]] = []
+    mask_top_fp: list[dict[str, Any]] = []
+    has_any_mask = False
 
     all_frames = sorted(set(gt_map.keys()) | set(pred_map.keys()) | set(pred_event_frames))
     threshold = max(0.0, min(1.0, float(iou_threshold)))
@@ -1038,8 +1045,12 @@ def compute_seg_metrics(
         gt_rows = [item for item in gt_rows if isinstance(item, dict)]
         pred_rows = [_normalize_seg_object(item) for item in pred_map.get(frame_seq, [])]
         pred_rows = [item for item in pred_rows if isinstance(item, dict)]
+        if any(isinstance(item.get("mask"), dict) for item in gt_rows) or any(
+            isinstance(item.get("mask"), dict) for item in pred_rows
+        ):
+            has_any_mask = True
 
-        matched, unmatched_gt, unmatched_pred = _match_seg_pairs(gt_rows, pred_rows)
+        matched, unmatched_gt, unmatched_pred = _match_seg_pairs(gt_rows, pred_rows, iou_fn=_seg_pair_bbox_iou)
         for pair in matched:
             iou = float(pair.get("iou", 0.0) or 0.0)
             gt_item = pair.get("gt")
@@ -1074,6 +1085,76 @@ def compute_seg_metrics(
                         }
                     )
 
+        mask_matched, mask_unmatched_gt, mask_unmatched_pred = _match_seg_pairs(
+            gt_rows,
+            pred_rows,
+            iou_fn=_seg_pair_mask_or_bbox_iou,
+        )
+        for pair in mask_matched:
+            iou = float(pair.get("iou", 0.0) or 0.0)
+            gt_item = pair.get("gt")
+            gt_item = gt_item if isinstance(gt_item, dict) else {}
+            pred_item = pair.get("pred")
+            pred_item = pred_item if isinstance(pred_item, dict) else {}
+            if iou >= threshold:
+                mask_tp += 1
+                mask_iou_hits.append(iou)
+            else:
+                mask_fn += 1
+                mask_fp += 1
+                if len(mask_top_misses) < 5:
+                    mask_top_misses.append(
+                        {
+                            "frameSeq": int(frame_seq),
+                            "label": str(gt_item.get("label", "")).strip(),
+                            "bbox": gt_item.get("bbox"),
+                            "bestIoU": round(iou, 4),
+                            "metric": "maskIoU",
+                            "note": "predicted_but_iou_below_threshold",
+                        }
+                    )
+                if len(mask_top_fp) < 5:
+                    mask_top_fp.append(
+                        {
+                            "frameSeq": int(frame_seq),
+                            "label": str(pred_item.get("label", "")).strip(),
+                            "bbox": pred_item.get("bbox"),
+                            "score": pred_item.get("score"),
+                            "bestIoU": round(iou, 4),
+                            "metric": "maskIoU",
+                            "note": "fp_iou_below_threshold",
+                        }
+                    )
+
+        for idx in mask_unmatched_gt:
+            mask_fn += 1
+            if len(mask_top_misses) < 5:
+                gt_item = gt_rows[idx]
+                mask_top_misses.append(
+                    {
+                        "frameSeq": int(frame_seq),
+                        "label": str(gt_item.get("label", "")).strip(),
+                        "bbox": gt_item.get("bbox"),
+                        "metric": "maskIoU",
+                        "note": "no_prediction_for_gt",
+                    }
+                )
+
+        for idx in mask_unmatched_pred:
+            mask_fp += 1
+            if len(mask_top_fp) < 5:
+                pred_item = pred_rows[idx]
+                mask_top_fp.append(
+                    {
+                        "frameSeq": int(frame_seq),
+                        "label": str(pred_item.get("label", "")).strip(),
+                        "bbox": pred_item.get("bbox"),
+                        "score": pred_item.get("score"),
+                        "metric": "maskIoU",
+                        "note": "no_gt_match",
+                    }
+                )
+
         for idx in unmatched_gt:
             fn += 1
             if len(top_misses) < 5:
@@ -1106,8 +1187,12 @@ def compute_seg_metrics(
     f1 = _f1(tp, fp, fn)
     mean_iou = _safe_ratio(sum(iou_hits), len(iou_hits))
     latency_stats = summarize_latency(latencies)
+    mask_precision = _safe_ratio(mask_tp, mask_tp + mask_fp)
+    mask_recall = _safe_ratio(mask_tp, mask_tp + mask_fn)
+    mask_f1 = _f1(mask_tp, mask_fp, mask_fn)
+    mask_mean_iou = _safe_ratio(sum(mask_iou_hits), len(mask_iou_hits))
 
-    return {
+    payload = {
         "present": bool(gt_map or pred_event_frames),
         "framesTotal": frames_total_safe,
         "framesWithGt": frames_with_gt,
@@ -1130,6 +1215,35 @@ def compute_seg_metrics(
         "topMisses": top_misses[:5],
         "topFP": top_fp[:5],
     }
+    if has_any_mask:
+        payload.update(
+            {
+                "maskMeanIoU": mask_mean_iou,
+                "maskPrecision50": mask_precision,
+                "maskRecall50": mask_recall,
+                "maskF1_50": mask_f1,
+                "maskFramesWithGt": frames_with_gt,
+                "maskFramesWithPred": frames_with_pred,
+                "maskCoverage": coverage,
+                "maskTopMisses": mask_top_misses[:5],
+                "maskTopFP": mask_top_fp[:5],
+            }
+        )
+    else:
+        payload.update(
+            {
+                "maskMeanIoU": None,
+                "maskPrecision50": None,
+                "maskRecall50": None,
+                "maskF1_50": None,
+                "maskFramesWithGt": None,
+                "maskFramesWithPred": None,
+                "maskCoverage": None,
+                "maskTopMisses": [],
+                "maskTopFP": [],
+            }
+        )
+    return payload
 
 
 def compute_quality_score(
@@ -1430,6 +1544,9 @@ def _normalize_seg_object(item: Any) -> dict[str, Any] | None:
     row: dict[str, Any] = {"label": label, "bbox": [x0, y0, x1, y1]}
     if score is not None:
         row["score"] = score
+    mask = _normalize_seg_mask_object(item.get("mask"))
+    if isinstance(mask, dict):
+        row["mask"] = mask
     return row
 
 
@@ -1456,10 +1573,13 @@ def _bbox_iou(a: list[float], b: list[float]) -> float:
 def _match_seg_pairs(
     gt_rows: list[dict[str, Any]],
     pred_rows: list[dict[str, Any]],
+    *,
+    iou_fn: Callable[[dict[str, Any], dict[str, Any]], float] | None = None,
 ) -> tuple[list[dict[str, Any]], set[int], set[int]]:
     remaining_gt = set(range(len(gt_rows)))
     remaining_pred = set(range(len(pred_rows)))
     matched: list[dict[str, Any]] = []
+    iou_resolver = iou_fn if callable(iou_fn) else _seg_pair_bbox_iou
 
     def _take_best(*, label_only: bool) -> tuple[int, int, float] | None:
         best: tuple[int, int, float] | None = None
@@ -1477,7 +1597,7 @@ def _match_seg_pairs(
                 p_bbox = p.get("bbox")
                 if not isinstance(p_bbox, list) or len(p_bbox) != 4:
                     continue
-                iou = _bbox_iou([float(v) for v in g_bbox], [float(v) for v in p_bbox])
+                iou = float(iou_resolver(g, p))
                 if best is None or iou > best[2]:
                     best = (gi, pi, iou)
         return best
@@ -1501,6 +1621,132 @@ def _match_seg_pairs(
         remaining_pred.discard(pi)
 
     return matched, remaining_gt, remaining_pred
+
+
+def _seg_pair_bbox_iou(gt_row: dict[str, Any], pred_row: dict[str, Any]) -> float:
+    gt_bbox = gt_row.get("bbox")
+    pred_bbox = pred_row.get("bbox")
+    if not isinstance(gt_bbox, list) or len(gt_bbox) != 4:
+        return 0.0
+    if not isinstance(pred_bbox, list) or len(pred_bbox) != 4:
+        return 0.0
+    try:
+        return _bbox_iou([float(v) for v in gt_bbox], [float(v) for v in pred_bbox])
+    except Exception:
+        return 0.0
+
+
+def _seg_pair_mask_or_bbox_iou(gt_row: dict[str, Any], pred_row: dict[str, Any]) -> float:
+    gt_mask = gt_row.get("mask")
+    pred_mask = pred_row.get("mask")
+    if isinstance(gt_mask, dict) and isinstance(pred_mask, dict):
+        mask_iou = _mask_iou(gt_mask, pred_mask)
+        if mask_iou is not None:
+            return mask_iou
+    return _seg_pair_bbox_iou(gt_row, pred_row)
+
+
+def _normalize_seg_mask_object(mask_raw: Any) -> dict[str, Any] | None:
+    if not isinstance(mask_raw, dict):
+        return None
+    fmt = str(mask_raw.get("format", "")).strip()
+    if fmt != "rle_v1":
+        return None
+    size_raw = mask_raw.get("size")
+    if not isinstance(size_raw, list) or len(size_raw) != 2:
+        return None
+    try:
+        h = int(size_raw[0])
+        w = int(size_raw[1])
+    except Exception:
+        return None
+    if h <= 0 or w <= 0:
+        return None
+    counts_raw = mask_raw.get("counts")
+    if not isinstance(counts_raw, list):
+        return None
+    counts: list[int] = []
+    total = 0
+    for value in counts_raw:
+        try:
+            parsed = int(value)
+        except Exception:
+            return None
+        if parsed < 0:
+            return None
+        counts.append(parsed)
+        total += parsed
+    if total != h * w:
+        return None
+    return {"format": "rle_v1", "size": [h, w], "counts": counts}
+
+
+def _decode_rle_bits(mask: dict[str, Any]) -> list[int] | None:
+    size = mask.get("size")
+    counts = mask.get("counts")
+    if not isinstance(size, list) or len(size) != 2:
+        return None
+    if not isinstance(counts, list):
+        return None
+    try:
+        h = int(size[0])
+        w = int(size[1])
+    except Exception:
+        return None
+    if h <= 0 or w <= 0:
+        return None
+    total = h * w
+    bits: list[int] = []
+    fill = 0
+    for value in counts:
+        try:
+            run_len = int(value)
+        except Exception:
+            return None
+        if run_len < 0:
+            return None
+        if run_len > 0:
+            bits.extend([fill] * run_len)
+        fill = 1 - fill
+        if len(bits) > total:
+            return None
+    if len(bits) != total:
+        return None
+    return bits
+
+
+def _mask_iou(gt_mask: dict[str, Any], pred_mask: dict[str, Any]) -> float | None:
+    gt_size = gt_mask.get("size")
+    pred_size = pred_mask.get("size")
+    if not isinstance(gt_size, list) or not isinstance(pred_size, list):
+        return None
+    if len(gt_size) != 2 or len(pred_size) != 2:
+        return None
+    try:
+        if int(gt_size[0]) != int(pred_size[0]) or int(gt_size[1]) != int(pred_size[1]):
+            return None
+    except Exception:
+        return None
+
+    gt_bits = _decode_rle_bits(gt_mask)
+    pred_bits = _decode_rle_bits(pred_mask)
+    if gt_bits is None or pred_bits is None:
+        return None
+    if len(gt_bits) != len(pred_bits):
+        return None
+
+    inter = 0
+    union = 0
+    for g_bit, p_bit in zip(gt_bits, pred_bits):
+        g_on = int(g_bit) != 0
+        p_on = int(p_bit) != 0
+        if g_on and p_on:
+            inter += 1
+        if g_on or p_on:
+            union += 1
+    if union <= 0:
+        return 0.0
+    return float(inter) / float(union)
 
 
 def _new_hazard_norm_meta() -> dict[str, Any]:

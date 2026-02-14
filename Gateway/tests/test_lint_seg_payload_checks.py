@@ -20,7 +20,14 @@ def test_lint_seg_payload_checks(tmp_path: Path) -> None:
     payload = payload if isinstance(payload, dict) else {}
     payload["imageWidth"] = 20
     payload["imageHeight"] = 20
-    payload["segments"] = [{"label": "", "score": 1.5, "bbox": [21, 0, 10, 0]}]
+    payload["segments"] = [
+        {
+            "label": "",
+            "score": 1.5,
+            "bbox": [21, 0, 10, 0],
+            "mask": {"format": "rle_v1", "size": [4, 4], "counts": [0, 2, 2]},
+        }
+    ]
     rows[0]["payload"] = payload
     events_path.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in rows) + "\n", encoding="utf-8")
 
@@ -32,3 +39,5 @@ def test_lint_seg_payload_checks(tmp_path: Path) -> None:
     assert int(summary.get("segBboxOutOfRangeCount", 0)) > 0
     assert int(summary.get("segScoreOutOfRangeCount", 0)) > 0
     assert int(summary.get("segEmptyLabelCount", 0)) > 0
+    assert int(summary.get("segMaskPresent", 0)) > 0
+    assert int(summary.get("segMaskBadCountsCount", 0)) > 0

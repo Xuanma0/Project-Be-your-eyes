@@ -32,3 +32,30 @@ def test_seg_contract_schema_ok() -> None:
 
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({"segments": [{"label": "", "score": 1.5, "bbox": [0, 0, 0, 0]}]}, schema)
+
+    valid_with_mask = {
+        "segments": [
+            {
+                "label": "person",
+                "score": 0.9,
+                "bbox": [0, 0, 4, 4],
+                "mask": {"format": "rle_v1", "size": [4, 4], "counts": [0, 2, 2, 2, 10]},
+            }
+        ]
+    }
+    jsonschema.validate(valid_with_mask, schema)
+
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            {
+                "segments": [
+                    {
+                        "label": "person",
+                        "score": 0.9,
+                        "bbox": [0, 0, 4, 4],
+                        "mask": {"format": "invalid", "size": [4, 4], "counts": [0, 2, 2, 2, 10]},
+                    }
+                ]
+            },
+            schema,
+        )
