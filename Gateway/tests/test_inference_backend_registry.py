@@ -55,3 +55,10 @@ def test_backend_registry_selects_http(monkeypatch) -> None:
     assert seg_backend.timeout_ms == 4444
     assert seg_backend.endpoint == "http://127.0.0.1:9003/seg"
     assert seg_backend.model_id == "seg-v1"
+
+
+def test_seg_targets_config_parsing(monkeypatch) -> None:
+    monkeypatch.setenv("BYES_SEG_TARGETS_JSON", '["person", "car"]')
+    monkeypatch.setenv("BYES_SEG_TARGETS", "stairs,person")
+    config = load_config()
+    assert config.inference_seg_targets == ("person", "car", "stairs")

@@ -19,12 +19,17 @@ python -m uvicorn services.reference_seg_service.app:app --app-dir ../../ --host
 ## API
 
 - `POST /seg`
-  - request: `{ "runId": "...", "frameSeq": 1, "image_b64": "..." }`
+  - request: `{ "runId": "...", "frameSeq": 1, "image_b64": "...", "targets": ["person","chair"] }`
   - response (byes.seg.v1 compatible):
     - `segments`: `[{label, score, bbox}]`
     - `segmentsCount`
     - `backend="reference"`
     - `model="reference-seg-v1"`
     - `endpoint`
+    - `targetsCount` / `targetsUsed` (optional passthrough evidence)
     - optional `warning` when run/frame is missing
 
+`targets` behavior:
+- empty or missing `targets`: return all fixture segments for `(runId, frameSeq)`.
+- non-empty `targets`: filter by `label` (case-insensitive).
+- default fixture (`run_package_with_seg_gt_min`) has labels: `person`, `chair`.

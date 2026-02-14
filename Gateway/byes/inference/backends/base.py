@@ -60,5 +60,6 @@ class SegBackend(Protocol):
         frame_seq: int | None,
         ts_ms: int,
         run_id: str | None = None,
+        targets: list[str] | None = None,
     ) -> SegResult:
         ...

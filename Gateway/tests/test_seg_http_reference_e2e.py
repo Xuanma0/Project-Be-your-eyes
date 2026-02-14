@@ -105,6 +105,7 @@ def test_seg_http_reference_service_e2e(tmp_path: Path) -> None:
     original_enable_seg = gateway.config.inference_enable_seg
     original_enable_ocr = gateway.config.inference_enable_ocr
     original_enable_risk = gateway.config.inference_enable_risk
+    original_seg_targets = gateway.config.inference_seg_targets
     original_seg_backend = gateway.seg_backend
 
     try:
@@ -146,6 +147,7 @@ def test_seg_http_reference_service_e2e(tmp_path: Path) -> None:
         object.__setattr__(gateway.config, "inference_enable_seg", True)
         object.__setattr__(gateway.config, "inference_enable_ocr", False)
         object.__setattr__(gateway.config, "inference_enable_risk", False)
+        object.__setattr__(gateway.config, "inference_seg_targets", ("person", "chair"))
         gateway.seg_backend = HttpSegBackend(
             url=f"http://127.0.0.1:{inf_port}/seg",
             timeout_ms=2000,
@@ -181,6 +183,8 @@ def test_seg_http_reference_service_e2e(tmp_path: Path) -> None:
             payload = row.get("payload", {})
             assert isinstance(payload, dict)
             assert isinstance(payload.get("segments"), list)
+            assert int(payload.get("targetsCount", 0)) == 2
+            assert payload.get("targetsUsed") == ["person", "chair"]
 
         events_path = run_pkg / "events" / "events_v1.jsonl"
         events_path.write_text(
@@ -220,5 +224,6 @@ def test_seg_http_reference_service_e2e(tmp_path: Path) -> None:
         object.__setattr__(gateway.config, "inference_enable_seg", original_enable_seg)
         object.__setattr__(gateway.config, "inference_enable_ocr", original_enable_ocr)
         object.__setattr__(gateway.config, "inference_enable_risk", original_enable_risk)
+        object.__setattr__(gateway.config, "inference_seg_targets", original_seg_targets)
         gateway.seg_backend = original_seg_backend
         gateway.drain_inference_events()

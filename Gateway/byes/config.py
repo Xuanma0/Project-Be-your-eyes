@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 
@@ -29,6 +30,36 @@ def _env_bool(name: str, default: bool) -> bool:
     if not raw:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_string_list(csv_name: str, json_name: str) -> tuple[str, ...]:
+    values: list[str] = []
+    seen: set[str] = set()
+
+    raw_json = str(os.getenv(json_name, "")).strip()
+    if raw_json:
+        try:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    text = str(item or "").strip()
+                    normalized = text.lower()
+                    if text and normalized not in seen:
+                        seen.add(normalized)
+                        values.append(text)
+        except Exception:
+            pass
+
+    raw_csv = str(os.getenv(csv_name, "")).strip()
+    if raw_csv:
+        for item in raw_csv.split(","):
+            text = str(item or "").strip()
+            normalized = text.lower()
+            if text and normalized not in seen:
+                seen.add(normalized)
+                values.append(text)
+
+    return tuple(values)
 
 
 @dataclass(frozen=True)
@@ -151,6 +182,7 @@ class GatewayConfig:
     inference_ocr_http_url: str = "http://127.0.0.1:9001/ocr"
     inference_risk_http_url: str = "http://127.0.0.1:9002/risk"
     inference_seg_http_url: str = "http://127.0.0.1:9003/seg"
+    inference_seg_targets: tuple[str, ...] = ()
     inference_ocr_timeout_ms: int = 1500
     inference_risk_timeout_ms: int = 1200
     inference_seg_timeout_ms: int = 1200
@@ -291,6 +323,7 @@ def load_config() -> GatewayConfig:
         inference_ocr_http_url=os.getenv("BYES_OCR_HTTP_URL", "http://127.0.0.1:9001/ocr"),
         inference_risk_http_url=os.getenv("BYES_RISK_HTTP_URL", "http://127.0.0.1:9002/risk"),
         inference_seg_http_url=os.getenv("BYES_SEG_HTTP_URL", "http://127.0.0.1:9003/seg"),
+        inference_seg_targets=_env_string_list("BYES_SEG_TARGETS", "BYES_SEG_TARGETS_JSON"),
         inference_ocr_timeout_ms=_env_int("BYES_OCR_HTTP_TIMEOUT_MS", 1500),
         inference_risk_timeout_ms=_env_int("BYES_RISK_HTTP_TIMEOUT_MS", 1200),
         inference_seg_timeout_ms=_env_int("BYES_SEG_HTTP_TIMEOUT_MS", 1200),

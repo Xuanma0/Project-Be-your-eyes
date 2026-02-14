@@ -19,6 +19,7 @@ class SegRequest(BaseModel):
     frameSeq: int | None = None
     runId: str | None = None
     tsMs: int | None = None
+    targets: list[str] | None = None
 
 
 app = FastAPI(title=APP_TITLE)
@@ -72,6 +73,18 @@ def _normalize_segment(item: Any) -> dict[str, Any] | None:
     score_raw = _to_float(item.get("score"))
     score = 1.0 if score_raw is None else max(0.0, min(1.0, float(score_raw)))
     return {"label": label, "score": score, "bbox": bbox}
+
+
+def _normalize_targets(raw_targets: list[Any] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw_targets or []:
+        text = str(item or "").strip().lower()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
 
 
 def _normalize_frame_rows(frames: list[Any]) -> dict[int, list[dict[str, Any]]]:
@@ -170,6 +183,7 @@ def segment(request: SegRequest, raw_request: Request) -> dict[str, Any]:
     warning: str | None = None
     warnings_count = int(state.get("warningsCount", 0) or 0)
     segments: list[dict[str, Any]] = []
+    targets = _normalize_targets(request.targets)
 
     if not run_id:
         warning = "missing_run_id"
@@ -190,6 +204,13 @@ def segment(request: SegRequest, raw_request: Request) -> dict[str, Any]:
                 if not segments:
                     warning = "frame_not_found"
                     warnings_count += 1
+                elif targets:
+                    target_set = set(targets)
+                    filtered = [item for item in segments if str(item.get("label", "")).strip().lower() in target_set]
+                    segments = filtered
+                    if not segments and warning is None:
+                        warning = "no_segments_after_target_filter"
+                        warnings_count += 1
 
     endpoint = state.get("endpoint")
     endpoint_text = str(endpoint).strip() if endpoint is not None else ""
@@ -202,10 +223,11 @@ def segment(request: SegRequest, raw_request: Request) -> dict[str, Any]:
         "backend": BACKEND,
         "model": MODEL_ID,
         "endpoint": endpoint_text,
+        "targetsCount": len(targets),
+        "targetsUsed": targets,
     }
     if warning:
         response["warning"] = warning
     if warnings_count > 0:
         response["warningsCount"] = warnings_count
     return response
-

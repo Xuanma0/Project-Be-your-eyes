@@ -26,7 +26,13 @@ class HttpSegProvider:
         self.timeout_ms = max(1, int(timeout_ms))
         self.model = str(model_id or "").strip() or "http-seg"
 
-    def infer(self, image: Image.Image, frame_seq: int | None, run_id: str | None = None) -> dict[str, Any]:
+    def infer(
+        self,
+        image: Image.Image,
+        frame_seq: int | None,
+        run_id: str | None = None,
+        targets: list[str] | None = None,
+    ) -> dict[str, Any]:
         started = _now_ms()
         payload = {
             "frameSeq": frame_seq,
@@ -35,6 +41,9 @@ class HttpSegProvider:
         run_id_text = str(run_id or "").strip()
         if run_id_text:
             payload["runId"] = run_id_text
+        targets_used = [str(item).strip() for item in (targets or []) if str(item).strip()]
+        if targets_used:
+            payload["targets"] = targets_used
         try:
             timeout_s = max(0.05, self.timeout_ms / 1000.0)
             with httpx.Client(timeout=timeout_s) as client:
@@ -67,6 +76,8 @@ class HttpSegProvider:
             "latencyMs": latency_ms,
             "backend": self.name,
             "endpoint": self.endpoint,
+            "targetsCount": int(body.get("targetsCount", len(targets_used)) or 0),
+            "targetsUsed": body.get("targetsUsed", targets_used),
         }
 
 

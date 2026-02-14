@@ -33,6 +33,7 @@ class InferenceRequest(BaseModel):
     image_b64: str
     frameSeq: int | None = None
     runId: str | None = None
+    targets: list[str] | None = None
     riskThresholds: dict[str, float] | None = None
 
 
@@ -262,8 +263,9 @@ def infer_seg(request: InferenceRequest) -> dict[str, Any]:
     started = _now_ms()
     image = _decode_pil_image(request.image_b64)
     provider = get_seg_provider()
+    targets = [str(item).strip() for item in (request.targets or []) if str(item).strip()]
     try:
-        result = provider.infer(image, request.frameSeq, request.runId)
+        result = provider.infer(image, request.frameSeq, request.runId, targets=targets or None)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -295,13 +297,26 @@ def infer_seg(request: InferenceRequest) -> dict[str, Any]:
     backend = str(result.get("backend", provider.name)).strip().lower() or provider.name
     endpoint = result.get("endpoint", provider.endpoint)
     endpoint_text = str(endpoint).strip() if endpoint is not None else ""
-    return {
+    response: dict[str, Any] = {
         "segments": segments,
         "latencyMs": latency_ms,
         "model": model,
         "backend": backend,
         "endpoint": endpoint_text or None,
     }
+    if "targetsCount" in result:
+        try:
+            response["targetsCount"] = max(0, int(result.get("targetsCount", 0)))
+        except Exception:  # noqa: BLE001
+            response["targetsCount"] = len(targets)
+    elif targets:
+        response["targetsCount"] = len(targets)
+    targets_used_raw = result.get("targetsUsed")
+    if isinstance(targets_used_raw, list):
+        response["targetsUsed"] = [str(item).strip() for item in targets_used_raw if str(item).strip()]
+    elif targets:
+        response["targetsUsed"] = targets
+    return response
 
 
 # TODO: replace infer_ocr and infer_risk internals with real model pipelines:

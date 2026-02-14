@@ -96,6 +96,9 @@ cd Gateway
 $env:BYES_ENABLE_SEG="1"
 $env:BYES_SEG_BACKEND="mock"   # or http
 $env:BYES_SEG_MODEL_ID="mock-seg-v1"
+# optional open-vocabulary targets:
+# $env:BYES_SEG_TARGETS="person,car,stairs"
+# $env:BYES_SEG_TARGETS_JSON='["person","car","stairs"]'
 # when using http backend:
 # $env:BYES_SEG_HTTP_URL="http://127.0.0.1:19120/seg"
 ```
@@ -126,6 +129,7 @@ Future SAM3 path:
 - keep `BYES_SEG_BACKEND=http`;
 - point `BYES_SEG_HTTP_URL` to external SAM3-compatible service exposing `POST /seg`;
 - return `segments` as `{label, score, bbox}`.
+- optional `targets` prompt passthrough is already wired end-to-end (`BYES_SEG_TARGETS` / `BYES_SEG_TARGETS_JSON`).
 
 Reference seg HTTP chain (Gateway -> inference_service -> reference_seg_service):
 
@@ -143,6 +147,7 @@ cd Gateway
 $env:BYES_ENABLE_SEG="1"
 $env:BYES_SEG_BACKEND="http"
 $env:BYES_SEG_HTTP_URL="http://127.0.0.1:19120/seg"
+$env:BYES_SEG_TARGETS="person,chair"  # matches run_package_with_seg_gt_min fixture labels
 python scripts/replay_run_package.py --run-package tests/fixtures/run_package_with_seg_gt_min --reset
 python scripts/report_run.py --run-package tests/fixtures/run_package_with_seg_gt_min
 ```

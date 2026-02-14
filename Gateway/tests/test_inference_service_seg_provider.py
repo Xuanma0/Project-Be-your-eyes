@@ -36,9 +36,14 @@ def test_seg_endpoint_returns_min_schema(monkeypatch) -> None:
     _reset_seg_provider_cache()
 
     with TestClient(inference_app.app) as client:
-        response = client.post("/seg", json={"image_b64": _encode_image_b64(), "frameSeq": 1})
+        response = client.post(
+            "/seg",
+            json={"image_b64": _encode_image_b64(), "frameSeq": 1, "targets": ["person", "stairs"]},
+        )
         assert response.status_code == 200, response.text
         payload = response.json()
     assert isinstance(payload.get("segments"), list)
     assert "latencyMs" in payload
     assert payload.get("model") == "mock-seg-v1"
+    assert int(payload.get("targetsCount", 0)) == 2
+    assert payload.get("targetsUsed") == ["person", "stairs"]

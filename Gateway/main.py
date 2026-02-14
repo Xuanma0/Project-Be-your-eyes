@@ -653,13 +653,25 @@ class GatewayApp:
 
         if self.config.inference_enable_seg:
             seg_started_ms = _now_ms()
+            seg_targets = [str(item).strip() for item in self.config.inference_seg_targets if str(item).strip()]
             try:
-                seg_result = await self.seg_backend.infer(frame_bytes, seq, ts_ms, run_id=run_id)
+                seg_result = await self.seg_backend.infer(
+                    frame_bytes,
+                    seq,
+                    ts_ms,
+                    run_id=run_id,
+                    targets=seg_targets or None,
+                )
             except Exception as exc:  # noqa: BLE001
                 seg_result = SegResult(
                     status="error",
                     error=exc.__class__.__name__,
-                    payload={"reason": exc.__class__.__name__, "segmentsCount": 0},
+                    payload={
+                        "reason": exc.__class__.__name__,
+                        "segmentsCount": 0,
+                        "targetsCount": len(seg_targets),
+                        "targetsUsed": seg_targets,
+                    },
                     latency_ms=max(0, _now_ms() - seg_started_ms),
                 )
             await emit_seg_events(

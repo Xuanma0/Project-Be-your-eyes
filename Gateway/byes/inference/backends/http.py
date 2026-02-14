@@ -176,6 +176,7 @@ class HttpSegBackend:
         frame_seq: int | None,
         ts_ms: int,
         run_id: str | None = None,
+        targets: list[str] | None = None,
     ) -> SegResult:
         started = _now_ms()
         request_payload = {
@@ -186,6 +187,9 @@ class HttpSegBackend:
         run_id_text = str(run_id or "").strip()
         if run_id_text:
             request_payload["runId"] = run_id_text
+        targets_normalized = [str(item).strip() for item in (targets or []) if str(item).strip()]
+        if targets_normalized:
+            request_payload["targets"] = targets_normalized
         try:
             timeout_s = max(0.05, self.timeout_ms / 1000.0)
             async with httpx.AsyncClient(timeout=timeout_s) as client:

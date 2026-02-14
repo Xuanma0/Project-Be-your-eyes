@@ -25,6 +25,7 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
 - `POST /ocr` -> `{"text": "...", "latencyMs": <int>, "model": "<id>"}`
 - `POST /risk` -> `{"hazards": [...], "latencyMs": <int>, "model": "<id>"}`
 - `POST /seg` -> `{"segments": [{"label":"...","score":0.0,"bbox":[x0,y0,x1,y1]}], "latencyMs": <int>, "model": "<id>"}`
+  - request supports optional `targets: string[]` for open-vocabulary prompt passthrough.
 
 ## Provider Matrix
 
@@ -47,6 +48,10 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
   - `segments`: list of `{label, score, bbox:[x0,y0,x1,y1]}`
   - `latencyMs`: service-side latency
   - `model`: provider/model id tag
+- Optional request field:
+  - `targets`: list of labels (for downstream provider filtering/prompting)
+- Optional response metadata:
+  - `targetsCount`, `targetsUsed`
 - Gateway records `seg.segment` events and computes `quality.seg` (`IoU/F1@0.5/coverage/latency`) during `report_run`.
 
 Required env for `http`:
