@@ -1,7 +1,7 @@
 {
   "name": "contract",
   "expected": {
-    "requirePovPresent": true,
+    "requirePovPresent": false,
     "minPovDecisions": 2
   },
   "runs": [
@@ -30,6 +30,15 @@
       "requireCriticalFnZero": true,
       "requirePovPresent": true,
       "minPovDecisions": 2
+    },
+    {
+      "id": "fixture_with_seg_gt_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_seg_gt_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireSegEventsPresent": true,
+      "requireSegPayloadSchemaOk": true
     }
   ]
 }

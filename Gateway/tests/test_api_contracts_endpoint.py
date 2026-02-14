@@ -13,7 +13,7 @@ def test_api_contracts_endpoint_returns_lock_and_runtime_defaults() -> None:
 
     versions = payload.get("versions", {})
     assert isinstance(versions, dict)
-    for key in ("pov.ir.v1", "byes.event.v1", "byes.action_plan.v1"):
+    for key in ("pov.ir.v1", "byes.event.v1", "byes.action_plan.v1", "byes.seg.v1"):
         assert key in versions
         row = versions[key]
         assert isinstance(row, dict)

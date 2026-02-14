@@ -160,9 +160,7 @@ async def emit_seg_events(
         payload["model"] = str(model or "").strip() or None
     if "endpoint" not in payload:
         payload["endpoint"] = _sanitize_endpoint(endpoint)
-    segments = list(result.segments)
-    payload["segments"] = segments
-    payload["segmentsCount"] = len(segments)
+    payload = _normalize_seg_payload(payload, result.segments)
     if result.error and "reason" not in payload:
         payload["reason"] = result.error
     normalized_status = _normalize_status(result.status, result.error)
@@ -248,3 +246,128 @@ def _sanitize_endpoint(endpoint: str | None) -> str | None:
     if parsed.scheme and parsed.netloc:
         return urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/", "", "", ""))
     return text
+
+
+def _normalize_seg_payload(payload: dict[str, Any], raw_segments: Any) -> dict[str, Any]:
+    out = dict(payload) if isinstance(payload, dict) else {}
+    warnings_count = _to_nonnegative_int(out.get("warningsCount"))
+
+    image_width = _to_positive_int(
+        out.get("imageWidth", out.get("imageW", out.get("width"))),
+    )
+    image_height = _to_positive_int(
+        out.get("imageHeight", out.get("imageH", out.get("height"))),
+    )
+    if image_width is not None:
+        out["imageWidth"] = image_width
+    if image_height is not None:
+        out["imageHeight"] = image_height
+
+    normalized_segments: list[dict[str, Any]] = []
+    rows = raw_segments if isinstance(raw_segments, list) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            warnings_count += 1
+            continue
+
+        label = str(row.get("label", "")).strip()
+        if not label:
+            label = "unknown"
+            warnings_count += 1
+
+        score = _to_float(row.get("score"))
+        if score is None:
+            score = 0.0
+            warnings_count += 1
+        score_clamped = _clamp_float(score, 0.0, 1.0)
+        if score_clamped != score:
+            warnings_count += 1
+        score = score_clamped
+
+        bbox_raw = row.get("bbox")
+        if not isinstance(bbox_raw, list) or len(bbox_raw) != 4:
+            warnings_count += 1
+            continue
+        coords: list[float] = []
+        parse_failed = False
+        for value in bbox_raw:
+            parsed = _to_float(value)
+            if parsed is None:
+                parse_failed = True
+                break
+            coords.append(parsed)
+        if parse_failed:
+            warnings_count += 1
+            continue
+
+        x0, y0, x1, y1 = coords
+        if x0 > x1:
+            x0, x1 = x1, x0
+            warnings_count += 1
+        if y0 > y1:
+            y0, y1 = y1, y0
+            warnings_count += 1
+
+        if image_width is not None:
+            orig_x0, orig_x1 = x0, x1
+            x0 = _clamp_float(x0, 0.0, float(image_width))
+            x1 = _clamp_float(x1, 0.0, float(image_width))
+            if x0 != orig_x0 or x1 != orig_x1:
+                warnings_count += 1
+        if image_height is not None:
+            orig_y0, orig_y1 = y0, y1
+            y0 = _clamp_float(y0, 0.0, float(image_height))
+            y1 = _clamp_float(y1, 0.0, float(image_height))
+            if y0 != orig_y0 or y1 != orig_y1:
+                warnings_count += 1
+
+        if x1 <= x0:
+            x1 = min(float(image_width), x0 + 1.0) if image_width is not None else x0 + 1.0
+            warnings_count += 1
+        if y1 <= y0:
+            y1 = min(float(image_height), y0 + 1.0) if image_height is not None else y0 + 1.0
+            warnings_count += 1
+
+        normalized_segments.append(
+            {
+                "label": label,
+                "score": score,
+                "bbox": [x0, y0, x1, y1],
+            }
+        )
+
+    out["segments"] = normalized_segments
+    out["segmentsCount"] = len(normalized_segments)
+    if warnings_count > 0:
+        out["warningsCount"] = int(warnings_count)
+    elif "warningsCount" in out:
+        out.pop("warningsCount", None)
+    return out
+
+
+def _to_nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except Exception:
+        return 0
+
+
+def _to_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except Exception:
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _clamp_float(value: float, min_value: float, max_value: float) -> float:
+    return max(min_value, min(max_value, float(value)))

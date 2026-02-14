@@ -18,6 +18,7 @@ if str(GATEWAY_ROOT) not in sys.path:
     sys.path.insert(0, str(GATEWAY_ROOT))
 
 from scripts.report_run import generate_report_outputs, resolve_run_package_input  # noqa: E402
+from scripts.lint_run_package import lint_run_package  # noqa: E402
 
 
 @dataclass
@@ -56,6 +57,10 @@ class RunSummary:
     risk_backend: str | None = None
     ocr_model: str | None = None
     risk_model: str | None = None
+    seg_events_present: bool = False
+    seg_payload_schema_ok: bool = False
+    seg_lines: int = 0
+    seg_schema_ok_lines: int = 0
     score_delta: float | None = None
     baseline_score: float | None = None
     critical_fn_gate_required: bool = False
@@ -125,6 +130,12 @@ class RunSummary:
                 },
             },
             "topFindings": self.top_findings,
+            "segLint": {
+                "eventsPresent": self.seg_events_present,
+                "payloadSchemaOk": self.seg_payload_schema_ok,
+                "segLines": self.seg_lines,
+                "segSchemaOkLines": self.seg_schema_ok_lines,
+            },
             "baselineScore": self.baseline_score,
             "scoreDelta": self.score_delta,
             "criticalFnGateRequired": self.critical_fn_gate_required,
@@ -550,6 +561,8 @@ def run_suite(
     run_min_quality_override: dict[str, float | None] = {}
     run_require_pov_present: dict[str, bool] = {}
     run_min_pov_decisions_override: dict[str, int | None] = {}
+    run_require_seg_events_present: dict[str, bool] = {}
+    run_require_seg_payload_schema_ok: dict[str, bool] = {}
     failures: list[str] = []
     contract_lock_ok: bool | None = None
     contract_lock_detail = ""
@@ -567,6 +580,8 @@ def run_suite(
         run_min_quality_override[run_id] = _try_float(run_cfg.get("minQualityScore"))
         run_require_pov_present[run_id] = _to_bool01(run_cfg.get("requirePovPresent"), False)
         run_min_pov_decisions_override[run_id] = _try_int(run_cfg.get("minPovDecisions"))
+        run_require_seg_events_present[run_id] = _to_bool01(run_cfg.get("requireSegEventsPresent"), False)
+        run_require_seg_payload_schema_ok[run_id] = _to_bool01(run_cfg.get("requireSegPayloadSchemaOk"), False)
         run_path = _resolve_input_path(run_path_text, suite_dir)
 
         ws_jsonl: Path | None = None
@@ -596,6 +611,16 @@ def run_suite(
                 output_json=report_json,
             )
             run_summary = _extract_run_summary(run_id, run_path, report_md, report_json, summary_payload)
+            try:
+                _lint_code, lint_summary = lint_run_package(run_input_path, strict=False, quiet=True)
+                if isinstance(lint_summary, dict):
+                    run_summary.seg_events_present = bool(lint_summary.get("segEventsPresent", 0))
+                    run_summary.seg_payload_schema_ok = bool(lint_summary.get("segPayloadSchemaOk", 0))
+                    run_summary.seg_lines = int(lint_summary.get("segLines", 0) or 0)
+                    run_summary.seg_schema_ok_lines = int(lint_summary.get("segSchemaOk", 0) or 0)
+            except Exception:
+                # Lint stats are best-effort; report generation should remain authoritative.
+                pass
 
             baseline_score = baseline_scores.get(run_id)
             run_summary.baseline_score = baseline_score
@@ -639,6 +664,10 @@ def run_suite(
             failures.append(
                 f"{run.run_id}: pov.decisions {int(run.pov_decisions or 0)} < minPovDecisions {int(effective_min_pov_decisions)}"
             )
+        if run_require_seg_events_present.get(run.run_id, False) and not bool(run.seg_events_present):
+            failures.append(f"{run.run_id}: seg events missing (seg.segment)")
+        if run_require_seg_payload_schema_ok.get(run.run_id, False) and not bool(run.seg_payload_schema_ok):
+            failures.append(f"{run.run_id}: seg payload schema check failed")
         if fail_on_drop and run.baseline_score is not None and run.quality_score is not None:
             delta = run.quality_score - run.baseline_score
             if delta < -2.0:
@@ -714,6 +743,7 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "[run] {run_id}: score={score} baseline={baseline} delta={delta} "
                 "confirmTimeouts={confirm_timeouts} critical_fn={critical_fn} riskDelayP90={risk_delay_p90} riskDelayMax={risk_delay_max} "
                 "riskLatencyP90={risk_latency_p90} riskLatencyMax={risk_latency_max} segF1@0.5={seg_f1} segCoverage={seg_cov} segLatencyP90={seg_p90} "
+                "segEventsPresent={seg_events_present} segPayloadSchemaOk={seg_payload_schema_ok} "
                 "povPresent={pov_present} povDecisions={pov_decisions} povTokenApprox={pov_token_approx} source={schema_src} "
                 "ocr={ocr_backend}/{ocr_model} risk={risk_backend}/{risk_model}".format(
                     run_id=run_id,
@@ -729,6 +759,8 @@ def _print_summary(result: dict[str, Any]) -> None:
                     seg_f1=row.get("seg", {}).get("f1At50", None),
                     seg_cov=row.get("seg", {}).get("coverage", None),
                     seg_p90=row.get("seg", {}).get("latencyP90", None),
+                    seg_events_present=row.get("segLint", {}).get("eventsPresent", False),
+                    seg_payload_schema_ok=row.get("segLint", {}).get("payloadSchemaOk", False),
                     pov_present=row.get("pov", {}).get("present", False),
                     pov_decisions=row.get("pov", {}).get("decisions", 0),
                     pov_token_approx=row.get("pov", {}).get("tokenApprox", 0),

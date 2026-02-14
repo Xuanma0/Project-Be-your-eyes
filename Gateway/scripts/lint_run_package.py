@@ -15,11 +15,17 @@ GATEWAY_ROOT = THIS_DIR.parent
 if str(GATEWAY_ROOT) not in sys.path:
     sys.path.insert(0, str(GATEWAY_ROOT))
 
+try:
+    import jsonschema
+except Exception:  # noqa: BLE001
+    jsonschema = None
+
 from byes.event_normalizer import collect_normalized_ws_events
 from byes.hazards.taxonomy_v1 import normalize_hazards
 from byes.schemas.pov_ir_schema import validate_pov_ir
 
 _SHA_LINE_RE = re.compile(r"^([a-fA-F0-9]{64})\s+\*?(.+)$")
+_SEG_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.seg.v1.json"
 
 
 def _collect_hazard_stats_from_gt(path: Path) -> dict[str, Any]:
@@ -206,7 +212,93 @@ def _read_sha_entries(path: Path) -> dict[str, str]:
     return mapping
 
 
-def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict[str, Any]]:
+def _load_seg_contract_schema() -> dict[str, Any] | None:
+    if not _SEG_SCHEMA_PATH.exists():
+        return None
+    try:
+        payload = json.loads(_SEG_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _validate_seg_payload(payload: dict[str, Any], schema: dict[str, Any] | None) -> tuple[bool, int, int, int]:
+    payload_ok = True
+    bbox_out_of_range = 0
+    score_out_of_range = 0
+    empty_label = 0
+
+    if schema is not None and jsonschema is not None:
+        try:
+            jsonschema.validate(payload, schema)
+        except Exception:
+            payload_ok = False
+
+    segments_raw = payload.get("segments")
+    if not isinstance(segments_raw, list):
+        return False, bbox_out_of_range, score_out_of_range, empty_label
+
+    image_width_raw = payload.get("imageWidth")
+    image_height_raw = payload.get("imageHeight")
+    image_width = int(image_width_raw) if isinstance(image_width_raw, int) and image_width_raw > 0 else None
+    image_height = int(image_height_raw) if isinstance(image_height_raw, int) and image_height_raw > 0 else None
+
+    for row in segments_raw:
+        if not isinstance(row, dict):
+            payload_ok = False
+            bbox_out_of_range += 1
+            continue
+        label = str(row.get("label", "")).strip()
+        if not label:
+            empty_label += 1
+            payload_ok = False
+
+        score = _to_float(row.get("score"))
+        if score is None or score < 0.0 or score > 1.0:
+            score_out_of_range += 1
+            payload_ok = False
+
+        bbox = row.get("bbox")
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            bbox_out_of_range += 1
+            payload_ok = False
+            continue
+        coords: list[float] = []
+        parse_failed = False
+        for value in bbox:
+            parsed = _to_float(value)
+            if parsed is None:
+                parse_failed = True
+                break
+            coords.append(parsed)
+        if parse_failed:
+            bbox_out_of_range += 1
+            payload_ok = False
+            continue
+        x0, y0, x1, y1 = coords
+        if not (x0 < x1 and y0 < y1):
+            bbox_out_of_range += 1
+            payload_ok = False
+        if image_width is not None and not (0.0 <= x0 <= float(image_width) and 0.0 <= x1 <= float(image_width)):
+            bbox_out_of_range += 1
+            payload_ok = False
+        if image_height is not None and not (0.0 <= y0 <= float(image_height) and 0.0 <= y1 <= float(image_height)):
+            bbox_out_of_range += 1
+            payload_ok = False
+
+    return payload_ok, bbox_out_of_range, score_out_of_range, empty_label
+
+
+def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = False) -> tuple[int, dict[str, Any]]:
     warnings: list[str] = []
     errors: list[str] = []
     cleanup_dir: Path | None = None
@@ -288,6 +380,11 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
         seg_schema_ok = 0
         seg_normalized = 0
         seg_warnings_count = 0
+        seg_payload_schema_ok = 0
+        seg_bbox_out_of_range_count = 0
+        seg_score_out_of_range_count = 0
+        seg_empty_label_count = 0
+        seg_schema = _load_seg_contract_schema()
         if events_v1_rel:
             events_v1_path = run_root / events_v1_rel
             if not events_v1_path.exists():
@@ -330,6 +427,14 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
                                         seg_schema_ok += 1
                                     else:
                                         seg_warnings_count += 1
+                                    payload_ok, bbox_oor, score_oor, empty_label = _validate_seg_payload(payload, seg_schema)
+                                    if payload_ok:
+                                        seg_payload_schema_ok += 1
+                                    else:
+                                        seg_warnings_count += 1
+                                    seg_bbox_out_of_range_count += int(bbox_oor)
+                                    seg_score_out_of_range_count += int(score_oor)
+                                    seg_empty_label_count += int(empty_label)
                 except Exception as exc:  # noqa: BLE001
                     warnings.append(f"eventsV1 read failed: {exc}")
                 events_v1_norm = collect_normalized_ws_events(events_v1_path)
@@ -467,51 +572,60 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
             "segEventsPresent": int(seg_events_present),
             "segLines": int(seg_lines),
             "segSchemaOk": int(seg_schema_ok),
+            "segPayloadSchemaOk": int(seg_lines > 0 and seg_payload_schema_ok == seg_lines),
             "segNormalized": int(seg_normalized),
             "segWarningsCount": int(seg_warnings_count),
+            "segBboxOutOfRangeCount": int(seg_bbox_out_of_range_count),
+            "segScoreOutOfRangeCount": int(seg_score_out_of_range_count),
+            "segEmptyLabelCount": int(seg_empty_label_count),
             "hazardUnknownKinds": len(hazard_unknown_kinds),
             "hazardAliasHits": int(hazard_alias_hits),
             "riskEventMissingFrameSeq": int(risk_event_missing_frame_seq),
             "riskEventFrameSeqOutOfRange": int(risk_event_frame_seq_out_of_range),
         }
 
-        print(f"run package: {run_package}")
-        print(f"sourceType: {source_type}")
-        print(f"framesDeclared: {frames_count_declared}")
-        print(f"framesActual: {frame_count_actual}")
-        print(f"normalizedEvents: {summary['normalizedEvents']}")
-        print(f"droppedEvents: {summary['droppedEvents']}")
-        print(f"eventsV1Present: {events_v1_present}")
-        print(f"eventsV1Lines: {events_v1_lines}")
-        print(f"eventsV1SchemaOk: {events_v1_schema_ok}")
-        print(f"eventsV1Normalized: {events_v1_normalized}")
-        print(f"povIrPresent: {summary['povIrPresent']}")
-        print(f"povIrSchemaOk: {summary['povIrSchemaOk']}")
-        print(f"povIrDecisions: {summary['povIrDecisions']}")
-        print(f"povEventsCount: {summary['povEventsCount']}")
-        print(f"povConsistencyWarnings: {summary['povConsistencyWarnings']}")
-        print(f"segEventsPresent: {summary['segEventsPresent']}")
-        print(f"segLines: {summary['segLines']}")
-        print(f"segSchemaOk: {summary['segSchemaOk']}")
-        print(f"segNormalized: {summary['segNormalized']}")
-        print(f"segWarningsCount: {summary['segWarningsCount']}")
-        print(f"hazardUnknownKinds: {summary['hazardUnknownKinds']}")
-        print(f"hazardAliasHits: {summary['hazardAliasHits']}")
-        print(f"riskEventMissingFrameSeq: {summary['riskEventMissingFrameSeq']}")
-        print(f"riskEventFrameSeqOutOfRange: {summary['riskEventFrameSeqOutOfRange']}")
-        print(f"warnings: {summary['warningsCount']}")
-        print(f"errors: {summary['errorsCount']}")
-        print(f"shaChecked: {sha_checked}")
-        print(f"shaMismatch: {sha_mismatch}")
+        if not quiet:
+            print(f"run package: {run_package}")
+            print(f"sourceType: {source_type}")
+            print(f"framesDeclared: {frames_count_declared}")
+            print(f"framesActual: {frame_count_actual}")
+            print(f"normalizedEvents: {summary['normalizedEvents']}")
+            print(f"droppedEvents: {summary['droppedEvents']}")
+            print(f"eventsV1Present: {events_v1_present}")
+            print(f"eventsV1Lines: {events_v1_lines}")
+            print(f"eventsV1SchemaOk: {events_v1_schema_ok}")
+            print(f"eventsV1Normalized: {events_v1_normalized}")
+            print(f"povIrPresent: {summary['povIrPresent']}")
+            print(f"povIrSchemaOk: {summary['povIrSchemaOk']}")
+            print(f"povIrDecisions: {summary['povIrDecisions']}")
+            print(f"povEventsCount: {summary['povEventsCount']}")
+            print(f"povConsistencyWarnings: {summary['povConsistencyWarnings']}")
+            print(f"segEventsPresent: {summary['segEventsPresent']}")
+            print(f"segLines: {summary['segLines']}")
+            print(f"segSchemaOk: {summary['segSchemaOk']}")
+            print(f"segPayloadSchemaOk: {summary['segPayloadSchemaOk']}")
+            print(f"segNormalized: {summary['segNormalized']}")
+            print(f"segWarningsCount: {summary['segWarningsCount']}")
+            print(f"segBboxOutOfRangeCount: {summary['segBboxOutOfRangeCount']}")
+            print(f"segScoreOutOfRangeCount: {summary['segScoreOutOfRangeCount']}")
+            print(f"segEmptyLabelCount: {summary['segEmptyLabelCount']}")
+            print(f"hazardUnknownKinds: {summary['hazardUnknownKinds']}")
+            print(f"hazardAliasHits: {summary['hazardAliasHits']}")
+            print(f"riskEventMissingFrameSeq: {summary['riskEventMissingFrameSeq']}")
+            print(f"riskEventFrameSeqOutOfRange: {summary['riskEventFrameSeqOutOfRange']}")
+            print(f"warnings: {summary['warningsCount']}")
+            print(f"errors: {summary['errorsCount']}")
+            print(f"shaChecked: {sha_checked}")
+            print(f"shaMismatch: {sha_mismatch}")
 
-        if warnings:
-            print("warningSamples:")
-            for item in warnings[:10]:
-                print(f"- {item}")
-        if errors:
-            print("errorSamples:")
-            for item in errors[:10]:
-                print(f"- {item}")
+            if warnings:
+                print("warningSamples:")
+                for item in warnings[:10]:
+                    print(f"- {item}")
+            if errors:
+                print("errorSamples:")
+                for item in errors[:10]:
+                    print(f"- {item}")
 
         exit_code = 0
         if strict and errors:
