@@ -1,0 +1,12 @@
+{
+  "name": "segmentation",
+  "runs": [
+    {
+      "id": "fixture_with_seg_gt",
+      "path": "Gateway/tests/fixtures/run_package_with_seg_gt_min"
+    }
+  ],
+  "expected": {
+    "minQualityScore": 0
+  }
+}

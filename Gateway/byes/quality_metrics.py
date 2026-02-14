@@ -48,6 +48,119 @@ def load_gt_risk_jsonl(
     return rows
 
 
+def load_gt_seg_v1(path: Path) -> dict[int, list[dict[str, Any]]]:
+    records: dict[int, list[dict[str, Any]]] = {}
+    suffix = path.suffix.lower()
+    if suffix == ".jsonl":
+        for item in _iter_jsonl(path):
+            if not isinstance(item, dict):
+                continue
+            seq = _extract_frame_seq(item)
+            if seq is None:
+                continue
+            objects = item.get("objects")
+            if not isinstance(objects, list):
+                continue
+            normalized = [_normalize_seg_object(obj) for obj in objects]
+            records[seq] = [obj for obj in normalized if isinstance(obj, dict)]
+        return records
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return records
+
+    frames: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        rows = payload.get("frames")
+        if isinstance(rows, list):
+            frames = [row for row in rows if isinstance(row, dict)]
+    elif isinstance(payload, list):
+        frames = [row for row in payload if isinstance(row, dict)]
+
+    for row in frames:
+        seq = _extract_frame_seq(row)
+        if seq is None:
+            continue
+        objects = row.get("objects")
+        if not isinstance(objects, list):
+            continue
+        normalized = [_normalize_seg_object(obj) for obj in objects]
+        records[seq] = [obj for obj in normalized if isinstance(obj, dict)]
+    return records
+
+
+def extract_pred_seg_from_ws_events(
+    ws_events_jsonl_path: Path,
+) -> tuple[dict[int, list[dict[str, Any]]], set[int], list[int]]:
+    pred_map: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    pred_event_frames: set[int] = set()
+    latencies: list[int] = []
+
+    normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
+    normalized_events = normalized_summary.get("events", [])
+    for event in normalized_events:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "seg.segment":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        seq = _parse_int(event.get("frameSeq"))
+        if seq is None:
+            continue
+        pred_event_frames.add(seq)
+        latency = _parse_int(event.get("latencyMs"))
+        if latency is not None and latency >= 0:
+            latencies.append(latency)
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        segments = payload.get("segments")
+        if not isinstance(segments, list):
+            continue
+        for raw in segments:
+            item = _normalize_seg_object(raw)
+            if item is not None:
+                pred_map[seq].append(item)
+
+    if normalized_events:
+        compact = {seq: rows for seq, rows in pred_map.items()}
+        return compact, pred_event_frames, latencies
+
+    for row in _iter_jsonl(ws_events_jsonl_path):
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        name = str(event.get("name", "")).strip().lower()
+        phase = str(event.get("phase", "")).strip().lower()
+        status = str(event.get("status", "")).strip().lower()
+        if name != "seg.segment" or (phase and phase != "result") or (status and status != "ok"):
+            continue
+        seq = _extract_frame_seq(event)
+        if seq is None:
+            continue
+        pred_event_frames.add(seq)
+        latency = _extract_latency_ms(event)
+        if latency is not None and latency >= 0:
+            latencies.append(latency)
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        segments = payload.get("segments")
+        if not isinstance(segments, list):
+            continue
+        for raw in segments:
+            item = _normalize_seg_object(raw)
+            if item is not None:
+                pred_map[seq].append(item)
+
+    compact = {seq: rows for seq, rows in pred_map.items()}
+    return compact, pred_event_frames, latencies
+
+
 def extract_pred_ocr_from_ws_events(ws_events_jsonl_path: Path) -> dict[int, dict[str, Any]]:
     normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
     normalized_events = normalized_summary.get("events", [])
@@ -896,6 +1009,129 @@ def compute_depth_risk_metrics(
     }
 
 
+def compute_seg_metrics(
+    gt_map: dict[int, list[dict[str, Any]]],
+    pred_map: dict[int, list[dict[str, Any]]],
+    pred_event_frames: set[int],
+    latencies: list[int],
+    frames_total: int,
+    *,
+    iou_threshold: float = 0.5,
+) -> dict[str, Any]:
+    frames_total_safe = max(0, int(frames_total))
+    frames_with_gt = len([seq for seq, rows in gt_map.items() if isinstance(rows, list) and rows])
+    frames_with_pred = len({seq for seq in pred_event_frames if isinstance(seq, int)})
+    coverage = _safe_ratio(frames_with_pred, frames_with_gt)
+
+    tp = 0
+    fp = 0
+    fn = 0
+    iou_hits: list[float] = []
+    top_misses: list[dict[str, Any]] = []
+    top_fp: list[dict[str, Any]] = []
+
+    all_frames = sorted(set(gt_map.keys()) | set(pred_map.keys()) | set(pred_event_frames))
+    threshold = max(0.0, min(1.0, float(iou_threshold)))
+
+    for frame_seq in all_frames:
+        gt_rows = [_normalize_seg_object(item) for item in gt_map.get(frame_seq, [])]
+        gt_rows = [item for item in gt_rows if isinstance(item, dict)]
+        pred_rows = [_normalize_seg_object(item) for item in pred_map.get(frame_seq, [])]
+        pred_rows = [item for item in pred_rows if isinstance(item, dict)]
+
+        matched, unmatched_gt, unmatched_pred = _match_seg_pairs(gt_rows, pred_rows)
+        for pair in matched:
+            iou = float(pair.get("iou", 0.0) or 0.0)
+            gt_item = pair.get("gt")
+            gt_item = gt_item if isinstance(gt_item, dict) else {}
+            pred_item = pair.get("pred")
+            pred_item = pred_item if isinstance(pred_item, dict) else {}
+            if iou >= threshold:
+                tp += 1
+                iou_hits.append(iou)
+            else:
+                fn += 1
+                fp += 1
+                if len(top_misses) < 5:
+                    top_misses.append(
+                        {
+                            "frameSeq": int(frame_seq),
+                            "label": str(gt_item.get("label", "")).strip(),
+                            "bbox": gt_item.get("bbox"),
+                            "bestIoU": round(iou, 4),
+                            "note": "predicted_but_iou_below_threshold",
+                        }
+                    )
+                if len(top_fp) < 5:
+                    top_fp.append(
+                        {
+                            "frameSeq": int(frame_seq),
+                            "label": str(pred_item.get("label", "")).strip(),
+                            "bbox": pred_item.get("bbox"),
+                            "score": pred_item.get("score"),
+                            "bestIoU": round(iou, 4),
+                            "note": "fp_iou_below_threshold",
+                        }
+                    )
+
+        for idx in unmatched_gt:
+            fn += 1
+            if len(top_misses) < 5:
+                gt_item = gt_rows[idx]
+                top_misses.append(
+                    {
+                        "frameSeq": int(frame_seq),
+                        "label": str(gt_item.get("label", "")).strip(),
+                        "bbox": gt_item.get("bbox"),
+                        "note": "no_prediction_for_gt",
+                    }
+                )
+
+        for idx in unmatched_pred:
+            fp += 1
+            if len(top_fp) < 5:
+                pred_item = pred_rows[idx]
+                top_fp.append(
+                    {
+                        "frameSeq": int(frame_seq),
+                        "label": str(pred_item.get("label", "")).strip(),
+                        "bbox": pred_item.get("bbox"),
+                        "score": pred_item.get("score"),
+                        "note": "no_gt_match",
+                    }
+                )
+
+    precision = _safe_ratio(tp, tp + fp)
+    recall = _safe_ratio(tp, tp + fn)
+    f1 = _f1(tp, fp, fn)
+    mean_iou = _safe_ratio(sum(iou_hits), len(iou_hits))
+    latency_stats = summarize_latency(latencies)
+
+    return {
+        "present": bool(gt_map or pred_event_frames),
+        "framesTotal": frames_total_safe,
+        "framesWithGt": frames_with_gt,
+        "framesWithPred": frames_with_pred,
+        "coverage": coverage,
+        "iouThreshold": threshold,
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "precision": precision,
+        "recall": recall,
+        "f1At50": f1,
+        "meanIoU": mean_iou,
+        "latencyMs": {
+            "count": int(latency_stats.get("count", 0) or 0),
+            "p50": int(latency_stats.get("p50", 0) or 0),
+            "p90": int(latency_stats.get("p90", 0) or 0),
+            "max": int(latency_stats.get("max", 0) or 0),
+        },
+        "topMisses": top_misses[:5],
+        "topFP": top_fp[:5],
+    }
+
+
 def compute_quality_score(
     safety_score: float,
     ocr_metrics: dict[str, Any] | None,
@@ -1167,6 +1403,104 @@ def _merge_line_text(lines: list[Any]) -> str:
         if text:
             parts.append(text)
     return " ".join(parts).strip()
+
+
+def _normalize_seg_object(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    label = str(item.get("label", "")).strip()
+    if not label:
+        return None
+    bbox = item.get("bbox")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return None
+    try:
+        x0, y0, x1, y1 = [float(value) for value in bbox]
+    except Exception:
+        return None
+    if x1 <= x0 or y1 <= y0:
+        return None
+    score_raw = item.get("score")
+    score: float | None = None
+    try:
+        if score_raw is not None:
+            score = float(score_raw)
+    except Exception:
+        score = None
+    row: dict[str, Any] = {"label": label, "bbox": [x0, y0, x1, y1]}
+    if score is not None:
+        row["score"] = score
+    return row
+
+
+def _bbox_iou(a: list[float], b: list[float]) -> float:
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    ix0 = max(ax0, bx0)
+    iy0 = max(ay0, by0)
+    ix1 = min(ax1, bx1)
+    iy1 = min(ay1, by1)
+    iw = max(0.0, ix1 - ix0)
+    ih = max(0.0, iy1 - iy0)
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0
+    area_a = max(0.0, ax1 - ax0) * max(0.0, ay1 - ay0)
+    area_b = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
+    denom = area_a + area_b - inter
+    if denom <= 0.0:
+        return 0.0
+    return inter / denom
+
+
+def _match_seg_pairs(
+    gt_rows: list[dict[str, Any]],
+    pred_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], set[int], set[int]]:
+    remaining_gt = set(range(len(gt_rows)))
+    remaining_pred = set(range(len(pred_rows)))
+    matched: list[dict[str, Any]] = []
+
+    def _take_best(*, label_only: bool) -> tuple[int, int, float] | None:
+        best: tuple[int, int, float] | None = None
+        for gi in remaining_gt:
+            g = gt_rows[gi]
+            g_label = str(g.get("label", "")).strip().lower()
+            g_bbox = g.get("bbox")
+            if not isinstance(g_bbox, list) or len(g_bbox) != 4:
+                continue
+            for pi in remaining_pred:
+                p = pred_rows[pi]
+                p_label = str(p.get("label", "")).strip().lower()
+                if label_only and g_label != p_label:
+                    continue
+                p_bbox = p.get("bbox")
+                if not isinstance(p_bbox, list) or len(p_bbox) != 4:
+                    continue
+                iou = _bbox_iou([float(v) for v in g_bbox], [float(v) for v in p_bbox])
+                if best is None or iou > best[2]:
+                    best = (gi, pi, iou)
+        return best
+
+    while True:
+        best = _take_best(label_only=True)
+        if best is None:
+            break
+        gi, pi, iou = best
+        matched.append({"gt": gt_rows[gi], "pred": pred_rows[pi], "iou": iou})
+        remaining_gt.discard(gi)
+        remaining_pred.discard(pi)
+
+    while True:
+        best = _take_best(label_only=False)
+        if best is None:
+            break
+        gi, pi, iou = best
+        matched.append({"gt": gt_rows[gi], "pred": pred_rows[pi], "iou": iou})
+        remaining_gt.discard(gi)
+        remaining_pred.discard(pi)
+
+    return matched, remaining_gt, remaining_pred
 
 
 def _new_hazard_norm_meta() -> dict[str, Any]:

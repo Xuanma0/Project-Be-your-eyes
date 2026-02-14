@@ -104,6 +104,24 @@ Expected evidence:
 - `events/events_v1.jsonl` contains `name="seg.segment"` with payload `segmentsCount`, `backend`, `model`, `endpoint`.
 - `report.json` contains `inference.seg` inferred from `events_v1`.
 
+Segmentation quality evaluation (bbox IoU/F1/coverage/latency):
+
+```powershell
+python scripts/report_run.py --run-package tests/fixtures/run_package_with_seg_gt_min
+python scripts/run_regression_suite.py --suite regression/suites/seg_suite.json --baseline regression/baselines/baseline.json --fail-on-drop
+```
+
+`report.json -> quality.seg` fields:
+- `framesTotal / framesWithGt / framesWithPred / coverage`
+- `precision / recall / f1At50 / meanIoU`
+- `latencyMs` (`p50/p90/max`)
+- `topMisses / topFP` (debug samples)
+
+Leaderboard fields:
+- columns: `seg_f1_50`, `seg_coverage`, `seg_latency_p90`
+- filters: `min_seg_f1_50`, `min_seg_coverage`, `max_seg_latency_p90`
+- sort: `sort=seg_f1_50|seg_coverage|seg_latency_p90`
+
 Future SAM3 path:
 - keep `BYES_SEG_BACKEND=http`;
 - point `BYES_SEG_HTTP_URL` to external SAM3-compatible service exposing `POST /seg`;

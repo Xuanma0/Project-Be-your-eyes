@@ -1945,6 +1945,9 @@ async def run_packages_list(
     max_critical_misses: int | None = None,
     max_risk_latency_p90: int | None = None,
     max_risk_latency_max: int | None = None,
+    min_seg_f1_50: float | None = None,
+    min_seg_coverage: float | None = None,
+    max_seg_latency_p90: int | None = None,
     has_pov: str = "any",
     min_pov_decisions: int | None = None,
     has_pov_context: str = "any",
@@ -1973,6 +1976,9 @@ async def run_packages_list(
         max_critical_misses=max_critical_misses,
         max_risk_latency_p90=max_risk_latency_p90,
         max_risk_latency_max=max_risk_latency_max,
+        min_seg_f1_50=min_seg_f1_50,
+        min_seg_coverage=min_seg_coverage,
+        max_seg_latency_p90=max_seg_latency_p90,
         has_pov=has_pov,
         min_pov_decisions=min_pov_decisions,
         has_pov_context=has_pov_context,
@@ -2002,6 +2008,9 @@ async def run_packages_list(
             "max_critical_misses": max_critical_misses,
             "max_risk_latency_p90": max_risk_latency_p90,
             "max_risk_latency_max": max_risk_latency_max,
+            "min_seg_f1_50": min_seg_f1_50,
+            "min_seg_coverage": min_seg_coverage,
+            "max_seg_latency_p90": max_seg_latency_p90,
             "has_pov": has_pov,
             "min_pov_decisions": min_pov_decisions,
             "has_pov_context": has_pov_context,
@@ -2035,6 +2044,9 @@ async def run_packages_export_json(
     max_critical_misses: int | None = None,
     max_risk_latency_p90: int | None = None,
     max_risk_latency_max: int | None = None,
+    min_seg_f1_50: float | None = None,
+    min_seg_coverage: float | None = None,
+    max_seg_latency_p90: int | None = None,
     has_pov: str = "any",
     min_pov_decisions: int | None = None,
     has_pov_context: str = "any",
@@ -2063,6 +2075,9 @@ async def run_packages_export_json(
         max_critical_misses=max_critical_misses,
         max_risk_latency_p90=max_risk_latency_p90,
         max_risk_latency_max=max_risk_latency_max,
+        min_seg_f1_50=min_seg_f1_50,
+        min_seg_coverage=min_seg_coverage,
+        max_seg_latency_p90=max_seg_latency_p90,
         has_pov=has_pov,
         min_pov_decisions=min_pov_decisions,
         has_pov_context=has_pov_context,
@@ -2098,6 +2113,9 @@ async def run_packages_export_csv(
     max_critical_misses: int | None = None,
     max_risk_latency_p90: int | None = None,
     max_risk_latency_max: int | None = None,
+    min_seg_f1_50: float | None = None,
+    min_seg_coverage: float | None = None,
+    max_seg_latency_p90: int | None = None,
     has_pov: str = "any",
     min_pov_decisions: int | None = None,
     has_pov_context: str = "any",
@@ -2126,6 +2144,9 @@ async def run_packages_export_csv(
         max_critical_misses=max_critical_misses,
         max_risk_latency_p90=max_risk_latency_p90,
         max_risk_latency_max=max_risk_latency_max,
+        min_seg_f1_50=min_seg_f1_50,
+        min_seg_coverage=min_seg_coverage,
+        max_seg_latency_p90=max_seg_latency_p90,
         has_pov=has_pov,
         min_pov_decisions=min_pov_decisions,
         has_pov_context=has_pov_context,
@@ -2166,6 +2187,9 @@ async def run_packages_export_csv(
         "max_delay_frames",
         "risk_latency_p90",
         "risk_latency_max",
+        "seg_f1_50",
+        "seg_latency_p90",
+        "seg_coverage",
         "pov_present",
         "pov_decisions",
         "pov_duration_ms",
@@ -2704,6 +2728,7 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     confirm_timeouts = int(confirm_behavior.get("timeouts", 0) or 0) if isinstance(confirm_behavior, dict) else 0
     depth_risk = quality_payload.get("depthRisk", {}) if isinstance(quality_payload, dict) else {}
     risk_latency = quality_payload.get("riskLatencyMs", {}) if isinstance(quality_payload, dict) else {}
+    seg_quality = quality_payload.get("seg", {}) if isinstance(quality_payload, dict) else {}
     pov_payload = summary.get("pov", {})
     pov_payload = pov_payload if isinstance(pov_payload, dict) else {}
     pov_context = summary.get("povContext", {})
@@ -2720,6 +2745,9 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     max_delay_frames: int | None = None
     risk_latency_p90: int | None = None
     risk_latency_max: int | None = None
+    seg_f1_50: float | None = None
+    seg_latency_p90: int | None = None
+    seg_coverage: float | None = None
     pov_present = bool(pov_payload.get("present")) if isinstance(pov_payload, dict) else False
     pov_counts = pov_payload.get("counts", {}) if isinstance(pov_payload.get("counts"), dict) else {}
     pov_time = pov_payload.get("time", {}) if isinstance(pov_payload.get("time"), dict) else {}
@@ -2837,6 +2865,18 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         raw_max = _read_float(risk_latency, "max")
         if raw_max is not None:
             risk_latency_max = int(raw_max)
+    if isinstance(seg_quality, dict):
+        raw_f1 = _read_float(seg_quality, "f1At50")
+        if raw_f1 is not None:
+            seg_f1_50 = float(raw_f1)
+        seg_latency = seg_quality.get("latencyMs")
+        seg_latency = seg_latency if isinstance(seg_latency, dict) else {}
+        raw_seg_p90 = _read_float(seg_latency, "p90")
+        if raw_seg_p90 is not None:
+            seg_latency_p90 = int(raw_seg_p90)
+        raw_cov = _read_float(seg_quality, "coverage")
+        if raw_cov is not None:
+            seg_coverage = float(raw_cov)
 
     row = {
         "run_id": run_id,
@@ -2871,6 +2911,9 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "riskLatencyMax": risk_latency_max,
         "risk_latency_p90": risk_latency_p90,
         "risk_latency_max": risk_latency_max,
+        "seg_f1_50": seg_f1_50,
+        "seg_latency_p90": seg_latency_p90,
+        "seg_coverage": seg_coverage,
         "pov_present": pov_present,
         "pov_decisions": pov_decisions,
         "pov_duration_ms": int(pov_duration_ms) if pov_duration_ms is not None else None,
@@ -2911,6 +2954,9 @@ def _matches_run_filters(
     max_critical_misses: int | None,
     max_risk_latency_p90: int | None,
     max_risk_latency_max: int | None,
+    min_seg_f1_50: float | None,
+    min_seg_coverage: float | None,
+    max_seg_latency_p90: int | None,
     has_pov: str | None,
     min_pov_decisions: int | None,
     has_pov_context: str | None,
@@ -2967,6 +3013,24 @@ def _matches_run_filters(
         if value is None:
             return False
         if int(value) > int(max_risk_latency_max):
+            return False
+    if min_seg_f1_50 is not None:
+        value = row.get("seg_f1_50")
+        if value is None:
+            return False
+        if float(value) < float(min_seg_f1_50):
+            return False
+    if min_seg_coverage is not None:
+        value = row.get("seg_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_seg_coverage):
+            return False
+    if max_seg_latency_p90 is not None:
+        value = row.get("seg_latency_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_seg_latency_p90):
             return False
     if has_pov:
         normalized = has_pov.strip().lower()
@@ -3054,6 +3118,9 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "quality",
         "quality_score",
         "risk_latency_p90",
+        "seg_f1_50",
+        "seg_latency_p90",
+        "seg_coverage",
         "pov_decisions",
         "pov_token_approx",
         "pov_decision_per_min",
@@ -3098,6 +3165,9 @@ async def _query_run_package_rows(
     max_critical_misses: int | None,
     max_risk_latency_p90: int | None,
     max_risk_latency_max: int | None,
+    min_seg_f1_50: float | None,
+    min_seg_coverage: float | None,
+    max_seg_latency_p90: int | None,
     has_pov: str | None,
     min_pov_decisions: int | None,
     has_pov_context: str | None,
@@ -3132,6 +3202,9 @@ async def _query_run_package_rows(
             max_critical_misses=max_critical_misses,
             max_risk_latency_p90=max_risk_latency_p90,
             max_risk_latency_max=max_risk_latency_max,
+            min_seg_f1_50=min_seg_f1_50,
+            min_seg_coverage=min_seg_coverage,
+            max_seg_latency_p90=max_seg_latency_p90,
             has_pov=has_pov,
             min_pov_decisions=min_pov_decisions,
             has_pov_context=has_pov_context,
@@ -3194,6 +3267,9 @@ async def runs_dashboard(
     max_critical_misses: int | None = None,
     max_risk_latency_p90: int | None = None,
     max_risk_latency_max: int | None = None,
+    min_seg_f1_50: float | None = None,
+    min_seg_coverage: float | None = None,
+    max_seg_latency_p90: int | None = None,
     has_pov: str = "any",
     min_pov_decisions: int | None = None,
     has_pov_context: str = "any",
@@ -3223,6 +3299,9 @@ async def runs_dashboard(
         max_critical_misses=max_critical_misses,
         max_risk_latency_p90=max_risk_latency_p90,
         max_risk_latency_max=max_risk_latency_max,
+        min_seg_f1_50=min_seg_f1_50,
+        min_seg_coverage=min_seg_coverage,
+        max_seg_latency_p90=max_seg_latency_p90,
         has_pov=has_pov,
         min_pov_decisions=min_pov_decisions,
         has_pov_context=has_pov_context,
@@ -3257,6 +3336,12 @@ async def runs_dashboard(
         max_delay = "—" if max_delay_raw is None else str(max_delay_raw)
         risk_p90_raw = row.get("risk_latency_p90")
         risk_p90 = "—" if risk_p90_raw is None else str(risk_p90_raw)
+        seg_f1_raw = row.get("seg_f1_50")
+        seg_f1 = "—" if seg_f1_raw is None else f"{float(seg_f1_raw):.4f}"
+        seg_cov_raw = row.get("seg_coverage")
+        seg_cov = "—" if seg_cov_raw is None else f"{float(seg_cov_raw):.4f}"
+        seg_p90_raw = row.get("seg_latency_p90")
+        seg_p90 = "—" if seg_p90_raw is None else str(int(seg_p90_raw))
         pov_present = "yes" if bool(row.get("pov_present")) else "no"
         pov_decisions = str(int(row.get("pov_decisions", 0) or 0))
         pov_token_approx = str(int(row.get("pov_token_approx", 0) or 0))
@@ -3297,6 +3382,9 @@ async def runs_dashboard(
             f"<td>{html.escape(critical_misses)}</td>"
             f"<td>{html.escape(max_delay)}</td>"
             f"<td>{html.escape(risk_p90)}</td>"
+            f"<td>{html.escape(seg_f1)}</td>"
+            f"<td>{html.escape(seg_cov)}</td>"
+            f"<td>{html.escape(seg_p90)}</td>"
             f"<td>{html.escape(pov_present)}</td>"
             f"<td>{html.escape(pov_decisions)}</td>"
             f"<td>{html.escape(pov_token_approx)}</td>"
@@ -3320,7 +3408,7 @@ async def runs_dashboard(
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='30' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='33' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -3333,6 +3421,9 @@ async def runs_dashboard(
     max_critical_misses_value = html.escape("" if max_critical_misses is None else str(max_critical_misses))
     max_risk_latency_p90_value = html.escape("" if max_risk_latency_p90 is None else str(max_risk_latency_p90))
     max_risk_latency_max_value = html.escape("" if max_risk_latency_max is None else str(max_risk_latency_max))
+    min_seg_f1_50_value = html.escape("" if min_seg_f1_50 is None else str(min_seg_f1_50))
+    min_seg_coverage_value = html.escape("" if min_seg_coverage is None else str(min_seg_coverage))
+    max_seg_latency_p90_value = html.escape("" if max_seg_latency_p90 is None else str(max_seg_latency_p90))
     has_pov_value = html.escape(has_pov or "any")
     min_pov_decisions_value = html.escape("" if min_pov_decisions is None else str(min_pov_decisions))
     has_pov_context_value = html.escape(has_pov_context or "any")
@@ -3418,6 +3509,9 @@ async def runs_dashboard(
       <label>max_critical_misses: <input type="number" min="0" name="max_critical_misses" value="{max_critical_misses_value}" /></label>
       <label>max_risk_latency_p90: <input type="number" min="0" name="max_risk_latency_p90" value="{max_risk_latency_p90_value}" /></label>
       <label>max_risk_latency_max: <input type="number" min="0" name="max_risk_latency_max" value="{max_risk_latency_max_value}" /></label>
+      <label>min_seg_f1_50: <input type="number" step="0.0001" min="0" max="1" name="min_seg_f1_50" value="{min_seg_f1_50_value}" /></label>
+      <label>min_seg_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_seg_coverage" value="{min_seg_coverage_value}" /></label>
+      <label>max_seg_latency_p90: <input type="number" min="0" name="max_seg_latency_p90" value="{max_seg_latency_p90_value}" /></label>
       <label>max_plan_guardrails: <input type="number" min="0" name="max_plan_guardrails" value="{max_plan_guardrails_value}" /></label>
       <label>max_plan_latency_p90: <input type="number" min="0" name="max_plan_latency_p90" value="{max_plan_latency_p90_value}" /></label>
       <label>max_plan_overcautious_rate: <input type="number" step="0.0001" min="0" max="1" name="max_plan_overcautious_rate" value="{max_plan_overcautious_rate_value}" /></label>
@@ -3438,6 +3532,9 @@ async def runs_dashboard(
           <option value="safety_score" {"selected" if sort_value == "safety_score" else ""}>safety_score</option>
           <option value="quality" {"selected" if sort_value == "quality" else ""}>quality</option>
           <option value="risk_latency_p90" {"selected" if sort_value == "risk_latency_p90" else ""}>risk_latency_p90</option>
+          <option value="seg_f1_50" {"selected" if sort_value == "seg_f1_50" else ""}>seg_f1_50</option>
+          <option value="seg_coverage" {"selected" if sort_value == "seg_coverage" else ""}>seg_coverage</option>
+          <option value="seg_latency_p90" {"selected" if sort_value == "seg_latency_p90" else ""}>seg_latency_p90</option>
           <option value="pov_decisions" {"selected" if sort_value == "pov_decisions" else ""}>pov_decisions</option>
           <option value="pov_token_approx" {"selected" if sort_value == "pov_token_approx" else ""}>pov_token_approx</option>
           <option value="pov_decision_per_min" {"selected" if sort_value == "pov_decision_per_min" else ""}>pov_decision_per_min</option>
@@ -3460,8 +3557,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -3477,6 +3574,9 @@ async def runs_dashboard(
           <th>Critical FN</th>
           <th>MaxDelay(fr)</th>
           <th>Risk p90(ms)</th>
+          <th>Seg F1@0.5</th>
+          <th>Seg Coverage</th>
+          <th>Seg p90(ms)</th>
           <th>POV</th>
           <th>POV Decisions</th>
           <th>POV Token~</th>

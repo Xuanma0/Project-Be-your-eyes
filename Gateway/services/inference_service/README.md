@@ -43,6 +43,11 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
 
 - `mock` (default): returns deterministic empty segments for contract/testing paths.
 - `http`: forwards image to external segmentation endpoint and normalizes output.
+- Response shape must stay stable for Gateway metrics:
+  - `segments`: list of `{label, score, bbox:[x0,y0,x1,y1]}`
+  - `latencyMs`: service-side latency
+  - `model`: provider/model id tag
+- Gateway records `seg.segment` events and computes `quality.seg` (`IoU/F1@0.5/coverage/latency`) during `report_run`.
 
 Required env for `http`:
 

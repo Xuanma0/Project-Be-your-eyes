@@ -38,6 +38,9 @@ class RunSummary:
     depth_risk_delay_max: int | None
     risk_latency_p90: int | None
     risk_latency_max: int | None
+    seg_f1_50: float | None
+    seg_coverage: float | None
+    seg_latency_p90: int | None
     confirm_timeouts: int
     confirm_missing_response: int
     event_schema_source: str
@@ -84,6 +87,14 @@ class RunSummary:
             },
             "riskLatencyP90": self.risk_latency_p90,
             "riskLatencyMax": self.risk_latency_max,
+            "seg": {
+                "f1At50": self.seg_f1_50,
+                "coverage": self.seg_coverage,
+                "latencyP90": self.seg_latency_p90,
+            },
+            "segF1At50": self.seg_f1_50,
+            "segCoverage": self.seg_coverage,
+            "segLatencyP90": self.seg_latency_p90,
             "safetyBehavior": {
                 "confirmTimeouts": self.confirm_timeouts,
                 "confirmMissingResponse": self.confirm_missing_response,
@@ -352,6 +363,10 @@ def _extract_run_summary(
     depth_delay = depth_delay if isinstance(depth_delay, dict) else {}
     risk_latency = quality.get("riskLatencyMs")
     risk_latency = risk_latency if isinstance(risk_latency, dict) else {}
+    seg = quality.get("seg")
+    seg = seg if isinstance(seg, dict) else {}
+    seg_latency = seg.get("latencyMs")
+    seg_latency = seg_latency if isinstance(seg_latency, dict) else {}
     safety = quality.get("safetyBehavior")
     safety = safety if isinstance(safety, dict) else {}
     confirm = safety.get("confirm")
@@ -400,6 +415,9 @@ def _extract_run_summary(
         depth_risk_delay_max=_try_int(depth_delay.get("max")),
         risk_latency_p90=_try_int(risk_latency.get("p90")),
         risk_latency_max=_try_int(risk_latency.get("max")),
+        seg_f1_50=_try_float(seg.get("f1At50")),
+        seg_coverage=_try_float(seg.get("coverage")),
+        seg_latency_p90=_try_int(seg_latency.get("p90")),
         confirm_timeouts=int(confirm.get("timeouts", 0) or 0),
         confirm_missing_response=int(confirm.get("missingResponseCount", 0) or 0),
         event_schema_source=str(event_schema.get("source", "")),
@@ -451,7 +469,7 @@ def _render_markdown(result: dict[str, Any]) -> str:
         if not isinstance(run, dict):
             continue
         lines.append(
-            "- `{id}` score=`{score}` baseline=`{baseline}` delta=`{delta}` confirmTimeouts=`{ct}` criticalFn=`{cfn}` riskDelayMax=`{dmax}` riskLatencyP90=`{rlp90}` riskLatencyMax=`{rlmax}` povPresent=`{pov_present}` povDecisions=`{pov_decisions}` schema=`{schema}`".format(
+            "- `{id}` score=`{score}` baseline=`{baseline}` delta=`{delta}` confirmTimeouts=`{ct}` criticalFn=`{cfn}` riskDelayMax=`{dmax}` riskLatencyP90=`{rlp90}` riskLatencyMax=`{rlmax}` segF1@0.5=`{seg_f1}` segCoverage=`{seg_cov}` segLatencyP90=`{seg_p90}` povPresent=`{pov_present}` povDecisions=`{pov_decisions}` schema=`{schema}`".format(
                 id=run.get("id", ""),
                 score=run.get("qualityScore", None),
                 baseline=run.get("baselineScore", None),
@@ -461,6 +479,9 @@ def _render_markdown(result: dict[str, Any]) -> str:
                 dmax=run.get("depthRisk", {}).get("delayMax", None),
                 rlp90=run.get("riskLatency", {}).get("p90", None),
                 rlmax=run.get("riskLatency", {}).get("max", None),
+                seg_f1=run.get("seg", {}).get("f1At50", None),
+                seg_cov=run.get("seg", {}).get("coverage", None),
+                seg_p90=run.get("seg", {}).get("latencyP90", None),
                 pov_present=run.get("pov", {}).get("present", False),
                 pov_decisions=run.get("pov", {}).get("decisions", 0),
                 schema=run.get("eventSchema", {}).get("source", ""),
@@ -692,7 +713,8 @@ def _print_summary(result: dict[str, Any]) -> None:
             print(
                 "[run] {run_id}: score={score} baseline={baseline} delta={delta} "
                 "confirmTimeouts={confirm_timeouts} critical_fn={critical_fn} riskDelayP90={risk_delay_p90} riskDelayMax={risk_delay_max} "
-                "riskLatencyP90={risk_latency_p90} riskLatencyMax={risk_latency_max} povPresent={pov_present} povDecisions={pov_decisions} povTokenApprox={pov_token_approx} source={schema_src} "
+                "riskLatencyP90={risk_latency_p90} riskLatencyMax={risk_latency_max} segF1@0.5={seg_f1} segCoverage={seg_cov} segLatencyP90={seg_p90} "
+                "povPresent={pov_present} povDecisions={pov_decisions} povTokenApprox={pov_token_approx} source={schema_src} "
                 "ocr={ocr_backend}/{ocr_model} risk={risk_backend}/{risk_model}".format(
                     run_id=run_id,
                     score=score,
@@ -704,6 +726,9 @@ def _print_summary(result: dict[str, Any]) -> None:
                     risk_delay_max=row.get("depthRisk", {}).get("delayMax", None),
                     risk_latency_p90=row.get("riskLatency", {}).get("p90", None),
                     risk_latency_max=row.get("riskLatency", {}).get("max", None),
+                    seg_f1=row.get("seg", {}).get("f1At50", None),
+                    seg_cov=row.get("seg", {}).get("coverage", None),
+                    seg_p90=row.get("seg", {}).get("latencyP90", None),
                     pov_present=row.get("pov", {}).get("present", False),
                     pov_decisions=row.get("pov", {}).get("decisions", 0),
                     pov_token_approx=row.get("pov", {}).get("tokenApprox", 0),

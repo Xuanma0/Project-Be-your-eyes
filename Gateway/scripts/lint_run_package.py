@@ -227,7 +227,11 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
         if not frames_meta_path.exists():
             warnings.append(f"framesMetaJsonl missing: {frames_meta_rel}")
 
-        frame_files = sorted(frames_dir.glob("frame_*.jpg")) if frames_dir.exists() else []
+        frame_files: list[Path] = []
+        if frames_dir.exists():
+            for pattern in ("frame_*.jpg", "frame_*.jpeg", "frame_*.png"):
+                frame_files.extend(frames_dir.glob(pattern))
+            frame_files = sorted(frame_files)
         frame_count_actual = len(frame_files)
         if frames_count_declared > 0 and frame_count_actual != frames_count_declared:
             warnings.append(
@@ -279,6 +283,11 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
         events_v1_rows: list[dict[str, Any]] = []
         pov_events_count = 0
         pov_decision_events_count = 0
+        seg_events_present = 0
+        seg_lines = 0
+        seg_schema_ok = 0
+        seg_normalized = 0
+        seg_warnings_count = 0
         if events_v1_rel:
             events_v1_path = run_root / events_v1_rel
             if not events_v1_path.exists():
@@ -304,11 +313,35 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
                                     pov_events_count += 1
                                 if name == "pov.decision":
                                     pov_decision_events_count += 1
+                                if name == "seg.segment":
+                                    seg_events_present = 1
+                                    seg_lines += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    has_segments_count = isinstance(payload.get("segmentsCount"), (int, float))
+                                    has_segments = isinstance(payload.get("segments"), list)
+                                    if (
+                                        str(obj.get("schemaVersion", "")).strip() == "byes.event.v1"
+                                        and str(obj.get("category", "")).strip().lower() == "tool"
+                                        and str(obj.get("phase", "")).strip().lower() == "result"
+                                        and str(obj.get("status", "")).strip().lower() == "ok"
+                                        and (has_segments_count or has_segments)
+                                    ):
+                                        seg_schema_ok += 1
+                                    else:
+                                        seg_warnings_count += 1
                 except Exception as exc:  # noqa: BLE001
                     warnings.append(f"eventsV1 read failed: {exc}")
                 events_v1_norm = collect_normalized_ws_events(events_v1_path)
                 events_v1_normalized = int(events_v1_norm.get("normalizedEvents", 0) or 0)
                 warnings.extend(events_v1_norm.get("warnings", []))
+                seg_normalized = len(
+                    [
+                        event
+                        for event in (events_v1_norm.get("events", []) if isinstance(events_v1_norm.get("events"), list) else [])
+                        if isinstance(event, dict) and str(event.get("name", "")).strip().lower() == "seg.segment"
+                    ]
+                )
 
         pov_ir_present = 0
         pov_ir_schema_ok = 0
@@ -431,6 +464,11 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
             "povIrDecisions": int(pov_ir_decisions),
             "povEventsCount": int(pov_events_count),
             "povConsistencyWarnings": int(pov_consistency_warnings),
+            "segEventsPresent": int(seg_events_present),
+            "segLines": int(seg_lines),
+            "segSchemaOk": int(seg_schema_ok),
+            "segNormalized": int(seg_normalized),
+            "segWarningsCount": int(seg_warnings_count),
             "hazardUnknownKinds": len(hazard_unknown_kinds),
             "hazardAliasHits": int(hazard_alias_hits),
             "riskEventMissingFrameSeq": int(risk_event_missing_frame_seq),
@@ -452,6 +490,11 @@ def lint_run_package(run_package: Path, strict: bool = False) -> tuple[int, dict
         print(f"povIrDecisions: {summary['povIrDecisions']}")
         print(f"povEventsCount: {summary['povEventsCount']}")
         print(f"povConsistencyWarnings: {summary['povConsistencyWarnings']}")
+        print(f"segEventsPresent: {summary['segEventsPresent']}")
+        print(f"segLines: {summary['segLines']}")
+        print(f"segSchemaOk: {summary['segSchemaOk']}")
+        print(f"segNormalized: {summary['segNormalized']}")
+        print(f"segWarningsCount: {summary['segWarningsCount']}")
         print(f"hazardUnknownKinds: {summary['hazardUnknownKinds']}")
         print(f"hazardAliasHits: {summary['hazardAliasHits']}")
         print(f"riskEventMissingFrameSeq: {summary['riskEventMissingFrameSeq']}")

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "byes.seg_gt.v1",
+  "frames": [
+    {
+      "frameSeq": 1,
+      "objects": [
+        {
+          "label": "person",
+          "bbox": [0, 0, 10, 10]
+        }
+      ]
+    },
+    {
+      "frameSeq": 2,
+      "objects": [
+        {
+          "label": "chair",
+          "bbox": [5, 5, 15, 15]
+        }
+      ]
+    }
+  ]
+}

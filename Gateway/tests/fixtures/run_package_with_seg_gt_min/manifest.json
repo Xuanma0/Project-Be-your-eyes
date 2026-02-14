@@ -1,0 +1,18 @@
+{
+  "scenarioTag": "fixture_with_seg_gt_min",
+  "startMs": 1710000000000,
+  "endMs": 1710000001200,
+  "wsJsonl": "events/events_v1.jsonl",
+  "eventsV1Jsonl": "events/events_v1.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "framesDir": "frames",
+  "framesMetaJsonl": "frames_meta.jsonl",
+  "frameCountSent": 2,
+  "eventCountAccepted": 2,
+  "groundTruth": {
+    "version": 1,
+    "segJson": "gt/seg_gt_v1.json"
+  },
+  "errors": []
+}
