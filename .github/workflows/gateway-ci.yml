@@ -45,3 +45,7 @@ jobs:
       - name: Contract Suite
         run: |
           python Gateway/scripts/run_regression_suite.py --suite Gateway/regression/suites/contract_suite.json --baseline Gateway/regression/baselines/baseline.json --fail-on-drop --fail-on-critical-fn
+
+      - name: Verify Contracts Lock
+        run: |
+          python Gateway/scripts/verify_contracts.py --check-lock

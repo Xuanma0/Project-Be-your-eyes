@@ -1,0 +1,75 @@
+﻿{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-be-your-eyes/contracts/byes.event.v1.json",
+  "title": "BYES Event v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "tsMs",
+    "component",
+    "category",
+    "name",
+    "phase",
+    "status",
+    "payload"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "byes.event.v1"
+    },
+    "tsMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "runId": {
+      "type": ["string", "null"]
+    },
+    "frameSeq": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "component": {
+      "type": "string",
+      "minLength": 1
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "tool",
+        "safety",
+        "system",
+        "scenario",
+        "metric",
+        "ui",
+        "pov",
+        "plan",
+        "unknown"
+      ]
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "phase": {
+      "type": "string",
+      "enum": ["start", "result", "error", "info"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["ok", "timeout", "cancel", "error"]
+    },
+    "latencyMs": {
+      "type": ["integer", "number", "null"],
+      "minimum": 0
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "raw": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    }
+  }
+}

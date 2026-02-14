@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "byes.contract.lock.v1",
+  "generatedAtMs": 1771052853501,
+  "versions": {
+    "byes.action_plan.v1": {
+      "version": "byes.action_plan.v1",
+      "path": "Gateway/contracts/byes.action_plan.v1.json",
+      "sha256": "5e328f86d74fcd4875a1021dae53349de413ea89ca2328462a29c828ab4bd99c",
+      "updatedAtMs": 1771052835631
+    },
+    "byes.event.v1": {
+      "version": "byes.event.v1",
+      "path": "Gateway/contracts/byes.event.v1.json",
+      "sha256": "1edf945d0f26102bf22d5a304a1fbe3783bda5ffb746ad477d042b9b804b70a5",
+      "updatedAtMs": 1771052701191
+    },
+    "pov.context.v1": {
+      "version": "pov.context.v1",
+      "path": "Gateway/contracts/pov.context.v1.json",
+      "sha256": "9dd22d8b8b9d4c6e07bdbd5a3c973dedcdbbe6fc0d6459c4b3d6d151d99fa6c8",
+      "updatedAtMs": 1771052846510
+    },
+    "pov.ir.v1": {
+      "version": "pov.ir.v1",
+      "path": "Gateway/contracts/pov.ir.v1.json",
+      "sha256": "e030d83d6c319ad3f6c84106b2bc9c322122b7c1bbcecf7fbf38269c918718e1",
+      "updatedAtMs": 1771052841590
+    }
+  }
+}

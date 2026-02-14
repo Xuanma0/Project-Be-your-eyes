@@ -94,6 +94,69 @@ def _split_report_sections(report_md: str) -> list[tuple[str, str, str]]:
     return sections
 
 
+def _contracts_dir() -> Path:
+    return Path(__file__).resolve().parent / "contracts"
+
+
+def _load_contract_lock() -> tuple[Path, dict[str, Any]]:
+    lock_path = _contracts_dir() / "contract.lock.json"
+    if not lock_path.exists():
+        raise FileNotFoundError(f"contract lock not found: {lock_path}")
+    payload = json.loads(lock_path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"contract lock must be object: {lock_path}")
+    versions = payload.get("versions")
+    if not isinstance(versions, dict):
+        raise ValueError(f"contract lock missing versions object: {lock_path}")
+    return lock_path, payload
+
+
+def _runtime_contract_defaults() -> dict[str, Any]:
+    pov_budget = PovContextBudgetRequest().model_dump()
+    plan_budget = PlanBudgetRequest().model_dump()
+    plan_constraints = PlanConstraintsRequest().model_dump()
+    risk_threshold_defaults = {
+        "version": "heuristic-risk-v4.29-defaults",
+        "depthObsWarn": 1.0,
+        "depthObsCrit": 0.55,
+        "depthDropoffDelta": 0.4,
+        "obsWarn": 0.14,
+        "obsCrit": 0.28,
+        "dropoffPeak": 28.0,
+        "dropoffContrast": 0.2,
+        "guardrailDropoffDelta": None,
+        "guardrailObstacleP10Crit": None,
+    }
+    planner_defaults = {
+        "backend": str(os.getenv("BYES_PLANNER_BACKEND", "mock")).strip() or "mock",
+        "provider": str(os.getenv("BYES_PLANNER_PROVIDER", "reference")).strip() or "reference",
+        "endpoint": str(os.getenv("BYES_PLANNER_ENDPOINT", "")).strip() or None,
+    }
+    return {
+        "povContext": {
+            "defaultBudget": {
+                "maxChars": int(pov_budget.get("maxChars", 2000)),
+                "maxTokensApprox": int(pov_budget.get("maxTokensApprox", 500)),
+                "mode": "decisions_plus_highlights",
+            }
+        },
+        "plan": {
+            "defaultBudget": {
+                "maxChars": int(plan_budget.get("maxChars", 2000)),
+                "maxTokensApprox": int(plan_budget.get("maxTokensApprox", 256)),
+                "mode": str(plan_budget.get("mode", "decisions_plus_highlights")),
+            },
+            "defaultConstraints": {
+                "allowConfirm": bool(plan_constraints.get("allowConfirm", True)),
+                "allowHaptic": bool(plan_constraints.get("allowHaptic", False)),
+                "maxActions": int(plan_constraints.get("maxActions", 3)),
+            },
+            "plannerDefaults": planner_defaults,
+        },
+        "riskThresholdDefaults": risk_threshold_defaults,
+    }
+
+
 class MockEvent(BaseModel):
     type: str
     timestampMs: int
@@ -1468,6 +1531,26 @@ async def get_latest_pov(runId: str) -> dict[str, Any]:
     if not bool(summary.get("present")):
         raise HTTPException(status_code=404, detail=f"pov not found for runId: {run_id}")
     return {"ok": True, **summary}
+
+
+@app.get("/api/contracts")
+async def contracts_index() -> dict[str, Any]:
+    try:
+        lock_path, lock_payload = _load_contract_lock()
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+    except ValueError as ex:
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+    versions = lock_payload.get("versions", {})
+    versions = versions if isinstance(versions, dict) else {}
+    return {
+        "schemaVersion": "byes.contracts.index.v1",
+        "generatedAtMs": _now_ms(),
+        "lockPath": str(lock_path),
+        "lockGeneratedAtMs": int(lock_payload.get("generatedAtMs", 0) or 0),
+        "versions": versions,
+        "runtimeDefaults": _runtime_contract_defaults(),
+    }
 
 
 def _resolve_planner_provider(request_provider: str | None) -> str:

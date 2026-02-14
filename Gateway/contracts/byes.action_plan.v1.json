@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-be-your-eyes/contracts/byes.action_plan.v1.json",
+  "title": "ActionPlan v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "frameSeq",
+    "generatedAtMs",
+    "intent",
+    "riskLevel",
+    "ttlMs",
+    "actions",
+    "meta"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "byes.action_plan.v1" },
+    "runId": { "type": "string", "minLength": 1 },
+    "frameSeq": { "type": ["integer", "null"] },
+    "generatedAtMs": { "type": "integer", "minimum": 0 },
+    "intent": { "type": "string" },
+    "riskLevel": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "critical"]
+    },
+    "ttlMs": { "type": "integer", "minimum": 0 },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["type", "priority", "payload", "requiresConfirm", "blocking"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["speak", "overlay", "haptic", "confirm", "stop"]
+          },
+          "priority": { "type": "integer" },
+          "payload": { "type": "object", "additionalProperties": true },
+          "requiresConfirm": { "type": "boolean" },
+          "blocking": { "type": "boolean" }
+        }
+      }
+    },
+    "planner": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "guardrailsApplied": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["planner", "budget", "safety"],
+      "properties": {
+        "planner": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["backend", "model", "endpoint"],
+          "properties": {
+            "backend": { "type": "string" },
+            "model": { "type": ["string", "null"] },
+            "endpoint": { "type": ["string", "null"] }
+          }
+        },
+        "budget": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["contextMaxTokensApprox", "contextMaxChars", "mode"],
+          "properties": {
+            "contextMaxTokensApprox": { "type": "integer", "minimum": 0 },
+            "contextMaxChars": { "type": "integer", "minimum": 0 },
+            "mode": {
+              "type": "string",
+              "enum": ["decisions_only", "decisions_plus_highlights", "full"]
+            }
+          }
+        },
+        "safety": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["guardrailsApplied"],
+          "properties": {
+            "guardrailsApplied": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "notes": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

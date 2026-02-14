@@ -137,6 +137,25 @@ def _resolve_input_path(path_text: str, suite_dir: Path) -> Path:
     return candidate
 
 
+def _run_contract_lock_check() -> tuple[bool, str]:
+    script = GATEWAY_ROOT / "scripts" / "verify_contracts.py"
+    if not script.exists():
+        return False, f"verify script not found: {script}"
+    result = subprocess.run(
+        [sys.executable, str(script), "--check-lock"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = (result.stdout or "").strip()
+    err = (result.stderr or "").strip()
+    detail = output
+    if err:
+        detail = f"{detail}\n{err}".strip()
+    return result.returncode == 0, detail
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict):
@@ -511,6 +530,8 @@ def run_suite(
     run_require_pov_present: dict[str, bool] = {}
     run_min_pov_decisions_override: dict[str, int | None] = {}
     failures: list[str] = []
+    contract_lock_ok: bool | None = None
+    contract_lock_detail = ""
 
     for run_cfg in runs_cfg:
         if not isinstance(run_cfg, dict):
@@ -608,6 +629,11 @@ def run_suite(
                     f"{run.run_id}: qualityScore drop {run.baseline_score:.3f}->{run.quality_score:.3f} (delta={delta:.3f}){suffix}"
                 )
 
+    if suite_name.strip().lower() == "contract":
+        contract_lock_ok, contract_lock_detail = _run_contract_lock_check()
+        if not contract_lock_ok:
+            failures.append("contract lock check failed (python Gateway/scripts/verify_contracts.py --check-lock)")
+
     result = {
         "suiteName": suite_name,
         "suitePath": str(suite_path),
@@ -617,6 +643,10 @@ def run_suite(
         "baselinePath": str(baseline_path) if baseline_path is not None else "",
         "runs": [run.to_dict() for run in run_summaries],
         "failures": failures,
+        "meta": {
+            "contractsOk": contract_lock_ok,
+            "contractsDetail": contract_lock_detail,
+        },
     }
 
     if write_baseline and baseline_path is not None:
@@ -638,6 +668,9 @@ def run_suite(
 
 def _print_summary(result: dict[str, Any]) -> None:
     print(f"[suite] {result.get('suiteName', '')}")
+    meta = result.get("meta", {})
+    if isinstance(meta, dict) and meta.get("contractsOk") is not None:
+        print(f"[contracts] ok={meta.get('contractsOk')}")
     runs = result.get("runs", [])
     if isinstance(runs, list):
         for row in runs:
