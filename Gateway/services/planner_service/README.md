@@ -96,8 +96,19 @@ set BYES_PLANNER_ALLOW_RUN_PACKAGE_PATH=1
 ## API
 
 - `POST /plan`
-  - input: `byes.planner_request.v1`
+  - input: `byes.plan_request.v1` (preferred) or legacy `byes.planner_request.v1`
   - output: `byes.action_plan.v1`
+
+`byes.plan_request.v1` supports structured contexts:
+- `contexts.pov.promptFragment`
+- `contexts.seg.promptFragment`
+- `risk.riskLevel / hazardsCount`
+- `meta.promptVersion`
+
+Explainable seg-hint rules (deterministic, v1):
+- keywords in `contexts.seg.promptFragment` trigger `stairs_or_dropoff` / `vehicle` / `pedestrian`
+- rule only adjusts action wording (speak/confirm), does not disable safety guardrail path in Gateway
+- planner metadata includes `ruleApplied`, `ruleHazardHint`, `matchedKeywords`, `ruleVersion`
 
 On LLM failures (`timeout`, `http_error`, `invalid_json`, `schema_error`), the response still returns 200 with a reference plan and metadata:
 - `meta.planner.fallbackUsed=true`

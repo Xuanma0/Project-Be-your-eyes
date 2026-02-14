@@ -331,8 +331,15 @@ Prompt version notes:
 
 Traceability fields:
 - `events/events_v1.jsonl` (`plan.generate`): `plannerProvider`, `promptVersion`, `fallbackUsed`, `fallbackReason`, `jsonValid`
+- `events/events_v1.jsonl` (`plan.request`): `schemaVersion=byes.plan_request.v1`, context-inclusion/char/truncation stats
+- `events/events_v1.jsonl` (`plan.rule_applied`): deterministic seg-hint rule hit with `hazardHint` + `matchedKeywords`
 - `report.json` (`plan.planner.*`, `planQuality.*`): fallback and JSON validity state
+- `report.json` (`planRequest`, `planEval.ruleAppliedCount`): request-budget and rule-hit aggregate metrics
 - `/api/run_packages`: `plan_fallback_used`, `plan_json_valid`, `plan_prompt_version`
+
+Planner HTTP request contract (v4.53):
+- `Gateway/contracts/byes.plan_request.v1.json`
+- includes `risk + contexts.pov + contexts.seg + meta.promptVersion`
 
 ## Planner Evaluation And Ablation
 

@@ -28,6 +28,8 @@ from byes.quality_metrics import (  # noqa: E402
     compute_quality_score,
     extract_risk_latency_metrics_from_events_v1,
     extract_seg_prompt_summary_from_events_v1,
+    extract_plan_request_summary_from_events_v1,
+    extract_plan_rule_summary_from_events_v1,
     extract_event_schema_stats,
     extract_inference_summary_from_ws_events,
     infer_inference_summary_from_events_v1,
@@ -1015,6 +1017,8 @@ def generate_report_outputs(
         summary["plan"] = plan_payload
     summary["planQuality"] = compute_plan_quality(summary.get("plan"))
     summary["planEval"] = compute_plan_eval(event_rows, summary)
+    summary["planRequest"] = extract_plan_request_summary_from_events_v1(event_rows)
+    summary["planRules"] = extract_plan_rule_summary_from_events_v1(event_rows)
     summary["povPlan"] = compute_pov_plan_metrics(pov_ir_payload, summary.get("plan"))
     inferred_summary = extract_inference_summary_from_ws_events(event_source_path)
     events_v1_inferred = infer_inference_summary_from_events_v1(event_rows)
@@ -1298,7 +1302,8 @@ def _infer_planner_meta_from_events(event_rows: list[dict[str, Any]]) -> dict[st
         "jsonValid": None,
     }
     for row in event_rows:
-        if str(row.get("name", "")).strip().lower() != "plan.generate":
+        event_name = str(row.get("name", "")).strip().lower()
+        if event_name not in {"plan.generate", "plan.request"}:
             continue
         if str(row.get("phase", "")).strip().lower() != "result":
             continue
@@ -1307,11 +1312,18 @@ def _infer_planner_meta_from_events(event_rows: list[dict[str, Any]]) -> dict[st
         payload = row.get("payload")
         if not isinstance(payload, dict):
             continue
-        backend = _normalize_optional_text(payload.get("backend"))
-        model = _normalize_optional_text(payload.get("model"))
-        endpoint = _normalize_optional_text(payload.get("endpoint"))
-        provider = _normalize_optional_text(payload.get("plannerProvider"))
-        prompt_version = _normalize_optional_text(payload.get("promptVersion"))
+        if event_name == "plan.request":
+            backend = _normalize_optional_text(payload.get("provider"))
+            model = _normalize_optional_text(payload.get("model"))
+            endpoint = _normalize_optional_text(payload.get("endpoint"))
+            provider = _normalize_optional_text(payload.get("provider"))
+            prompt_version = _normalize_optional_text(payload.get("promptVersion"))
+        else:
+            backend = _normalize_optional_text(payload.get("backend"))
+            model = _normalize_optional_text(payload.get("model"))
+            endpoint = _normalize_optional_text(payload.get("endpoint"))
+            provider = _normalize_optional_text(payload.get("plannerProvider"))
+            prompt_version = _normalize_optional_text(payload.get("promptVersion"))
         fallback_used = payload.get("fallbackUsed")
         fallback_reason = _normalize_optional_text(payload.get("fallbackReason"))
         json_valid = payload.get("jsonValid")

@@ -74,6 +74,11 @@ class RunSummary:
     seg_context_chars: int = 0
     seg_context_segments_out: int = 0
     seg_context_trunc_segments_dropped: int = 0
+    plan_request_events_present: bool = False
+    plan_request_schema_ok: bool = False
+    plan_request_lines: int = 0
+    plan_request_seg_included_count: int = 0
+    plan_request_seg_chars_total: int = 0
     score_delta: float | None = None
     baseline_score: float | None = None
     critical_fn_gate_required: bool = False
@@ -161,6 +166,11 @@ class RunSummary:
                 "segContextChars": self.seg_context_chars,
                 "segContextSegmentsOut": self.seg_context_segments_out,
                 "segContextTruncSegmentsDropped": self.seg_context_trunc_segments_dropped,
+                "planRequestEventsPresent": self.plan_request_events_present,
+                "planRequestSchemaOk": self.plan_request_schema_ok,
+                "planRequestLines": self.plan_request_lines,
+                "planRequestSegIncludedCount": self.plan_request_seg_included_count,
+                "planRequestSegCharsTotal": self.plan_request_seg_chars_total,
             },
             "baselineScore": self.baseline_score,
             "scoreDelta": self.score_delta,
@@ -599,6 +609,8 @@ def run_suite(
     run_require_seg_prompt_packed: dict[str, bool] = {}
     run_require_seg_context_present: dict[str, bool] = {}
     run_require_seg_context_schema_ok: dict[str, bool] = {}
+    run_require_plan_request_events_present: dict[str, bool] = {}
+    run_require_plan_request_schema_ok: dict[str, bool] = {}
     failures: list[str] = []
     contract_lock_ok: bool | None = None
     contract_lock_detail = ""
@@ -628,6 +640,8 @@ def run_suite(
         run_require_seg_prompt_packed[run_id] = _to_bool01(run_cfg.get("requireSegPromptPacked"), False)
         run_require_seg_context_present[run_id] = _to_bool01(run_cfg.get("requireSegContextPresent"), False)
         run_require_seg_context_schema_ok[run_id] = _to_bool01(run_cfg.get("requireSegContextSchemaOk"), False)
+        run_require_plan_request_events_present[run_id] = _to_bool01(run_cfg.get("requirePlanRequestEventsPresent"), False)
+        run_require_plan_request_schema_ok[run_id] = _to_bool01(run_cfg.get("requirePlanRequestSchemaOk"), False)
         run_path = _resolve_input_path(run_path_text, suite_dir)
 
         ws_jsonl: Path | None = None
@@ -679,6 +693,11 @@ def run_suite(
                     run_summary.seg_context_trunc_segments_dropped = int(
                         lint_summary.get("segContextTruncSegmentsDropped", 0) or 0
                     )
+                    run_summary.plan_request_events_present = bool(lint_summary.get("planRequestEventsPresent", 0))
+                    run_summary.plan_request_schema_ok = bool(lint_summary.get("planRequestSchemaOk", 0))
+                    run_summary.plan_request_lines = int(lint_summary.get("planRequestLines", 0) or 0)
+                    run_summary.plan_request_seg_included_count = int(lint_summary.get("planRequestSegIncludedCount", 0) or 0)
+                    run_summary.plan_request_seg_chars_total = int(lint_summary.get("planRequestSegCharsTotal", 0) or 0)
             except Exception:
                 # Lint stats are best-effort; report generation should remain authoritative.
                 pass
@@ -743,6 +762,10 @@ def run_suite(
             failures.append(f"{run.run_id}: seg context missing")
         if run_require_seg_context_schema_ok.get(run.run_id, False) and not bool(run.seg_context_schema_ok):
             failures.append(f"{run.run_id}: seg context schema check failed")
+        if run_require_plan_request_events_present.get(run.run_id, False) and not bool(run.plan_request_events_present):
+            failures.append(f"{run.run_id}: plan.request events missing")
+        if run_require_plan_request_schema_ok.get(run.run_id, False) and not bool(run.plan_request_schema_ok):
+            failures.append(f"{run.run_id}: plan.request payload schema check failed")
         if fail_on_drop and run.baseline_score is not None and run.quality_score is not None:
             delta = run.quality_score - run.baseline_score
             if delta < -2.0:
@@ -824,6 +847,8 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "segPromptPackedTrueCount={seg_prompt_packed_true_count} "
                 "segContextPresent={seg_context_present} segContextSchemaOk={seg_context_schema_ok} "
                 "segContextChars={seg_context_chars} segContextSegmentsOut={seg_context_segments_out} "
+                "planRequestEventsPresent={plan_request_events_present} planRequestSchemaOk={plan_request_schema_ok} "
+                "planRequestSegIncludedCount={plan_request_seg_included_count} planRequestSegCharsTotal={plan_request_seg_chars_total} "
                 "povPresent={pov_present} povDecisions={pov_decisions} povTokenApprox={pov_token_approx} source={schema_src} "
                 "ocr={ocr_backend}/{ocr_model} risk={risk_backend}/{risk_model}".format(
                     run_id=run_id,
@@ -850,6 +875,10 @@ def _print_summary(result: dict[str, Any]) -> None:
                     seg_context_schema_ok=row.get("segLint", {}).get("segContextSchemaOk", False),
                     seg_context_chars=row.get("segLint", {}).get("segContextChars", 0),
                     seg_context_segments_out=row.get("segLint", {}).get("segContextSegmentsOut", 0),
+                    plan_request_events_present=row.get("segLint", {}).get("planRequestEventsPresent", False),
+                    plan_request_schema_ok=row.get("segLint", {}).get("planRequestSchemaOk", False),
+                    plan_request_seg_included_count=row.get("segLint", {}).get("planRequestSegIncludedCount", 0),
+                    plan_request_seg_chars_total=row.get("segLint", {}).get("planRequestSegCharsTotal", 0),
                     pov_present=row.get("pov", {}).get("present", False),
                     pov_decisions=row.get("pov", {}).get("decisions", 0),
                     pov_token_approx=row.get("pov", {}).get("tokenApprox", 0),

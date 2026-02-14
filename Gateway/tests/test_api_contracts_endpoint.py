@@ -13,7 +13,15 @@ def test_api_contracts_endpoint_returns_lock_and_runtime_defaults() -> None:
 
     versions = payload.get("versions", {})
     assert isinstance(versions, dict)
-    for key in ("pov.ir.v1", "byes.event.v1", "byes.action_plan.v1", "byes.seg.v1", "byes.seg_request.v1", "seg.context.v1"):
+    for key in (
+        "pov.ir.v1",
+        "byes.event.v1",
+        "byes.action_plan.v1",
+        "byes.seg.v1",
+        "byes.seg_request.v1",
+        "seg.context.v1",
+        "byes.plan_request.v1",
+    ):
         assert key in versions
         row = versions[key]
         assert isinstance(row, dict)
@@ -40,3 +48,8 @@ def test_api_contracts_endpoint_returns_lock_and_runtime_defaults() -> None:
     assert isinstance(seg_ctx_budget, dict)
     assert int(seg_ctx_budget.get("maxChars", 0)) > 0
     assert int(seg_ctx_budget.get("maxSegments", 0)) > 0
+    plan_request = runtime_defaults.get("planRequest", {})
+    assert isinstance(plan_request, dict)
+    assert str(plan_request.get("defaultPromptVersion", "")).strip()
+    assert "includeSegContext" in plan_request
+    assert "includePovContext" in plan_request

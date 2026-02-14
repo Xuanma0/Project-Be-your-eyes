@@ -84,6 +84,15 @@
       "requireSegPayloadSchemaOk": true,
       "requireSegContextPresent": true,
       "requireSegContextSchemaOk": true
+    },
+    {
+      "id": "fixture_with_plan_request_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_plan_request_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requirePlanRequestEventsPresent": true,
+      "requirePlanRequestSchemaOk": true
     }
   ]
 }

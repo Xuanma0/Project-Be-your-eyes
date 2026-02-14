@@ -21,6 +21,12 @@ app = Flask(__name__)
 _ALLOWED_RISK = {"low", "medium", "high", "critical"}
 _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 _DEFAULT_ENDPOINT = "http://127.0.0.1:19211/plan"
+_SEG_HINTS = {
+    "stairs_or_dropoff": ("stairs", "step", "stair", "dropoff", "ledge", "curb"),
+    "vehicle": ("car", "bus", "bike", "vehicle"),
+    "pedestrian": ("person", "human", "crowd"),
+}
+_SEG_HINT_PRIORITY = ("stairs_or_dropoff", "vehicle", "pedestrian")
 
 
 def _now_ms() -> int:
@@ -69,6 +75,175 @@ def _render_prompts(req: dict[str, Any], prompt_version: str) -> tuple[str, str]
 
     system_body = system_tpl.replace("{{PROMPT_VERSION}}", prompt_version)
     return system_body, user_body
+
+
+def _normalize_plan_request(req_payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    schema_version = str(req_payload.get("schemaVersion", "")).strip()
+    meta: dict[str, Any] = {"schemaVersion": schema_version}
+    if schema_version == "byes.planner_request.v1":
+        normalized = dict(req_payload)
+        meta["provider"] = str(req_payload.get("provider", "")).strip().lower() or None
+        return normalized, meta
+    if schema_version != "byes.plan_request.v1":
+        raise ValueError("schemaVersion must be byes.plan_request.v1 or byes.planner_request.v1")
+
+    run_id = str(req_payload.get("runId", "")).strip()
+    frame_seq = req_payload.get("frameSeq") if isinstance(req_payload.get("frameSeq"), int) else None
+    contexts = req_payload.get("contexts")
+    contexts = contexts if isinstance(contexts, dict) else {}
+    pov_ctx = contexts.get("pov")
+    pov_ctx = pov_ctx if isinstance(pov_ctx, dict) else {}
+    seg_ctx = contexts.get("seg")
+    seg_ctx = seg_ctx if isinstance(seg_ctx, dict) else {}
+    pov_fragment = str(pov_ctx.get("promptFragment", "")).strip()
+    seg_fragment = str(seg_ctx.get("promptFragment", "")).strip()
+    risk = req_payload.get("risk")
+    risk = risk if isinstance(risk, dict) else {}
+    risk_level = str(risk.get("riskLevel", "")).strip().lower() or "low"
+    hazards_count_raw = risk.get("hazardsCount")
+    hazards_count = int(hazards_count_raw) if isinstance(hazards_count_raw, int) and hazards_count_raw > 0 else 0
+    hazards_top: list[dict[str, Any]] = []
+    if hazards_count > 0:
+        severity = "critical" if risk_level == "critical" else ("warning" if risk_level in {"medium", "high"} else "info")
+        hazards_top = [{"hazardKind": "summary", "severity": severity}] * hazards_count
+    constraints = req_payload.get("constraints")
+    constraints = constraints if isinstance(constraints, dict) else {}
+    context_budget = req_payload.get("contextBudget")
+    context_budget = context_budget if isinstance(context_budget, dict) else {}
+    context_max_chars = int(context_budget.get("maxChars", 0) or 0)
+    context_max_tokens = int(context_budget.get("maxTokensApprox", 0) or 0)
+    context_mode = str(context_budget.get("mode", "decisions_plus_highlights")).strip() or "decisions_plus_highlights"
+    meta_payload = req_payload.get("meta")
+    meta_payload = meta_payload if isinstance(meta_payload, dict) else {}
+    context_prompt = pov_fragment
+    if str(meta_payload.get("promptVersion", "")).strip().lower() == "v2" and seg_fragment:
+        if context_prompt:
+            context_prompt = f"{context_prompt}\n\n{seg_fragment}"
+        else:
+            context_prompt = seg_fragment
+    normalized = {
+        "schemaVersion": "byes.planner_request.v1",
+        "runId": run_id,
+        "frameSeq": frame_seq,
+        "contextPack": {
+            "schemaVersion": "pov.context.v1",
+            "text": {"prompt": context_prompt},
+        },
+        "contextBudget": {
+            "maxChars": context_max_chars,
+            "maxTokensApprox": context_max_tokens,
+            "mode": context_mode,
+        },
+        "riskSummary": {
+            "hazardsTop": hazards_top,
+            "riskLevel": risk_level,
+            "hazardsCount": hazards_count,
+        },
+        "constraints": constraints,
+    }
+    for key in ("provider", "povIr", "segContext", "runPackagePath"):
+        if key in req_payload:
+            normalized[key] = req_payload.get(key)
+    if seg_fragment:
+        normalized["segContext"] = {
+            "text": {"promptFragment": seg_fragment},
+            "stats": {"out": {"segments": int(seg_ctx.get("tokenApprox", 0) or 0)}},
+        }
+    provider = str(meta_payload.get("provider", req_payload.get("provider", ""))).strip().lower() or None
+    prompt_version = str(meta_payload.get("promptVersion", "")).strip() or None
+    meta.update(
+        {
+            "provider": provider,
+            "promptVersion": prompt_version,
+            "rawPlanRequest": req_payload,
+        }
+    )
+    return normalized, meta
+
+
+def _extract_seg_fragment(plan_request_raw: dict[str, Any], normalized_req: dict[str, Any]) -> tuple[str, bool]:
+    contexts = plan_request_raw.get("contexts")
+    contexts = contexts if isinstance(contexts, dict) else {}
+    seg_ctx = contexts.get("seg")
+    seg_ctx = seg_ctx if isinstance(seg_ctx, dict) else {}
+    fragment = str(seg_ctx.get("promptFragment", "")).strip()
+    if fragment:
+        return fragment, True
+    seg_context = normalized_req.get("segContext")
+    seg_context = seg_context if isinstance(seg_context, dict) else {}
+    seg_text = seg_context.get("text")
+    seg_text = seg_text if isinstance(seg_text, dict) else {}
+    fragment = str(seg_text.get("promptFragment", "")).strip()
+    return fragment, bool(fragment)
+
+
+def _resolve_rule_hint(fragment: str) -> tuple[str | None, list[str]]:
+    text = str(fragment or "").strip().lower()
+    if not text:
+        return None, []
+    for hint in _SEG_HINT_PRIORITY:
+        keys = _SEG_HINTS.get(hint, ())
+        matched: list[str] = []
+        for key in keys:
+            if key in text:
+                matched.append(key)
+        if matched:
+            return hint, matched[:3]
+    return None, []
+
+
+def _apply_seg_hint_rules(
+    plan: dict[str, Any],
+    *,
+    risk_level: str,
+    hazard_hint: str | None,
+    matched_keywords: list[str],
+    seg_context_used: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    out = dict(plan)
+    actions = out.get("actions")
+    actions = [dict(item) for item in actions if isinstance(item, dict)] if isinstance(actions, list) else []
+    if not actions:
+        return out, {
+            "applied": False,
+            "ruleVersion": "v1",
+            "hazardHint": None,
+            "matchedKeywords": [],
+            "segContextUsed": bool(seg_context_used),
+            "riskLevel": risk_level,
+        }
+
+    applied = False
+    speak_text_map = {
+        "stairs_or_dropoff": "Possible stairs or drop-off ahead. Slow down and probe with your cane.",
+        "vehicle": "Vehicle nearby. Stop and check surroundings.",
+        "pedestrian": "People nearby. Proceed slowly and keep distance.",
+    }
+    confirm_text = "Possible stairs/drop-off ahead. Confirm stop?"
+
+    if hazard_hint in speak_text_map:
+        for action in actions:
+            action_type = str(action.get("type", "")).strip().lower()
+            payload = action.get("payload")
+            payload = dict(payload) if isinstance(payload, dict) else {}
+            if action_type == "speak":
+                payload["text"] = speak_text_map[hazard_hint]
+                action["payload"] = payload
+                applied = True
+            if hazard_hint == "stairs_or_dropoff" and action_type == "confirm":
+                payload["text"] = confirm_text
+                action["payload"] = payload
+                applied = True
+
+    out["actions"] = actions
+    return out, {
+        "applied": bool(applied),
+        "ruleVersion": "v1",
+        "hazardHint": hazard_hint,
+        "matchedKeywords": [str(item) for item in matched_keywords[:3]],
+        "segContextUsed": bool(seg_context_used),
+        "riskLevel": str(risk_level or "").strip().lower() or None,
+    }
 
 
 def _normalize_hazards(payload: Any) -> list[dict[str, Any]]:
@@ -336,17 +511,19 @@ def plan() -> Any:
     req_payload = request.get_json(silent=True)
     if not isinstance(req_payload, dict):
         return jsonify({"ok": False, "error": "request body must be object"}), 400
-    if str(req_payload.get("schemaVersion", "")).strip() != "byes.planner_request.v1":
-        return jsonify({"ok": False, "error": "schemaVersion must be byes.planner_request.v1"}), 400
+    try:
+        normalized_req, req_meta = _normalize_plan_request(req_payload)
+    except ValueError as ex:
+        return jsonify({"ok": False, "error": str(ex)}), 400
 
     endpoint = request.headers.get("X-Endpoint") or os.getenv("PLANNER_SERVICE_ENDPOINT", _DEFAULT_ENDPOINT)
-    provider_from_body = str(req_payload.get("provider", "")).strip().lower()
+    provider_from_body = str(req_meta.get("provider") or normalized_req.get("provider", "")).strip().lower()
     provider = provider_from_body if provider_from_body in {"reference", "llm", "pov"} else str(
         os.getenv("BYES_PLANNER_PROVIDER", "reference")
     ).strip().lower() or "reference"
-    prompt_version = str(os.getenv("BYES_PLANNER_PROMPT_VERSION", "v1")).strip() or "v1"
+    prompt_version = str(req_meta.get("promptVersion") or os.getenv("BYES_PLANNER_PROMPT_VERSION", "v2")).strip() or "v2"
     timeout_ms = int(os.getenv("BYES_PLANNER_LLM_TIMEOUT_MS", "2500") or "2500")
-    constraints = req_payload.get("constraints")
+    constraints = normalized_req.get("constraints")
     constraints = constraints if isinstance(constraints, dict) else {}
 
     fallback_used = False
@@ -360,8 +537,8 @@ def plan() -> Any:
     candidate_plan: dict[str, Any] | None = None
     if provider == "pov":
         planner_prompt_version = "n/a"
-        inline_pov = req_payload.get("povIr")
-        run_package_path = str(req_payload.get("runPackagePath", "")).strip()
+        inline_pov = normalized_req.get("povIr")
+        run_package_path = str(normalized_req.get("runPackagePath", "")).strip()
         if isinstance(inline_pov, dict):
             pov_source = "inline"
         elif run_package_path:
@@ -378,8 +555,8 @@ def plan() -> Any:
                     pov_ir = parse_pov_ir_obj(inline_pov)
                 else:
                     pov_ir = parse_pov_ir(Path(run_package_path) / "pov" / "pov_ir_v1.json")
-                run_id = str(req_payload.get("runId", "")).strip() or str(pov_ir.get("runId", "")).strip() or "pov-run"
-                frame_seq = req_payload.get("frameSeq") if isinstance(req_payload.get("frameSeq"), int) else None
+                run_id = str(normalized_req.get("runId", "")).strip() or str(pov_ir.get("runId", "")).strip() or "pov-run"
+                frame_seq = normalized_req.get("frameSeq") if isinstance(normalized_req.get("frameSeq"), int) else None
                 pov_plan, _diagnostics = pov_to_action_plan(
                     pov_ir,
                     constraints,
@@ -414,7 +591,7 @@ def plan() -> Any:
             json_valid = False
         else:
             try:
-                llm_plan, llm_meta = _call_llm_provider(req_payload, llm_endpoint, timeout_ms, prompt_version)
+                llm_plan, llm_meta = _call_llm_provider(normalized_req, llm_endpoint, timeout_ms, prompt_version)
                 validated_llm_plan, diagnostics = validate_and_normalize(llm_plan, constraints)
                 json_valid = bool(diagnostics.get("jsonValid"))
                 if validated_llm_plan is None:
@@ -446,13 +623,28 @@ def plan() -> Any:
                 json_valid = False
 
     if candidate_plan is None:
-        reference = _reference_plan(req_payload, endpoint)
+        reference = _reference_plan(normalized_req, endpoint)
         candidate_plan, diagnostics = validate_and_normalize(reference, constraints)
         if candidate_plan is None:
             return jsonify({"ok": False, "error": "reference_planner_invalid", "diagnostics": diagnostics}), 500
         planner_model = "reference-planner-v1"
         planner_backend = "http"
         planner_endpoint = endpoint
+
+    risk_summary = normalized_req.get("riskSummary")
+    risk_summary = risk_summary if isinstance(risk_summary, dict) else {}
+    risk_level = str(risk_summary.get("riskLevel", "")).strip().lower()
+    if not risk_level:
+        risk_level = str(candidate_plan.get("riskLevel", "")).strip().lower()
+    seg_fragment, seg_context_used = _extract_seg_fragment(req_payload, normalized_req)
+    hazard_hint, matched_keywords = _resolve_rule_hint(seg_fragment)
+    candidate_plan, rule_payload = _apply_seg_hint_rules(
+        candidate_plan,
+        risk_level=risk_level,
+        hazard_hint=hazard_hint,
+        matched_keywords=matched_keywords,
+        seg_context_used=seg_context_used,
+    )
 
     final = _with_planner_meta(
         candidate_plan,
@@ -465,6 +657,17 @@ def plan() -> Any:
         json_valid=json_valid,
         planner_model=planner_model,
     )
+    final_meta = final.get("meta")
+    final_meta = final_meta if isinstance(final_meta, dict) else {}
+    final_planner = final_meta.get("planner")
+    final_planner = final_planner if isinstance(final_planner, dict) else {}
+    final_planner["ruleVersion"] = str(rule_payload.get("ruleVersion", "v1"))
+    final_planner["ruleApplied"] = bool(rule_payload.get("applied"))
+    final_planner["ruleHazardHint"] = rule_payload.get("hazardHint")
+    final_planner["matchedKeywords"] = rule_payload.get("matchedKeywords", [])
+    final_planner["segContextUsed"] = bool(rule_payload.get("segContextUsed"))
+    final_meta["planner"] = final_planner
+    final["meta"] = final_meta
     return jsonify(final)
 
 

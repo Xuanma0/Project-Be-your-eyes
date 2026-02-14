@@ -503,6 +503,11 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         seg_context_chars = 0
         seg_context_segments_out = 0
         seg_context_trunc_segments_dropped = 0
+        plan_request_events_present = 0
+        plan_request_lines = 0
+        plan_request_schema_ok = 0
+        plan_request_seg_included_count = 0
+        plan_request_seg_chars_total = 0
         seg_schema = _load_seg_contract_schema()
         if events_v1_rel:
             events_v1_path = run_root / events_v1_rel
@@ -615,6 +620,28 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                         seg_prompt_warnings_count += 1
                                     if payload_ok:
                                         seg_prompt_schema_ok += 1
+                                if name == "plan.request":
+                                    plan_request_events_present = 1
+                                    plan_request_lines += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    schema_ok = (
+                                        str(payload.get("schemaVersion", "")).strip() == "byes.plan_request.v1"
+                                        and isinstance(payload.get("provider"), str)
+                                        and isinstance(payload.get("promptVersion"), str)
+                                    )
+                                    seg_included = bool(payload.get("segIncluded"))
+                                    try:
+                                        seg_chars = max(0, int(payload.get("segChars", 0)))
+                                    except Exception:
+                                        seg_chars = 0
+                                    if schema_ok:
+                                        plan_request_schema_ok += 1
+                                    else:
+                                        warnings.append("plan.request payload missing required fields")
+                                    if seg_included:
+                                        plan_request_seg_included_count += 1
+                                    plan_request_seg_chars_total += int(max(0, seg_chars))
                                 if name == "seg.segment":
                                     seg_events_present = 1
                                     seg_lines += 1
@@ -831,6 +858,11 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "segContextChars": int(seg_context_chars),
             "segContextSegmentsOut": int(seg_context_segments_out),
             "segContextTruncSegmentsDropped": int(seg_context_trunc_segments_dropped),
+            "planRequestEventsPresent": int(plan_request_events_present),
+            "planRequestLines": int(plan_request_lines),
+            "planRequestSchemaOk": int(plan_request_lines > 0 and plan_request_schema_ok == plan_request_lines),
+            "planRequestSegIncludedCount": int(plan_request_seg_included_count),
+            "planRequestSegCharsTotal": int(plan_request_seg_chars_total),
             "hazardUnknownKinds": len(hazard_unknown_kinds),
             "hazardAliasHits": int(hazard_alias_hits),
             "riskEventMissingFrameSeq": int(risk_event_missing_frame_seq),
@@ -880,6 +912,11 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"segContextChars: {summary['segContextChars']}")
             print(f"segContextSegmentsOut: {summary['segContextSegmentsOut']}")
             print(f"segContextTruncSegmentsDropped: {summary['segContextTruncSegmentsDropped']}")
+            print(f"planRequestEventsPresent: {summary['planRequestEventsPresent']}")
+            print(f"planRequestLines: {summary['planRequestLines']}")
+            print(f"planRequestSchemaOk: {summary['planRequestSchemaOk']}")
+            print(f"planRequestSegIncludedCount: {summary['planRequestSegIncludedCount']}")
+            print(f"planRequestSegCharsTotal: {summary['planRequestSegCharsTotal']}")
             print(f"hazardUnknownKinds: {summary['hazardUnknownKinds']}")
             print(f"hazardAliasHits: {summary['hazardAliasHits']}")
             print(f"riskEventMissingFrameSeq: {summary['riskEventMissingFrameSeq']}")

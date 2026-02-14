@@ -25,6 +25,8 @@ def compute_plan_eval(events: Iterable[dict[str, Any]] | None, report: dict[str,
     explicit_confirm_timeouts = 0
     pending_confirm_values: list[int] = []
     risk_levels: list[str] = []
+    rule_applied_count = 0
+    rule_hints: list[str] = []
 
     request_ids: set[str] = set()
     response_ids: set[str] = set()
@@ -73,6 +75,12 @@ def compute_plan_eval(events: Iterable[dict[str, Any]] | None, report: dict[str,
                     timeout_hit = "timeout" in reason or "expired" in reason
             if timeout_hit:
                 explicit_confirm_timeouts += 1
+
+        if name == "plan.rule_applied" and phase == "result" and status == "ok":
+            rule_applied_count += 1
+            hint = str(payload.get("hazardHint", "")).strip().lower()
+            if hint:
+                rule_hints.append(hint)
 
     unmatched_by_id = 0
     if request_ids:
@@ -138,6 +146,8 @@ def compute_plan_eval(events: Iterable[dict[str, Any]] | None, report: dict[str,
             "stopWhenNotCritical": int(max(0, stop_when_not_critical)),
             "confirmWhenNotCritical": int(max(0, confirm_when_not_critical)),
         },
+        "ruleAppliedCount": int(rule_applied_count),
+        "ruleHazardHintTop": _most_common_text(rule_hints),
     }
 
 
@@ -181,3 +191,17 @@ def _pick_risk_level(plan_payload: dict[str, Any], risk_levels: list[str]) -> st
     if risk_levels:
         return risk_levels[-1]
     return "low"
+
+
+def _most_common_text(values: list[str]) -> str | None:
+    if not values:
+        return None
+    counts: dict[str, int] = {}
+    for item in values:
+        key = str(item).strip().lower()
+        if not key:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return None
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]

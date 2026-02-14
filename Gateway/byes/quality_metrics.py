@@ -2270,6 +2270,88 @@ def extract_seg_prompt_summary_from_events_v1(events: Iterable[dict[str, Any]]) 
     }
 
 
+def extract_plan_request_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    event_count = 0
+    seg_included_count = 0
+    pov_included_count = 0
+    fallback_used_count = 0
+    seg_chars_values: list[int] = []
+    pov_chars_values: list[int] = []
+    seg_trunc_segments_dropped_total = 0
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "plan.request":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        event_count += 1
+        if bool(payload.get("segIncluded")):
+            seg_included_count += 1
+        if bool(payload.get("povIncluded")):
+            pov_included_count += 1
+        if isinstance(payload.get("fallbackUsed"), bool) and bool(payload.get("fallbackUsed")):
+            fallback_used_count += 1
+        seg_chars = _to_nonnegative_int(payload.get("segChars"))
+        pov_chars = _to_nonnegative_int(payload.get("povChars"))
+        seg_chars_values.append(seg_chars)
+        pov_chars_values.append(pov_chars)
+        seg_trunc_segments_dropped_total += _to_nonnegative_int(payload.get("segTruncSegmentsDropped"))
+
+    seg_stats = summarize_latency(seg_chars_values)
+    pov_stats = summarize_latency(pov_chars_values)
+    present = event_count > 0
+    return {
+        "present": present,
+        "events": int(event_count),
+        "segIncludedCount": int(seg_included_count),
+        "povIncludedCount": int(pov_included_count),
+        "segCharsTotal": int(sum(seg_chars_values)),
+        "segCharsP90": int(seg_stats.get("p90", 0) or 0),
+        "segTruncSegmentsDroppedTotal": int(seg_trunc_segments_dropped_total),
+        "povCharsTotal": int(sum(pov_chars_values)),
+        "povCharsP90": int(pov_stats.get("p90", 0) or 0),
+        "fallbackUsedCount": int(fallback_used_count),
+    }
+
+
+def extract_plan_rule_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    count = 0
+    hints: Counter[str] = Counter()
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "plan.rule_applied":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        hint = str(payload.get("hazardHint", "")).strip().lower()
+        count += 1
+        if hint:
+            hints[hint] += 1
+    top_hint = hints.most_common(1)[0][0] if hints else None
+    return {
+        "present": count > 0,
+        "ruleAppliedCount": int(count),
+        "ruleHazardHintTop": top_hint,
+    }
+
+
 def extract_risk_latency_metrics_from_events_v1(
     events: Iterable[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, dict[str, int]] | None]:

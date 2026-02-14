@@ -174,6 +174,11 @@ def _runtime_contract_defaults() -> dict[str, Any]:
             },
             "plannerDefaults": planner_defaults,
         },
+        "planRequest": {
+            "defaultPromptVersion": "v2",
+            "includeSegContext": True,
+            "includePovContext": True,
+        },
         "segPrompt": {
             "targets": seg_targets,
             "promptPresent": seg_prompt_present,
@@ -1943,6 +1948,16 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
             guardrails = guardrails if isinstance(guardrails, list) else []
             findings = bundle.get("findings", [])
             findings = findings if isinstance(findings, list) else []
+            plan_request_payload = bundle.get("planRequest")
+            plan_request_payload = plan_request_payload if isinstance(plan_request_payload, dict) else {}
+            planner_rule_payload = {
+                "applied": bool(planner.get("ruleApplied")),
+                "ruleVersion": planner.get("ruleVersion"),
+                "hazardHint": planner.get("ruleHazardHint"),
+                "matchedKeywords": planner.get("matchedKeywords"),
+                "segContextUsed": planner.get("segContextUsed"),
+                "riskLevel": str(plan_payload.get("riskLevel", "low")),
+            }
             _try_append_plan_events(
                 run_package_dir=run_package_dir,
                 manifest=manifest,
@@ -1957,16 +1972,28 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
                 blocking_count=blocking_count,
                 guardrails_applied=[str(item) for item in guardrails if str(item).strip()],
                 findings_count=len(findings),
+                plan_request=plan_request_payload,
+                rule_payload=planner_rule_payload,
             )
         else:
             planner = bundle.get("planner", {})
             planner = planner if isinstance(planner, dict) else {}
+            plan_request_payload = bundle.get("planRequest")
+            plan_request_payload = plan_request_payload if isinstance(plan_request_payload, dict) else {}
             actions_payload = plan_payload.get("actions")
             actions_payload = actions_payload if isinstance(actions_payload, list) else []
             guardrails = bundle.get("guardrailsApplied", [])
             guardrails = guardrails if isinstance(guardrails, list) else []
             findings = bundle.get("findings", [])
             findings = findings if isinstance(findings, list) else []
+            plan_request_row = _build_byes_event(
+                run_id=run_id or "pov-live",
+                frame_seq=frame_seq or 1,
+                category="plan",
+                name="plan.request",
+                latency_ms=latency_ms,
+                payload=_build_plan_request_event_payload(plan_request_payload, planner),
+            )
             plan_row = _build_byes_event(
                 run_id=run_id or "pov-live",
                 frame_seq=frame_seq or 1,
@@ -1986,6 +2013,22 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
                     "actionsCount": len(actions_payload),
                 },
             )
+            rule_row = None
+            if bool(planner.get("ruleApplied")):
+                rule_row = _build_byes_event(
+                    run_id=run_id or "pov-live",
+                    frame_seq=frame_seq or 1,
+                    category="plan",
+                    name="plan.rule_applied",
+                    latency_ms=latency_ms,
+                    payload={
+                        "ruleVersion": planner.get("ruleVersion"),
+                        "hazardHint": planner.get("ruleHazardHint"),
+                        "matchedKeywords": [str(item) for item in (planner.get("matchedKeywords") or [])[:3]],
+                        "segContextUsed": bool(planner.get("segContextUsed")),
+                        "riskLevel": str(plan_payload.get("riskLevel", "low")),
+                    },
+                )
             safety_row = _build_byes_event(
                 run_id=run_id or "pov-live",
                 frame_seq=frame_seq or 1,
@@ -1998,7 +2041,10 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
                     "findingsCount": len(findings),
                 },
             )
+            await gateway._emit_inference_event(plan_request_row)  # noqa: SLF001
             await gateway._emit_inference_event(plan_row)  # noqa: SLF001
+            if isinstance(rule_row, dict):
+                await gateway._emit_inference_event(rule_row)  # noqa: SLF001
             await gateway._emit_inference_event(safety_row)  # noqa: SLF001
         return plan_payload
     except HTTPException:
@@ -2167,6 +2213,9 @@ async def run_packages_list(
     max_seg_latency_p90: int | None = None,
     max_seg_ctx_chars: int | None = None,
     max_seg_ctx_trunc_dropped: int | None = None,
+    max_plan_req_seg_chars_p90: int | None = None,
+    max_plan_req_seg_trunc_dropped: int | None = None,
+    plan_req_fallback_used: str = "any",
     min_seg_prompt_text_chars: int | None = None,
     max_seg_prompt_trunc_rate: float | None = None,
     max_seg_prompt_trunc_dropped: int | None = None,
@@ -2205,6 +2254,9 @@ async def run_packages_list(
         max_seg_latency_p90=max_seg_latency_p90,
         max_seg_ctx_chars=max_seg_ctx_chars,
         max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
+        max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
+        max_plan_req_seg_trunc_dropped=max_plan_req_seg_trunc_dropped,
+        plan_req_fallback_used=plan_req_fallback_used,
         min_seg_prompt_text_chars=min_seg_prompt_text_chars,
         max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
         max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
@@ -2244,6 +2296,9 @@ async def run_packages_list(
             "max_seg_latency_p90": max_seg_latency_p90,
             "max_seg_ctx_chars": max_seg_ctx_chars,
             "max_seg_ctx_trunc_dropped": max_seg_ctx_trunc_dropped,
+            "max_plan_req_seg_chars_p90": max_plan_req_seg_chars_p90,
+            "max_plan_req_seg_trunc_dropped": max_plan_req_seg_trunc_dropped,
+            "plan_req_fallback_used": plan_req_fallback_used,
             "min_seg_prompt_text_chars": min_seg_prompt_text_chars,
             "max_seg_prompt_trunc_rate": max_seg_prompt_trunc_rate,
             "max_seg_prompt_trunc_dropped": max_seg_prompt_trunc_dropped,
@@ -2287,6 +2342,9 @@ async def run_packages_export_json(
     max_seg_latency_p90: int | None = None,
     max_seg_ctx_chars: int | None = None,
     max_seg_ctx_trunc_dropped: int | None = None,
+    max_plan_req_seg_chars_p90: int | None = None,
+    max_plan_req_seg_trunc_dropped: int | None = None,
+    plan_req_fallback_used: str = "any",
     min_seg_prompt_text_chars: int | None = None,
     max_seg_prompt_trunc_rate: float | None = None,
     max_seg_prompt_trunc_dropped: int | None = None,
@@ -2325,6 +2383,9 @@ async def run_packages_export_json(
         max_seg_latency_p90=max_seg_latency_p90,
         max_seg_ctx_chars=max_seg_ctx_chars,
         max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
+        max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
+        max_plan_req_seg_trunc_dropped=max_plan_req_seg_trunc_dropped,
+        plan_req_fallback_used=plan_req_fallback_used,
         min_seg_prompt_text_chars=min_seg_prompt_text_chars,
         max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
         max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
@@ -2370,6 +2431,9 @@ async def run_packages_export_csv(
     max_seg_latency_p90: int | None = None,
     max_seg_ctx_chars: int | None = None,
     max_seg_ctx_trunc_dropped: int | None = None,
+    max_plan_req_seg_chars_p90: int | None = None,
+    max_plan_req_seg_trunc_dropped: int | None = None,
+    plan_req_fallback_used: str = "any",
     min_seg_prompt_text_chars: int | None = None,
     max_seg_prompt_trunc_rate: float | None = None,
     max_seg_prompt_trunc_dropped: int | None = None,
@@ -2408,6 +2472,9 @@ async def run_packages_export_csv(
         max_seg_latency_p90=max_seg_latency_p90,
         max_seg_ctx_chars=max_seg_ctx_chars,
         max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
+        max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
+        max_plan_req_seg_trunc_dropped=max_plan_req_seg_trunc_dropped,
+        plan_req_fallback_used=plan_req_fallback_used,
         min_seg_prompt_text_chars=min_seg_prompt_text_chars,
         max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
         max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
@@ -2460,6 +2527,12 @@ async def run_packages_export_csv(
         "seg_ctx_chars",
         "seg_ctx_segments",
         "seg_ctx_trunc_dropped",
+        "plan_req_seg_chars_p90",
+        "plan_req_seg_trunc_dropped",
+        "plan_req_pov_chars_p90",
+        "plan_req_fallback_used",
+        "plan_rule_applied",
+        "plan_rule_hint",
         "seg_prompt_present",
         "seg_prompt_text_chars_total",
         "seg_prompt_chars_out",
@@ -2680,6 +2753,35 @@ def _append_events_v1_rows(events_path: Path, rows: list[dict[str, Any]]) -> boo
     return True
 
 
+def _build_plan_request_event_payload(plan_request: dict[str, Any] | None, planner: dict[str, Any]) -> dict[str, Any]:
+    request_payload = plan_request if isinstance(plan_request, dict) else {}
+    contexts = request_payload.get("contexts")
+    contexts = contexts if isinstance(contexts, dict) else {}
+    seg = contexts.get("seg")
+    seg = seg if isinstance(seg, dict) else {}
+    pov = contexts.get("pov")
+    pov = pov if isinstance(pov, dict) else {}
+    seg_trunc = seg.get("truncation")
+    seg_trunc = seg_trunc if isinstance(seg_trunc, dict) else {}
+    meta = request_payload.get("meta")
+    meta = meta if isinstance(meta, dict) else {}
+    seg_chars = int(seg.get("chars", 0) or 0)
+    pov_chars = int(pov.get("chars", 0) or 0)
+    return {
+        "schemaVersion": "byes.plan_request.v1",
+        "provider": planner.get("plannerProvider") or planner.get("provider") or meta.get("provider"),
+        "promptVersion": planner.get("promptVersion") or meta.get("promptVersion"),
+        "segIncluded": bool(seg.get("included")),
+        "povIncluded": bool(pov.get("included")),
+        "segChars": int(max(0, seg_chars)),
+        "povChars": int(max(0, pov_chars)),
+        "segTruncSegmentsDropped": int(max(0, int(seg_trunc.get("segmentsDropped", 0) or 0))),
+        "segTruncCharsDropped": int(max(0, int(seg_trunc.get("charsDropped", 0) or 0))),
+        "fallbackUsed": bool(planner.get("fallbackUsed")) if isinstance(planner.get("fallbackUsed"), bool) else None,
+        "fallbackReason": planner.get("fallbackReason"),
+    }
+
+
 def _try_append_plan_events(
     *,
     run_package_dir: Path,
@@ -2695,6 +2797,8 @@ def _try_append_plan_events(
     blocking_count: int,
     guardrails_applied: list[str],
     findings_count: int,
+    plan_request: dict[str, Any] | None = None,
+    rule_payload: dict[str, Any] | None = None,
 ) -> bool:
     events_path = _resolve_events_v1_path(run_package_dir, manifest)
     now_ms = _now_ms()
@@ -2719,7 +2823,21 @@ def _try_append_plan_events(
         "guardrailsApplied": [str(item) for item in guardrails_applied if str(item).strip()],
         "findingsCount": int(max(0, findings_count)),
     }
+    plan_request_payload = _build_plan_request_event_payload(plan_request, planner)
     rows = [
+        {
+            "schemaVersion": "byes.event.v1",
+            "tsMs": now_ms,
+            "runId": run_id,
+            "frameSeq": safe_frame_seq,
+            "component": "gateway",
+            "category": "plan",
+            "name": "plan.request",
+            "phase": "result",
+            "status": "ok",
+            "latencyMs": int(max(0, latency_ms)),
+            "payload": plan_request_payload,
+        },
         {
             "schemaVersion": "byes.event.v1",
             "tsMs": now_ms,
@@ -2747,6 +2865,29 @@ def _try_append_plan_events(
             "payload": safety_payload,
         },
     ]
+    rule = rule_payload if isinstance(rule_payload, dict) else {}
+    if bool(rule.get("applied")):
+        rows.append(
+            {
+                "schemaVersion": "byes.event.v1",
+                "tsMs": now_ms,
+                "runId": run_id,
+                "frameSeq": safe_frame_seq,
+                "component": "gateway",
+                "category": "plan",
+                "name": "plan.rule_applied",
+                "phase": "result",
+                "status": "ok",
+                "latencyMs": int(max(0, latency_ms)),
+                "payload": {
+                    "ruleVersion": str(rule.get("ruleVersion", "v1")),
+                    "hazardHint": rule.get("hazardHint"),
+                    "matchedKeywords": [str(item) for item in (rule.get("matchedKeywords") or [])[:3]],
+                    "segContextUsed": bool(rule.get("segContextUsed")),
+                    "riskLevel": rule.get("riskLevel"),
+                },
+            }
+        )
     return _append_events_v1_rows(events_path, rows)
 
 
@@ -3017,6 +3158,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     seg_prompt_payload = seg_prompt_payload if isinstance(seg_prompt_payload, dict) else {}
     seg_context_payload = summary.get("segContext", {})
     seg_context_payload = seg_context_payload if isinstance(seg_context_payload, dict) else {}
+    plan_request_payload = summary.get("planRequest", {})
+    plan_request_payload = plan_request_payload if isinstance(plan_request_payload, dict) else {}
     plan_quality_payload = summary.get("planQuality", {})
     plan_quality_payload = plan_quality_payload if isinstance(plan_quality_payload, dict) else {}
     plan_eval_payload = summary.get("planEval", {})
@@ -3068,6 +3211,12 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     plan_confirm_timeouts = confirm_timeouts
     plan_overcautious_rate: float | None = None
     plan_guardrail_override_rate: float | None = None
+    plan_rule_applied = False
+    plan_rule_hint: str | None = None
+    plan_req_seg_chars_p90: int | None = None
+    plan_req_seg_trunc_dropped: int | None = None
+    plan_req_pov_chars_p90: int | None = None
+    plan_req_fallback_used = False
     plan_actions_payload = plan_payload.get("actions")
     if isinstance(plan_actions_payload, dict):
         raw_actions = _read_float(plan_actions_payload, "count")
@@ -3127,6 +3276,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         overcautious_raw = _read_float(overcautious_payload, "rate")
         if overcautious_raw is not None:
             plan_overcautious_rate = float(overcautious_raw)
+        plan_rule_applied = int(plan_eval_payload.get("ruleAppliedCount", 0) or 0) > 0
+        hint_text = str(plan_eval_payload.get("ruleHazardHintTop", "")).strip()
+        if hint_text:
+            plan_rule_hint = hint_text
     planner_payload = plan_payload.get("planner")
     planner_payload = planner_payload if isinstance(planner_payload, dict) else {}
     if not plan_prompt_version:
@@ -3139,6 +3292,19 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
             plan_json_valid = json_valid_raw
     if not plan_fallback_used and isinstance(planner_payload.get("fallbackUsed"), bool):
         plan_fallback_used = bool(planner_payload.get("fallbackUsed"))
+    if isinstance(plan_request_payload, dict) and bool(plan_request_payload.get("present")):
+        seg_chars_raw = _read_float(plan_request_payload, "segCharsP90")
+        if seg_chars_raw is not None:
+            plan_req_seg_chars_p90 = int(seg_chars_raw)
+        seg_trunc_raw = _read_float(plan_request_payload, "segTruncSegmentsDroppedTotal")
+        if seg_trunc_raw is not None:
+            plan_req_seg_trunc_dropped = int(seg_trunc_raw)
+        pov_chars_raw = _read_float(plan_request_payload, "povCharsP90")
+        if pov_chars_raw is not None:
+            plan_req_pov_chars_p90 = int(pov_chars_raw)
+        fallback_count_raw = _read_float(plan_request_payload, "fallbackUsedCount")
+        if fallback_count_raw is not None:
+            plan_req_fallback_used = int(fallback_count_raw) > 0
     if isinstance(depth_risk, dict):
         critical = depth_risk.get("critical", {})
         delay = depth_risk.get("detectionDelayFrames", {})
@@ -3291,6 +3457,12 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "plan_latency_p90": plan_latency_p90,
         "plan_overcautious_rate": plan_overcautious_rate,
         "plan_guardrail_override_rate": plan_guardrail_override_rate,
+        "plan_rule_applied": plan_rule_applied,
+        "plan_rule_hint": plan_rule_hint,
+        "plan_req_seg_chars_p90": plan_req_seg_chars_p90,
+        "plan_req_seg_trunc_dropped": plan_req_seg_trunc_dropped,
+        "plan_req_pov_chars_p90": plan_req_pov_chars_p90,
+        "plan_req_fallback_used": plan_req_fallback_used,
         "summary": summary,
     }
     row.update(urls)
@@ -3317,6 +3489,9 @@ def _matches_run_filters(
     max_seg_latency_p90: int | None,
     max_seg_ctx_chars: int | None,
     max_seg_ctx_trunc_dropped: int | None,
+    max_plan_req_seg_chars_p90: int | None,
+    max_plan_req_seg_trunc_dropped: int | None,
+    plan_req_fallback_used: str | None,
     min_seg_prompt_text_chars: int | None,
     max_seg_prompt_trunc_rate: float | None,
     max_seg_prompt_trunc_dropped: int | None,
@@ -3418,6 +3593,25 @@ def _matches_run_filters(
         if value is None:
             return False
         if int(value) > int(max_seg_ctx_trunc_dropped):
+            return False
+    if max_plan_req_seg_chars_p90 is not None:
+        value = row.get("plan_req_seg_chars_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_plan_req_seg_chars_p90):
+            return False
+    if max_plan_req_seg_trunc_dropped is not None:
+        value = row.get("plan_req_seg_trunc_dropped")
+        if value is None:
+            return False
+        if int(value) > int(max_plan_req_seg_trunc_dropped):
+            return False
+    if plan_req_fallback_used:
+        normalized = plan_req_fallback_used.strip().lower()
+        present = bool(row.get("plan_req_fallback_used"))
+        if normalized in {"true", "1", "yes"} and not present:
+            return False
+        if normalized in {"false", "0", "no"} and present:
             return False
     if min_seg_prompt_text_chars is not None:
         value = row.get("seg_prompt_text_chars_total")
@@ -3532,6 +3726,10 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "seg_ctx_chars",
         "seg_ctx_segments",
         "seg_ctx_trunc_dropped",
+        "plan_req_seg_chars_p90",
+        "plan_req_seg_trunc_dropped",
+        "plan_req_pov_chars_p90",
+        "plan_rule_applied",
         "pov_decisions",
         "pov_token_approx",
         "pov_decision_per_min",
@@ -3588,6 +3786,9 @@ async def _query_run_package_rows(
     max_seg_latency_p90: int | None,
     max_seg_ctx_chars: int | None,
     max_seg_ctx_trunc_dropped: int | None,
+    max_plan_req_seg_chars_p90: int | None,
+    max_plan_req_seg_trunc_dropped: int | None,
+    plan_req_fallback_used: str | None,
     min_seg_prompt_text_chars: int | None,
     max_seg_prompt_trunc_rate: float | None,
     max_seg_prompt_trunc_dropped: int | None,
@@ -3632,6 +3833,9 @@ async def _query_run_package_rows(
             max_seg_latency_p90=max_seg_latency_p90,
             max_seg_ctx_chars=max_seg_ctx_chars,
             max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
+            max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
+            max_plan_req_seg_trunc_dropped=max_plan_req_seg_trunc_dropped,
+            plan_req_fallback_used=plan_req_fallback_used,
             min_seg_prompt_text_chars=min_seg_prompt_text_chars,
             max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
             max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
@@ -3704,6 +3908,9 @@ async def runs_dashboard(
     max_seg_latency_p90: int | None = None,
     max_seg_ctx_chars: int | None = None,
     max_seg_ctx_trunc_dropped: int | None = None,
+    max_plan_req_seg_chars_p90: int | None = None,
+    max_plan_req_seg_trunc_dropped: int | None = None,
+    plan_req_fallback_used: str = "any",
     min_seg_prompt_text_chars: int | None = None,
     max_seg_prompt_trunc_rate: float | None = None,
     max_seg_prompt_trunc_dropped: int | None = None,
@@ -3743,6 +3950,9 @@ async def runs_dashboard(
         max_seg_latency_p90=max_seg_latency_p90,
         max_seg_ctx_chars=max_seg_ctx_chars,
         max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
+        max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
+        max_plan_req_seg_trunc_dropped=max_plan_req_seg_trunc_dropped,
+        plan_req_fallback_used=plan_req_fallback_used,
         min_seg_prompt_text_chars=min_seg_prompt_text_chars,
         max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
         max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,

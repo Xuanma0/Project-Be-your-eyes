@@ -67,9 +67,13 @@ def extract_risk_summary(events_rows: list[dict[str, Any]], frame_seq: int | Non
         return {
             "hazardsTop": [],
             "riskLevel": "low",
+            "hazardsCount": 0,
             "riskLatencyP90": None,
             "missCriticalCount": None,
             "critical_fn": None,
+            "backend": None,
+            "model": None,
+            "endpoint": None,
         }
 
     chosen = sorted(
@@ -97,9 +101,13 @@ def extract_risk_summary(events_rows: list[dict[str, Any]], frame_seq: int | Non
     return {
         "hazardsTop": hazards_top,
         "riskLevel": risk_level,
+        "hazardsCount": len(hazards_top),
         "riskLatencyP90": latency,
         "missCriticalCount": None,
         "critical_fn": None,
+        "backend": payload.get("backend"),
+        "model": payload.get("model"),
+        "endpoint": payload.get("endpoint"),
     }
 
 
@@ -120,24 +128,84 @@ def build_planner_request(
         "allowHaptic": bool(constraints.get("allowHaptic", False)),
         "maxActions": max(1, int(constraints.get("maxActions", 3) or 3)),
     }
-    budget = context_pack.get("budget", {})
+    budget = context_pack.get("budget")
     budget = budget if isinstance(budget, dict) else {}
+    context_text = context_pack.get("text")
+    context_text = context_text if isinstance(context_text, dict) else {}
+    context_prompt_fragment = str(context_text.get("prompt", "")).strip()
+    context_stats = context_pack.get("stats")
+    context_stats = context_stats if isinstance(context_stats, dict) else {}
+    context_out = context_stats.get("out")
+    context_out = context_out if isinstance(context_out, dict) else {}
+    context_trunc = context_stats.get("truncation")
+    context_trunc = context_trunc if isinstance(context_trunc, dict) else {}
+
+    seg_payload = seg_context if isinstance(seg_context, dict) else {}
+    seg_text = seg_payload.get("text")
+    seg_text = seg_text if isinstance(seg_text, dict) else {}
+    seg_prompt_fragment = str(seg_text.get("promptFragment", "")).strip()
+    seg_stats = seg_payload.get("stats")
+    seg_stats = seg_stats if isinstance(seg_stats, dict) else {}
+    seg_out = seg_stats.get("out")
+    seg_out = seg_out if isinstance(seg_out, dict) else {}
+    seg_trunc = seg_stats.get("truncation")
+    seg_trunc = seg_trunc if isinstance(seg_trunc, dict) else {}
+
+    provider_value = str(planner_provider or "").strip().lower()
+    if provider_value not in {"mock", "http", "reference", "llm", "pov"}:
+        provider_value = "mock"
+    prompt_version = str(os.getenv("BYES_PLANNER_PROMPT_VERSION", "v2")).strip() or "v2"
+
     payload = {
-        "schemaVersion": "byes.planner_request.v1",
+        "schemaVersion": "byes.plan_request.v1",
         "runId": run_id,
         "frameSeq": frame_seq if isinstance(frame_seq, int) else None,
-        "contextPack": context_pack,
-        "contextBudget": {
-            "maxChars": int(budget.get("maxChars", 0) or 0),
-            "maxTokensApprox": int(budget.get("maxTokensApprox", 0) or 0),
-            "mode": str(budget.get("mode", "decisions_plus_highlights")),
+        "risk": {
+            "riskLevel": str(risk_summary.get("riskLevel", "low") or "low"),
+            "hazardsCount": int(risk_summary.get("hazardsCount", len(risk_summary.get("hazardsTop", [])) if isinstance(risk_summary.get("hazardsTop"), list) else 0) or 0),
+            "model": risk_summary.get("model"),
+            "backend": risk_summary.get("backend"),
+            "endpoint": risk_summary.get("endpoint"),
         },
-        "riskSummary": risk_summary,
-        "constraints": normalized_constraints,
+        "contexts": {
+            "pov": {
+                "included": bool(context_prompt_fragment),
+                "promptFragment": context_prompt_fragment or None,
+                "chars": len(context_prompt_fragment),
+                "tokenApprox": _as_int(context_out.get("tokenApprox")),
+                "truncation": {
+                    "dropped": _as_int(context_trunc.get("charsDropped")),
+                },
+            },
+            "seg": {
+                "included": bool(seg_prompt_fragment),
+                "promptFragment": seg_prompt_fragment or None,
+                "chars": len(seg_prompt_fragment),
+                "tokenApprox": _as_int(seg_out.get("tokenApprox")),
+                "truncation": {
+                    "segmentsDropped": _as_int(seg_trunc.get("segmentsDropped")),
+                    "charsDropped": _as_int(seg_trunc.get("charsDropped")),
+                },
+            },
+        },
+        "meta": {
+            "provider": provider_value,
+            "promptVersion": prompt_version,
+            "createdAtMs": _now_ms(),
+        },
     }
-    planner_provider_text = str(planner_provider or "").strip().lower()
-    if planner_provider_text in {"reference", "llm", "pov"}:
-        payload["provider"] = planner_provider_text
+
+    # Legacy-compatible fields for older planner backends still expecting byes.planner_request.v1.
+    payload["contextPack"] = context_pack
+    payload["contextBudget"] = {
+        "maxChars": int(budget.get("maxChars", 0) or 0),
+        "maxTokensApprox": int(budget.get("maxTokensApprox", 0) or 0),
+        "mode": str(budget.get("mode", "decisions_plus_highlights")),
+    }
+    payload["riskSummary"] = risk_summary
+    payload["constraints"] = normalized_constraints
+    if provider_value in {"reference", "llm", "pov"}:
+        payload["provider"] = provider_value
     if isinstance(pov_ir_inline, dict):
         payload["povIr"] = pov_ir_inline
     if isinstance(seg_context, dict):
@@ -243,6 +311,7 @@ def generate_action_plan(
         "plan": guarded_plan,
         "contextPack": context_pack,
         "segContext": seg_context,
+        "planRequest": planner_request,
         "riskSummary": risk_summary,
         "guardrailsApplied": list(guardrails_applied),
         "findings": findings,
@@ -303,6 +372,10 @@ def summarize_plan_for_report(bundle: dict[str, Any]) -> dict[str, Any]:
             "fallbackUsed": planner_meta.get("fallbackUsed"),
             "fallbackReason": planner_meta.get("fallbackReason"),
             "jsonValid": planner_meta.get("jsonValid"),
+            "ruleVersion": planner_meta.get("ruleVersion"),
+            "ruleApplied": planner_meta.get("ruleApplied"),
+            "ruleHazardHint": planner_meta.get("ruleHazardHint"),
+            "matchedKeywords": planner_meta.get("matchedKeywords"),
         },
         "riskLevel": str(plan.get("riskLevel", "")).strip() or "low",
         "actions": {
