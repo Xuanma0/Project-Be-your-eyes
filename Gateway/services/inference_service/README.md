@@ -63,6 +63,19 @@ $env:BYES_SERVICE_SEG_MODEL_ID="sam3-seg-v1"
 $env:BYES_SERVICE_SEG_TIMEOUT_MS="1200"
 ```
 
+Reference seg chain example:
+
+```powershell
+# start reference seg service first
+python -m uvicorn services.reference_seg_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19231
+
+# then start inference_service with seg provider=http
+$env:BYES_SERVICE_SEG_PROVIDER="http"
+$env:BYES_SERVICE_SEG_ENDPOINT="http://127.0.0.1:19231/seg"
+$env:BYES_SERVICE_SEG_MODEL_ID="reference-seg-v1"
+python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
+```
+
 ## Calibrated Risk Defaults (v4.28 -> v4.29)
 
 Current default thresholds:

@@ -26,12 +26,15 @@ class HttpSegProvider:
         self.timeout_ms = max(1, int(timeout_ms))
         self.model = str(model_id or "").strip() or "http-seg"
 
-    def infer(self, image: Image.Image, frame_seq: int | None) -> dict[str, Any]:
+    def infer(self, image: Image.Image, frame_seq: int | None, run_id: str | None = None) -> dict[str, Any]:
         started = _now_ms()
         payload = {
             "frameSeq": frame_seq,
             "image_b64": _encode_image_b64(image),
         }
+        run_id_text = str(run_id or "").strip()
+        if run_id_text:
+            payload["runId"] = run_id_text
         try:
             timeout_s = max(0.05, self.timeout_ms / 1000.0)
             with httpx.Client(timeout=timeout_s) as client:

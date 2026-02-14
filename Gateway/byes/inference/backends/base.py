@@ -54,5 +54,11 @@ class SegBackend(Protocol):
     model_id: str | None
     endpoint: str | None
 
-    async def infer(self, image_bytes: bytes, frame_seq: int | None, ts_ms: int) -> SegResult:
+    async def infer(
+        self,
+        image_bytes: bytes,
+        frame_seq: int | None,
+        ts_ms: int,
+        run_id: str | None = None,
+    ) -> SegResult:
         ...

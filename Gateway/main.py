@@ -654,7 +654,7 @@ class GatewayApp:
         if self.config.inference_enable_seg:
             seg_started_ms = _now_ms()
             try:
-                seg_result = await self.seg_backend.infer(frame_bytes, seq, ts_ms)
+                seg_result = await self.seg_backend.infer(frame_bytes, seq, ts_ms, run_id=run_id)
             except Exception as exc:  # noqa: BLE001
                 seg_result = SegResult(
                     status="error",

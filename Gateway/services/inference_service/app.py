@@ -32,6 +32,7 @@ def _now_ms() -> int:
 class InferenceRequest(BaseModel):
     image_b64: str
     frameSeq: int | None = None
+    runId: str | None = None
     riskThresholds: dict[str, float] | None = None
 
 
@@ -262,7 +263,7 @@ def infer_seg(request: InferenceRequest) -> dict[str, Any]:
     image = _decode_pil_image(request.image_b64)
     provider = get_seg_provider()
     try:
-        result = provider.infer(image, request.frameSeq)
+        result = provider.infer(image, request.frameSeq, request.runId)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -291,7 +292,16 @@ def infer_seg(request: InferenceRequest) -> dict[str, Any]:
 
     model = str(result.get("model", provider.model)).strip() or provider.model
     latency_ms = max(0, _now_ms() - started)
-    return {"segments": segments, "latencyMs": latency_ms, "model": model}
+    backend = str(result.get("backend", provider.name)).strip().lower() or provider.name
+    endpoint = result.get("endpoint", provider.endpoint)
+    endpoint_text = str(endpoint).strip() if endpoint is not None else ""
+    return {
+        "segments": segments,
+        "latencyMs": latency_ms,
+        "model": model,
+        "backend": backend,
+        "endpoint": endpoint_text or None,
+    }
 
 
 # TODO: replace infer_ocr and infer_risk internals with real model pipelines:

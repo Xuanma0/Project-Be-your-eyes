@@ -170,13 +170,22 @@ class HttpSegBackend:
         self.model_id = str(model_id or "").strip() or None
         self.endpoint = _sanitize_endpoint(self.url)
 
-    async def infer(self, image_bytes: bytes, frame_seq: int | None, ts_ms: int) -> SegResult:
+    async def infer(
+        self,
+        image_bytes: bytes,
+        frame_seq: int | None,
+        ts_ms: int,
+        run_id: str | None = None,
+    ) -> SegResult:
         started = _now_ms()
         request_payload = {
             "frameSeq": frame_seq,
             "tsMs": ts_ms,
             "image_b64": base64.b64encode(image_bytes).decode("ascii"),
         }
+        run_id_text = str(run_id or "").strip()
+        if run_id_text:
+            request_payload["runId"] = run_id_text
         try:
             timeout_s = max(0.05, self.timeout_ms / 1000.0)
             async with httpx.AsyncClient(timeout=timeout_s) as client:

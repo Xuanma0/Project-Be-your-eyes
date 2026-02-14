@@ -12,6 +12,6 @@ class MockSegProvider:
         self.model = str(model_id or "").strip() or "mock-seg"
         self.endpoint: str | None = None
 
-    def infer(self, image: Image.Image, frame_seq: int | None) -> dict[str, Any]:
-        del image, frame_seq
+    def infer(self, image: Image.Image, frame_seq: int | None, run_id: str | None = None) -> dict[str, Any]:
+        del image, frame_seq, run_id
         return {"segments": [], "model": self.model}

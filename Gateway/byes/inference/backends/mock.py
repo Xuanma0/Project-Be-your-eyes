@@ -68,9 +68,15 @@ class MockSegBackend:
         self.model_id: str | None = str(model_id or "").strip() or "mock-seg"
         self.endpoint: str | None = None
 
-    async def infer(self, image_bytes: bytes, frame_seq: int | None, ts_ms: int) -> SegResult:
+    async def infer(
+        self,
+        image_bytes: bytes,
+        frame_seq: int | None,
+        ts_ms: int,
+        run_id: str | None = None,
+    ) -> SegResult:
         started = _now_ms()
-        del image_bytes, frame_seq, ts_ms
+        del image_bytes, frame_seq, ts_ms, run_id
         latency = max(0, _now_ms() - started)
         return SegResult(
             segments=list(self._segments),

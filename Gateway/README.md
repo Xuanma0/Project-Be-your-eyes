@@ -127,6 +127,26 @@ Future SAM3 path:
 - point `BYES_SEG_HTTP_URL` to external SAM3-compatible service exposing `POST /seg`;
 - return `segments` as `{label, score, bbox}`.
 
+Reference seg HTTP chain (Gateway -> inference_service -> reference_seg_service):
+
+```powershell
+# terminal 1: reference seg service
+python -m uvicorn services.reference_seg_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19231
+
+# terminal 2: inference_service (seg provider=http -> reference seg service)
+$env:BYES_SERVICE_SEG_PROVIDER="http"
+$env:BYES_SERVICE_SEG_ENDPOINT="http://127.0.0.1:19231/seg"
+python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
+
+# terminal 3: Gateway replay with seg enabled
+cd Gateway
+$env:BYES_ENABLE_SEG="1"
+$env:BYES_SEG_BACKEND="http"
+$env:BYES_SEG_HTTP_URL="http://127.0.0.1:19120/seg"
+python scripts/replay_run_package.py --run-package tests/fixtures/run_package_with_seg_gt_min --reset
+python scripts/report_run.py --run-package tests/fixtures/run_package_with_seg_gt_min
+```
+
 ## Planning API (/api/plan)
 
 Generate an `ActionPlan v1` from POV context + risk events.
