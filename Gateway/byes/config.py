@@ -283,6 +283,11 @@ class GatewayConfig:
     inference_seg_http_url: str = "http://127.0.0.1:9003/seg"
     inference_seg_targets: tuple[str, ...] = ()
     inference_seg_prompt: dict[str, Any] | None = None
+    inference_seg_prompt_max_chars: int = 256
+    inference_seg_prompt_max_targets: int = 8
+    inference_seg_prompt_max_boxes: int = 4
+    inference_seg_prompt_max_points: int = 8
+    inference_seg_prompt_budget_mode: str = "targets_text_boxes_points"
     inference_ocr_timeout_ms: int = 1500
     inference_risk_timeout_ms: int = 1200
     inference_seg_timeout_ms: int = 1200
@@ -425,6 +430,14 @@ def load_config() -> GatewayConfig:
         inference_seg_http_url=os.getenv("BYES_SEG_HTTP_URL", "http://127.0.0.1:9003/seg"),
         inference_seg_targets=_env_string_list("BYES_SEG_TARGETS", "BYES_SEG_TARGETS_JSON"),
         inference_seg_prompt=_env_seg_prompt(),
+        inference_seg_prompt_max_chars=_env_int("BYES_SEG_PROMPT_MAX_CHARS", 256),
+        inference_seg_prompt_max_targets=_env_int("BYES_SEG_PROMPT_MAX_TARGETS", 8),
+        inference_seg_prompt_max_boxes=_env_int("BYES_SEG_PROMPT_MAX_BOXES", 4),
+        inference_seg_prompt_max_points=_env_int("BYES_SEG_PROMPT_MAX_POINTS", 8),
+        inference_seg_prompt_budget_mode=(
+            str(os.getenv("BYES_SEG_PROMPT_BUDGET_MODE", "targets_text_boxes_points")).strip()
+            or "targets_text_boxes_points"
+        ),
         inference_ocr_timeout_ms=_env_int("BYES_OCR_HTTP_TIMEOUT_MS", 1500),
         inference_risk_timeout_ms=_env_int("BYES_RISK_HTTP_TIMEOUT_MS", 1200),
         inference_seg_timeout_ms=_env_int("BYES_SEG_HTTP_TIMEOUT_MS", 1200),

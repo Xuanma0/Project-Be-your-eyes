@@ -59,6 +59,20 @@
       "requireSegPayloadSchemaOk": true,
       "requireSegPromptEventsPresent": true,
       "requireSegPromptPayloadSchemaOk": true
+    },
+    {
+      "id": "fixture_with_seg_prompt_budget_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_seg_prompt_budget_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireSegEventsPresent": true,
+      "requireSegPayloadSchemaOk": true,
+      "requireSegPromptEventsPresent": true,
+      "requireSegPromptPayloadSchemaOk": true,
+      "requireSegPromptBudgetPresent": true,
+      "requireSegPromptTruncationPresent": true,
+      "requireSegPromptPacked": true
     }
   ]
 }

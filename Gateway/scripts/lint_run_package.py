@@ -447,6 +447,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         seg_prompt_lines = 0
         seg_prompt_schema_ok = 0
         seg_prompt_warnings_count = 0
+        seg_prompt_budget_present = 0
+        seg_prompt_truncation_present = 0
+        seg_prompt_out_present = 0
+        seg_prompt_packed_true_count = 0
         seg_payload_schema_ok = 0
         seg_bbox_out_of_range_count = 0
         seg_score_out_of_range_count = 0
@@ -510,6 +514,61 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                         if value is not None and not isinstance(value, str):
                                             payload_ok = False
                                             seg_prompt_warnings_count += 1
+                                    budget_payload = payload.get("budget")
+                                    if isinstance(budget_payload, dict):
+                                        budget_ok = True
+                                        for key in ("maxChars", "maxTargets", "maxBoxes", "maxPoints"):
+                                            try:
+                                                value = int(budget_payload.get(key, 0))
+                                            except Exception:
+                                                budget_ok = False
+                                                seg_prompt_warnings_count += 1
+                                                continue
+                                            if value < 0:
+                                                budget_ok = False
+                                                seg_prompt_warnings_count += 1
+                                        mode = budget_payload.get("mode")
+                                        if mode is not None and not isinstance(mode, str):
+                                            budget_ok = False
+                                            seg_prompt_warnings_count += 1
+                                        if budget_ok:
+                                            seg_prompt_budget_present += 1
+                                    out_payload = payload.get("out")
+                                    if isinstance(out_payload, dict):
+                                        out_ok = True
+                                        for key in ("targetsCount", "textChars", "boxesCount", "pointsCount", "charsTotal"):
+                                            try:
+                                                value = int(out_payload.get(key, 0))
+                                            except Exception:
+                                                out_ok = False
+                                                seg_prompt_warnings_count += 1
+                                                continue
+                                            if value < 0:
+                                                out_ok = False
+                                                seg_prompt_warnings_count += 1
+                                        if out_ok:
+                                            seg_prompt_out_present += 1
+                                    truncation_payload = payload.get("truncation")
+                                    if isinstance(truncation_payload, dict):
+                                        truncation_ok = True
+                                        for key in ("targetsDropped", "boxesDropped", "pointsDropped", "textCharsDropped"):
+                                            try:
+                                                value = int(truncation_payload.get(key, 0))
+                                            except Exception:
+                                                truncation_ok = False
+                                                seg_prompt_warnings_count += 1
+                                                continue
+                                            if value < 0:
+                                                truncation_ok = False
+                                                seg_prompt_warnings_count += 1
+                                        if truncation_ok:
+                                            seg_prompt_truncation_present += 1
+                                    packed_raw = payload.get("packed")
+                                    if isinstance(packed_raw, bool):
+                                        if packed_raw:
+                                            seg_prompt_packed_true_count += 1
+                                    elif packed_raw is not None:
+                                        seg_prompt_warnings_count += 1
                                     if payload_ok:
                                         seg_prompt_schema_ok += 1
                                 if name == "seg.segment":
@@ -695,6 +754,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "segPromptSchemaOk": int(seg_prompt_schema_ok),
             "segPromptPayloadSchemaOk": int(seg_prompt_lines > 0 and seg_prompt_schema_ok == seg_prompt_lines),
             "segPromptWarningsCount": int(seg_prompt_warnings_count),
+            "segPromptBudgetPresent": int(seg_prompt_budget_present),
+            "segPromptTruncationPresent": int(seg_prompt_truncation_present),
+            "segPromptOutPresent": int(seg_prompt_out_present),
+            "segPromptPackedTrueCount": int(seg_prompt_packed_true_count),
             "segBboxOutOfRangeCount": int(seg_bbox_out_of_range_count),
             "segScoreOutOfRangeCount": int(seg_score_out_of_range_count),
             "segEmptyLabelCount": int(seg_empty_label_count),
@@ -735,6 +798,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"segPromptSchemaOk: {summary['segPromptSchemaOk']}")
             print(f"segPromptPayloadSchemaOk: {summary['segPromptPayloadSchemaOk']}")
             print(f"segPromptWarningsCount: {summary['segPromptWarningsCount']}")
+            print(f"segPromptBudgetPresent: {summary['segPromptBudgetPresent']}")
+            print(f"segPromptTruncationPresent: {summary['segPromptTruncationPresent']}")
+            print(f"segPromptOutPresent: {summary['segPromptOutPresent']}")
+            print(f"segPromptPackedTrueCount: {summary['segPromptPackedTrueCount']}")
             print(f"segBboxOutOfRangeCount: {summary['segBboxOutOfRangeCount']}")
             print(f"segScoreOutOfRangeCount: {summary['segScoreOutOfRangeCount']}")
             print(f"segEmptyLabelCount: {summary['segEmptyLabelCount']}")

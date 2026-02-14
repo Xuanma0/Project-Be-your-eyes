@@ -2162,6 +2162,19 @@ def extract_seg_prompt_summary_from_events_v1(events: Iterable[dict[str, Any]]) 
     summary = infer_inference_summary_from_events_v1(events).get("seg", {})
     summary = summary if isinstance(summary, dict) else {}
     present = bool(summary.get("promptPresent"))
+    total_items_in = int(summary.get("promptTargetsInTotal", 0) or 0) + int(summary.get("promptBoxesInTotal", 0) or 0) + int(
+        summary.get("promptPointsInTotal", 0) or 0
+    )
+    total_items_dropped = int(summary.get("promptTargetsDroppedTotal", 0) or 0) + int(
+        summary.get("promptBoxesDroppedTotal", 0) or 0
+    ) + int(summary.get("promptPointsDroppedTotal", 0) or 0)
+    text_in_total = int(summary.get("promptTextInCharsTotal", 0) or 0)
+    text_dropped_total = int(summary.get("promptTextCharsDroppedTotal", 0) or 0)
+    truncation_rate = 0.0
+    if total_items_in > 0:
+        truncation_rate = float(total_items_dropped) / float(total_items_in)
+    elif text_in_total > 0:
+        truncation_rate = float(text_dropped_total) / float(text_in_total)
     if not present:
         return {
             "present": False,
@@ -2172,7 +2185,39 @@ def extract_seg_prompt_summary_from_events_v1(events: Iterable[dict[str, Any]]) 
             "pointsTotal": 0,
             "promptVersion": None,
             "promptVersionDiversityCount": 0,
-            "budget": {"textCharsTotal": 0, "boxesTotal": 0, "pointsTotal": 0},
+            "budget": {
+                "maxChars": 0,
+                "maxTargets": 0,
+                "maxBoxes": 0,
+                "maxPoints": 0,
+                "mode": None,
+                "textCharsTotal": 0,
+                "boxesTotal": 0,
+                "pointsTotal": 0,
+            },
+            "out": {
+                "targetsCountTotal": 0,
+                "textCharsTotal": 0,
+                "boxesTotal": 0,
+                "pointsTotal": 0,
+                "charsTotal": 0,
+            },
+            "truncation": {
+                "targetsDropped": 0,
+                "boxesDropped": 0,
+                "pointsDropped": 0,
+                "textCharsDropped": 0,
+            },
+            "complexity": {
+                "eventsWithTargets": 0,
+                "eventsWithText": 0,
+                "eventsWithBoxes": 0,
+                "eventsWithPoints": 0,
+                "scoreMean": 0.0,
+            },
+            "packed": {"trueCount": 0, "falseCount": 0},
+            "warningsCount": 0,
+            "truncationRate": 0.0,
         }
     text_chars = int(summary.get("promptTextCharsTotal", 0) or 0)
     boxes_total = int(summary.get("promptBoxesTotal", 0) or 0)
@@ -2187,10 +2232,41 @@ def extract_seg_prompt_summary_from_events_v1(events: Iterable[dict[str, Any]]) 
         "promptVersion": summary.get("promptVersion"),
         "promptVersionDiversityCount": int(summary.get("promptVersionDiversityCount", 0) or 0),
         "budget": {
+            "maxChars": int(summary.get("promptBudgetMaxChars", 0) or 0),
+            "maxTargets": int(summary.get("promptBudgetMaxTargets", 0) or 0),
+            "maxBoxes": int(summary.get("promptBudgetMaxBoxes", 0) or 0),
+            "maxPoints": int(summary.get("promptBudgetMaxPoints", 0) or 0),
+            "mode": summary.get("promptBudgetMode"),
             "textCharsTotal": text_chars,
             "boxesTotal": boxes_total,
             "pointsTotal": points_total,
         },
+        "out": {
+            "targetsCountTotal": int(summary.get("promptTargetsOutTotal", summary.get("promptTargetsTotal", 0)) or 0),
+            "textCharsTotal": int(summary.get("promptTextOutCharsTotal", summary.get("promptTextCharsTotal", 0)) or 0),
+            "boxesTotal": int(summary.get("promptBoxesOutTotal", summary.get("promptBoxesTotal", 0)) or 0),
+            "pointsTotal": int(summary.get("promptPointsOutTotal", summary.get("promptPointsTotal", 0)) or 0),
+            "charsTotal": int(summary.get("promptCharsOutTotal", 0) or 0),
+        },
+        "truncation": {
+            "targetsDropped": int(summary.get("promptTargetsDroppedTotal", 0) or 0),
+            "boxesDropped": int(summary.get("promptBoxesDroppedTotal", 0) or 0),
+            "pointsDropped": int(summary.get("promptPointsDroppedTotal", 0) or 0),
+            "textCharsDropped": int(summary.get("promptTextCharsDroppedTotal", 0) or 0),
+        },
+        "complexity": {
+            "eventsWithTargets": int(summary.get("promptComplexityHasTargetsCount", 0) or 0),
+            "eventsWithText": int(summary.get("promptComplexityHasTextCount", 0) or 0),
+            "eventsWithBoxes": int(summary.get("promptComplexityHasBoxesCount", 0) or 0),
+            "eventsWithPoints": int(summary.get("promptComplexityHasPointsCount", 0) or 0),
+            "scoreMean": float(summary.get("promptComplexityScoreMean", 0.0) or 0.0),
+        },
+        "packed": {
+            "trueCount": int(summary.get("promptPackedTrueCount", 0) or 0),
+            "falseCount": int(summary.get("promptPackedFalseCount", 0) or 0),
+        },
+        "warningsCount": int(summary.get("promptWarningsCountTotal", 0) or 0),
+        "truncationRate": round(max(0.0, min(1.0, truncation_rate)), 6),
     }
 
 
@@ -2263,14 +2339,93 @@ def _merge_inference_fields(target: dict[str, Any], payload: dict[str, Any]) -> 
 
 def _merge_seg_prompt_fields(target: dict[str, Any], payload: dict[str, Any]) -> None:
     target["promptPresent"] = True
-    target["promptTextCharsTotal"] = int(target.get("promptTextCharsTotal", 0) or 0) + _to_nonnegative_int(
-        payload.get("textChars")
+    out_payload = payload.get("out")
+    out_payload = out_payload if isinstance(out_payload, dict) else {}
+    truncation_payload = payload.get("truncation")
+    truncation_payload = truncation_payload if isinstance(truncation_payload, dict) else {}
+    budget_payload = payload.get("budget")
+    budget_payload = budget_payload if isinstance(budget_payload, dict) else {}
+    complexity_payload = payload.get("complexity")
+    complexity_payload = complexity_payload if isinstance(complexity_payload, dict) else {}
+
+    in_targets = _to_nonnegative_int(payload.get("targetsCount"))
+    in_text_chars = _to_nonnegative_int(payload.get("textChars"))
+    in_boxes = _to_nonnegative_int(payload.get("boxesCount"))
+    in_points = _to_nonnegative_int(payload.get("pointsCount"))
+
+    out_targets = _to_nonnegative_int(out_payload.get("targetsCount", payload.get("targetsCount")))
+    out_text_chars = _to_nonnegative_int(out_payload.get("textChars", payload.get("textChars")))
+    out_boxes = _to_nonnegative_int(out_payload.get("boxesCount", payload.get("boxesCount")))
+    out_points = _to_nonnegative_int(out_payload.get("pointsCount", payload.get("pointsCount")))
+    out_chars_total = _to_nonnegative_int(out_payload.get("charsTotal"))
+
+    target["promptTextCharsTotal"] = int(target.get("promptTextCharsTotal", 0) or 0) + out_text_chars
+    target["promptBoxesTotal"] = int(target.get("promptBoxesTotal", 0) or 0) + out_boxes
+    target["promptPointsTotal"] = int(target.get("promptPointsTotal", 0) or 0) + out_points
+    target["promptTargetsTotal"] = int(target.get("promptTargetsTotal", 0) or 0) + out_targets
+
+    target["promptTargetsInTotal"] = int(target.get("promptTargetsInTotal", 0) or 0) + in_targets
+    target["promptTextInCharsTotal"] = int(target.get("promptTextInCharsTotal", 0) or 0) + in_text_chars
+    target["promptBoxesInTotal"] = int(target.get("promptBoxesInTotal", 0) or 0) + in_boxes
+    target["promptPointsInTotal"] = int(target.get("promptPointsInTotal", 0) or 0) + in_points
+
+    target["promptTargetsOutTotal"] = int(target.get("promptTargetsOutTotal", 0) or 0) + out_targets
+    target["promptTextOutCharsTotal"] = int(target.get("promptTextOutCharsTotal", 0) or 0) + out_text_chars
+    target["promptBoxesOutTotal"] = int(target.get("promptBoxesOutTotal", 0) or 0) + out_boxes
+    target["promptPointsOutTotal"] = int(target.get("promptPointsOutTotal", 0) or 0) + out_points
+    target["promptCharsOutTotal"] = int(target.get("promptCharsOutTotal", 0) or 0) + out_chars_total
+
+    target["promptTargetsDroppedTotal"] = int(target.get("promptTargetsDroppedTotal", 0) or 0) + _to_nonnegative_int(
+        truncation_payload.get("targetsDropped")
     )
-    target["promptBoxesTotal"] = int(target.get("promptBoxesTotal", 0) or 0) + _to_nonnegative_int(payload.get("boxesCount"))
-    target["promptPointsTotal"] = int(target.get("promptPointsTotal", 0) or 0) + _to_nonnegative_int(payload.get("pointsCount"))
-    target["promptTargetsTotal"] = int(target.get("promptTargetsTotal", 0) or 0) + _to_nonnegative_int(
-        payload.get("targetsCount")
+    target["promptBoxesDroppedTotal"] = int(target.get("promptBoxesDroppedTotal", 0) or 0) + _to_nonnegative_int(
+        truncation_payload.get("boxesDropped")
     )
+    target["promptPointsDroppedTotal"] = int(target.get("promptPointsDroppedTotal", 0) or 0) + _to_nonnegative_int(
+        truncation_payload.get("pointsDropped")
+    )
+    target["promptTextCharsDroppedTotal"] = int(target.get("promptTextCharsDroppedTotal", 0) or 0) + _to_nonnegative_int(
+        truncation_payload.get("textCharsDropped")
+    )
+
+    target["promptWarningsCountTotal"] = int(target.get("promptWarningsCountTotal", 0) or 0) + _to_nonnegative_int(
+        payload.get("warningsCount")
+    )
+    packed = payload.get("packed")
+    if isinstance(packed, bool):
+        if packed:
+            target["promptPackedTrueCount"] = int(target.get("promptPackedTrueCount", 0) or 0) + 1
+        else:
+            target["promptPackedFalseCount"] = int(target.get("promptPackedFalseCount", 0) or 0) + 1
+
+    if _to_bool(complexity_payload.get("hasTargets")):
+        target["promptComplexityHasTargetsCount"] = int(target.get("promptComplexityHasTargetsCount", 0) or 0) + 1
+    if _to_bool(complexity_payload.get("hasText")):
+        target["promptComplexityHasTextCount"] = int(target.get("promptComplexityHasTextCount", 0) or 0) + 1
+    if _to_bool(complexity_payload.get("hasBoxes")):
+        target["promptComplexityHasBoxesCount"] = int(target.get("promptComplexityHasBoxesCount", 0) or 0) + 1
+    if _to_bool(complexity_payload.get("hasPoints")):
+        target["promptComplexityHasPointsCount"] = int(target.get("promptComplexityHasPointsCount", 0) or 0) + 1
+    target["promptComplexityScoreTotal"] = float(target.get("promptComplexityScoreTotal", 0.0) or 0.0) + _to_nonnegative_float(
+        complexity_payload.get("score")
+    )
+
+    budget_max_chars = _to_nonnegative_int(budget_payload.get("maxChars"))
+    if budget_max_chars > 0:
+        target["promptBudgetMaxChars"] = budget_max_chars
+    budget_max_targets = _to_nonnegative_int(budget_payload.get("maxTargets"))
+    if budget_max_targets > 0:
+        target["promptBudgetMaxTargets"] = budget_max_targets
+    budget_max_boxes = _to_nonnegative_int(budget_payload.get("maxBoxes"))
+    if budget_max_boxes > 0:
+        target["promptBudgetMaxBoxes"] = budget_max_boxes
+    budget_max_points = _to_nonnegative_int(budget_payload.get("maxPoints"))
+    if budget_max_points > 0:
+        target["promptBudgetMaxPoints"] = budget_max_points
+    budget_mode = str(budget_payload.get("mode", "")).strip()
+    if budget_mode:
+        target["promptBudgetMode"] = budget_mode
+
     target["promptEventCount"] = int(target.get("promptEventCount", 0) or 0) + 1
     prompt_version = payload.get("promptVersion")
     version_text = "" if prompt_version is None else str(prompt_version).strip()
@@ -2293,6 +2448,12 @@ def _finalize_seg_prompt_bucket(target: dict[str, Any]) -> None:
         if "promptVersion" not in target:
             target["promptVersion"] = None
         target["promptVersionDiversityCount"] = 0
+    event_count = int(target.get("promptEventCount", 0) or 0)
+    if event_count > 0:
+        score_total = float(target.get("promptComplexityScoreTotal", 0.0) or 0.0)
+        target["promptComplexityScoreMean"] = round(score_total / float(event_count), 6)
+    elif "promptComplexityScoreMean" not in target:
+        target["promptComplexityScoreMean"] = 0.0
 
 
 def _to_nonnegative_int(value: Any) -> int:
@@ -2300,6 +2461,20 @@ def _to_nonnegative_int(value: Any) -> int:
         return max(0, int(value))
     except Exception:
         return 0
+
+
+def _to_nonnegative_float(value: Any) -> float:
+    try:
+        return max(0.0, float(value))
+    except Exception:
+        return 0.0
+
+
+def _to_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "on"}
 
 
 def _has_any_inference(summary: dict[str, dict[str, Any]]) -> bool:

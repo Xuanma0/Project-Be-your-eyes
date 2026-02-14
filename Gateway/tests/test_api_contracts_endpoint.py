@@ -30,3 +30,7 @@ def test_api_contracts_endpoint_returns_lock_and_runtime_defaults() -> None:
     seg_prompt = runtime_defaults.get("segPrompt", {})
     assert isinstance(seg_prompt, dict)
     assert "promptPresent" in seg_prompt
+    default_budget = seg_prompt.get("defaultBudget", {})
+    assert isinstance(default_budget, dict)
+    assert int(default_budget.get("maxChars", 0)) > 0
+    assert int(default_budget.get("maxTargets", 0)) > 0

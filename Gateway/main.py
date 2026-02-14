@@ -33,6 +33,7 @@ from byes.intent import IntentManager
 from byes.inference.event_emitters import emit_ocr_events, emit_risk_events, emit_seg_events
 from byes.inference.registry import get_ocr_backend, get_risk_backend, get_seg_backend
 from byes.inference.backends.base import OCRResult, RiskResult, SegResult
+from byes.inference.prompt_budget import normalize_prompt, pack_prompt
 from byes.metrics import GatewayMetrics
 from byes.observability import Observability
 from byes.planner import PolicyPlannerV0, PolicyPlannerV1
@@ -136,6 +137,14 @@ def _runtime_contract_defaults() -> dict[str, Any]:
     seg_targets = [str(item).strip() for item in runtime_cfg.inference_seg_targets if str(item).strip()]
     seg_prompt = runtime_cfg.inference_seg_prompt
     seg_prompt_present = isinstance(seg_prompt, dict)
+    seg_prompt_budget = {
+        "maxChars": max(0, int(runtime_cfg.inference_seg_prompt_max_chars)),
+        "maxTargets": max(0, int(runtime_cfg.inference_seg_prompt_max_targets)),
+        "maxBoxes": max(0, int(runtime_cfg.inference_seg_prompt_max_boxes)),
+        "maxPoints": max(0, int(runtime_cfg.inference_seg_prompt_max_points)),
+        "mode": str(runtime_cfg.inference_seg_prompt_budget_mode or "targets_text_boxes_points").strip()
+        or "targets_text_boxes_points",
+    }
     return {
         "povContext": {
             "defaultBudget": {
@@ -161,6 +170,7 @@ def _runtime_contract_defaults() -> dict[str, Any]:
             "targets": seg_targets,
             "promptPresent": seg_prompt_present,
             "promptTextChars": len(str(seg_prompt.get("text", ""))) if seg_prompt_present else 0,
+            "defaultBudget": seg_prompt_budget,
         },
         "riskThresholdDefaults": risk_threshold_defaults,
     }
@@ -604,75 +614,7 @@ class GatewayApp:
 
     @staticmethod
     def _normalize_seg_prompt(prompt: dict[str, Any] | None) -> dict[str, Any] | None:
-        if not isinstance(prompt, dict):
-            return None
-        out: dict[str, Any] = {}
-
-        targets_raw = prompt.get("targets")
-        if isinstance(targets_raw, list):
-            targets: list[str] = []
-            seen: set[str] = set()
-            for item in targets_raw:
-                text = str(item or "").strip()
-                key = text.lower()
-                if text and key not in seen:
-                    seen.add(key)
-                    targets.append(text)
-            if targets:
-                out["targets"] = targets
-
-        text_raw = str(prompt.get("text", "")).strip()
-        if text_raw:
-            out["text"] = text_raw
-
-        boxes_raw = prompt.get("boxes")
-        if isinstance(boxes_raw, list):
-            boxes: list[list[float]] = []
-            for row in boxes_raw:
-                if not isinstance(row, list) or len(row) != 4:
-                    continue
-                try:
-                    boxes.append([float(row[0]), float(row[1]), float(row[2]), float(row[3])])
-                except Exception:
-                    continue
-            if boxes:
-                out["boxes"] = boxes
-
-        points_raw = prompt.get("points")
-        if isinstance(points_raw, list):
-            points: list[dict[str, Any]] = []
-            for row in points_raw:
-                if not isinstance(row, dict):
-                    continue
-                try:
-                    x = float(row.get("x"))
-                    y = float(row.get("y"))
-                    label = int(row.get("label"))
-                except Exception:
-                    continue
-                if label not in {0, 1}:
-                    continue
-                points.append({"x": x, "y": y, "label": label})
-            if points:
-                out["points"] = points
-
-        for key in ("imageWidth", "imageHeight"):
-            raw_value = prompt.get(key)
-            try:
-                parsed = int(raw_value)
-            except Exception:
-                continue
-            if parsed > 0:
-                out[key] = parsed
-
-        meta_raw = prompt.get("meta")
-        if isinstance(meta_raw, dict):
-            prompt_version_raw = meta_raw.get("promptVersion")
-            prompt_version = None if prompt_version_raw is None else str(prompt_version_raw).strip()
-            if prompt_version:
-                out["meta"] = {"promptVersion": prompt_version}
-
-        return out or None
+        return normalize_prompt(prompt)
 
     @staticmethod
     def _build_seg_prompt_payload(
@@ -681,6 +623,8 @@ class GatewayApp:
         backend: str | None,
         model: str | None,
         endpoint: str | None,
+        budget: dict[str, Any] | None = None,
+        pack_stats: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         targets_raw = prompt.get("targets")
         text_raw = str(prompt.get("text", ""))
@@ -692,15 +636,69 @@ class GatewayApp:
             raw_prompt_version = meta_raw.get("promptVersion")
             text_version = "" if raw_prompt_version is None else str(raw_prompt_version).strip()
             prompt_version = text_version or None
+        out_stats = pack_stats.get("out", {}) if isinstance(pack_stats, dict) and isinstance(pack_stats.get("out"), dict) else {}
+        trunc_stats = (
+            pack_stats.get("truncation", {})
+            if isinstance(pack_stats, dict) and isinstance(pack_stats.get("truncation"), dict)
+            else {}
+        )
+        complexity = (
+            pack_stats.get("complexity", {})
+            if isinstance(pack_stats, dict) and isinstance(pack_stats.get("complexity"), dict)
+            else {}
+        )
+        warnings_count = int(pack_stats.get("warningsCount", 0) or 0) if isinstance(pack_stats, dict) else 0
+        packed = bool(pack_stats.get("packed", False)) if isinstance(pack_stats, dict) else False
+        budget_payload = {
+            "maxChars": int(budget.get("maxChars", 0) or 0) if isinstance(budget, dict) else 0,
+            "maxTargets": int(budget.get("maxTargets", 0) or 0) if isinstance(budget, dict) else 0,
+            "maxBoxes": int(budget.get("maxBoxes", 0) or 0) if isinstance(budget, dict) else 0,
+            "maxPoints": int(budget.get("maxPoints", 0) or 0) if isinstance(budget, dict) else 0,
+            "mode": str(budget.get("mode", "")).strip() if isinstance(budget, dict) else "",
+        }
         return {
-            "targetsCount": len(targets_raw) if isinstance(targets_raw, list) else 0,
-            "textChars": len(text_raw),
-            "boxesCount": len(boxes_raw) if isinstance(boxes_raw, list) else 0,
-            "pointsCount": len(points_raw) if isinstance(points_raw, list) else 0,
+            "targetsCount": int(out_stats.get("targets", len(targets_raw) if isinstance(targets_raw, list) else 0) or 0),
+            "textChars": int(out_stats.get("textChars", len(text_raw)) or 0),
+            "boxesCount": int(out_stats.get("boxes", len(boxes_raw) if isinstance(boxes_raw, list) else 0) or 0),
+            "pointsCount": int(out_stats.get("points", len(points_raw) if isinstance(points_raw, list) else 0) or 0),
             "promptVersion": prompt_version,
             "backend": (str(backend or "").strip().lower() or None),
             "endpoint": (str(endpoint or "").strip() or None),
             "model": (str(model or "").strip() or None),
+            "budget": budget_payload,
+            "out": {
+                "targetsCount": int(out_stats.get("targets", len(targets_raw) if isinstance(targets_raw, list) else 0) or 0),
+                "textChars": int(out_stats.get("textChars", len(text_raw)) or 0),
+                "boxesCount": int(out_stats.get("boxes", len(boxes_raw) if isinstance(boxes_raw, list) else 0) or 0),
+                "pointsCount": int(out_stats.get("points", len(points_raw) if isinstance(points_raw, list) else 0) or 0),
+                "charsTotal": int(
+                    out_stats.get(
+                        "charsTotal",
+                        (
+                            len(text_raw)
+                            + (len(targets_raw) if isinstance(targets_raw, list) else 0)
+                            + (len(boxes_raw) if isinstance(boxes_raw, list) else 0)
+                            + (len(points_raw) if isinstance(points_raw, list) else 0)
+                        ),
+                    )
+                    or 0
+                ),
+            },
+            "truncation": {
+                "targetsDropped": int(trunc_stats.get("targetsDropped", 0) or 0),
+                "boxesDropped": int(trunc_stats.get("boxesDropped", 0) or 0),
+                "pointsDropped": int(trunc_stats.get("pointsDropped", 0) or 0),
+                "textCharsDropped": int(trunc_stats.get("textCharsDropped", 0) or 0),
+            },
+            "complexity": {
+                "hasText": bool(complexity.get("hasText", False)),
+                "hasBoxes": bool(complexity.get("hasBoxes", False)),
+                "hasPoints": bool(complexity.get("hasPoints", False)),
+                "hasTargets": bool(complexity.get("hasTargets", False)),
+                "score": float(complexity.get("score", 0.0) or 0.0),
+            },
+            "packed": packed,
+            "warningsCount": warnings_count,
         }
 
     async def _run_inference_for_frame(self, frame_bytes: bytes, seq: int, ts_ms: int, meta: dict[str, Any]) -> None:
@@ -765,15 +763,26 @@ class GatewayApp:
             seg_started_ms = _now_ms()
             seg_targets = [str(item).strip() for item in self.config.inference_seg_targets if str(item).strip()]
             seg_prompt = self._normalize_seg_prompt(self.config.inference_seg_prompt)
+            seg_prompt_budget = {
+                "maxChars": max(0, int(self.config.inference_seg_prompt_max_chars)),
+                "maxTargets": max(0, int(self.config.inference_seg_prompt_max_targets)),
+                "maxBoxes": max(0, int(self.config.inference_seg_prompt_max_boxes)),
+                "maxPoints": max(0, int(self.config.inference_seg_prompt_max_points)),
+                "mode": str(self.config.inference_seg_prompt_budget_mode or "targets_text_boxes_points").strip()
+                or "targets_text_boxes_points",
+            }
+            packed_seg_prompt, seg_prompt_stats = pack_prompt(seg_prompt, budget=seg_prompt_budget)
             seg_backend_name = getattr(self.seg_backend, "name", None)
             seg_model_id = getattr(self.seg_backend, "model_id", None)
             seg_endpoint = getattr(self.seg_backend, "endpoint", None)
-            if seg_prompt is not None:
+            if packed_seg_prompt is not None:
                 seg_prompt_payload = self._build_seg_prompt_payload(
-                    seg_prompt,
+                    packed_seg_prompt,
                     backend=seg_backend_name,
                     model=seg_model_id,
                     endpoint=seg_endpoint,
+                    budget=seg_prompt_budget,
+                    pack_stats=seg_prompt_stats,
                 )
                 await self._emit_inference_event(
                     {
@@ -797,7 +806,7 @@ class GatewayApp:
                     ts_ms,
                     run_id=run_id,
                     targets=seg_targets or None,
-                    prompt=seg_prompt,
+                    prompt=packed_seg_prompt,
                 )
             except Exception as exc:  # noqa: BLE001
                 seg_result = SegResult(
@@ -2100,6 +2109,8 @@ async def run_packages_list(
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
     min_seg_prompt_text_chars: int | None = None,
+    max_seg_prompt_trunc_rate: float | None = None,
+    max_seg_prompt_trunc_dropped: int | None = None,
     has_pov: str = "any",
     min_pov_decisions: int | None = None,
     has_pov_context: str = "any",
@@ -2134,6 +2145,8 @@ async def run_packages_list(
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
         min_seg_prompt_text_chars=min_seg_prompt_text_chars,
+        max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
+        max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
         has_pov=has_pov,
         min_pov_decisions=min_pov_decisions,
         has_pov_context=has_pov_context,
@@ -2169,6 +2182,8 @@ async def run_packages_list(
             "min_seg_mask_coverage": min_seg_mask_coverage,
             "max_seg_latency_p90": max_seg_latency_p90,
             "min_seg_prompt_text_chars": min_seg_prompt_text_chars,
+            "max_seg_prompt_trunc_rate": max_seg_prompt_trunc_rate,
+            "max_seg_prompt_trunc_dropped": max_seg_prompt_trunc_dropped,
             "has_pov": has_pov,
             "min_pov_decisions": min_pov_decisions,
             "has_pov_context": has_pov_context,
@@ -2208,6 +2223,8 @@ async def run_packages_export_json(
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
     min_seg_prompt_text_chars: int | None = None,
+    max_seg_prompt_trunc_rate: float | None = None,
+    max_seg_prompt_trunc_dropped: int | None = None,
     has_pov: str = "any",
     min_pov_decisions: int | None = None,
     has_pov_context: str = "any",
@@ -2242,6 +2259,8 @@ async def run_packages_export_json(
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
         min_seg_prompt_text_chars=min_seg_prompt_text_chars,
+        max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
+        max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
         has_pov=has_pov,
         min_pov_decisions=min_pov_decisions,
         has_pov_context=has_pov_context,
@@ -2283,6 +2302,8 @@ async def run_packages_export_csv(
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
     min_seg_prompt_text_chars: int | None = None,
+    max_seg_prompt_trunc_rate: float | None = None,
+    max_seg_prompt_trunc_dropped: int | None = None,
     has_pov: str = "any",
     min_pov_decisions: int | None = None,
     has_pov_context: str = "any",
@@ -2317,6 +2338,8 @@ async def run_packages_export_csv(
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
         min_seg_prompt_text_chars=min_seg_prompt_text_chars,
+        max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
+        max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
         has_pov=has_pov,
         min_pov_decisions=min_pov_decisions,
         has_pov_context=has_pov_context,
@@ -2365,6 +2388,10 @@ async def run_packages_export_csv(
         "seg_mask_mean_iou",
         "seg_prompt_present",
         "seg_prompt_text_chars_total",
+        "seg_prompt_chars_out",
+        "seg_prompt_targets_out",
+        "seg_prompt_trunc_dropped",
+        "seg_prompt_trunc_rate",
         "pov_present",
         "pov_decisions",
         "pov_duration_ms",
@@ -2930,6 +2957,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     seg_mask_mean_iou: float | None = None
     seg_prompt_present = bool(seg_prompt_payload.get("present")) if isinstance(seg_prompt_payload, dict) else False
     seg_prompt_text_chars_total: int | None = None
+    seg_prompt_chars_out: int | None = None
+    seg_prompt_targets_out: int | None = None
+    seg_prompt_trunc_dropped: int | None = None
+    seg_prompt_trunc_rate: float | None = None
     pov_present = bool(pov_payload.get("present")) if isinstance(pov_payload, dict) else False
     pov_counts = pov_payload.get("counts", {}) if isinstance(pov_payload.get("counts"), dict) else {}
     pov_time = pov_payload.get("time", {}) if isinstance(pov_payload.get("time"), dict) else {}
@@ -3071,6 +3102,31 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     seg_prompt_text_raw = _read_float(seg_prompt_payload, "textCharsTotal")
     if seg_prompt_text_raw is not None:
         seg_prompt_text_chars_total = int(seg_prompt_text_raw)
+    seg_prompt_out = seg_prompt_payload.get("out")
+    seg_prompt_out = seg_prompt_out if isinstance(seg_prompt_out, dict) else {}
+    seg_prompt_truncation = seg_prompt_payload.get("truncation")
+    seg_prompt_truncation = seg_prompt_truncation if isinstance(seg_prompt_truncation, dict) else {}
+    seg_prompt_chars_out_raw = _read_float(seg_prompt_out, "charsTotal")
+    if seg_prompt_chars_out_raw is not None:
+        seg_prompt_chars_out = int(seg_prompt_chars_out_raw)
+    seg_prompt_targets_out_raw = _read_float(seg_prompt_out, "targetsCountTotal")
+    if seg_prompt_targets_out_raw is not None:
+        seg_prompt_targets_out = int(seg_prompt_targets_out_raw)
+    seg_prompt_targets_dropped = _read_float(seg_prompt_truncation, "targetsDropped")
+    seg_prompt_boxes_dropped = _read_float(seg_prompt_truncation, "boxesDropped")
+    seg_prompt_points_dropped = _read_float(seg_prompt_truncation, "pointsDropped")
+    seg_prompt_text_dropped = _read_float(seg_prompt_truncation, "textCharsDropped")
+    dropped_total = 0.0
+    for value in (seg_prompt_targets_dropped, seg_prompt_boxes_dropped, seg_prompt_points_dropped, seg_prompt_text_dropped):
+        if value is not None:
+            dropped_total += float(value)
+    if seg_prompt_present:
+        seg_prompt_trunc_dropped = int(max(0.0, dropped_total))
+    seg_prompt_trunc_rate_raw = _read_float(seg_prompt_payload, "truncationRate")
+    if seg_prompt_trunc_rate_raw is not None:
+        seg_prompt_trunc_rate = float(seg_prompt_trunc_rate_raw)
+    elif seg_prompt_present:
+        seg_prompt_trunc_rate = 0.0
 
     row = {
         "run_id": run_id,
@@ -3113,6 +3169,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "seg_mask_mean_iou": seg_mask_mean_iou,
         "seg_prompt_present": seg_prompt_present,
         "seg_prompt_text_chars_total": seg_prompt_text_chars_total,
+        "seg_prompt_chars_out": seg_prompt_chars_out,
+        "seg_prompt_targets_out": seg_prompt_targets_out,
+        "seg_prompt_trunc_dropped": seg_prompt_trunc_dropped,
+        "seg_prompt_trunc_rate": seg_prompt_trunc_rate,
         "pov_present": pov_present,
         "pov_decisions": pov_decisions,
         "pov_duration_ms": int(pov_duration_ms) if pov_duration_ms is not None else None,
@@ -3159,6 +3219,8 @@ def _matches_run_filters(
     min_seg_mask_coverage: float | None,
     max_seg_latency_p90: int | None,
     min_seg_prompt_text_chars: int | None,
+    max_seg_prompt_trunc_rate: float | None,
+    max_seg_prompt_trunc_dropped: int | None,
     has_pov: str | None,
     min_pov_decisions: int | None,
     has_pov_context: str | None,
@@ -3251,6 +3313,18 @@ def _matches_run_filters(
         if value is None:
             return False
         if int(value) < int(min_seg_prompt_text_chars):
+            return False
+    if max_seg_prompt_trunc_rate is not None:
+        value = row.get("seg_prompt_trunc_rate")
+        if value is None:
+            return False
+        if float(value) > float(max_seg_prompt_trunc_rate):
+            return False
+    if max_seg_prompt_trunc_dropped is not None:
+        value = row.get("seg_prompt_trunc_dropped")
+        if value is None:
+            return False
+        if int(value) > int(max_seg_prompt_trunc_dropped):
             return False
     if has_pov:
         normalized = has_pov.strip().lower()
@@ -3348,6 +3422,11 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "pov_token_approx",
         "pov_decision_per_min",
         "pov_context_token_approx",
+        "seg_prompt_text_chars_total",
+        "seg_prompt_chars_out",
+        "seg_prompt_targets_out",
+        "seg_prompt_trunc_dropped",
+        "seg_prompt_trunc_rate",
         "plan_actions",
         "plan_guardrails",
         "plan_latency_p90",
@@ -3394,6 +3473,8 @@ async def _query_run_package_rows(
     min_seg_mask_coverage: float | None,
     max_seg_latency_p90: int | None,
     min_seg_prompt_text_chars: int | None,
+    max_seg_prompt_trunc_rate: float | None,
+    max_seg_prompt_trunc_dropped: int | None,
     has_pov: str | None,
     min_pov_decisions: int | None,
     has_pov_context: str | None,
@@ -3434,6 +3515,8 @@ async def _query_run_package_rows(
             min_seg_mask_coverage=min_seg_mask_coverage,
             max_seg_latency_p90=max_seg_latency_p90,
             min_seg_prompt_text_chars=min_seg_prompt_text_chars,
+            max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
+            max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
             has_pov=has_pov,
             min_pov_decisions=min_pov_decisions,
             has_pov_context=has_pov_context,
@@ -3502,6 +3585,8 @@ async def runs_dashboard(
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
     min_seg_prompt_text_chars: int | None = None,
+    max_seg_prompt_trunc_rate: float | None = None,
+    max_seg_prompt_trunc_dropped: int | None = None,
     has_pov: str = "any",
     min_pov_decisions: int | None = None,
     has_pov_context: str = "any",
@@ -3537,6 +3622,8 @@ async def runs_dashboard(
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
         min_seg_prompt_text_chars=min_seg_prompt_text_chars,
+        max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
+        max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
         has_pov=has_pov,
         min_pov_decisions=min_pov_decisions,
         has_pov_context=has_pov_context,
@@ -3586,6 +3673,14 @@ async def runs_dashboard(
         seg_prompt_present = "yes" if bool(row.get("seg_prompt_present")) else "no"
         seg_prompt_chars_raw = row.get("seg_prompt_text_chars_total")
         seg_prompt_chars = "—" if seg_prompt_chars_raw is None else str(int(seg_prompt_chars_raw))
+        seg_prompt_chars_out_raw = row.get("seg_prompt_chars_out")
+        seg_prompt_chars_out = "—" if seg_prompt_chars_out_raw is None else str(int(seg_prompt_chars_out_raw))
+        seg_prompt_targets_out_raw = row.get("seg_prompt_targets_out")
+        seg_prompt_targets_out = "—" if seg_prompt_targets_out_raw is None else str(int(seg_prompt_targets_out_raw))
+        seg_prompt_trunc_dropped_raw = row.get("seg_prompt_trunc_dropped")
+        seg_prompt_trunc_dropped = "—" if seg_prompt_trunc_dropped_raw is None else str(int(seg_prompt_trunc_dropped_raw))
+        seg_prompt_trunc_rate_raw = row.get("seg_prompt_trunc_rate")
+        seg_prompt_trunc_rate = "—" if seg_prompt_trunc_rate_raw is None else f"{float(seg_prompt_trunc_rate_raw):.4f}"
         pov_present = "yes" if bool(row.get("pov_present")) else "no"
         pov_decisions = str(int(row.get("pov_decisions", 0) or 0))
         pov_token_approx = str(int(row.get("pov_token_approx", 0) or 0))
@@ -3634,6 +3729,10 @@ async def runs_dashboard(
             f"<td>{html.escape(seg_p90)}</td>"
             f"<td>{html.escape(seg_prompt_present)}</td>"
             f"<td>{html.escape(seg_prompt_chars)}</td>"
+            f"<td>{html.escape(seg_prompt_chars_out)}</td>"
+            f"<td>{html.escape(seg_prompt_targets_out)}</td>"
+            f"<td>{html.escape(seg_prompt_trunc_dropped)}</td>"
+            f"<td>{html.escape(seg_prompt_trunc_rate)}</td>"
             f"<td>{html.escape(pov_present)}</td>"
             f"<td>{html.escape(pov_decisions)}</td>"
             f"<td>{html.escape(pov_token_approx)}</td>"
@@ -3676,6 +3775,12 @@ async def runs_dashboard(
     min_seg_mask_coverage_value = html.escape("" if min_seg_mask_coverage is None else str(min_seg_mask_coverage))
     max_seg_latency_p90_value = html.escape("" if max_seg_latency_p90 is None else str(max_seg_latency_p90))
     min_seg_prompt_text_chars_value = html.escape("" if min_seg_prompt_text_chars is None else str(min_seg_prompt_text_chars))
+    max_seg_prompt_trunc_rate_value = html.escape(
+        "" if max_seg_prompt_trunc_rate is None else str(max_seg_prompt_trunc_rate)
+    )
+    max_seg_prompt_trunc_dropped_value = html.escape(
+        "" if max_seg_prompt_trunc_dropped is None else str(max_seg_prompt_trunc_dropped)
+    )
     has_pov_value = html.escape(has_pov or "any")
     min_pov_decisions_value = html.escape("" if min_pov_decisions is None else str(min_pov_decisions))
     has_pov_context_value = html.escape(has_pov_context or "any")
@@ -3767,6 +3872,8 @@ async def runs_dashboard(
       <label>min_seg_mask_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_seg_mask_coverage" value="{min_seg_mask_coverage_value}" /></label>
       <label>max_seg_latency_p90: <input type="number" min="0" name="max_seg_latency_p90" value="{max_seg_latency_p90_value}" /></label>
       <label>min_seg_prompt_text_chars: <input type="number" min="0" name="min_seg_prompt_text_chars" value="{min_seg_prompt_text_chars_value}" /></label>
+      <label>max_seg_prompt_trunc_rate: <input type="number" step="0.0001" min="0" max="1" name="max_seg_prompt_trunc_rate" value="{max_seg_prompt_trunc_rate_value}" /></label>
+      <label>max_seg_prompt_trunc_dropped: <input type="number" min="0" name="max_seg_prompt_trunc_dropped" value="{max_seg_prompt_trunc_dropped_value}" /></label>
       <label>max_plan_guardrails: <input type="number" min="0" name="max_plan_guardrails" value="{max_plan_guardrails_value}" /></label>
       <label>max_plan_latency_p90: <input type="number" min="0" name="max_plan_latency_p90" value="{max_plan_latency_p90_value}" /></label>
       <label>max_plan_overcautious_rate: <input type="number" step="0.0001" min="0" max="1" name="max_plan_overcautious_rate" value="{max_plan_overcautious_rate_value}" /></label>
@@ -3794,6 +3901,10 @@ async def runs_dashboard(
           <option value="seg_mask_mean_iou" {"selected" if sort_value == "seg_mask_mean_iou" else ""}>seg_mask_mean_iou</option>
           <option value="seg_latency_p90" {"selected" if sort_value == "seg_latency_p90" else ""}>seg_latency_p90</option>
           <option value="seg_prompt_text_chars_total" {"selected" if sort_value == "seg_prompt_text_chars_total" else ""}>seg_prompt_text_chars_total</option>
+          <option value="seg_prompt_chars_out" {"selected" if sort_value == "seg_prompt_chars_out" else ""}>seg_prompt_chars_out</option>
+          <option value="seg_prompt_targets_out" {"selected" if sort_value == "seg_prompt_targets_out" else ""}>seg_prompt_targets_out</option>
+          <option value="seg_prompt_trunc_dropped" {"selected" if sort_value == "seg_prompt_trunc_dropped" else ""}>seg_prompt_trunc_dropped</option>
+          <option value="seg_prompt_trunc_rate" {"selected" if sort_value == "seg_prompt_trunc_rate" else ""}>seg_prompt_trunc_rate</option>
           <option value="pov_decisions" {"selected" if sort_value == "pov_decisions" else ""}>pov_decisions</option>
           <option value="pov_token_approx" {"selected" if sort_value == "pov_token_approx" else ""}>pov_token_approx</option>
           <option value="pov_decision_per_min" {"selected" if sort_value == "pov_decision_per_min" else ""}>pov_decision_per_min</option>
@@ -3816,8 +3927,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -3841,6 +3952,10 @@ async def runs_dashboard(
           <th>Seg p90(ms)</th>
           <th>Seg Prompt</th>
           <th>Seg Prompt Chars</th>
+          <th>Seg Prompt Chars Out</th>
+          <th>Seg Prompt Targets Out</th>
+          <th>Seg Prompt Dropped</th>
+          <th>Seg Prompt TruncRate</th>
           <th>POV</th>
           <th>POV Decisions</th>
           <th>POV Token~</th>

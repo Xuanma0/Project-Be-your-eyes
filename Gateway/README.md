@@ -102,6 +102,12 @@ $env:BYES_SEG_MODEL_ID="mock-seg-v1"
 # optional seg prompt (JSON has higher priority than TEXT):
 # $env:BYES_SEG_PROMPT_TEXT="find stairs and handrail"
 # $env:BYES_SEG_PROMPT_JSON='{\"schemaVersion\":\"byes.seg_request.v1\",\"targets\":[\"stairs\"],\"text\":\"find stairs and handrail\",\"meta\":{\"promptVersion\":\"v1\"}}'
+# optional seg prompt budget (v4.51):
+# $env:BYES_SEG_PROMPT_MAX_CHARS="256"
+# $env:BYES_SEG_PROMPT_MAX_TARGETS="8"
+# $env:BYES_SEG_PROMPT_MAX_BOXES="4"
+# $env:BYES_SEG_PROMPT_MAX_POINTS="8"
+# $env:BYES_SEG_PROMPT_BUDGET_MODE="targets_text_boxes_points"
 # when using http backend:
 # $env:BYES_SEG_HTTP_URL="http://127.0.0.1:19120/seg"
 ```
@@ -134,6 +140,7 @@ Future SAM3 path:
 - return `segments` as `{label, score, bbox}`.
 - optional `targets` prompt passthrough is already wired end-to-end (`BYES_SEG_TARGETS` / `BYES_SEG_TARGETS_JSON`).
 - optional rich prompt passthrough is supported via `BYES_SEG_PROMPT_TEXT` / `BYES_SEG_PROMPT_JSON` and recorded as `seg.prompt` events.
+- prompt budget packer is built-in; `seg.prompt`/`report.segPrompt` include `budget`, `out`, `truncation`, `complexity`, `truncationRate`.
 
 Reference seg HTTP chain (Gateway -> inference_service -> reference_seg_service):
 
@@ -182,6 +189,16 @@ Expected evidence:
 - `events/events_v1.jsonl` includes both `seg.prompt` and `seg.segment`.
 - `seg.segment.payload.segments[*].mask` keeps `rle_v1`.
 - `report.json -> quality.seg` includes `maskCoverage`, `maskFramesWithGt`, `maskFramesWithPred`.
+
+Seg prompt budget sweep (local tooling, not CI gate):
+
+```powershell
+python scripts/sweep_seg_prompt_budget.py --run-package tests/fixtures/run_package_with_seg_prompt_budget_min --max-chars 64,128,256 --mode targets_text_boxes_points
+```
+
+Outputs:
+- `%TEMP%\byes_seg_prompt_budget\latest.json`
+- `%TEMP%\byes_seg_prompt_budget\latest.md`
 
 ## Planning API (/api/plan)
 

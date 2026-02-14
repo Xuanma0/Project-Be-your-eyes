@@ -43,3 +43,16 @@ def test_contract_suite_seg_gate_passes(tmp_path: Path) -> None:
     assert bool(seg_prompt_lint.get("payloadSchemaOk")) is True
     assert bool(seg_prompt_lint.get("promptEventsPresent")) is True
     assert bool(seg_prompt_lint.get("promptPayloadSchemaOk")) is True
+
+    seg_prompt_budget_row = next(
+        (row for row in runs if str(row.get("id", "")) == "fixture_with_seg_prompt_budget_contract"),
+        None,
+    )
+    assert isinstance(seg_prompt_budget_row, dict)
+    seg_prompt_budget_lint = seg_prompt_budget_row.get("segLint", {})
+    assert isinstance(seg_prompt_budget_lint, dict)
+    assert bool(seg_prompt_budget_lint.get("promptEventsPresent")) is True
+    assert bool(seg_prompt_budget_lint.get("promptPayloadSchemaOk")) is True
+    assert bool(seg_prompt_budget_lint.get("segPromptBudgetPresent")) is True
+    assert bool(seg_prompt_budget_lint.get("segPromptTruncationPresent")) is True
+    assert int(seg_prompt_budget_lint.get("segPromptPackedTrueCount", 0) or 0) > 0

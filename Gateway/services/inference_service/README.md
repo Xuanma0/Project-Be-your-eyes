@@ -53,6 +53,12 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
 - Optional request field:
   - `targets`: list of labels (for downstream provider filtering/prompting)
   - `prompt`: rich prompt object for future SAM2/SAM3 adapters (forwarded to HTTP provider and may condition output if downstream supports prompt filtering)
+  - Gateway v4.51 sends packed prompt budgets by default; see Gateway env:
+    - `BYES_SEG_PROMPT_MAX_CHARS`
+    - `BYES_SEG_PROMPT_MAX_TARGETS`
+    - `BYES_SEG_PROMPT_MAX_BOXES`
+    - `BYES_SEG_PROMPT_MAX_POINTS`
+    - `BYES_SEG_PROMPT_BUDGET_MODE`
 - Optional response metadata:
   - `targetsCount`, `targetsUsed`
 - If downstream returns `mask` (`rle_v1`), `http` provider keeps it and passes through to Gateway events/report.
