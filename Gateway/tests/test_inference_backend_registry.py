@@ -71,3 +71,19 @@ def test_seg_prompt_config_json_precedence(monkeypatch) -> None:
     assert isinstance(config.inference_seg_prompt, dict)
     assert config.inference_seg_prompt.get("text") == "find person"
     assert config.inference_seg_prompt.get("meta", {}).get("promptVersion") == "v1"
+
+
+def test_seg_prompt_config_field_env_parsing(monkeypatch) -> None:
+    monkeypatch.delenv("BYES_SEG_PROMPT_JSON", raising=False)
+    monkeypatch.setenv("BYES_SEG_PROMPT_TEXT", "find stairs and handrail")
+    monkeypatch.setenv("BYES_SEG_PROMPT_TARGETS", "person,stairs")
+    monkeypatch.setenv("BYES_SEG_PROMPT_BOXES_JSON", "[[0,0,10,10]]")
+    monkeypatch.setenv("BYES_SEG_PROMPT_POINTS_JSON", '[{"x":8,"y":8,"label":1}]')
+    monkeypatch.setenv("BYES_SEG_PROMPT_VERSION", "v1")
+    config = load_config()
+    assert isinstance(config.inference_seg_prompt, dict)
+    assert config.inference_seg_prompt.get("text") == "find stairs and handrail"
+    assert config.inference_seg_prompt.get("targets") == ["person", "stairs"]
+    assert config.inference_seg_prompt.get("boxes") == [[0.0, 0.0, 10.0, 10.0]]
+    assert config.inference_seg_prompt.get("points") == [{"x": 8.0, "y": 8.0, "label": 1}]
+    assert config.inference_seg_prompt.get("meta", {}).get("promptVersion") == "v1"

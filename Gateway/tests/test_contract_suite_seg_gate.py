@@ -34,3 +34,12 @@ def test_contract_suite_seg_gate_passes(tmp_path: Path) -> None:
     assert isinstance(seg_lint, dict)
     assert bool(seg_lint.get("eventsPresent")) is True
     assert bool(seg_lint.get("payloadSchemaOk")) is True
+
+    seg_prompt_row = next((row for row in runs if str(row.get("id", "")) == "fixture_with_seg_prompt_mask_contract"), None)
+    assert isinstance(seg_prompt_row, dict)
+    seg_prompt_lint = seg_prompt_row.get("segLint", {})
+    assert isinstance(seg_prompt_lint, dict)
+    assert bool(seg_prompt_lint.get("eventsPresent")) is True
+    assert bool(seg_prompt_lint.get("payloadSchemaOk")) is True
+    assert bool(seg_prompt_lint.get("promptEventsPresent")) is True
+    assert bool(seg_prompt_lint.get("promptPayloadSchemaOk")) is True

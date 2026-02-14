@@ -445,6 +445,7 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         seg_warnings_count = 0
         seg_prompt_events_present = 0
         seg_prompt_lines = 0
+        seg_prompt_schema_ok = 0
         seg_prompt_warnings_count = 0
         seg_payload_schema_ok = 0
         seg_bbox_out_of_range_count = 0
@@ -485,17 +486,32 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                     seg_prompt_lines += 1
                                     payload = obj.get("payload")
                                     payload = payload if isinstance(payload, dict) else {}
+                                    payload_ok = True
                                     for key in ("targetsCount", "textChars", "boxesCount", "pointsCount"):
+                                        if key not in payload:
+                                            payload_ok = False
+                                            seg_prompt_warnings_count += 1
+                                            continue
                                         try:
                                             value = int(payload.get(key, 0))
                                         except Exception:
+                                            payload_ok = False
                                             seg_prompt_warnings_count += 1
                                             continue
                                         if value < 0:
+                                            payload_ok = False
                                             seg_prompt_warnings_count += 1
                                     prompt_version = payload.get("promptVersion")
                                     if prompt_version is not None and not isinstance(prompt_version, str):
+                                        payload_ok = False
                                         seg_prompt_warnings_count += 1
+                                    for key in ("backend", "model", "endpoint"):
+                                        value = payload.get(key)
+                                        if value is not None and not isinstance(value, str):
+                                            payload_ok = False
+                                            seg_prompt_warnings_count += 1
+                                    if payload_ok:
+                                        seg_prompt_schema_ok += 1
                                 if name == "seg.segment":
                                     seg_events_present = 1
                                     seg_lines += 1
@@ -676,6 +692,8 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "segWarningsCount": int(seg_warnings_count),
             "segPromptEventsPresent": int(seg_prompt_events_present),
             "segPromptLines": int(seg_prompt_lines),
+            "segPromptSchemaOk": int(seg_prompt_schema_ok),
+            "segPromptPayloadSchemaOk": int(seg_prompt_lines > 0 and seg_prompt_schema_ok == seg_prompt_lines),
             "segPromptWarningsCount": int(seg_prompt_warnings_count),
             "segBboxOutOfRangeCount": int(seg_bbox_out_of_range_count),
             "segScoreOutOfRangeCount": int(seg_score_out_of_range_count),
@@ -714,6 +732,8 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"segWarningsCount: {summary['segWarningsCount']}")
             print(f"segPromptEventsPresent: {summary['segPromptEventsPresent']}")
             print(f"segPromptLines: {summary['segPromptLines']}")
+            print(f"segPromptSchemaOk: {summary['segPromptSchemaOk']}")
+            print(f"segPromptPayloadSchemaOk: {summary['segPromptPayloadSchemaOk']}")
             print(f"segPromptWarningsCount: {summary['segPromptWarningsCount']}")
             print(f"segBboxOutOfRangeCount: {summary['segBboxOutOfRangeCount']}")
             print(f"segScoreOutOfRangeCount: {summary['segScoreOutOfRangeCount']}")

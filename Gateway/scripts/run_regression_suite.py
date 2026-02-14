@@ -61,6 +61,10 @@ class RunSummary:
     seg_payload_schema_ok: bool = False
     seg_lines: int = 0
     seg_schema_ok_lines: int = 0
+    seg_prompt_events_present: bool = False
+    seg_prompt_payload_schema_ok: bool = False
+    seg_prompt_lines: int = 0
+    seg_prompt_schema_ok_lines: int = 0
     score_delta: float | None = None
     baseline_score: float | None = None
     critical_fn_gate_required: bool = False
@@ -135,6 +139,10 @@ class RunSummary:
                 "payloadSchemaOk": self.seg_payload_schema_ok,
                 "segLines": self.seg_lines,
                 "segSchemaOkLines": self.seg_schema_ok_lines,
+                "promptEventsPresent": self.seg_prompt_events_present,
+                "promptPayloadSchemaOk": self.seg_prompt_payload_schema_ok,
+                "segPromptLines": self.seg_prompt_lines,
+                "segPromptSchemaOkLines": self.seg_prompt_schema_ok_lines,
             },
             "baselineScore": self.baseline_score,
             "scoreDelta": self.score_delta,
@@ -563,6 +571,8 @@ def run_suite(
     run_min_pov_decisions_override: dict[str, int | None] = {}
     run_require_seg_events_present: dict[str, bool] = {}
     run_require_seg_payload_schema_ok: dict[str, bool] = {}
+    run_require_seg_prompt_events_present: dict[str, bool] = {}
+    run_require_seg_prompt_payload_schema_ok: dict[str, bool] = {}
     failures: list[str] = []
     contract_lock_ok: bool | None = None
     contract_lock_detail = ""
@@ -582,6 +592,8 @@ def run_suite(
         run_min_pov_decisions_override[run_id] = _try_int(run_cfg.get("minPovDecisions"))
         run_require_seg_events_present[run_id] = _to_bool01(run_cfg.get("requireSegEventsPresent"), False)
         run_require_seg_payload_schema_ok[run_id] = _to_bool01(run_cfg.get("requireSegPayloadSchemaOk"), False)
+        run_require_seg_prompt_events_present[run_id] = _to_bool01(run_cfg.get("requireSegPromptEventsPresent"), False)
+        run_require_seg_prompt_payload_schema_ok[run_id] = _to_bool01(run_cfg.get("requireSegPromptPayloadSchemaOk"), False)
         run_path = _resolve_input_path(run_path_text, suite_dir)
 
         ws_jsonl: Path | None = None
@@ -618,6 +630,10 @@ def run_suite(
                     run_summary.seg_payload_schema_ok = bool(lint_summary.get("segPayloadSchemaOk", 0))
                     run_summary.seg_lines = int(lint_summary.get("segLines", 0) or 0)
                     run_summary.seg_schema_ok_lines = int(lint_summary.get("segSchemaOk", 0) or 0)
+                    run_summary.seg_prompt_events_present = bool(lint_summary.get("segPromptEventsPresent", 0))
+                    run_summary.seg_prompt_payload_schema_ok = bool(lint_summary.get("segPromptPayloadSchemaOk", 0))
+                    run_summary.seg_prompt_lines = int(lint_summary.get("segPromptLines", 0) or 0)
+                    run_summary.seg_prompt_schema_ok_lines = int(lint_summary.get("segPromptSchemaOk", 0) or 0)
             except Exception:
                 # Lint stats are best-effort; report generation should remain authoritative.
                 pass
@@ -668,6 +684,10 @@ def run_suite(
             failures.append(f"{run.run_id}: seg events missing (seg.segment)")
         if run_require_seg_payload_schema_ok.get(run.run_id, False) and not bool(run.seg_payload_schema_ok):
             failures.append(f"{run.run_id}: seg payload schema check failed")
+        if run_require_seg_prompt_events_present.get(run.run_id, False) and not bool(run.seg_prompt_events_present):
+            failures.append(f"{run.run_id}: seg prompt events missing (seg.prompt)")
+        if run_require_seg_prompt_payload_schema_ok.get(run.run_id, False) and not bool(run.seg_prompt_payload_schema_ok):
+            failures.append(f"{run.run_id}: seg prompt payload schema check failed")
         if fail_on_drop and run.baseline_score is not None and run.quality_score is not None:
             delta = run.quality_score - run.baseline_score
             if delta < -2.0:
@@ -744,6 +764,7 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "confirmTimeouts={confirm_timeouts} critical_fn={critical_fn} riskDelayP90={risk_delay_p90} riskDelayMax={risk_delay_max} "
                 "riskLatencyP90={risk_latency_p90} riskLatencyMax={risk_latency_max} segF1@0.5={seg_f1} segCoverage={seg_cov} segLatencyP90={seg_p90} "
                 "segEventsPresent={seg_events_present} segPayloadSchemaOk={seg_payload_schema_ok} "
+                "segPromptEventsPresent={seg_prompt_events_present} segPromptPayloadSchemaOk={seg_prompt_payload_schema_ok} "
                 "povPresent={pov_present} povDecisions={pov_decisions} povTokenApprox={pov_token_approx} source={schema_src} "
                 "ocr={ocr_backend}/{ocr_model} risk={risk_backend}/{risk_model}".format(
                     run_id=run_id,
@@ -761,6 +782,8 @@ def _print_summary(result: dict[str, Any]) -> None:
                     seg_p90=row.get("seg", {}).get("latencyP90", None),
                     seg_events_present=row.get("segLint", {}).get("eventsPresent", False),
                     seg_payload_schema_ok=row.get("segLint", {}).get("payloadSchemaOk", False),
+                    seg_prompt_events_present=row.get("segLint", {}).get("promptEventsPresent", False),
+                    seg_prompt_payload_schema_ok=row.get("segLint", {}).get("promptPayloadSchemaOk", False),
                     pov_present=row.get("pov", {}).get("present", False),
                     pov_decisions=row.get("pov", {}).get("decisions", 0),
                     pov_token_approx=row.get("pov", {}).get("tokenApprox", 0),

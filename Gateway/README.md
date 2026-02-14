@@ -156,6 +156,33 @@ python scripts/replay_run_package.py --run-package tests/fixtures/run_package_wi
 python scripts/report_run.py --run-package tests/fixtures/run_package_with_seg_gt_min
 ```
 
+Prompt + mask HTTP e2e (deterministic fixture):
+
+```powershell
+# terminal 1: reference seg service (prompt+mask fixture source)
+$env:BYES_REF_SEG_FIXTURE_DIR="Gateway/tests/fixtures/run_package_with_seg_prompt_and_mask_gt_min"
+python -m uvicorn services.reference_seg_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19231
+
+# terminal 2: inference_service (seg provider=http)
+$env:BYES_SERVICE_SEG_PROVIDER="http"
+$env:BYES_SERVICE_SEG_ENDPOINT="http://127.0.0.1:19231/seg"
+python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
+
+# terminal 3: Gateway + replay/report
+cd Gateway
+$env:BYES_ENABLE_SEG="1"
+$env:BYES_SEG_BACKEND="http"
+$env:BYES_SEG_HTTP_URL="http://127.0.0.1:19120/seg"
+$env:BYES_SEG_PROMPT_JSON='{\"schemaVersion\":\"byes.seg_request.v1\",\"targets\":[\"person\"],\"text\":\"find person\",\"meta\":{\"promptVersion\":\"v1\"}}'
+python scripts/replay_run_package.py --run-package tests/fixtures/run_package_with_seg_prompt_and_mask_gt_min --reset
+python scripts/report_run.py --run-package tests/fixtures/run_package_with_seg_prompt_and_mask_gt_min
+```
+
+Expected evidence:
+- `events/events_v1.jsonl` includes both `seg.prompt` and `seg.segment`.
+- `seg.segment.payload.segments[*].mask` keeps `rle_v1`.
+- `report.json -> quality.seg` includes `maskCoverage`, `maskFramesWithGt`, `maskFramesWithPred`.
+
 ## Planning API (/api/plan)
 
 Generate an `ActionPlan v1` from POV context + risk events.

@@ -20,7 +20,7 @@ python -m uvicorn services.reference_seg_service.app:app --app-dir ../../ --host
 ## API
 
 - `POST /seg`
-  - request: `{ "runId": "...", "frameSeq": 1, "image_b64": "...", "targets": ["person","chair"] }`
+  - request: `{ "runId": "...", "frameSeq": 1, "image_b64": "...", "targets": ["person","chair"], "prompt": {"targets":["person"],"text":"find person","boxes":[[0,0,10,10]],"points":[{"x":4,"y":4,"label":1}],"meta":{"promptVersion":"v1"}} }`
   - response (byes.seg.v1 compatible):
     - `segments`: `[{label, score, bbox, mask?}]`
     - `segmentsCount`
@@ -35,3 +35,9 @@ python -m uvicorn services.reference_seg_service.app:app --app-dir ../../ --host
 - non-empty `targets`: filter by `label` (case-insensitive).
 - default fixture (`run_package_with_seg_gt_min`) has labels: `person`, `chair`.
 - when fixture objects include `mask` (`rle_v1`), the mask is returned and can flow through the HTTP chain.
+
+`prompt` behavior (deterministic, optional):
+1. label filter via `targets + prompt.targets + tokenized prompt.text`
+2. bbox overlap filter via `prompt.boxes`
+3. point-in-bbox filter via `prompt.points`
+- filters are cumulative; if filtered result becomes empty, service falls back to the unfiltered frame segments and emits `promptWarning`.

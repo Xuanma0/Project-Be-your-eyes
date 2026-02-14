@@ -52,7 +52,7 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
   - `model`: provider/model id tag
 - Optional request field:
   - `targets`: list of labels (for downstream provider filtering/prompting)
-  - `prompt`: rich prompt object for future SAM2/SAM3 adapters (forwarded to HTTP provider)
+  - `prompt`: rich prompt object for future SAM2/SAM3 adapters (forwarded to HTTP provider and may condition output if downstream supports prompt filtering)
 - Optional response metadata:
   - `targetsCount`, `targetsUsed`
 - If downstream returns `mask` (`rle_v1`), `http` provider keeps it and passes through to Gateway events/report.

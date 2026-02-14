@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -130,6 +131,152 @@ def _normalize_targets(raw_targets: list[Any] | None) -> list[str]:
     return out
 
 
+def _normalize_prompt(prompt: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(prompt, dict):
+        return {}
+    out: dict[str, Any] = {}
+    targets = _normalize_targets(prompt.get("targets"))
+    if targets:
+        out["targets"] = targets
+
+    text = str(prompt.get("text", "")).strip()
+    if text:
+        out["text"] = text
+
+    boxes_raw = prompt.get("boxes")
+    if isinstance(boxes_raw, list):
+        boxes: list[list[float]] = []
+        for item in boxes_raw:
+            normalized = _normalize_bbox(item)
+            if normalized is not None:
+                boxes.append(normalized)
+        if boxes:
+            out["boxes"] = boxes
+
+    points_raw = prompt.get("points")
+    if isinstance(points_raw, list):
+        points: list[dict[str, float]] = []
+        for item in points_raw:
+            if not isinstance(item, dict):
+                continue
+            x = _to_float(item.get("x"))
+            y = _to_float(item.get("y"))
+            if x is None or y is None:
+                continue
+            points.append({"x": float(x), "y": float(y)})
+        if points:
+            out["points"] = points
+
+    meta_raw = prompt.get("meta")
+    if isinstance(meta_raw, dict):
+        prompt_version = str(meta_raw.get("promptVersion", "")).strip()
+        if prompt_version:
+            out["meta"] = {"promptVersion": prompt_version}
+
+    return out
+
+
+def _extract_labels_from_prompt_text(text: str) -> list[str]:
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for token in re.split(r"[\s,;/|]+", text):
+        normalized = str(token or "").strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        tokens.append(normalized)
+    return tokens
+
+
+def _bbox_overlap_area(a: list[float], b: list[float]) -> float:
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    ix0 = max(ax0, bx0)
+    iy0 = max(ay0, by0)
+    ix1 = min(ax1, bx1)
+    iy1 = min(ay1, by1)
+    width = ix1 - ix0
+    height = iy1 - iy0
+    if width <= 0 or height <= 0:
+        return 0.0
+    return float(width * height)
+
+
+def _point_in_bbox(point: dict[str, float], bbox: list[float]) -> bool:
+    x = float(point.get("x", 0.0))
+    y = float(point.get("y", 0.0))
+    x0, y0, x1, y1 = bbox
+    return x0 <= x <= x1 and y0 <= y <= y1
+
+
+def _filter_segments_by_prompt(
+    segments: list[dict[str, Any]],
+    *,
+    targets: list[str],
+    prompt: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str | None]:
+    if not segments:
+        return segments, None
+
+    original = [dict(item) for item in segments if isinstance(item, dict)]
+    candidate = [dict(item) for item in original]
+    prompt_targets = _normalize_targets(prompt.get("targets"))
+    prompt_text = str(prompt.get("text", "")).strip()
+    text_targets = _extract_labels_from_prompt_text(prompt_text) if prompt_text else []
+    label_filters = sorted(set(targets + prompt_targets + text_targets))
+
+    if label_filters:
+        label_set = set(label_filters)
+        filtered = [item for item in candidate if str(item.get("label", "")).strip().lower() in label_set]
+        if not filtered:
+            return original, "prompt_filter_empty_fallback_targets_or_text"
+        candidate = filtered
+
+    boxes = prompt.get("boxes")
+    if isinstance(boxes, list) and boxes:
+        prompt_boxes: list[list[float]] = []
+        for box in boxes:
+            if isinstance(box, list) and len(box) == 4:
+                normalized_box = _normalize_bbox(box)
+                if normalized_box is not None:
+                    prompt_boxes.append(normalized_box)
+        if not prompt_boxes:
+            boxes = []
+    if isinstance(boxes, list) and boxes:
+        filtered = []
+        for item in candidate:
+            bbox = item.get("bbox")
+            if not isinstance(bbox, list) or len(bbox) != 4:
+                continue
+            bbox_norm = _normalize_bbox(bbox)
+            if bbox_norm is None:
+                continue
+            overlap = any(_bbox_overlap_area(bbox_norm, box) > 0.0 for box in prompt_boxes)
+            if overlap:
+                filtered.append(item)
+        if not filtered:
+            return original, "prompt_filter_empty_fallback_boxes"
+        candidate = filtered
+
+    points = prompt.get("points")
+    if isinstance(points, list) and points:
+        filtered = []
+        for item in candidate:
+            bbox = item.get("bbox")
+            if not isinstance(bbox, list) or len(bbox) != 4:
+                continue
+            bbox_norm = _normalize_bbox(bbox)
+            if bbox_norm is None:
+                continue
+            if any(_point_in_bbox(point, bbox_norm) for point in points if isinstance(point, dict)):
+                filtered.append(item)
+        if not filtered:
+            return original, "prompt_filter_empty_fallback_points"
+        candidate = filtered
+
+    return candidate, None
+
+
 def _normalize_frame_rows(frames: list[Any]) -> dict[int, list[dict[str, Any]]]:
     out: dict[int, list[dict[str, Any]]] = {}
     for row in frames:
@@ -249,6 +396,8 @@ def segment(request: SegRequest, raw_request: Request) -> dict[str, Any]:
     warnings_count = int(state.get("warningsCount", 0) or 0)
     segments: list[dict[str, Any]] = []
     targets = _normalize_targets(request.targets)
+    prompt = _normalize_prompt(request.prompt)
+    prompt_warning: str | None = None
 
     if not run_id:
         warning = "missing_run_id"
@@ -269,12 +418,10 @@ def segment(request: SegRequest, raw_request: Request) -> dict[str, Any]:
                 if not segments:
                     warning = "frame_not_found"
                     warnings_count += 1
-                elif targets:
-                    target_set = set(targets)
-                    filtered = [item for item in segments if str(item.get("label", "")).strip().lower() in target_set]
+                else:
+                    filtered, prompt_warning = _filter_segments_by_prompt(segments, targets=targets, prompt=prompt)
                     segments = filtered
-                    if not segments and warning is None:
-                        warning = "no_segments_after_target_filter"
+                    if prompt_warning:
                         warnings_count += 1
 
     endpoint = state.get("endpoint")
@@ -293,6 +440,8 @@ def segment(request: SegRequest, raw_request: Request) -> dict[str, Any]:
     }
     if warning:
         response["warning"] = warning
+    if prompt_warning:
+        response["promptWarning"] = prompt_warning
     if warnings_count > 0:
         response["warningsCount"] = warnings_count
     return response

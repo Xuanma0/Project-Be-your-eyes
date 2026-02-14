@@ -72,10 +72,93 @@ def _env_seg_prompt() -> dict[str, Any] | None:
                 return parsed
         except Exception:
             pass
+    prompt: dict[str, Any] = {}
+
+    raw_targets_json = str(os.getenv("BYES_SEG_PROMPT_TARGETS_JSON", "")).strip()
+    if raw_targets_json:
+        try:
+            parsed = json.loads(raw_targets_json)
+            if isinstance(parsed, list):
+                targets: list[str] = []
+                seen: set[str] = set()
+                for item in parsed:
+                    text = str(item or "").strip()
+                    key = text.lower()
+                    if text and key not in seen:
+                        seen.add(key)
+                        targets.append(text)
+                if targets:
+                    prompt["targets"] = targets
+        except Exception:
+            pass
+
+    raw_targets_csv = str(os.getenv("BYES_SEG_PROMPT_TARGETS", "")).strip()
+    if raw_targets_csv:
+        existing = prompt.get("targets")
+        merged: list[str] = [str(item).strip() for item in existing if str(item).strip()] if isinstance(existing, list) else []
+        seen = {item.lower() for item in merged}
+        for item in raw_targets_csv.split(","):
+            text = str(item or "").strip()
+            key = text.lower()
+            if text and key not in seen:
+                seen.add(key)
+                merged.append(text)
+        if merged:
+            prompt["targets"] = merged
+
+    raw_boxes_json = str(os.getenv("BYES_SEG_PROMPT_BOXES_JSON", "")).strip()
+    if raw_boxes_json:
+        try:
+            parsed = json.loads(raw_boxes_json)
+            if isinstance(parsed, list):
+                boxes: list[list[float]] = []
+                for item in parsed:
+                    if not isinstance(item, list) or len(item) != 4:
+                        continue
+                    try:
+                        boxes.append([float(item[0]), float(item[1]), float(item[2]), float(item[3])])
+                    except Exception:
+                        continue
+                if boxes:
+                    prompt["boxes"] = boxes
+        except Exception:
+            pass
+
+    raw_points_json = str(os.getenv("BYES_SEG_PROMPT_POINTS_JSON", "")).strip()
+    if raw_points_json:
+        try:
+            parsed = json.loads(raw_points_json)
+            if isinstance(parsed, list):
+                points: list[dict[str, float | int]] = []
+                for item in parsed:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        x = float(item.get("x"))
+                        y = float(item.get("y"))
+                        label = int(item.get("label"))
+                    except Exception:
+                        continue
+                    if label not in {0, 1}:
+                        continue
+                    points.append({"x": x, "y": y, "label": label})
+                if points:
+                    prompt["points"] = points
+        except Exception:
+            pass
+
+    raw_version = str(os.getenv("BYES_SEG_PROMPT_VERSION", "")).strip()
+    if raw_version:
+        meta = prompt.get("meta")
+        meta_obj = dict(meta) if isinstance(meta, dict) else {}
+        meta_obj["promptVersion"] = raw_version
+        prompt["meta"] = meta_obj
+
     raw_text = str(os.getenv("BYES_SEG_PROMPT_TEXT", "")).strip()
     if raw_text:
-        return {"text": raw_text}
-    return None
+        prompt["text"] = raw_text
+
+    return prompt or None
 
 
 @dataclass(frozen=True)
