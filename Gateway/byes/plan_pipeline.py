@@ -8,6 +8,7 @@ from typing import Any
 
 from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text
 from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events
+from byes.inference.plan_context_pack import build_plan_context_pack
 from byes.planner_backends.base import PlannerBackend
 from byes.planner_registry import get_planner_backend
 from byes.safety_kernel import apply_guardrails, classify_risk_level
@@ -122,6 +123,7 @@ def build_planner_request(
     planner_provider: str | None = None,
     pov_ir_inline: dict[str, Any] | None = None,
     seg_context: dict[str, Any] | None = None,
+    plan_context_pack: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_constraints = {
         "allowConfirm": bool(constraints.get("allowConfirm", True)),
@@ -210,6 +212,8 @@ def build_planner_request(
         payload["povIr"] = pov_ir_inline
     if isinstance(seg_context, dict):
         payload["segContext"] = seg_context
+    if isinstance(plan_context_pack, dict):
+        payload["planContextPack"] = plan_context_pack
     allow_path = str(os.getenv("BYES_PLANNER_ALLOW_RUN_PACKAGE_PATH", "0")).strip().lower() in {"1", "true", "yes", "on"}
     run_package_path_text = str(run_package_path or "").strip()
     if allow_path and run_package_path_text:
@@ -250,6 +254,13 @@ def generate_action_plan(
     seg_context_out = seg_context_out if isinstance(seg_context_out, dict) else {}
     seg_context_segments = _as_int(seg_context_out.get("segments")) or 0
     seg_context = seg_context_payload if seg_context_segments > 0 else None
+    plan_context_pack = build_plan_context_pack(
+        run_id=run_id,
+        seg_context=seg_context,
+        pov_context=context_pack,
+        risk_context=risk_summary,
+        budget=None,
+    )
 
     planner_backend = backend if backend is not None else get_planner_backend()
     planner_request = build_planner_request(
@@ -262,6 +273,7 @@ def generate_action_plan(
         planner_provider=planner_provider,
         pov_ir_inline=planner_pov_ir,
         seg_context=seg_context,
+        plan_context_pack=plan_context_pack,
     )
     draft_plan = planner_backend.generate_plan(planner_request)
     if not isinstance(draft_plan, dict):
@@ -311,6 +323,7 @@ def generate_action_plan(
         "plan": guarded_plan,
         "contextPack": context_pack,
         "segContext": seg_context,
+        "planContextPack": plan_context_pack,
         "planRequest": planner_request,
         "riskSummary": risk_summary,
         "guardrailsApplied": list(guardrails_applied),

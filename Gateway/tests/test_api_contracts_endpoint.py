@@ -22,6 +22,7 @@ def test_api_contracts_endpoint_returns_lock_and_runtime_defaults() -> None:
         "seg.context.v1",
         "byes.plan_request.v1",
         "plan.context_alignment.v1",
+        "plan.context_pack.v1",
     ):
         assert key in versions
         row = versions[key]
@@ -54,3 +55,9 @@ def test_api_contracts_endpoint_returns_lock_and_runtime_defaults() -> None:
     assert str(plan_request.get("defaultPromptVersion", "")).strip()
     assert "includeSegContext" in plan_request
     assert "includePovContext" in plan_request
+    plan_context_pack = runtime_defaults.get("planContextPack", {})
+    assert isinstance(plan_context_pack, dict)
+    plan_context_budget = plan_context_pack.get("defaultBudget", {})
+    assert isinstance(plan_context_budget, dict)
+    assert int(plan_context_budget.get("maxChars", 0)) > 0
+    assert str(plan_context_budget.get("mode", "")).strip()

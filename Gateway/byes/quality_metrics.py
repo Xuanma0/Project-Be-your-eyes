@@ -2447,6 +2447,98 @@ def extract_plan_context_summary_from_events_v1(events: Iterable[dict[str, Any]]
     }
 
 
+def extract_plan_context_pack_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    event_count = 0
+    chars_values: list[int] = []
+    seg_chars_values: list[int] = []
+    pov_chars_values: list[int] = []
+    risk_chars_values: list[int] = []
+    chars_dropped_total = 0
+    mode_counter: Counter[str] = Counter()
+    budget_chars_counter: Counter[int] = Counter()
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "plan.context_pack":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        stats = payload.get("stats")
+        stats = stats if isinstance(stats, dict) else {}
+        out_stats = stats.get("out")
+        out_stats = out_stats if isinstance(out_stats, dict) else {}
+        truncation = stats.get("truncation")
+        truncation = truncation if isinstance(truncation, dict) else {}
+        budget = payload.get("budget")
+        budget = budget if isinstance(budget, dict) else {}
+
+        event_count += 1
+        chars_values.append(_to_nonnegative_int(out_stats.get("charsTotal")))
+        seg_chars_values.append(_to_nonnegative_int(out_stats.get("segChars")))
+        pov_chars_values.append(_to_nonnegative_int(out_stats.get("povChars")))
+        risk_chars_values.append(_to_nonnegative_int(out_stats.get("riskChars")))
+        chars_dropped_total += _to_nonnegative_int(truncation.get("charsDropped"))
+        mode = str(budget.get("mode", "")).strip()
+        if mode:
+            mode_counter[mode] += 1
+        budget_chars = _to_nonnegative_int(budget.get("maxChars"))
+        if budget_chars > 0:
+            budget_chars_counter[budget_chars] += 1
+
+    if event_count <= 0:
+        return {
+            "present": False,
+            "events": 0,
+            "budgetDefault": {"maxChars": 0, "mode": None},
+            "out": {
+                "charsTotalP90": 0,
+                "segCharsP90": 0,
+                "povCharsP90": 0,
+                "riskCharsP90": 0,
+            },
+            "truncation": {
+                "charsDroppedTotal": 0,
+                "truncationRate": 0.0,
+            },
+            "modeDiversityCount": 0,
+        }
+
+    chars_stats = summarize_latency(chars_values)
+    seg_stats = summarize_latency(seg_chars_values)
+    pov_stats = summarize_latency(pov_chars_values)
+    risk_stats = summarize_latency(risk_chars_values)
+    truncation_rate = _safe_ratio(chars_dropped_total, max(1, sum(chars_values) + chars_dropped_total))
+    top_mode = mode_counter.most_common(1)[0][0] if mode_counter else None
+    top_budget_chars = budget_chars_counter.most_common(1)[0][0] if budget_chars_counter else 0
+    return {
+        "present": True,
+        "events": int(event_count),
+        "budgetDefault": {
+            "maxChars": int(top_budget_chars),
+            "mode": top_mode,
+        },
+        "out": {
+            "charsTotalP90": int(chars_stats.get("p90", 0) or 0),
+            "segCharsP90": int(seg_stats.get("p90", 0) or 0),
+            "povCharsP90": int(pov_stats.get("p90", 0) or 0),
+            "riskCharsP90": int(risk_stats.get("p90", 0) or 0),
+        },
+        "truncation": {
+            "charsDroppedTotal": int(chars_dropped_total),
+            "truncationRate": round(max(0.0, min(1.0, truncation_rate)), 6),
+        },
+        "modeDiversityCount": int(len(mode_counter)),
+    }
+
+
 def extract_risk_latency_metrics_from_events_v1(
     events: Iterable[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, dict[str, int]] | None]:

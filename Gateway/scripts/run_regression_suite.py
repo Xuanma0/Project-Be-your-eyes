@@ -85,6 +85,11 @@ class RunSummary:
     plan_ctx_used_true_count: int = 0
     plan_seg_coverage_p90: float = 0.0
     plan_pov_coverage_p90: float = 0.0
+    plan_context_pack_events_present: bool = False
+    plan_context_pack_schema_ok: bool = False
+    plan_context_pack_lines: int = 0
+    plan_ctx_trunc_rate: float = 0.0
+    plan_ctx_chars_p90: float = 0.0
     score_delta: float | None = None
     baseline_score: float | None = None
     critical_fn_gate_required: bool = False
@@ -183,6 +188,11 @@ class RunSummary:
                 "planCtxUsedTrueCount": self.plan_ctx_used_true_count,
                 "planSegCoverageP90": self.plan_seg_coverage_p90,
                 "planPovCoverageP90": self.plan_pov_coverage_p90,
+                "planContextPackEventsPresent": self.plan_context_pack_events_present,
+                "planContextPackSchemaOk": self.plan_context_pack_schema_ok,
+                "planContextPackLines": self.plan_context_pack_lines,
+                "planCtxTruncRate": self.plan_ctx_trunc_rate,
+                "planCtxCharsP90": self.plan_ctx_chars_p90,
             },
             "baselineScore": self.baseline_score,
             "scoreDelta": self.score_delta,
@@ -625,6 +635,8 @@ def run_suite(
     run_require_plan_request_schema_ok: dict[str, bool] = {}
     run_require_plan_context_events_present: dict[str, bool] = {}
     run_require_plan_context_schema_ok: dict[str, bool] = {}
+    run_require_plan_context_pack_events_present: dict[str, bool] = {}
+    run_require_plan_context_pack_schema_ok: dict[str, bool] = {}
     failures: list[str] = []
     contract_lock_ok: bool | None = None
     contract_lock_detail = ""
@@ -658,6 +670,14 @@ def run_suite(
         run_require_plan_request_schema_ok[run_id] = _to_bool01(run_cfg.get("requirePlanRequestSchemaOk"), False)
         run_require_plan_context_events_present[run_id] = _to_bool01(run_cfg.get("requirePlanContextEventsPresent"), False)
         run_require_plan_context_schema_ok[run_id] = _to_bool01(run_cfg.get("requirePlanContextSchemaOk"), False)
+        run_require_plan_context_pack_events_present[run_id] = _to_bool01(
+            run_cfg.get("requirePlanContextPackEventsPresent"),
+            False,
+        )
+        run_require_plan_context_pack_schema_ok[run_id] = _to_bool01(
+            run_cfg.get("requirePlanContextPackSchemaOk"),
+            False,
+        )
         run_path = _resolve_input_path(run_path_text, suite_dir)
 
         ws_jsonl: Path | None = None
@@ -720,6 +740,11 @@ def run_suite(
                     run_summary.plan_ctx_used_true_count = int(lint_summary.get("planCtxUsedTrueCount", 0) or 0)
                     run_summary.plan_seg_coverage_p90 = float(lint_summary.get("planSegCoverageP90", 0.0) or 0.0)
                     run_summary.plan_pov_coverage_p90 = float(lint_summary.get("planPovCoverageP90", 0.0) or 0.0)
+                    run_summary.plan_context_pack_events_present = bool(lint_summary.get("planContextPackPresent", 0))
+                    run_summary.plan_context_pack_schema_ok = bool(lint_summary.get("planContextPackSchemaOk", 0))
+                    run_summary.plan_context_pack_lines = int(lint_summary.get("planContextPackLines", 0) or 0)
+                    run_summary.plan_ctx_trunc_rate = float(lint_summary.get("planCtxTruncRate", 0.0) or 0.0)
+                    run_summary.plan_ctx_chars_p90 = float(lint_summary.get("planCtxCharsP90", 0.0) or 0.0)
             except Exception:
                 # Lint stats are best-effort; report generation should remain authoritative.
                 pass
@@ -792,6 +817,12 @@ def run_suite(
             failures.append(f"{run.run_id}: plan.context_alignment events missing")
         if run_require_plan_context_schema_ok.get(run.run_id, False) and not bool(run.plan_context_schema_ok):
             failures.append(f"{run.run_id}: plan.context_alignment payload schema check failed")
+        if run_require_plan_context_pack_events_present.get(run.run_id, False) and not bool(
+            run.plan_context_pack_events_present
+        ):
+            failures.append(f"{run.run_id}: plan.context_pack events missing")
+        if run_require_plan_context_pack_schema_ok.get(run.run_id, False) and not bool(run.plan_context_pack_schema_ok):
+            failures.append(f"{run.run_id}: plan.context_pack payload schema check failed")
         if fail_on_drop and run.baseline_score is not None and run.quality_score is not None:
             delta = run.quality_score - run.baseline_score
             if delta < -2.0:
@@ -877,6 +908,8 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "planRequestSegIncludedCount={plan_request_seg_included_count} planRequestSegCharsTotal={plan_request_seg_chars_total} "
                 "planContextEventsPresent={plan_context_events_present} planContextSchemaOk={plan_context_schema_ok} "
                 "planCtxUsedTrueCount={plan_ctx_used_true_count} planSegCoverageP90={plan_seg_coverage_p90} planPovCoverageP90={plan_pov_coverage_p90} "
+                "planContextPackPresent={plan_context_pack_present} planContextPackSchemaOk={plan_context_pack_schema_ok} "
+                "planCtxTruncRate={plan_ctx_trunc_rate} planCtxCharsP90={plan_ctx_chars_p90} "
                 "povPresent={pov_present} povDecisions={pov_decisions} povTokenApprox={pov_token_approx} source={schema_src} "
                 "ocr={ocr_backend}/{ocr_model} risk={risk_backend}/{risk_model}".format(
                     run_id=run_id,
@@ -912,6 +945,10 @@ def _print_summary(result: dict[str, Any]) -> None:
                     plan_ctx_used_true_count=row.get("segLint", {}).get("planCtxUsedTrueCount", 0),
                     plan_seg_coverage_p90=row.get("segLint", {}).get("planSegCoverageP90", 0.0),
                     plan_pov_coverage_p90=row.get("segLint", {}).get("planPovCoverageP90", 0.0),
+                    plan_context_pack_present=row.get("segLint", {}).get("planContextPackEventsPresent", False),
+                    plan_context_pack_schema_ok=row.get("segLint", {}).get("planContextPackSchemaOk", False),
+                    plan_ctx_trunc_rate=row.get("segLint", {}).get("planCtxTruncRate", 0.0),
+                    plan_ctx_chars_p90=row.get("segLint", {}).get("planCtxCharsP90", 0.0),
                     pov_present=row.get("pov", {}).get("present", False),
                     pov_decisions=row.get("pov", {}).get("decisions", 0),
                     pov_token_approx=row.get("pov", {}).get("tokenApprox", 0),

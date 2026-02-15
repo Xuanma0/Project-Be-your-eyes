@@ -35,6 +35,11 @@ from byes.inference.registry import get_ocr_backend, get_risk_backend, get_seg_b
 from byes.inference.backends.base import OCRResult, RiskResult, SegResult
 from byes.inference.prompt_budget import normalize_prompt, pack_prompt
 from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events
+from byes.inference.plan_context_pack import (
+    DEFAULT_PLAN_CONTEXT_PACK_BUDGET,
+    build_plan_context_pack,
+    resolve_plan_context_pack_budget_from_env,
+)
 from byes.metrics import GatewayMetrics
 from byes.observability import Observability
 from byes.planner import PolicyPlannerV0, PolicyPlannerV1
@@ -51,7 +56,7 @@ from byes.world_state import WorldState
 from byes.pov.store import PovStore
 from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text
 from byes.plan_context_alignment import compute_plan_context_alignment
-from byes.plan_pipeline import generate_action_plan, load_events_v1_rows
+from byes.plan_pipeline import extract_risk_summary, generate_action_plan, load_events_v1_rows
 from byes.plan_executor import execute_plan as execute_action_plan
 from byes.schemas.pov_ir_schema import validate_pov_ir
 from scripts.report_run import generate_report_outputs, load_run_package, safe_extract_zip
@@ -147,6 +152,7 @@ def _runtime_contract_defaults() -> dict[str, Any]:
         "mode": str(runtime_cfg.inference_seg_prompt_budget_mode or "targets_text_boxes_points").strip()
         or "targets_text_boxes_points",
     }
+    plan_context_pack_budget = resolve_plan_context_pack_budget_from_env()
     return {
         "segContext": {
             "defaultBudget": {
@@ -179,6 +185,12 @@ def _runtime_contract_defaults() -> dict[str, Any]:
             "defaultPromptVersion": "v2",
             "includeSegContext": True,
             "includePovContext": True,
+        },
+        "planContextPack": {
+            "defaultBudget": {
+                "maxChars": int(plan_context_pack_budget.get("maxChars", DEFAULT_PLAN_CONTEXT_PACK_BUDGET["maxChars"])),
+                "mode": str(plan_context_pack_budget.get("mode", DEFAULT_PLAN_CONTEXT_PACK_BUDGET["mode"])),
+            }
         },
         "segPrompt": {
             "targets": seg_targets,
@@ -1780,6 +1792,94 @@ async def get_seg_context(
             shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
+@app.get("/api/plan/context")
+async def get_plan_context(
+    runId: str,
+    maxChars: int = int(DEFAULT_PLAN_CONTEXT_PACK_BUDGET["maxChars"]),
+    mode: Literal[
+        "seg_plus_pov_plus_risk",
+        "seg_plus_pov",
+        "pov_plus_risk",
+        "seg_only",
+        "pov_only",
+        "risk_only",
+    ] = str(DEFAULT_PLAN_CONTEXT_PACK_BUDGET["mode"]),
+) -> dict[str, Any]:
+    run_id = str(runId or "").strip()
+    if not run_id:
+        raise HTTPException(status_code=400, detail="runId is required")
+
+    budget = {
+        "maxChars": max(0, int(maxChars)),
+        "mode": str(mode or DEFAULT_PLAN_CONTEXT_PACK_BUDGET["mode"]).strip() or str(DEFAULT_PLAN_CONTEXT_PACK_BUDGET["mode"]),
+    }
+
+    cleanup_dir: Path | None = None
+    events_rows: list[dict[str, Any]] = []
+    pov_ir_payload: dict[str, Any] | None = None
+    try:
+        try:
+            run_package_dir, cleanup_dir, _can_write_events = await _resolve_context_run_package_dir_async(
+                run_package_raw=None,
+                run_id=run_id,
+            )
+            _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+            events_rows, _events_path = load_events_v1_rows(run_package_dir, manifest)
+            if str(manifest.get("povIrJson", "")).strip():
+                _manifest, pov_ir_payload, _pov_path = _load_pov_ir_for_context(run_package_dir)
+        except HTTPException as ex:
+            if int(ex.status_code) != 404:
+                raise
+            events_rows = []
+
+        if not isinstance(pov_ir_payload, dict):
+            store_pov = gateway.pov_store.get(run_id)
+            pov_ir_payload = store_pov if isinstance(store_pov, dict) else None
+
+        if not events_rows:
+            for row in gateway._inference_events:  # noqa: SLF001
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("runId", "")).strip() != run_id:
+                    continue
+                events_rows.append(dict(row))
+
+        if not events_rows and not isinstance(pov_ir_payload, dict):
+            raise HTTPException(status_code=404, detail=f"no plan context data found for runId: {run_id}")
+
+        seg_context_budget = {
+            "maxChars": int(DEFAULT_SEG_CONTEXT_BUDGET["maxChars"]),
+            "maxSegments": int(DEFAULT_SEG_CONTEXT_BUDGET["maxSegments"]),
+            "mode": str(DEFAULT_SEG_CONTEXT_BUDGET["mode"]),
+        }
+        seg_context_raw = build_seg_context_from_events(events_rows, budget=seg_context_budget)
+        seg_stats = seg_context_raw.get("stats")
+        seg_stats = seg_stats if isinstance(seg_stats, dict) else {}
+        seg_out = seg_stats.get("out")
+        seg_out = seg_out if isinstance(seg_out, dict) else {}
+        seg_context = seg_context_raw if int(seg_out.get("segments", 0) or 0) > 0 else None
+
+        pov_context: dict[str, Any] | None = None
+        if isinstance(pov_ir_payload, dict):
+            pov_budget = PovContextBudgetRequest().model_dump()
+            ctx = build_context_pack(pov_ir_payload, budget=pov_budget, mode="decisions_plus_highlights")
+            ctx_text = render_context_text(ctx)
+            pov_context = finalize_context_pack_text(ctx, ctx_text, _now_ms())
+
+        risk_summary = extract_risk_summary(events_rows, frame_seq=None)
+        context_pack = build_plan_context_pack(
+            run_id=run_id,
+            seg_context=seg_context,
+            pov_context=pov_context,
+            risk_context=risk_summary,
+            budget=budget,
+        )
+        return context_pack
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
 @app.get("/api/contracts")
 async def contracts_index() -> dict[str, Any]:
     try:
@@ -1951,6 +2051,8 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
             findings = findings if isinstance(findings, list) else []
             plan_request_payload = bundle.get("planRequest")
             plan_request_payload = plan_request_payload if isinstance(plan_request_payload, dict) else {}
+            plan_context_pack_payload = bundle.get("planContextPack")
+            plan_context_pack_payload = plan_context_pack_payload if isinstance(plan_context_pack_payload, dict) else {}
             plan_context_alignment_payload = compute_plan_context_alignment(plan_request_payload, plan_payload)
             planner_rule_payload = {
                 "applied": bool(planner.get("ruleApplied")),
@@ -1977,12 +2079,15 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
                 plan_request=plan_request_payload,
                 rule_payload=planner_rule_payload,
                 alignment_payload=plan_context_alignment_payload,
+                plan_context_pack=plan_context_pack_payload,
             )
         else:
             planner = bundle.get("planner", {})
             planner = planner if isinstance(planner, dict) else {}
             plan_request_payload = bundle.get("planRequest")
             plan_request_payload = plan_request_payload if isinstance(plan_request_payload, dict) else {}
+            plan_context_pack_payload = bundle.get("planContextPack")
+            plan_context_pack_payload = plan_context_pack_payload if isinstance(plan_context_pack_payload, dict) else {}
             plan_context_alignment_payload = compute_plan_context_alignment(plan_request_payload, plan_payload)
             actions_payload = plan_payload.get("actions")
             actions_payload = actions_payload if isinstance(actions_payload, list) else []
@@ -1990,6 +2095,14 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
             guardrails = guardrails if isinstance(guardrails, list) else []
             findings = bundle.get("findings", [])
             findings = findings if isinstance(findings, list) else []
+            plan_context_pack_row = _build_byes_event(
+                run_id=run_id or "pov-live",
+                frame_seq=frame_seq or 1,
+                category="plan",
+                name="plan.context_pack",
+                latency_ms=latency_ms,
+                payload=_build_plan_context_pack_event_payload(plan_context_pack_payload),
+            )
             plan_request_row = _build_byes_event(
                 run_id=run_id or "pov-live",
                 frame_seq=frame_seq or 1,
@@ -2053,6 +2166,7 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
                     "findingsCount": len(findings),
                 },
             )
+            await gateway._emit_inference_event(plan_context_pack_row)  # noqa: SLF001
             await gateway._emit_inference_event(plan_request_row)  # noqa: SLF001
             await gateway._emit_inference_event(plan_row)  # noqa: SLF001
             await gateway._emit_inference_event(context_alignment_row)  # noqa: SLF001
@@ -2232,6 +2346,8 @@ async def run_packages_list(
     min_plan_seg_ctx_coverage: float | None = None,
     min_plan_pov_ctx_coverage: float | None = None,
     require_plan_ctx_used: str = "any",
+    max_plan_ctx_trunc_rate: float | None = None,
+    min_plan_ctx_chars_p90: int | None = None,
     min_seg_prompt_text_chars: int | None = None,
     max_seg_prompt_trunc_rate: float | None = None,
     max_seg_prompt_trunc_dropped: int | None = None,
@@ -2276,6 +2392,8 @@ async def run_packages_list(
         min_plan_seg_ctx_coverage=min_plan_seg_ctx_coverage,
         min_plan_pov_ctx_coverage=min_plan_pov_ctx_coverage,
         require_plan_ctx_used=require_plan_ctx_used,
+        max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
+        min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
         min_seg_prompt_text_chars=min_seg_prompt_text_chars,
         max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
         max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
@@ -2321,6 +2439,8 @@ async def run_packages_list(
             "min_plan_seg_ctx_coverage": min_plan_seg_ctx_coverage,
             "min_plan_pov_ctx_coverage": min_plan_pov_ctx_coverage,
             "require_plan_ctx_used": require_plan_ctx_used,
+            "max_plan_ctx_trunc_rate": max_plan_ctx_trunc_rate,
+            "min_plan_ctx_chars_p90": min_plan_ctx_chars_p90,
             "min_seg_prompt_text_chars": min_seg_prompt_text_chars,
             "max_seg_prompt_trunc_rate": max_seg_prompt_trunc_rate,
             "max_seg_prompt_trunc_dropped": max_seg_prompt_trunc_dropped,
@@ -2370,6 +2490,8 @@ async def run_packages_export_json(
     min_plan_seg_ctx_coverage: float | None = None,
     min_plan_pov_ctx_coverage: float | None = None,
     require_plan_ctx_used: str = "any",
+    max_plan_ctx_trunc_rate: float | None = None,
+    min_plan_ctx_chars_p90: int | None = None,
     min_seg_prompt_text_chars: int | None = None,
     max_seg_prompt_trunc_rate: float | None = None,
     max_seg_prompt_trunc_dropped: int | None = None,
@@ -2414,6 +2536,8 @@ async def run_packages_export_json(
         min_plan_seg_ctx_coverage=min_plan_seg_ctx_coverage,
         min_plan_pov_ctx_coverage=min_plan_pov_ctx_coverage,
         require_plan_ctx_used=require_plan_ctx_used,
+        max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
+        min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
         min_seg_prompt_text_chars=min_seg_prompt_text_chars,
         max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
         max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
@@ -2465,6 +2589,8 @@ async def run_packages_export_csv(
     min_plan_seg_ctx_coverage: float | None = None,
     min_plan_pov_ctx_coverage: float | None = None,
     require_plan_ctx_used: str = "any",
+    max_plan_ctx_trunc_rate: float | None = None,
+    min_plan_ctx_chars_p90: int | None = None,
     min_seg_prompt_text_chars: int | None = None,
     max_seg_prompt_trunc_rate: float | None = None,
     max_seg_prompt_trunc_dropped: int | None = None,
@@ -2509,6 +2635,8 @@ async def run_packages_export_csv(
         min_plan_seg_ctx_coverage=min_plan_seg_ctx_coverage,
         min_plan_pov_ctx_coverage=min_plan_pov_ctx_coverage,
         require_plan_ctx_used=require_plan_ctx_used,
+        max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
+        min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
         min_seg_prompt_text_chars=min_seg_prompt_text_chars,
         max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
         max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
@@ -2571,6 +2699,11 @@ async def run_packages_export_csv(
         "plan_ctx_used_rate",
         "plan_seg_ctx_coverage",
         "plan_pov_ctx_coverage",
+        "plan_ctx_chars_p90",
+        "plan_ctx_trunc_rate",
+        "plan_ctx_seg_chars_p90",
+        "plan_ctx_pov_chars_p90",
+        "plan_ctx_risk_chars_p90",
         "seg_prompt_present",
         "seg_prompt_text_chars_total",
         "seg_prompt_chars_out",
@@ -2871,6 +3004,57 @@ def _build_plan_context_alignment_event_payload(
     }
 
 
+def _build_plan_context_pack_event_payload(
+    plan_context_pack: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload = plan_context_pack if isinstance(plan_context_pack, dict) else {}
+    budget = payload.get("budget")
+    budget = budget if isinstance(budget, dict) else {}
+    stats = payload.get("stats")
+    stats = stats if isinstance(stats, dict) else {}
+    out_stats = stats.get("out")
+    out_stats = out_stats if isinstance(out_stats, dict) else {}
+    truncation = stats.get("truncation")
+    truncation = truncation if isinstance(truncation, dict) else {}
+    text = payload.get("text")
+    text = text if isinstance(text, dict) else {}
+    parts = payload.get("parts")
+    parts = parts if isinstance(parts, dict) else {}
+    run_id_value = str(payload.get("runId", "")).strip() or "plan-context-pack"
+    return {
+        "schemaVersion": "plan.context_pack.v1",
+        "runId": run_id_value,
+        "budget": {
+            "maxChars": int(max(0, int(budget.get("maxChars", 0) or 0))),
+            "mode": str(budget.get("mode", "")).strip() or None,
+        },
+        "parts": {
+            "seg": parts.get("seg"),
+            "pov": parts.get("pov"),
+            "risk": parts.get("risk"),
+        },
+        "stats": {
+            "out": {
+                "charsTotal": int(max(0, int(out_stats.get("charsTotal", 0) or 0))),
+                "tokenApprox": int(max(0, int(out_stats.get("tokenApprox", 0) or 0))),
+                "segChars": int(max(0, int(out_stats.get("segChars", 0) or 0))),
+                "povChars": int(max(0, int(out_stats.get("povChars", 0) or 0))),
+                "riskChars": int(max(0, int(out_stats.get("riskChars", 0) or 0))),
+            },
+            "truncation": {
+                "charsDropped": int(max(0, int(truncation.get("charsDropped", 0) or 0))),
+                "segCharsDropped": int(max(0, int(truncation.get("segCharsDropped", 0) or 0))),
+                "povCharsDropped": int(max(0, int(truncation.get("povCharsDropped", 0) or 0))),
+                "riskCharsDropped": int(max(0, int(truncation.get("riskCharsDropped", 0) or 0))),
+            },
+        },
+        "text": {
+            "summary": str(text.get("summary", "") or ""),
+            "prompt": str(text.get("prompt", "") or ""),
+        },
+    }
+
+
 def _try_append_plan_events(
     *,
     run_package_dir: Path,
@@ -2889,6 +3073,7 @@ def _try_append_plan_events(
     plan_request: dict[str, Any] | None = None,
     rule_payload: dict[str, Any] | None = None,
     alignment_payload: dict[str, Any] | None = None,
+    plan_context_pack: dict[str, Any] | None = None,
 ) -> bool:
     events_path = _resolve_events_v1_path(run_package_dir, manifest)
     now_ms = _now_ms()
@@ -2915,7 +3100,21 @@ def _try_append_plan_events(
     }
     plan_request_payload = _build_plan_request_event_payload(plan_request, planner)
     alignment = _build_plan_context_alignment_event_payload(alignment_payload)
+    plan_context_pack_payload = _build_plan_context_pack_event_payload(plan_context_pack)
     rows = [
+        {
+            "schemaVersion": "byes.event.v1",
+            "tsMs": now_ms,
+            "runId": run_id,
+            "frameSeq": safe_frame_seq,
+            "component": "gateway",
+            "category": "plan",
+            "name": "plan.request",
+            "phase": "result",
+            "status": "ok",
+            "latencyMs": int(max(0, latency_ms)),
+            "payload": plan_context_pack_payload,
+        },
         {
             "schemaVersion": "byes.event.v1",
             "tsMs": now_ms,
@@ -3266,6 +3465,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     plan_request_payload = plan_request_payload if isinstance(plan_request_payload, dict) else {}
     plan_context_payload = summary.get("planContext", {})
     plan_context_payload = plan_context_payload if isinstance(plan_context_payload, dict) else {}
+    plan_context_pack_payload = summary.get("planContextPack", {})
+    plan_context_pack_payload = plan_context_pack_payload if isinstance(plan_context_pack_payload, dict) else {}
     plan_quality_payload = summary.get("planQuality", {})
     plan_quality_payload = plan_quality_payload if isinstance(plan_quality_payload, dict) else {}
     plan_eval_payload = summary.get("planEval", {})
@@ -3327,6 +3528,11 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     plan_ctx_used_rate: float | None = None
     plan_seg_ctx_coverage: float | None = None
     plan_pov_ctx_coverage: float | None = None
+    plan_ctx_chars_p90: int | None = None
+    plan_ctx_trunc_rate: float | None = None
+    plan_ctx_seg_chars_p90: int | None = None
+    plan_ctx_pov_chars_p90: int | None = None
+    plan_ctx_risk_chars_p90: int | None = None
     plan_actions_payload = plan_payload.get("actions")
     if isinstance(plan_actions_payload, dict):
         raw_actions = _read_float(plan_actions_payload, "count")
@@ -3430,6 +3636,26 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         pov_cov_raw = _read_float(pov_ctx_payload, "coverageMean")
         if pov_cov_raw is not None:
             plan_pov_ctx_coverage = float(pov_cov_raw)
+    if isinstance(plan_context_pack_payload, dict) and bool(plan_context_pack_payload.get("present")):
+        out_payload = plan_context_pack_payload.get("out")
+        out_payload = out_payload if isinstance(out_payload, dict) else {}
+        trunc_payload = plan_context_pack_payload.get("truncation")
+        trunc_payload = trunc_payload if isinstance(trunc_payload, dict) else {}
+        chars_raw = _read_float(out_payload, "charsTotalP90")
+        if chars_raw is not None:
+            plan_ctx_chars_p90 = int(chars_raw)
+        seg_chars_raw = _read_float(out_payload, "segCharsP90")
+        if seg_chars_raw is not None:
+            plan_ctx_seg_chars_p90 = int(seg_chars_raw)
+        pov_chars_raw = _read_float(out_payload, "povCharsP90")
+        if pov_chars_raw is not None:
+            plan_ctx_pov_chars_p90 = int(pov_chars_raw)
+        risk_chars_raw = _read_float(out_payload, "riskCharsP90")
+        if risk_chars_raw is not None:
+            plan_ctx_risk_chars_p90 = int(risk_chars_raw)
+        trunc_rate_raw = _read_float(trunc_payload, "truncationRate")
+        if trunc_rate_raw is not None:
+            plan_ctx_trunc_rate = float(trunc_rate_raw)
     if isinstance(depth_risk, dict):
         critical = depth_risk.get("critical", {})
         delay = depth_risk.get("detectionDelayFrames", {})
@@ -3592,6 +3818,11 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "plan_ctx_used_rate": plan_ctx_used_rate,
         "plan_seg_ctx_coverage": plan_seg_ctx_coverage,
         "plan_pov_ctx_coverage": plan_pov_ctx_coverage,
+        "plan_ctx_chars_p90": plan_ctx_chars_p90,
+        "plan_ctx_trunc_rate": plan_ctx_trunc_rate,
+        "plan_ctx_seg_chars_p90": plan_ctx_seg_chars_p90,
+        "plan_ctx_pov_chars_p90": plan_ctx_pov_chars_p90,
+        "plan_ctx_risk_chars_p90": plan_ctx_risk_chars_p90,
         "summary": summary,
     }
     row.update(urls)
@@ -3624,6 +3855,8 @@ def _matches_run_filters(
     min_plan_seg_ctx_coverage: float | None,
     min_plan_pov_ctx_coverage: float | None,
     require_plan_ctx_used: str | None,
+    max_plan_ctx_trunc_rate: float | None,
+    min_plan_ctx_chars_p90: int | None,
     min_seg_prompt_text_chars: int | None,
     max_seg_prompt_trunc_rate: float | None,
     max_seg_prompt_trunc_dropped: int | None,
@@ -3764,6 +3997,18 @@ def _matches_run_filters(
             return False
         if normalized in {"false", "0", "no"} and present:
             return False
+    if max_plan_ctx_trunc_rate is not None:
+        value = row.get("plan_ctx_trunc_rate")
+        if value is None:
+            return False
+        if float(value) > float(max_plan_ctx_trunc_rate):
+            return False
+    if min_plan_ctx_chars_p90 is not None:
+        value = row.get("plan_ctx_chars_p90")
+        if value is None:
+            return False
+        if int(value) < int(min_plan_ctx_chars_p90):
+            return False
     if min_seg_prompt_text_chars is not None:
         value = row.get("seg_prompt_text_chars_total")
         if value is None:
@@ -3884,6 +4129,11 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "plan_seg_ctx_coverage",
         "plan_pov_ctx_coverage",
         "plan_ctx_used_rate",
+        "plan_ctx_chars_p90",
+        "plan_ctx_trunc_rate",
+        "plan_ctx_seg_chars_p90",
+        "plan_ctx_pov_chars_p90",
+        "plan_ctx_risk_chars_p90",
         "pov_decisions",
         "pov_token_approx",
         "pov_decision_per_min",
@@ -3946,6 +4196,8 @@ async def _query_run_package_rows(
     min_plan_seg_ctx_coverage: float | None,
     min_plan_pov_ctx_coverage: float | None,
     require_plan_ctx_used: str | None,
+    max_plan_ctx_trunc_rate: float | None,
+    min_plan_ctx_chars_p90: int | None,
     min_seg_prompt_text_chars: int | None,
     max_seg_prompt_trunc_rate: float | None,
     max_seg_prompt_trunc_dropped: int | None,
@@ -3996,6 +4248,8 @@ async def _query_run_package_rows(
             min_plan_seg_ctx_coverage=min_plan_seg_ctx_coverage,
             min_plan_pov_ctx_coverage=min_plan_pov_ctx_coverage,
             require_plan_ctx_used=require_plan_ctx_used,
+            max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
+            min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
             min_seg_prompt_text_chars=min_seg_prompt_text_chars,
             max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
             max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
@@ -4074,6 +4328,8 @@ async def runs_dashboard(
     min_plan_seg_ctx_coverage: float | None = None,
     min_plan_pov_ctx_coverage: float | None = None,
     require_plan_ctx_used: str = "any",
+    max_plan_ctx_trunc_rate: float | None = None,
+    min_plan_ctx_chars_p90: int | None = None,
     min_seg_prompt_text_chars: int | None = None,
     max_seg_prompt_trunc_rate: float | None = None,
     max_seg_prompt_trunc_dropped: int | None = None,
@@ -4119,6 +4375,8 @@ async def runs_dashboard(
         min_plan_seg_ctx_coverage=min_plan_seg_ctx_coverage,
         min_plan_pov_ctx_coverage=min_plan_pov_ctx_coverage,
         require_plan_ctx_used=require_plan_ctx_used,
+        max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
+        min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
         min_seg_prompt_text_chars=min_seg_prompt_text_chars,
         max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
         max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
@@ -4285,6 +4543,10 @@ async def runs_dashboard(
     max_seg_ctx_trunc_dropped_value = html.escape(
         "" if max_seg_ctx_trunc_dropped is None else str(max_seg_ctx_trunc_dropped)
     )
+    max_plan_ctx_trunc_rate_value = html.escape(
+        "" if max_plan_ctx_trunc_rate is None else str(max_plan_ctx_trunc_rate)
+    )
+    min_plan_ctx_chars_p90_value = html.escape("" if min_plan_ctx_chars_p90 is None else str(min_plan_ctx_chars_p90))
     min_seg_prompt_text_chars_value = html.escape("" if min_seg_prompt_text_chars is None else str(min_seg_prompt_text_chars))
     max_seg_prompt_trunc_rate_value = html.escape(
         "" if max_seg_prompt_trunc_rate is None else str(max_seg_prompt_trunc_rate)
@@ -4384,6 +4646,8 @@ async def runs_dashboard(
       <label>max_seg_latency_p90: <input type="number" min="0" name="max_seg_latency_p90" value="{max_seg_latency_p90_value}" /></label>
       <label>max_seg_ctx_chars: <input type="number" min="0" name="max_seg_ctx_chars" value="{max_seg_ctx_chars_value}" /></label>
       <label>max_seg_ctx_trunc_dropped: <input type="number" min="0" name="max_seg_ctx_trunc_dropped" value="{max_seg_ctx_trunc_dropped_value}" /></label>
+      <label>max_plan_ctx_trunc_rate: <input type="number" step="0.0001" min="0" max="1" name="max_plan_ctx_trunc_rate" value="{max_plan_ctx_trunc_rate_value}" /></label>
+      <label>min_plan_ctx_chars_p90: <input type="number" min="0" name="min_plan_ctx_chars_p90" value="{min_plan_ctx_chars_p90_value}" /></label>
       <label>min_seg_prompt_text_chars: <input type="number" min="0" name="min_seg_prompt_text_chars" value="{min_seg_prompt_text_chars_value}" /></label>
       <label>max_seg_prompt_trunc_rate: <input type="number" step="0.0001" min="0" max="1" name="max_seg_prompt_trunc_rate" value="{max_seg_prompt_trunc_rate_value}" /></label>
       <label>max_seg_prompt_trunc_dropped: <input type="number" min="0" name="max_seg_prompt_trunc_dropped" value="{max_seg_prompt_trunc_dropped_value}" /></label>
@@ -4416,6 +4680,8 @@ async def runs_dashboard(
           <option value="seg_ctx_chars" {"selected" if sort_value == "seg_ctx_chars" else ""}>seg_ctx_chars</option>
           <option value="seg_ctx_segments" {"selected" if sort_value == "seg_ctx_segments" else ""}>seg_ctx_segments</option>
           <option value="seg_ctx_trunc_dropped" {"selected" if sort_value == "seg_ctx_trunc_dropped" else ""}>seg_ctx_trunc_dropped</option>
+          <option value="plan_ctx_chars_p90" {"selected" if sort_value == "plan_ctx_chars_p90" else ""}>plan_ctx_chars_p90</option>
+          <option value="plan_ctx_trunc_rate" {"selected" if sort_value == "plan_ctx_trunc_rate" else ""}>plan_ctx_trunc_rate</option>
           <option value="seg_prompt_text_chars_total" {"selected" if sort_value == "seg_prompt_text_chars_total" else ""}>seg_prompt_text_chars_total</option>
           <option value="seg_prompt_chars_out" {"selected" if sort_value == "seg_prompt_chars_out" else ""}>seg_prompt_chars_out</option>
           <option value="seg_prompt_targets_out" {"selected" if sort_value == "seg_prompt_targets_out" else ""}>seg_prompt_targets_out</option>
@@ -4443,8 +4709,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>

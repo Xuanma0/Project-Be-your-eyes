@@ -28,6 +28,7 @@ from byes.schemas.pov_ir_schema import validate_pov_ir
 
 _SHA_LINE_RE = re.compile(r"^([a-fA-F0-9]{64})\s+\*?(.+)$")
 _SEG_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.seg.v1.json"
+_PLAN_CONTEXT_PACK_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "plan.context_pack.v1.json"
 
 
 def _collect_hazard_stats_from_gt(path: Path) -> dict[str, Any]:
@@ -219,6 +220,18 @@ def _load_seg_contract_schema() -> dict[str, Any] | None:
         return None
     try:
         payload = json.loads(_SEG_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _load_plan_context_pack_schema() -> dict[str, Any] | None:
+    if not _PLAN_CONTEXT_PACK_SCHEMA_PATH.exists():
+        return None
+    try:
+        payload = json.loads(_PLAN_CONTEXT_PACK_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     if not isinstance(payload, dict):
@@ -452,6 +465,52 @@ def _plan_context_alignment_schema_ok(payload: dict[str, Any]) -> tuple[bool, fl
     return True, float(seg_coverage), float(pov_coverage), context_used
 
 
+def _plan_context_pack_schema_ok(
+    payload: dict[str, Any],
+    schema: dict[str, Any] | None,
+) -> tuple[bool, int, int]:
+    if not isinstance(payload, dict):
+        return False, 0, 0
+    schema_ok = True
+    if schema is not None and jsonschema is not None:
+        try:
+            jsonschema.validate(payload, schema)
+        except Exception:
+            schema_ok = False
+
+    if str(payload.get("schemaVersion", "")).strip() != "plan.context_pack.v1":
+        return False, 0, 0
+
+    stats = payload.get("stats")
+    stats = stats if isinstance(stats, dict) else {}
+    out_stats = stats.get("out")
+    out_stats = out_stats if isinstance(out_stats, dict) else {}
+    truncation = stats.get("truncation")
+    truncation = truncation if isinstance(truncation, dict) else {}
+    text = payload.get("text")
+    text = text if isinstance(text, dict) else {}
+    budget = payload.get("budget")
+    budget = budget if isinstance(budget, dict) else {}
+
+    if not isinstance(payload.get("runId"), str):
+        return False, 0, 0
+    if not isinstance(text.get("summary"), str) or not isinstance(text.get("prompt"), str):
+        return False, 0, 0
+    if not isinstance(budget.get("mode"), str):
+        return False, 0, 0
+    try:
+        max_chars = int(budget.get("maxChars", -1))
+        chars_total = int(out_stats.get("charsTotal", -1))
+        token_approx = int(out_stats.get("tokenApprox", -1))
+        chars_dropped = int(truncation.get("charsDropped", -1))
+    except Exception:
+        return False, 0, 0
+    if max_chars < 0 or chars_total < 0 or token_approx < 0 or chars_dropped < 0:
+        return False, 0, 0
+
+    return bool(schema_ok), max(0, chars_total), max(0, chars_dropped)
+
+
 def _percentile_float(values: list[float], p: int) -> float:
     if not values:
         return 0.0
@@ -578,7 +637,13 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         plan_ctx_used_true_count = 0
         plan_seg_coverages: list[float] = []
         plan_pov_coverages: list[float] = []
+        plan_context_pack_present = 0
+        plan_context_pack_lines = 0
+        plan_context_pack_schema_ok = 0
+        plan_context_pack_chars: list[float] = []
+        plan_context_pack_trunc_dropped_total = 0
         seg_schema = _load_seg_contract_schema()
+        plan_context_pack_schema = _load_plan_context_pack_schema()
         if events_v1_rel:
             events_v1_path = run_root / events_v1_rel
             if not events_v1_path.exists():
@@ -726,6 +791,21 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                             plan_ctx_used_true_count += 1
                                     else:
                                         warnings.append("plan.context_alignment payload missing required fields")
+                                if name == "plan.context_pack":
+                                    plan_context_pack_present = 1
+                                    plan_context_pack_lines += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    schema_ok, chars_total, chars_dropped = _plan_context_pack_schema_ok(
+                                        payload,
+                                        plan_context_pack_schema,
+                                    )
+                                    if schema_ok:
+                                        plan_context_pack_schema_ok += 1
+                                        plan_context_pack_chars.append(float(chars_total))
+                                        plan_context_pack_trunc_dropped_total += int(max(0, chars_dropped))
+                                    else:
+                                        warnings.append("plan.context_pack payload missing required fields")
                                 if name == "seg.segment":
                                     seg_events_present = 1
                                     seg_lines += 1
@@ -953,6 +1033,19 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "planCtxUsedTrueCount": int(plan_ctx_used_true_count),
             "planSegCoverageP90": round(float(_percentile_float(plan_seg_coverages, 90)), 6),
             "planPovCoverageP90": round(float(_percentile_float(plan_pov_coverages, 90)), 6),
+            "planContextPackPresent": int(plan_context_pack_present),
+            "planContextPackLines": int(plan_context_pack_lines),
+            "planContextPackSchemaOk": int(
+                plan_context_pack_lines > 0 and plan_context_pack_schema_ok == plan_context_pack_lines
+            ),
+            "planCtxTruncRate": round(
+                float(
+                    plan_context_pack_trunc_dropped_total
+                    / max(1.0, sum(plan_context_pack_chars) + float(plan_context_pack_trunc_dropped_total))
+                ),
+                6,
+            ),
+            "planCtxCharsP90": round(float(_percentile_float(plan_context_pack_chars, 90)), 6),
             "hazardUnknownKinds": len(hazard_unknown_kinds),
             "hazardAliasHits": int(hazard_alias_hits),
             "riskEventMissingFrameSeq": int(risk_event_missing_frame_seq),
@@ -1013,6 +1106,11 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"planCtxUsedTrueCount: {summary['planCtxUsedTrueCount']}")
             print(f"planSegCoverageP90: {summary['planSegCoverageP90']}")
             print(f"planPovCoverageP90: {summary['planPovCoverageP90']}")
+            print(f"planContextPackPresent: {summary['planContextPackPresent']}")
+            print(f"planContextPackLines: {summary['planContextPackLines']}")
+            print(f"planContextPackSchemaOk: {summary['planContextPackSchemaOk']}")
+            print(f"planCtxTruncRate: {summary['planCtxTruncRate']}")
+            print(f"planCtxCharsP90: {summary['planCtxCharsP90']}")
             print(f"hazardUnknownKinds: {summary['hazardUnknownKinds']}")
             print(f"hazardAliasHits: {summary['hazardAliasHits']}")
             print(f"riskEventMissingFrameSeq: {summary['riskEventMissingFrameSeq']}")
