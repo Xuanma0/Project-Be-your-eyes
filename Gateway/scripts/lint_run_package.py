@@ -29,6 +29,7 @@ from byes.schemas.pov_ir_schema import validate_pov_ir
 _SHA_LINE_RE = re.compile(r"^([a-fA-F0-9]{64})\s+\*?(.+)$")
 _SEG_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.seg.v1.json"
 _PLAN_CONTEXT_PACK_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "plan.context_pack.v1.json"
+_FRAME_E2E_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.e2e.v1.json"
 
 
 def _collect_hazard_stats_from_gt(path: Path) -> dict[str, Any]:
@@ -232,6 +233,18 @@ def _load_plan_context_pack_schema() -> dict[str, Any] | None:
         return None
     try:
         payload = json.loads(_PLAN_CONTEXT_PACK_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _load_frame_e2e_schema() -> dict[str, Any] | None:
+    if not _FRAME_E2E_SCHEMA_PATH.exists():
+        return None
+    try:
+        payload = json.loads(_FRAME_E2E_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     if not isinstance(payload, dict):
@@ -511,6 +524,59 @@ def _plan_context_pack_schema_ok(
     return bool(schema_ok), max(0, chars_total), max(0, chars_dropped)
 
 
+def _frame_e2e_schema_ok(
+    payload: dict[str, Any],
+    schema: dict[str, Any] | None,
+) -> tuple[bool, int, bool]:
+    if not isinstance(payload, dict):
+        return False, 0, True
+    schema_ok = True
+    if schema is not None and jsonschema is not None:
+        try:
+            jsonschema.validate(payload, schema)
+        except Exception:
+            schema_ok = False
+
+    if str(payload.get("schemaVersion", "")).strip() != "frame.e2e.v1":
+        return False, 0, True
+    if not isinstance(payload.get("runId"), str):
+        return False, 0, True
+    try:
+        frame_seq = int(payload.get("frameSeq", 0))
+        t0_ms = int(payload.get("t0Ms", -1))
+        t1_ms = int(payload.get("t1Ms", -1))
+        total_ms = int(payload.get("totalMs", -1))
+    except Exception:
+        return False, 0, True
+    if frame_seq <= 0 or t0_ms < 0 or t1_ms < 0 or total_ms < 0:
+        return False, 0, True
+    if t1_ms < t0_ms:
+        return False, 0, True
+
+    parts = payload.get("partsMs")
+    parts = parts if isinstance(parts, dict) else {}
+    present = payload.get("present")
+    present = present if isinstance(present, dict) else {}
+    part_values: list[int | None] = []
+    for key in ("segMs", "riskMs", "planMs", "executeMs", "confirmMs"):
+        value = parts.get(key)
+        if value is None:
+            part_values.append(None)
+            continue
+        try:
+            parsed = int(value)
+        except Exception:
+            return False, 0, True
+        if parsed < 0:
+            return False, 0, True
+        part_values.append(parsed)
+    for key in ("seg", "risk", "plan", "execute", "confirm"):
+        if not isinstance(present.get(key), bool):
+            return False, 0, True
+    parts_missing = all(value is None for value in part_values)
+    return bool(schema_ok), max(0, total_ms), bool(parts_missing)
+
+
 def _percentile_float(values: list[float], p: int) -> float:
     if not values:
         return 0.0
@@ -642,8 +708,14 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         plan_context_pack_schema_ok = 0
         plan_context_pack_chars: list[float] = []
         plan_context_pack_trunc_dropped_total = 0
+        frame_e2e_events_present = 0
+        frame_e2e_lines = 0
+        frame_e2e_schema_ok = 0
+        frame_e2e_total_ms_values: list[float] = []
+        frame_e2e_parts_missing_count = 0
         seg_schema = _load_seg_contract_schema()
         plan_context_pack_schema = _load_plan_context_pack_schema()
+        frame_e2e_schema = _load_frame_e2e_schema()
         if events_v1_rel:
             events_v1_path = run_root / events_v1_rel
             if not events_v1_path.exists():
@@ -806,6 +878,19 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                         plan_context_pack_trunc_dropped_total += int(max(0, chars_dropped))
                                     else:
                                         warnings.append("plan.context_pack payload missing required fields")
+                                if name == "frame.e2e":
+                                    frame_e2e_events_present = 1
+                                    frame_e2e_lines += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    schema_ok, total_ms, parts_missing = _frame_e2e_schema_ok(payload, frame_e2e_schema)
+                                    if schema_ok:
+                                        frame_e2e_schema_ok += 1
+                                        frame_e2e_total_ms_values.append(float(total_ms))
+                                    else:
+                                        warnings.append("frame.e2e payload missing required fields")
+                                    if parts_missing:
+                                        frame_e2e_parts_missing_count += 1
                                 if name == "seg.segment":
                                     seg_events_present = 1
                                     seg_lines += 1
@@ -1046,6 +1131,11 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                 6,
             ),
             "planCtxCharsP90": round(float(_percentile_float(plan_context_pack_chars, 90)), 6),
+            "frameE2eEventsPresent": int(frame_e2e_events_present),
+            "frameE2eSchemaOk": int(frame_e2e_lines > 0 and frame_e2e_schema_ok == frame_e2e_lines),
+            "frameE2eCount": int(frame_e2e_lines),
+            "frameE2eTotalMsP90": round(float(_percentile_float(frame_e2e_total_ms_values, 90)), 6),
+            "frameE2ePartsMissingCount": int(frame_e2e_parts_missing_count),
             "hazardUnknownKinds": len(hazard_unknown_kinds),
             "hazardAliasHits": int(hazard_alias_hits),
             "riskEventMissingFrameSeq": int(risk_event_missing_frame_seq),
@@ -1111,6 +1201,11 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"planContextPackSchemaOk: {summary['planContextPackSchemaOk']}")
             print(f"planCtxTruncRate: {summary['planCtxTruncRate']}")
             print(f"planCtxCharsP90: {summary['planCtxCharsP90']}")
+            print(f"frameE2eEventsPresent: {summary['frameE2eEventsPresent']}")
+            print(f"frameE2eSchemaOk: {summary['frameE2eSchemaOk']}")
+            print(f"frameE2eCount: {summary['frameE2eCount']}")
+            print(f"frameE2eTotalMsP90: {summary['frameE2eTotalMsP90']}")
+            print(f"frameE2ePartsMissingCount: {summary['frameE2ePartsMissingCount']}")
             print(f"hazardUnknownKinds: {summary['hazardUnknownKinds']}")
             print(f"hazardAliasHits: {summary['hazardAliasHits']}")
             print(f"riskEventMissingFrameSeq: {summary['riskEventMissingFrameSeq']}")

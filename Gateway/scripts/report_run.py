@@ -32,6 +32,7 @@ from byes.quality_metrics import (  # noqa: E402
     extract_plan_rule_summary_from_events_v1,
     extract_plan_context_summary_from_events_v1,
     extract_plan_context_pack_summary_from_events_v1,
+    extract_frame_e2e_summary_from_events_v1,
     extract_event_schema_stats,
     extract_inference_summary_from_ws_events,
     infer_inference_summary_from_events_v1,
@@ -1023,6 +1024,25 @@ def generate_report_outputs(
     summary["planRules"] = extract_plan_rule_summary_from_events_v1(event_rows)
     summary["planContext"] = extract_plan_context_summary_from_events_v1(event_rows)
     summary["planContextPack"] = extract_plan_context_pack_summary_from_events_v1(event_rows)
+    frames_total_declared: int | None = None
+    if isinstance(run_package_summary, dict):
+        try:
+            declared = int(run_package_summary.get("frameCountSent", 0) or 0)
+        except Exception:
+            declared = 0
+        if declared > 0:
+            frames_total_declared = declared
+    if frames_total_declared is None:
+        try:
+            received = int(round(float(summary.get("frame_received", 0) or 0)))
+        except Exception:
+            received = 0
+        if received > 0:
+            frames_total_declared = received
+    summary["frameE2E"] = extract_frame_e2e_summary_from_events_v1(
+        event_rows,
+        frames_total_declared=frames_total_declared,
+    )
     summary["povPlan"] = compute_pov_plan_metrics(pov_ir_payload, summary.get("plan"))
     inferred_summary = extract_inference_summary_from_ws_events(event_source_path)
     events_v1_inferred = infer_inference_summary_from_events_v1(event_rows)

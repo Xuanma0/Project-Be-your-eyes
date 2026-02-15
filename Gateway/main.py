@@ -2004,6 +2004,7 @@ async def build_pov_context(request: PovContextRequest) -> dict[str, Any]:
 @app.post("/api/plan")
 async def generate_plan(request: PlanGenerateRequest, provider: str | None = None) -> dict[str, Any]:
     started_at = time.perf_counter()
+    started_at_ms = _now_ms()
     cleanup_dir: Path | None = None
     try:
         run_package_dir: Path | None = None
@@ -2129,6 +2130,7 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
                 rule_payload=planner_rule_payload,
                 alignment_payload=plan_context_alignment_payload,
                 plan_context_pack=plan_context_pack_payload,
+                t0_hint_ms=started_at_ms,
             )
         else:
             planner = bundle.get("planner", {})
@@ -2215,6 +2217,25 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
                     "findingsCount": len(findings),
                 },
             )
+            existing_rows = list(gateway._inference_events)  # noqa: SLF001
+            existing_rows.extend(
+                [
+                    plan_context_pack_row,
+                    plan_request_row,
+                    plan_row,
+                    context_alignment_row,
+                ]
+            )
+            if isinstance(rule_row, dict):
+                existing_rows.append(rule_row)
+            existing_rows.append(safety_row)
+            frame_e2e_row = _build_frame_e2e_event(
+                rows=existing_rows,
+                run_id=run_id or "pov-live",
+                frame_seq=frame_seq or 1,
+                t1_ms=_now_ms(),
+                t0_hint_ms=started_at_ms,
+            )
             await gateway._emit_inference_event(plan_context_pack_row)  # noqa: SLF001
             await gateway._emit_inference_event(plan_request_row)  # noqa: SLF001
             await gateway._emit_inference_event(plan_row)  # noqa: SLF001
@@ -2222,6 +2243,7 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
             if isinstance(rule_row, dict):
                 await gateway._emit_inference_event(rule_row)  # noqa: SLF001
             await gateway._emit_inference_event(safety_row)  # noqa: SLF001
+            await gateway._emit_inference_event(frame_e2e_row)  # noqa: SLF001
         return plan_payload
     except HTTPException:
         raise
@@ -2237,6 +2259,7 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
 @app.post("/api/plan/execute")
 async def execute_plan(request: PlanExecuteRequest) -> dict[str, Any]:
     started_at = time.perf_counter()
+    started_at_ms = _now_ms()
     cleanup_dir: Path | None = None
     try:
         plan = request.plan if isinstance(request.plan, dict) else None
@@ -2277,6 +2300,7 @@ async def execute_plan(request: PlanExecuteRequest) -> dict[str, Any]:
                     blocked_count=int(result.get("blockedCount", 0) or 0),
                     pending_confirm_count=int(result.get("pendingConfirmCount", 0) or 0),
                     ui_events=ui_events,
+                    t0_hint_ms=started_at_ms,
                 )
         return result
     except HTTPException:
@@ -2290,6 +2314,7 @@ async def execute_plan(request: PlanExecuteRequest) -> dict[str, Any]:
 
 @app.post("/api/confirm/response")
 async def confirm_response(request: ConfirmResponseRequest) -> dict[str, Any]:
+    started_at_ms = _now_ms()
     cleanup_dir: Path | None = None
     try:
         run_package_dir, cleanup_dir, _can_write_events = await _resolve_context_run_package_dir_async(
@@ -2348,6 +2373,13 @@ async def confirm_response(request: ConfirmResponseRequest) -> dict[str, Any]:
             wrote_guardrail_stop = True
 
         _append_events_v1_rows(events_path, rows)
+        _try_append_frame_e2e_event(
+            events_path=events_path,
+            run_id=run_id,
+            frame_seq=frame_seq,
+            t1_ms=_now_ms(),
+            t0_hint_ms=started_at_ms,
+        )
         return {
             "ok": True,
             "runId": run_id,
@@ -2387,6 +2419,8 @@ async def run_packages_list(
     min_seg_mask_f1_50: float | None = None,
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
+    max_frame_e2e_p90: int | None = None,
+    max_frame_e2e_max: int | None = None,
     max_seg_ctx_chars: int | None = None,
     max_seg_ctx_trunc_dropped: int | None = None,
     max_plan_req_seg_chars_p90: int | None = None,
@@ -2433,6 +2467,8 @@ async def run_packages_list(
         min_seg_mask_f1_50=min_seg_mask_f1_50,
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
+        max_frame_e2e_p90=max_frame_e2e_p90,
+        max_frame_e2e_max=max_frame_e2e_max,
         max_seg_ctx_chars=max_seg_ctx_chars,
         max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
         max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
@@ -2480,6 +2516,8 @@ async def run_packages_list(
             "min_seg_mask_f1_50": min_seg_mask_f1_50,
             "min_seg_mask_coverage": min_seg_mask_coverage,
             "max_seg_latency_p90": max_seg_latency_p90,
+            "max_frame_e2e_p90": max_frame_e2e_p90,
+            "max_frame_e2e_max": max_frame_e2e_max,
             "max_seg_ctx_chars": max_seg_ctx_chars,
             "max_seg_ctx_trunc_dropped": max_seg_ctx_trunc_dropped,
             "max_plan_req_seg_chars_p90": max_plan_req_seg_chars_p90,
@@ -2531,6 +2569,8 @@ async def run_packages_export_json(
     min_seg_mask_f1_50: float | None = None,
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
+    max_frame_e2e_p90: int | None = None,
+    max_frame_e2e_max: int | None = None,
     max_seg_ctx_chars: int | None = None,
     max_seg_ctx_trunc_dropped: int | None = None,
     max_plan_req_seg_chars_p90: int | None = None,
@@ -2577,6 +2617,8 @@ async def run_packages_export_json(
         min_seg_mask_f1_50=min_seg_mask_f1_50,
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
+        max_frame_e2e_p90=max_frame_e2e_p90,
+        max_frame_e2e_max=max_frame_e2e_max,
         max_seg_ctx_chars=max_seg_ctx_chars,
         max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
         max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
@@ -2630,6 +2672,8 @@ async def run_packages_export_csv(
     min_seg_mask_f1_50: float | None = None,
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
+    max_frame_e2e_p90: int | None = None,
+    max_frame_e2e_max: int | None = None,
     max_seg_ctx_chars: int | None = None,
     max_seg_ctx_trunc_dropped: int | None = None,
     max_plan_req_seg_chars_p90: int | None = None,
@@ -2676,6 +2720,8 @@ async def run_packages_export_csv(
         min_seg_mask_f1_50=min_seg_mask_f1_50,
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
+        max_frame_e2e_p90=max_frame_e2e_p90,
+        max_frame_e2e_max=max_frame_e2e_max,
         max_seg_ctx_chars=max_seg_ctx_chars,
         max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
         max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
@@ -2732,6 +2778,12 @@ async def run_packages_export_csv(
         "seg_f1_50",
         "seg_latency_p90",
         "seg_coverage",
+        "frame_e2e_p90",
+        "frame_e2e_max",
+        "frame_seg_p90",
+        "frame_risk_p90",
+        "frame_plan_p90",
+        "frame_execute_p90",
         "seg_mask_f1_50",
         "seg_mask_coverage",
         "seg_mask_mean_iou",
@@ -2973,6 +3025,207 @@ def _append_events_v1_rows(events_path: Path, rows: list[dict[str, Any]]) -> boo
     return True
 
 
+def _to_nonnegative_int_or_none(value: Any) -> int | None:
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        parsed = int(float(value))
+    except Exception:
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def _to_nonnegative_int(value: Any, default: int = 0) -> int:
+    parsed = _to_nonnegative_int_or_none(value)
+    if parsed is None:
+        return int(default)
+    return int(parsed)
+
+
+def _collect_frame_rows(
+    rows: list[dict[str, Any]],
+    *,
+    run_id: str,
+    frame_seq: int,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("runId", "")).strip() != run_id:
+            continue
+        if _to_nonnegative_int(row.get("frameSeq"), 0) != frame_seq:
+            continue
+        out.append(row)
+    return out
+
+
+def _read_events_v1_rows(events_path: Path) -> list[dict[str, Any]]:
+    if not events_path.exists() or not events_path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    with events_path.open("r", encoding="utf-8-sig") as fp:
+        for raw in fp:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                rows.append(payload)
+    return rows
+
+
+def _latest_event_latency_ms(
+    rows: list[dict[str, Any]],
+    *,
+    event_name: str,
+    fallback_payload_path: list[str] | None = None,
+) -> int | None:
+    latest_ts = -1
+    value: int | None = None
+    for row in rows:
+        if str(row.get("name", "")).strip().lower() != event_name:
+            continue
+        if str(row.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(row.get("status", "")).strip().lower() != "ok":
+            continue
+        ts_ms = _to_nonnegative_int(row.get("tsMs"), 0)
+        latency = _to_nonnegative_int_or_none(row.get("latencyMs"))
+        if latency is None and fallback_payload_path:
+            payload = row.get("payload")
+            payload = payload if isinstance(payload, dict) else {}
+            current: Any = payload
+            for key in fallback_payload_path:
+                if isinstance(current, dict):
+                    current = current.get(key)
+                else:
+                    current = None
+                if current is None:
+                    break
+            latency = _to_nonnegative_int_or_none(current)
+        if ts_ms >= latest_ts:
+            latest_ts = ts_ms
+            value = latency
+    return value
+
+
+def _build_frame_e2e_payload(
+    *,
+    rows: list[dict[str, Any]],
+    run_id: str,
+    frame_seq: int,
+    t1_ms: int,
+    t0_hint_ms: int | None = None,
+) -> dict[str, Any]:
+    frame_rows = _collect_frame_rows(rows, run_id=run_id, frame_seq=frame_seq)
+    non_e2e_rows = [
+        row
+        for row in frame_rows
+        if str(row.get("name", "")).strip().lower() != "frame.e2e"
+    ]
+    ts_candidates = [
+        _to_nonnegative_int(row.get("tsMs"), 0)
+        for row in non_e2e_rows
+        if _to_nonnegative_int_or_none(row.get("tsMs")) is not None
+    ]
+    fallback_t0 = _to_nonnegative_int_or_none(t0_hint_ms)
+    t0_ms = min(ts_candidates) if ts_candidates else (fallback_t0 if fallback_t0 is not None else int(max(0, t1_ms)))
+    safe_t1 = max(int(max(0, t1_ms)), int(max(0, t0_ms)))
+
+    seg_present = any(str(row.get("name", "")).strip().lower() == "seg.segment" for row in non_e2e_rows)
+    risk_present = any(str(row.get("name", "")).strip().lower() == "risk.hazards" for row in non_e2e_rows)
+    plan_present = any(str(row.get("name", "")).strip().lower() == "plan.generate" for row in non_e2e_rows)
+    execute_present = any(str(row.get("name", "")).strip().lower() == "plan.execute" for row in non_e2e_rows)
+    confirm_present = any(str(row.get("name", "")).strip().lower() == "ui.confirm_response" for row in non_e2e_rows)
+
+    seg_ms = _latest_event_latency_ms(non_e2e_rows, event_name="seg.segment")
+    risk_ms = _latest_event_latency_ms(
+        non_e2e_rows,
+        event_name="risk.hazards",
+        fallback_payload_path=["debug", "timings", "totalMs"],
+    )
+    plan_ms = _latest_event_latency_ms(non_e2e_rows, event_name="plan.generate")
+    execute_ms = _latest_event_latency_ms(non_e2e_rows, event_name="plan.execute")
+    confirm_ms = _latest_event_latency_ms(
+        non_e2e_rows,
+        event_name="ui.confirm_response",
+        fallback_payload_path=["latencyMs"],
+    )
+
+    return {
+        "schemaVersion": "frame.e2e.v1",
+        "runId": run_id,
+        "frameSeq": int(max(1, frame_seq)),
+        "t0Ms": int(max(0, t0_ms)),
+        "t1Ms": int(max(0, safe_t1)),
+        "totalMs": int(max(0, safe_t1 - int(max(0, t0_ms)))),
+        "partsMs": {
+            "segMs": seg_ms,
+            "riskMs": risk_ms,
+            "planMs": plan_ms,
+            "executeMs": execute_ms,
+            "confirmMs": confirm_ms,
+        },
+        "present": {
+            "seg": bool(seg_present),
+            "risk": bool(risk_present),
+            "plan": bool(plan_present),
+            "execute": bool(execute_present),
+            "confirm": bool(confirm_present),
+        },
+    }
+
+
+def _build_frame_e2e_event(
+    *,
+    rows: list[dict[str, Any]],
+    run_id: str,
+    frame_seq: int,
+    t1_ms: int,
+    t0_hint_ms: int | None = None,
+) -> dict[str, Any]:
+    payload = _build_frame_e2e_payload(
+        rows=rows,
+        run_id=run_id,
+        frame_seq=frame_seq,
+        t1_ms=t1_ms,
+        t0_hint_ms=t0_hint_ms,
+    )
+    return _build_byes_event(
+        run_id=run_id,
+        frame_seq=frame_seq,
+        category="frame",
+        name="frame.e2e",
+        latency_ms=int(max(0, _to_nonnegative_int(payload.get("totalMs"), 0))),
+        payload=payload,
+    )
+
+
+def _try_append_frame_e2e_event(
+    *,
+    events_path: Path,
+    run_id: str,
+    frame_seq: int,
+    t1_ms: int,
+    t0_hint_ms: int | None = None,
+) -> bool:
+    existing = _read_events_v1_rows(events_path)
+    row = _build_frame_e2e_event(
+        rows=existing,
+        run_id=run_id,
+        frame_seq=frame_seq,
+        t1_ms=t1_ms,
+        t0_hint_ms=t0_hint_ms,
+    )
+    return _append_events_v1_rows(events_path, [row])
+
+
 def _build_plan_request_event_payload(plan_request: dict[str, Any] | None, planner: dict[str, Any]) -> dict[str, Any]:
     request_payload = plan_request if isinstance(plan_request, dict) else {}
     contexts = request_payload.get("contexts")
@@ -3123,6 +3376,7 @@ def _try_append_plan_events(
     rule_payload: dict[str, Any] | None = None,
     alignment_payload: dict[str, Any] | None = None,
     plan_context_pack: dict[str, Any] | None = None,
+    t0_hint_ms: int | None = None,
 ) -> bool:
     events_path = _resolve_events_v1_path(run_package_dir, manifest)
     now_ms = _now_ms()
@@ -3240,7 +3494,15 @@ def _try_append_plan_events(
                 },
             }
         )
-    return _append_events_v1_rows(events_path, rows)
+    if not _append_events_v1_rows(events_path, rows):
+        return False
+    return _try_append_frame_e2e_event(
+        events_path=events_path,
+        run_id=run_id,
+        frame_seq=safe_frame_seq,
+        t1_ms=now_ms,
+        t0_hint_ms=t0_hint_ms,
+    )
 
 
 def _try_append_plan_execute_event(
@@ -3254,6 +3516,7 @@ def _try_append_plan_execute_event(
     blocked_count: int,
     pending_confirm_count: int,
     ui_events: list[dict[str, Any]],
+    t0_hint_ms: int | None = None,
 ) -> bool:
     events_path = _resolve_events_v1_path(run_package_dir, manifest)
     safe_frame_seq = int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1
@@ -3294,7 +3557,15 @@ def _try_append_plan_execute_event(
                     phase="start",
                 )
             )
-    return _append_events_v1_rows(events_path, rows)
+    if not _append_events_v1_rows(events_path, rows):
+        return False
+    return _try_append_frame_e2e_event(
+        events_path=events_path,
+        run_id=run_id,
+        frame_seq=safe_frame_seq,
+        t1_ms=_now_ms(),
+        t0_hint_ms=t0_hint_ms,
+    )
 
 
 def _build_byes_event(
@@ -3516,6 +3787,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     plan_context_payload = plan_context_payload if isinstance(plan_context_payload, dict) else {}
     plan_context_pack_payload = summary.get("planContextPack", {})
     plan_context_pack_payload = plan_context_pack_payload if isinstance(plan_context_pack_payload, dict) else {}
+    frame_e2e_payload = summary.get("frameE2E", {})
+    frame_e2e_payload = frame_e2e_payload if isinstance(frame_e2e_payload, dict) else {}
     plan_quality_payload = summary.get("planQuality", {})
     plan_quality_payload = plan_quality_payload if isinstance(plan_quality_payload, dict) else {}
     plan_eval_payload = summary.get("planEval", {})
@@ -3582,6 +3855,12 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     plan_ctx_seg_chars_p90: int | None = None
     plan_ctx_pov_chars_p90: int | None = None
     plan_ctx_risk_chars_p90: int | None = None
+    frame_e2e_p90: int | None = None
+    frame_e2e_max: int | None = None
+    frame_seg_p90: int | None = None
+    frame_risk_p90: int | None = None
+    frame_plan_p90: int | None = None
+    frame_execute_p90: int | None = None
     plan_actions_payload = plan_payload.get("actions")
     if isinstance(plan_actions_payload, dict):
         raw_actions = _read_float(plan_actions_payload, "count")
@@ -3705,6 +3984,37 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         trunc_rate_raw = _read_float(trunc_payload, "truncationRate")
         if trunc_rate_raw is not None:
             plan_ctx_trunc_rate = float(trunc_rate_raw)
+    if isinstance(frame_e2e_payload, dict) and bool(frame_e2e_payload.get("present")):
+        frame_total = frame_e2e_payload.get("totalMs")
+        frame_total = frame_total if isinstance(frame_total, dict) else {}
+        frame_parts = frame_e2e_payload.get("partsMs")
+        frame_parts = frame_parts if isinstance(frame_parts, dict) else {}
+        frame_e2e_p90_raw = _read_float(frame_total, "p90")
+        if frame_e2e_p90_raw is not None:
+            frame_e2e_p90 = int(frame_e2e_p90_raw)
+        frame_e2e_max_raw = _read_float(frame_total, "max")
+        if frame_e2e_max_raw is not None:
+            frame_e2e_max = int(frame_e2e_max_raw)
+        seg_part = frame_parts.get("segMs")
+        seg_part = seg_part if isinstance(seg_part, dict) else {}
+        frame_seg_p90_raw = _read_float(seg_part, "p90")
+        if frame_seg_p90_raw is not None:
+            frame_seg_p90 = int(frame_seg_p90_raw)
+        risk_part = frame_parts.get("riskMs")
+        risk_part = risk_part if isinstance(risk_part, dict) else {}
+        frame_risk_p90_raw = _read_float(risk_part, "p90")
+        if frame_risk_p90_raw is not None:
+            frame_risk_p90 = int(frame_risk_p90_raw)
+        plan_part = frame_parts.get("planMs")
+        plan_part = plan_part if isinstance(plan_part, dict) else {}
+        frame_plan_p90_raw = _read_float(plan_part, "p90")
+        if frame_plan_p90_raw is not None:
+            frame_plan_p90 = int(frame_plan_p90_raw)
+        execute_part = frame_parts.get("executeMs")
+        execute_part = execute_part if isinstance(execute_part, dict) else {}
+        frame_execute_p90_raw = _read_float(execute_part, "p90")
+        if frame_execute_p90_raw is not None:
+            frame_execute_p90 = int(frame_execute_p90_raw)
     if isinstance(depth_risk, dict):
         critical = depth_risk.get("critical", {})
         delay = depth_risk.get("detectionDelayFrames", {})
@@ -3872,6 +4182,12 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "plan_ctx_seg_chars_p90": plan_ctx_seg_chars_p90,
         "plan_ctx_pov_chars_p90": plan_ctx_pov_chars_p90,
         "plan_ctx_risk_chars_p90": plan_ctx_risk_chars_p90,
+        "frame_e2e_p90": frame_e2e_p90,
+        "frame_e2e_max": frame_e2e_max,
+        "frame_seg_p90": frame_seg_p90,
+        "frame_risk_p90": frame_risk_p90,
+        "frame_plan_p90": frame_plan_p90,
+        "frame_execute_p90": frame_execute_p90,
         "summary": summary,
     }
     row.update(urls)
@@ -3896,6 +4212,8 @@ def _matches_run_filters(
     min_seg_mask_f1_50: float | None,
     min_seg_mask_coverage: float | None,
     max_seg_latency_p90: int | None,
+    max_frame_e2e_p90: int | None,
+    max_frame_e2e_max: int | None,
     max_seg_ctx_chars: int | None,
     max_seg_ctx_trunc_dropped: int | None,
     max_plan_req_seg_chars_p90: int | None,
@@ -3995,6 +4313,18 @@ def _matches_run_filters(
         if value is None:
             return False
         if int(value) > int(max_seg_latency_p90):
+            return False
+    if max_frame_e2e_p90 is not None:
+        value = row.get("frame_e2e_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_frame_e2e_p90):
+            return False
+    if max_frame_e2e_max is not None:
+        value = row.get("frame_e2e_max")
+        if value is None:
+            return False
+        if int(value) > int(max_frame_e2e_max):
             return False
     if max_seg_ctx_chars is not None:
         value = row.get("seg_ctx_chars")
@@ -4165,6 +4495,12 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "seg_f1_50",
         "seg_latency_p90",
         "seg_coverage",
+        "frame_e2e_p90",
+        "frame_e2e_max",
+        "frame_seg_p90",
+        "frame_risk_p90",
+        "frame_plan_p90",
+        "frame_execute_p90",
         "seg_mask_f1_50",
         "seg_mask_coverage",
         "seg_mask_mean_iou",
@@ -4237,6 +4573,8 @@ async def _query_run_package_rows(
     min_seg_mask_f1_50: float | None,
     min_seg_mask_coverage: float | None,
     max_seg_latency_p90: int | None,
+    max_frame_e2e_p90: int | None,
+    max_frame_e2e_max: int | None,
     max_seg_ctx_chars: int | None,
     max_seg_ctx_trunc_dropped: int | None,
     max_plan_req_seg_chars_p90: int | None,
@@ -4289,6 +4627,8 @@ async def _query_run_package_rows(
             min_seg_mask_f1_50=min_seg_mask_f1_50,
             min_seg_mask_coverage=min_seg_mask_coverage,
             max_seg_latency_p90=max_seg_latency_p90,
+            max_frame_e2e_p90=max_frame_e2e_p90,
+            max_frame_e2e_max=max_frame_e2e_max,
             max_seg_ctx_chars=max_seg_ctx_chars,
             max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
             max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
@@ -4369,6 +4709,8 @@ async def runs_dashboard(
     min_seg_mask_f1_50: float | None = None,
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
+    max_frame_e2e_p90: int | None = None,
+    max_frame_e2e_max: int | None = None,
     max_seg_ctx_chars: int | None = None,
     max_seg_ctx_trunc_dropped: int | None = None,
     max_plan_req_seg_chars_p90: int | None = None,
@@ -4416,6 +4758,8 @@ async def runs_dashboard(
         min_seg_mask_f1_50=min_seg_mask_f1_50,
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
+        max_frame_e2e_p90=max_frame_e2e_p90,
+        max_frame_e2e_max=max_frame_e2e_max,
         max_seg_ctx_chars=max_seg_ctx_chars,
         max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
         max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,

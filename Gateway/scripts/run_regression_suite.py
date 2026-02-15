@@ -90,6 +90,11 @@ class RunSummary:
     plan_context_pack_lines: int = 0
     plan_ctx_trunc_rate: float = 0.0
     plan_ctx_chars_p90: float = 0.0
+    frame_e2e_events_present: bool = False
+    frame_e2e_schema_ok: bool = False
+    frame_e2e_count: int = 0
+    frame_e2e_total_ms_p90: float = 0.0
+    frame_e2e_parts_missing_count: int = 0
     score_delta: float | None = None
     baseline_score: float | None = None
     critical_fn_gate_required: bool = False
@@ -129,6 +134,13 @@ class RunSummary:
             "segF1At50": self.seg_f1_50,
             "segCoverage": self.seg_coverage,
             "segLatencyP90": self.seg_latency_p90,
+            "frameE2E": {
+                "eventsPresent": self.frame_e2e_events_present,
+                "schemaOk": self.frame_e2e_schema_ok,
+                "count": self.frame_e2e_count,
+                "totalMsP90": self.frame_e2e_total_ms_p90,
+                "partsMissingCount": self.frame_e2e_parts_missing_count,
+            },
             "safetyBehavior": {
                 "confirmTimeouts": self.confirm_timeouts,
                 "confirmMissingResponse": self.confirm_missing_response,
@@ -193,6 +205,11 @@ class RunSummary:
                 "planContextPackLines": self.plan_context_pack_lines,
                 "planCtxTruncRate": self.plan_ctx_trunc_rate,
                 "planCtxCharsP90": self.plan_ctx_chars_p90,
+                "frameE2eEventsPresent": self.frame_e2e_events_present,
+                "frameE2eSchemaOk": self.frame_e2e_schema_ok,
+                "frameE2eCount": self.frame_e2e_count,
+                "frameE2eTotalMsP90": self.frame_e2e_total_ms_p90,
+                "frameE2ePartsMissingCount": self.frame_e2e_parts_missing_count,
             },
             "baselineScore": self.baseline_score,
             "scoreDelta": self.score_delta,
@@ -637,6 +654,8 @@ def run_suite(
     run_require_plan_context_schema_ok: dict[str, bool] = {}
     run_require_plan_context_pack_events_present: dict[str, bool] = {}
     run_require_plan_context_pack_schema_ok: dict[str, bool] = {}
+    run_require_frame_e2e_events_present: dict[str, bool] = {}
+    run_require_frame_e2e_schema_ok: dict[str, bool] = {}
     failures: list[str] = []
     contract_lock_ok: bool | None = None
     contract_lock_detail = ""
@@ -678,6 +697,8 @@ def run_suite(
             run_cfg.get("requirePlanContextPackSchemaOk"),
             False,
         )
+        run_require_frame_e2e_events_present[run_id] = _to_bool01(run_cfg.get("requireFrameE2eEventsPresent"), False)
+        run_require_frame_e2e_schema_ok[run_id] = _to_bool01(run_cfg.get("requireFrameE2eSchemaOk"), False)
         run_path = _resolve_input_path(run_path_text, suite_dir)
 
         ws_jsonl: Path | None = None
@@ -745,6 +766,13 @@ def run_suite(
                     run_summary.plan_context_pack_lines = int(lint_summary.get("planContextPackLines", 0) or 0)
                     run_summary.plan_ctx_trunc_rate = float(lint_summary.get("planCtxTruncRate", 0.0) or 0.0)
                     run_summary.plan_ctx_chars_p90 = float(lint_summary.get("planCtxCharsP90", 0.0) or 0.0)
+                    run_summary.frame_e2e_events_present = bool(lint_summary.get("frameE2eEventsPresent", 0))
+                    run_summary.frame_e2e_schema_ok = bool(lint_summary.get("frameE2eSchemaOk", 0))
+                    run_summary.frame_e2e_count = int(lint_summary.get("frameE2eCount", 0) or 0)
+                    run_summary.frame_e2e_total_ms_p90 = float(lint_summary.get("frameE2eTotalMsP90", 0.0) or 0.0)
+                    run_summary.frame_e2e_parts_missing_count = int(
+                        lint_summary.get("frameE2ePartsMissingCount", 0) or 0
+                    )
             except Exception:
                 # Lint stats are best-effort; report generation should remain authoritative.
                 pass
@@ -823,6 +851,10 @@ def run_suite(
             failures.append(f"{run.run_id}: plan.context_pack events missing")
         if run_require_plan_context_pack_schema_ok.get(run.run_id, False) and not bool(run.plan_context_pack_schema_ok):
             failures.append(f"{run.run_id}: plan.context_pack payload schema check failed")
+        if run_require_frame_e2e_events_present.get(run.run_id, False) and not bool(run.frame_e2e_events_present):
+            failures.append(f"{run.run_id}: frame.e2e events missing")
+        if run_require_frame_e2e_schema_ok.get(run.run_id, False) and not bool(run.frame_e2e_schema_ok):
+            failures.append(f"{run.run_id}: frame.e2e payload schema check failed")
         if fail_on_drop and run.baseline_score is not None and run.quality_score is not None:
             delta = run.quality_score - run.baseline_score
             if delta < -2.0:
@@ -910,6 +942,8 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "planCtxUsedTrueCount={plan_ctx_used_true_count} planSegCoverageP90={plan_seg_coverage_p90} planPovCoverageP90={plan_pov_coverage_p90} "
                 "planContextPackPresent={plan_context_pack_present} planContextPackSchemaOk={plan_context_pack_schema_ok} "
                 "planCtxTruncRate={plan_ctx_trunc_rate} planCtxCharsP90={plan_ctx_chars_p90} "
+                "frameE2eEventsPresent={frame_e2e_events_present} frameE2eSchemaOk={frame_e2e_schema_ok} "
+                "frameE2eCount={frame_e2e_count} frameE2eTotalMsP90={frame_e2e_total_ms_p90} "
                 "povPresent={pov_present} povDecisions={pov_decisions} povTokenApprox={pov_token_approx} source={schema_src} "
                 "ocr={ocr_backend}/{ocr_model} risk={risk_backend}/{risk_model}".format(
                     run_id=run_id,
@@ -949,6 +983,10 @@ def _print_summary(result: dict[str, Any]) -> None:
                     plan_context_pack_schema_ok=row.get("segLint", {}).get("planContextPackSchemaOk", False),
                     plan_ctx_trunc_rate=row.get("segLint", {}).get("planCtxTruncRate", 0.0),
                     plan_ctx_chars_p90=row.get("segLint", {}).get("planCtxCharsP90", 0.0),
+                    frame_e2e_events_present=row.get("segLint", {}).get("frameE2eEventsPresent", False),
+                    frame_e2e_schema_ok=row.get("segLint", {}).get("frameE2eSchemaOk", False),
+                    frame_e2e_count=row.get("segLint", {}).get("frameE2eCount", 0),
+                    frame_e2e_total_ms_p90=row.get("segLint", {}).get("frameE2eTotalMsP90", 0.0),
                     pov_present=row.get("pov", {}).get("present", False),
                     pov_decisions=row.get("pov", {}).get("decisions", 0),
                     pov_token_approx=row.get("pov", {}).get("tokenApprox", 0),

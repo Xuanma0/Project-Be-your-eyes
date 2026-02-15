@@ -111,6 +111,15 @@
       "minPovDecisions": 0,
       "requirePlanContextPackEventsPresent": true,
       "requirePlanContextPackSchemaOk": true
+    },
+    {
+      "id": "fixture_with_frame_e2e_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_frame_e2e_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireFrameE2eEventsPresent": true,
+      "requireFrameE2eSchemaOk": true
     }
   ]
 }

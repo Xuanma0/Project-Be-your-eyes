@@ -2539,6 +2539,93 @@ def extract_plan_context_pack_summary_from_events_v1(events: Iterable[dict[str, 
     }
 
 
+def extract_frame_e2e_summary_from_events_v1(
+    events: Iterable[dict[str, Any]],
+    *,
+    frames_total_declared: int | None = None,
+) -> dict[str, Any]:
+    event_count = 0
+    frame_seq_set: set[int] = set()
+    total_ms_values: list[int] = []
+    part_values: dict[str, list[int]] = {
+        "segMs": [],
+        "riskMs": [],
+        "planMs": [],
+        "executeMs": [],
+        "confirmMs": [],
+    }
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "frame.e2e":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        event_count += 1
+        seq = _to_nonnegative_int(payload.get("frameSeq"))
+        if seq is None:
+            seq = _to_nonnegative_int(event.get("frameSeq"))
+        if seq is not None and seq > 0:
+            frame_seq_set.add(int(seq))
+
+        total_ms = _to_nonnegative_int(payload.get("totalMs"))
+        if total_ms is not None:
+            total_ms_values.append(int(total_ms))
+
+        parts = payload.get("partsMs")
+        parts = parts if isinstance(parts, dict) else {}
+        for key in ("segMs", "riskMs", "planMs", "executeMs", "confirmMs"):
+            value = _to_nonnegative_int(parts.get(key))
+            if value is not None:
+                part_values[key].append(int(value))
+
+    if event_count <= 0:
+        return {
+            "present": False,
+            "events": 0,
+            "coverage": {
+                "framesWithE2E": 0,
+                "framesTotalDeclared": int(max(0, int(frames_total_declared or 0))) if frames_total_declared is not None else None,
+                "ratio": 0.0 if frames_total_declared is not None and int(frames_total_declared or 0) > 0 else None,
+            },
+            "totalMs": summarize_latency([]),
+            "partsMs": {
+                key: summarize_latency([])
+                for key in ("segMs", "riskMs", "planMs", "executeMs", "confirmMs")
+            },
+        }
+
+    frames_with_e2e = len(frame_seq_set) if frame_seq_set else int(event_count)
+    total_declared = None
+    coverage_ratio = None
+    if frames_total_declared is not None:
+        total_declared = int(max(0, int(frames_total_declared or 0)))
+        if total_declared > 0:
+            coverage_ratio = round(_safe_ratio(frames_with_e2e, total_declared), 6)
+
+    return {
+        "present": True,
+        "events": int(event_count),
+        "coverage": {
+            "framesWithE2E": int(frames_with_e2e),
+            "framesTotalDeclared": total_declared,
+            "ratio": coverage_ratio,
+        },
+        "totalMs": summarize_latency(total_ms_values),
+        "partsMs": {
+            key: summarize_latency(values)
+            for key, values in part_values.items()
+        },
+    }
+
+
 def extract_risk_latency_metrics_from_events_v1(
     events: Iterable[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, dict[str, int]] | None]:

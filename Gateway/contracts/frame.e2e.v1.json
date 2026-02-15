@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-be-your-eyes/contracts/frame.e2e.v1.json",
+  "title": "Frame End-to-End Latency v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "frameSeq",
+    "t0Ms",
+    "t1Ms",
+    "totalMs",
+    "partsMs",
+    "present"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "frame.e2e.v1"
+    },
+    "runId": {
+      "type": "string"
+    },
+    "frameSeq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "t0Ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "t1Ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "totalMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "partsMs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "segMs",
+        "riskMs",
+        "planMs",
+        "executeMs",
+        "confirmMs"
+      ],
+      "properties": {
+        "segMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "riskMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "planMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "executeMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "confirmMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "present": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seg",
+        "risk",
+        "plan",
+        "execute",
+        "confirm"
+      ],
+      "properties": {
+        "seg": {
+          "type": "boolean"
+        },
+        "risk": {
+          "type": "boolean"
+        },
+        "plan": {
+          "type": "boolean"
+        },
+        "execute": {
+          "type": "boolean"
+        },
+        "confirm": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
