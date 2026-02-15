@@ -370,7 +370,7 @@ class FrameAckRequest(BaseModel):
     runId: str
     frameSeq: int
     feedbackTsMs: int
-    kind: Literal["tts", "overlay", "haptic", "any"] = "any"
+    kind: Literal["tts", "ar", "overlay", "haptic", "other", "any"] = "any"
     accepted: bool = True
     runPackage: str | None = None
 
@@ -2627,6 +2627,9 @@ async def run_packages_list(
     max_frame_e2e_max: int | None = None,
     max_frame_user_e2e_p90: int | None = None,
     max_frame_user_e2e_max: int | None = None,
+    max_frame_user_e2e_tts_p90: int | None = None,
+    max_frame_user_e2e_ar_p90: int | None = None,
+    min_ack_kind_diversity: int | None = None,
     max_seg_ctx_chars: int | None = None,
     max_seg_ctx_trunc_dropped: int | None = None,
     max_plan_req_seg_chars_p90: int | None = None,
@@ -2677,6 +2680,9 @@ async def run_packages_list(
         max_frame_e2e_max=max_frame_e2e_max,
         max_frame_user_e2e_p90=max_frame_user_e2e_p90,
         max_frame_user_e2e_max=max_frame_user_e2e_max,
+        max_frame_user_e2e_tts_p90=max_frame_user_e2e_tts_p90,
+        max_frame_user_e2e_ar_p90=max_frame_user_e2e_ar_p90,
+        min_ack_kind_diversity=min_ack_kind_diversity,
         max_seg_ctx_chars=max_seg_ctx_chars,
         max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
         max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
@@ -2728,6 +2734,9 @@ async def run_packages_list(
             "max_frame_e2e_max": max_frame_e2e_max,
             "max_frame_user_e2e_p90": max_frame_user_e2e_p90,
             "max_frame_user_e2e_max": max_frame_user_e2e_max,
+            "max_frame_user_e2e_tts_p90": max_frame_user_e2e_tts_p90,
+            "max_frame_user_e2e_ar_p90": max_frame_user_e2e_ar_p90,
+            "min_ack_kind_diversity": min_ack_kind_diversity,
             "max_seg_ctx_chars": max_seg_ctx_chars,
             "max_seg_ctx_trunc_dropped": max_seg_ctx_trunc_dropped,
             "max_plan_req_seg_chars_p90": max_plan_req_seg_chars_p90,
@@ -2783,6 +2792,9 @@ async def run_packages_export_json(
     max_frame_e2e_max: int | None = None,
     max_frame_user_e2e_p90: int | None = None,
     max_frame_user_e2e_max: int | None = None,
+    max_frame_user_e2e_tts_p90: int | None = None,
+    max_frame_user_e2e_ar_p90: int | None = None,
+    min_ack_kind_diversity: int | None = None,
     max_seg_ctx_chars: int | None = None,
     max_seg_ctx_trunc_dropped: int | None = None,
     max_plan_req_seg_chars_p90: int | None = None,
@@ -2833,6 +2845,9 @@ async def run_packages_export_json(
         max_frame_e2e_max=max_frame_e2e_max,
         max_frame_user_e2e_p90=max_frame_user_e2e_p90,
         max_frame_user_e2e_max=max_frame_user_e2e_max,
+        max_frame_user_e2e_tts_p90=max_frame_user_e2e_tts_p90,
+        max_frame_user_e2e_ar_p90=max_frame_user_e2e_ar_p90,
+        min_ack_kind_diversity=min_ack_kind_diversity,
         max_seg_ctx_chars=max_seg_ctx_chars,
         max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
         max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
@@ -2890,6 +2905,9 @@ async def run_packages_export_csv(
     max_frame_e2e_max: int | None = None,
     max_frame_user_e2e_p90: int | None = None,
     max_frame_user_e2e_max: int | None = None,
+    max_frame_user_e2e_tts_p90: int | None = None,
+    max_frame_user_e2e_ar_p90: int | None = None,
+    min_ack_kind_diversity: int | None = None,
     max_seg_ctx_chars: int | None = None,
     max_seg_ctx_trunc_dropped: int | None = None,
     max_plan_req_seg_chars_p90: int | None = None,
@@ -2940,6 +2958,9 @@ async def run_packages_export_csv(
         max_frame_e2e_max=max_frame_e2e_max,
         max_frame_user_e2e_p90=max_frame_user_e2e_p90,
         max_frame_user_e2e_max=max_frame_user_e2e_max,
+        max_frame_user_e2e_tts_p90=max_frame_user_e2e_tts_p90,
+        max_frame_user_e2e_ar_p90=max_frame_user_e2e_ar_p90,
+        min_ack_kind_diversity=min_ack_kind_diversity,
         max_seg_ctx_chars=max_seg_ctx_chars,
         max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
         max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
@@ -3004,6 +3025,11 @@ async def run_packages_export_csv(
         "frame_execute_p90",
         "frame_user_e2e_p90",
         "frame_user_e2e_max",
+        "frame_user_e2e_tts_p90",
+        "frame_user_e2e_tts_max",
+        "frame_user_e2e_ar_p90",
+        "frame_user_e2e_ar_max",
+        "ack_kind_diversity",
         "ack_coverage",
         "seg_mask_f1_50",
         "seg_mask_coverage",
@@ -3600,6 +3626,10 @@ def _build_frame_ack_payload(
     accepted: bool,
 ) -> dict[str, Any]:
     normalized_kind = str(kind or "any").strip().lower()
+    if normalized_kind == "ar":
+        normalized_kind = "overlay"
+    elif normalized_kind == "other":
+        normalized_kind = "any"
     if normalized_kind not in {"tts", "overlay", "haptic", "any"}:
         normalized_kind = "any"
     return {
@@ -4508,6 +4538,11 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     frame_user_e2e_p90: int | None = None
     frame_user_e2e_max: int | None = None
     ack_coverage: float | None = None
+    frame_user_e2e_tts_p90: int | None = None
+    frame_user_e2e_tts_max: int | None = None
+    frame_user_e2e_ar_p90: int | None = None
+    frame_user_e2e_ar_max: int | None = None
+    ack_kind_diversity: int = 0
     plan_actions_payload = plan_payload.get("actions")
     if isinstance(plan_actions_payload, dict):
         raw_actions = _read_float(plan_actions_payload, "count")
@@ -4676,6 +4711,29 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         ack_cov_raw = _read_float(user_cov, "ratio")
         if ack_cov_raw is not None:
             ack_coverage = float(ack_cov_raw)
+        by_kind_payload = frame_user_e2e_payload.get("byKind")
+        by_kind_payload = by_kind_payload if isinstance(by_kind_payload, dict) else {}
+        ack_kind_diversity = len([key for key in by_kind_payload.keys() if str(key).strip()])
+        tts_payload = by_kind_payload.get("tts")
+        tts_payload = tts_payload if isinstance(tts_payload, dict) else {}
+        tts_total = tts_payload.get("totalMs")
+        tts_total = tts_total if isinstance(tts_total, dict) else {}
+        tts_p90_raw = _read_float(tts_total, "p90")
+        if tts_p90_raw is not None:
+            frame_user_e2e_tts_p90 = int(tts_p90_raw)
+        tts_max_raw = _read_float(tts_total, "max")
+        if tts_max_raw is not None:
+            frame_user_e2e_tts_max = int(tts_max_raw)
+        ar_payload = by_kind_payload.get("ar")
+        ar_payload = ar_payload if isinstance(ar_payload, dict) else {}
+        ar_total = ar_payload.get("totalMs")
+        ar_total = ar_total if isinstance(ar_total, dict) else {}
+        ar_p90_raw = _read_float(ar_total, "p90")
+        if ar_p90_raw is not None:
+            frame_user_e2e_ar_p90 = int(ar_p90_raw)
+        ar_max_raw = _read_float(ar_total, "max")
+        if ar_max_raw is not None:
+            frame_user_e2e_ar_max = int(ar_max_raw)
     if isinstance(depth_risk, dict):
         critical = depth_risk.get("critical", {})
         delay = depth_risk.get("detectionDelayFrames", {})
@@ -4851,6 +4909,11 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "frame_execute_p90": frame_execute_p90,
         "frame_user_e2e_p90": frame_user_e2e_p90,
         "frame_user_e2e_max": frame_user_e2e_max,
+        "frame_user_e2e_tts_p90": frame_user_e2e_tts_p90,
+        "frame_user_e2e_tts_max": frame_user_e2e_tts_max,
+        "frame_user_e2e_ar_p90": frame_user_e2e_ar_p90,
+        "frame_user_e2e_ar_max": frame_user_e2e_ar_max,
+        "ack_kind_diversity": int(ack_kind_diversity),
         "ack_coverage": ack_coverage,
         "summary": summary,
     }
@@ -4880,6 +4943,9 @@ def _matches_run_filters(
     max_frame_e2e_max: int | None,
     max_frame_user_e2e_p90: int | None,
     max_frame_user_e2e_max: int | None,
+    max_frame_user_e2e_tts_p90: int | None,
+    max_frame_user_e2e_ar_p90: int | None,
+    min_ack_kind_diversity: int | None,
     max_seg_ctx_chars: int | None,
     max_seg_ctx_trunc_dropped: int | None,
     max_plan_req_seg_chars_p90: int | None,
@@ -5003,6 +5069,24 @@ def _matches_run_filters(
         if value is None:
             return False
         if int(value) > int(max_frame_user_e2e_max):
+            return False
+    if max_frame_user_e2e_tts_p90 is not None:
+        value = row.get("frame_user_e2e_tts_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_frame_user_e2e_tts_p90):
+            return False
+    if max_frame_user_e2e_ar_p90 is not None:
+        value = row.get("frame_user_e2e_ar_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_frame_user_e2e_ar_p90):
+            return False
+    if min_ack_kind_diversity is not None:
+        value = row.get("ack_kind_diversity")
+        if value is None:
+            return False
+        if int(value) < int(min_ack_kind_diversity):
             return False
     if max_seg_ctx_chars is not None:
         value = row.get("seg_ctx_chars")
@@ -5258,6 +5342,9 @@ async def _query_run_package_rows(
     max_frame_e2e_max: int | None,
     max_frame_user_e2e_p90: int | None,
     max_frame_user_e2e_max: int | None,
+    max_frame_user_e2e_tts_p90: int | None,
+    max_frame_user_e2e_ar_p90: int | None,
+    min_ack_kind_diversity: int | None,
     max_seg_ctx_chars: int | None,
     max_seg_ctx_trunc_dropped: int | None,
     max_plan_req_seg_chars_p90: int | None,
@@ -5314,6 +5401,9 @@ async def _query_run_package_rows(
             max_frame_e2e_max=max_frame_e2e_max,
             max_frame_user_e2e_p90=max_frame_user_e2e_p90,
             max_frame_user_e2e_max=max_frame_user_e2e_max,
+            max_frame_user_e2e_tts_p90=max_frame_user_e2e_tts_p90,
+            max_frame_user_e2e_ar_p90=max_frame_user_e2e_ar_p90,
+            min_ack_kind_diversity=min_ack_kind_diversity,
             max_seg_ctx_chars=max_seg_ctx_chars,
             max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
             max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
@@ -5398,6 +5488,9 @@ async def runs_dashboard(
     max_frame_e2e_max: int | None = None,
     max_frame_user_e2e_p90: int | None = None,
     max_frame_user_e2e_max: int | None = None,
+    max_frame_user_e2e_tts_p90: int | None = None,
+    max_frame_user_e2e_ar_p90: int | None = None,
+    min_ack_kind_diversity: int | None = None,
     max_seg_ctx_chars: int | None = None,
     max_seg_ctx_trunc_dropped: int | None = None,
     max_plan_req_seg_chars_p90: int | None = None,
@@ -5449,6 +5542,9 @@ async def runs_dashboard(
         max_frame_e2e_max=max_frame_e2e_max,
         max_frame_user_e2e_p90=max_frame_user_e2e_p90,
         max_frame_user_e2e_max=max_frame_user_e2e_max,
+        max_frame_user_e2e_tts_p90=max_frame_user_e2e_tts_p90,
+        max_frame_user_e2e_ar_p90=max_frame_user_e2e_ar_p90,
+        min_ack_kind_diversity=min_ack_kind_diversity,
         max_seg_ctx_chars=max_seg_ctx_chars,
         max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
         max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
@@ -5500,6 +5596,16 @@ async def runs_dashboard(
         frame_user_e2e_p90 = "—" if frame_user_e2e_p90_raw is None else str(int(frame_user_e2e_p90_raw))
         frame_user_e2e_max_raw = row.get("frame_user_e2e_max")
         frame_user_e2e_max = "—" if frame_user_e2e_max_raw is None else str(int(frame_user_e2e_max_raw))
+        frame_user_e2e_tts_p90_raw = row.get("frame_user_e2e_tts_p90")
+        frame_user_e2e_tts_p90 = "—" if frame_user_e2e_tts_p90_raw is None else str(int(frame_user_e2e_tts_p90_raw))
+        frame_user_e2e_tts_max_raw = row.get("frame_user_e2e_tts_max")
+        frame_user_e2e_tts_max = "—" if frame_user_e2e_tts_max_raw is None else str(int(frame_user_e2e_tts_max_raw))
+        frame_user_e2e_ar_p90_raw = row.get("frame_user_e2e_ar_p90")
+        frame_user_e2e_ar_p90 = "—" if frame_user_e2e_ar_p90_raw is None else str(int(frame_user_e2e_ar_p90_raw))
+        frame_user_e2e_ar_max_raw = row.get("frame_user_e2e_ar_max")
+        frame_user_e2e_ar_max = "—" if frame_user_e2e_ar_max_raw is None else str(int(frame_user_e2e_ar_max_raw))
+        ack_kind_diversity_raw = row.get("ack_kind_diversity")
+        ack_kind_diversity = "—" if ack_kind_diversity_raw is None else str(int(ack_kind_diversity_raw))
         ack_coverage_raw = row.get("ack_coverage")
         ack_coverage = "—" if ack_coverage_raw is None else f"{float(ack_coverage_raw):.4f}"
         seg_f1_raw = row.get("seg_f1_50")
@@ -5573,6 +5679,11 @@ async def runs_dashboard(
             f"<td>{html.escape(risk_p90)}</td>"
             f"<td>{html.escape(frame_user_e2e_p90)}</td>"
             f"<td>{html.escape(frame_user_e2e_max)}</td>"
+            f"<td>{html.escape(frame_user_e2e_tts_p90)}</td>"
+            f"<td>{html.escape(frame_user_e2e_tts_max)}</td>"
+            f"<td>{html.escape(frame_user_e2e_ar_p90)}</td>"
+            f"<td>{html.escape(frame_user_e2e_ar_max)}</td>"
+            f"<td>{html.escape(ack_kind_diversity)}</td>"
             f"<td>{html.escape(ack_coverage)}</td>"
             f"<td>{html.escape(seg_f1)}</td>"
             f"<td>{html.escape(seg_cov)}</td>"
@@ -5612,7 +5723,7 @@ async def runs_dashboard(
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='48' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='55' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -5632,6 +5743,15 @@ async def runs_dashboard(
     max_seg_latency_p90_value = html.escape("" if max_seg_latency_p90 is None else str(max_seg_latency_p90))
     max_frame_user_e2e_p90_value = html.escape("" if max_frame_user_e2e_p90 is None else str(max_frame_user_e2e_p90))
     max_frame_user_e2e_max_value = html.escape("" if max_frame_user_e2e_max is None else str(max_frame_user_e2e_max))
+    max_frame_user_e2e_tts_p90_value = html.escape(
+        "" if max_frame_user_e2e_tts_p90 is None else str(max_frame_user_e2e_tts_p90)
+    )
+    max_frame_user_e2e_ar_p90_value = html.escape(
+        "" if max_frame_user_e2e_ar_p90 is None else str(max_frame_user_e2e_ar_p90)
+    )
+    min_ack_kind_diversity_value = html.escape(
+        "" if min_ack_kind_diversity is None else str(min_ack_kind_diversity)
+    )
     max_seg_ctx_chars_value = html.escape("" if max_seg_ctx_chars is None else str(max_seg_ctx_chars))
     max_seg_ctx_trunc_dropped_value = html.escape(
         "" if max_seg_ctx_trunc_dropped is None else str(max_seg_ctx_trunc_dropped)
@@ -5734,6 +5854,9 @@ async def runs_dashboard(
       <label>max_risk_latency_max: <input type="number" min="0" name="max_risk_latency_max" value="{max_risk_latency_max_value}" /></label>
       <label>max_frame_user_e2e_p90: <input type="number" min="0" name="max_frame_user_e2e_p90" value="{max_frame_user_e2e_p90_value}" /></label>
       <label>max_frame_user_e2e_max: <input type="number" min="0" name="max_frame_user_e2e_max" value="{max_frame_user_e2e_max_value}" /></label>
+      <label>max_frame_user_e2e_tts_p90: <input type="number" min="0" name="max_frame_user_e2e_tts_p90" value="{max_frame_user_e2e_tts_p90_value}" /></label>
+      <label>max_frame_user_e2e_ar_p90: <input type="number" min="0" name="max_frame_user_e2e_ar_p90" value="{max_frame_user_e2e_ar_p90_value}" /></label>
+      <label>min_ack_kind_diversity: <input type="number" min="0" name="min_ack_kind_diversity" value="{min_ack_kind_diversity_value}" /></label>
       <label>min_seg_f1_50: <input type="number" step="0.0001" min="0" max="1" name="min_seg_f1_50" value="{min_seg_f1_50_value}" /></label>
       <label>min_seg_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_seg_coverage" value="{min_seg_coverage_value}" /></label>
       <label>min_seg_mask_f1_50: <input type="number" step="0.0001" min="0" max="1" name="min_seg_mask_f1_50" value="{min_seg_mask_f1_50_value}" /></label>
@@ -5768,6 +5891,9 @@ async def runs_dashboard(
           <option value="risk_latency_p90" {"selected" if sort_value == "risk_latency_p90" else ""}>risk_latency_p90</option>
           <option value="frame_user_e2e_p90" {"selected" if sort_value == "frame_user_e2e_p90" else ""}>frame_user_e2e_p90</option>
           <option value="frame_user_e2e_max" {"selected" if sort_value == "frame_user_e2e_max" else ""}>frame_user_e2e_max</option>
+          <option value="frame_user_e2e_tts_p90" {"selected" if sort_value == "frame_user_e2e_tts_p90" else ""}>frame_user_e2e_tts_p90</option>
+          <option value="frame_user_e2e_ar_p90" {"selected" if sort_value == "frame_user_e2e_ar_p90" else ""}>frame_user_e2e_ar_p90</option>
+          <option value="ack_kind_diversity" {"selected" if sort_value == "ack_kind_diversity" else ""}>ack_kind_diversity</option>
           <option value="ack_coverage" {"selected" if sort_value == "ack_coverage" else ""}>ack_coverage</option>
           <option value="seg_f1_50" {"selected" if sort_value == "seg_f1_50" else ""}>seg_f1_50</option>
           <option value="seg_coverage" {"selected" if sort_value == "seg_coverage" else ""}>seg_coverage</option>
@@ -5807,8 +5933,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -5826,6 +5952,11 @@ async def runs_dashboard(
           <th>Risk p90(ms)</th>
           <th>User E2E p90(ms)</th>
           <th>User E2E max(ms)</th>
+          <th>User E2E tts p90(ms)</th>
+          <th>User E2E tts max(ms)</th>
+          <th>User E2E ar p90(ms)</th>
+          <th>User E2E ar max(ms)</th>
+          <th>ACK Kind Diversity</th>
           <th>ACK Coverage</th>
           <th>Seg F1@0.5</th>
           <th>Seg Coverage</th>

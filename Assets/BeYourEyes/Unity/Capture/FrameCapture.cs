@@ -5,6 +5,7 @@ using Newtonsoft.Json.Linq;
 using UnityEngine;
 using Object = UnityEngine.Object;
 using BeYourEyes.Unity.Interaction;
+using BYES.Telemetry;
 
 namespace BeYourEyes.Unity.Capture
 {
@@ -420,12 +421,15 @@ namespace BeYourEyes.Unity.Capture
         private JObject BuildMeta(Camera cameraToUse, long nowMs, int effectiveTtlMs, CaptureResult capture, string keyReason)
         {
             var intrinsics = EstimateIntrinsics(cameraToUse, capture.sourceWidth, capture.sourceHeight, capture.cropRect);
+            var resolvedRunId = gatewayClient != null ? gatewayClient.SessionId : "default";
             var meta = new JObject
             {
+                ["runId"] = resolvedRunId,
                 ["sessionId"] = gatewayClient != null ? gatewayClient.SessionId : "default",
                 ["seq"] = frameSeq,
                 ["timestampMs"] = nowMs,
                 ["tsCaptureMs"] = nowMs,
+                ["captureTsMs"] = nowMs,
                 ["ttlMs"] = Mathf.Max(200, effectiveTtlMs),
                 ["width"] = capture.outputWidth,
                 ["height"] = capture.outputHeight,
@@ -434,6 +438,8 @@ namespace BeYourEyes.Unity.Capture
                 ["intrinsics"] = intrinsics,
                 ["keyframeReason"] = string.IsNullOrWhiteSpace(keyReason) ? "unknown" : keyReason,
                 ["roiApplied"] = capture.usedRoi,
+                ["deviceId"] = ByesFrameTelemetry.DeviceId,
+                ["deviceTimeBase"] = ByesFrameTelemetry.DeviceTimeBase,
             };
 
             if (includePose)

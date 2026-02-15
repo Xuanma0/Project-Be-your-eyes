@@ -1,0 +1,10 @@
+﻿e2e_count 2
+e2e_sum 210
+ttfa_count 2
+ttfa_sum 90
+safemode_enter 0
+throttle_enter 0
+preempt_enter 0
+confirm_request 1
+confirm_response 1
+confirm_timeout 0

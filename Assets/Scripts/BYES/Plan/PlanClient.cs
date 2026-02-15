@@ -3,6 +3,7 @@ using System.Collections;
 using System.Text;
 using UnityEngine;
 using UnityEngine.Networking;
+using BYES.Telemetry;
 
 namespace BYES.Plan
 {
@@ -147,6 +148,15 @@ namespace BYES.Plan
 
                 if (Executor != null)
                 {
+                    if (string.IsNullOrWhiteSpace(_lastRunId))
+                    {
+                        if (ByesFrameTelemetry.TryGetLatestFrameContext(out var latestRunId, out var latestFrameSeq))
+                        {
+                            _lastRunId = latestRunId;
+                            _lastFrameSeq = Mathf.Max(1, latestFrameSeq);
+                        }
+                    }
+                    Executor.SetExecutionContext(_lastRunId, Mathf.Max(1, _lastFrameSeq));
                     Executor.ExecuteSummary(summary, OnConfirmDecision);
                 }
                 else

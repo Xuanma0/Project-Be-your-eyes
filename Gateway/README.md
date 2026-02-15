@@ -438,8 +438,14 @@ Important leaderboard fields:
 
 v4.59 adds capture/ack latency tracking to make true user-perceived E2E visible:
 - `frame.input` event (`frame.input.v1`): capture timestamp from device + gateway receive timestamp.
-- `frame.ack` event (`frame.ack.v1`): device feedback ACK (`tts|overlay|haptic|any`).
+- `frame.ack` event (`frame.ack.v1`): device feedback ACK (`tts|overlay|haptic|any`), where `overlay` is treated as AR feedback in reports.
 - `frame.user_e2e` event (`frame.e2e.v1` payload): `totalMs = feedbackTsMs - t0`.
+
+v4.60 adds kind buckets and Unity wiring:
+- `report.json.frameUserE2E.byKind.{tts,ar,haptic,other}` with `p50/p90/p99/max`.
+- `report.json.frameUserE2E.tts` (TTFA-equivalent bucket summary).
+- `/api/run_packages` columns: `frame_user_e2e_tts_p90`, `frame_user_e2e_tts_max`, `frame_user_e2e_ar_p90`, `frame_user_e2e_ar_max`, `ack_kind_diversity`.
+- Unity runtime bootstrap (no scene edit): `Assets/Scripts/BYES/Telemetry/ByesFrameTelemetry.cs`.
 
 Minimal API flow:
 
@@ -457,8 +463,10 @@ curl -X POST "http://127.0.0.1:8000/api/frame/ack" `
 
 Report and leaderboard fields:
 - `report.json.frameUserE2E.totalMs.{p50,p90,max}`
+- `report.json.frameUserE2E.byKind.<kind>.totalMs.{p50,p90,max}`
+- `report.json.frameUserE2E.tts.{p50,p90,max}`
 - `report.json.frameUserE2E.coverage.ratio` (ACK coverage)
-- `/api/run_packages`: `frame_user_e2e_p90`, `frame_user_e2e_max`, `ack_coverage`
+- `/api/run_packages`: `frame_user_e2e_p90`, `frame_user_e2e_max`, `frame_user_e2e_tts_p90`, `frame_user_e2e_ar_p90`, `ack_kind_diversity`, `ack_coverage`
 
 ## Script Index (Most Used)
 

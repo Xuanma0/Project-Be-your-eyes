@@ -691,6 +691,17 @@ def _percentile_float(values: list[float], p: int) -> float:
     return float(ordered[idx])
 
 
+def _normalize_frame_ack_kind_bucket(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw == "tts":
+        return "tts"
+    if raw in {"overlay", "ar"}:
+        return "ar"
+    if raw == "haptic":
+        return "haptic"
+    return "other"
+
+
 def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = False) -> tuple[int, dict[str, Any]]:
     warnings: list[str] = []
     errors: list[str] = []
@@ -824,6 +835,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         frame_ack_events_present = 0
         frame_ack_lines = 0
         frame_ack_schema_ok = 0
+        frame_ack_kinds_present: set[str] = set()
+        frame_ack_tts_count = 0
+        frame_ack_ar_count = 0
+        frame_ack_haptic_count = 0
         frame_user_e2e_events_present = 0
         frame_user_e2e_lines = 0
         frame_user_e2e_schema_ok = 0
@@ -960,6 +975,14 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                     frame_ack_lines += 1
                                     payload = obj.get("payload")
                                     payload = payload if isinstance(payload, dict) else {}
+                                    ack_kind_bucket = _normalize_frame_ack_kind_bucket(payload.get("kind"))
+                                    frame_ack_kinds_present.add(ack_kind_bucket)
+                                    if ack_kind_bucket == "tts":
+                                        frame_ack_tts_count += 1
+                                    elif ack_kind_bucket == "ar":
+                                        frame_ack_ar_count += 1
+                                    elif ack_kind_bucket == "haptic":
+                                        frame_ack_haptic_count += 1
                                     if _frame_ack_schema_ok(payload, frame_ack_schema):
                                         frame_ack_schema_ok += 1
                                     else:
@@ -1341,6 +1364,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "frameAckEventsPresent": int(frame_ack_events_present),
             "frameAckLines": int(frame_ack_lines),
             "frameAckSchemaOk": int(frame_ack_lines > 0 and frame_ack_schema_ok == frame_ack_lines),
+            "frameAckKindsPresent": int(len(frame_ack_kinds_present)),
+            "frameAckTtsCount": int(frame_ack_tts_count),
+            "frameAckArCount": int(frame_ack_ar_count),
+            "frameAckHapticCount": int(frame_ack_haptic_count),
             "frameUserE2eEventsPresent": int(frame_user_e2e_events_present),
             "frameUserE2eLines": int(frame_user_e2e_lines),
             "frameUserE2eSchemaOk": int(frame_user_e2e_lines > 0 and frame_user_e2e_schema_ok == frame_user_e2e_lines),
@@ -1424,6 +1451,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"frameAckEventsPresent: {summary['frameAckEventsPresent']}")
             print(f"frameAckLines: {summary['frameAckLines']}")
             print(f"frameAckSchemaOk: {summary['frameAckSchemaOk']}")
+            print(f"frameAckKindsPresent: {summary['frameAckKindsPresent']}")
+            print(f"frameAckTtsCount: {summary['frameAckTtsCount']}")
+            print(f"frameAckArCount: {summary['frameAckArCount']}")
+            print(f"frameAckHapticCount: {summary['frameAckHapticCount']}")
             print(f"frameUserE2eEventsPresent: {summary['frameUserE2eEventsPresent']}")
             print(f"frameUserE2eLines: {summary['frameUserE2eLines']}")
             print(f"frameUserE2eSchemaOk: {summary['frameUserE2eSchemaOk']}")

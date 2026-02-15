@@ -1,6 +1,7 @@
 using System;
 using UnityEngine;
 using UnityEngine.UI;
+using BYES.Telemetry;
 
 namespace BYES.Plan
 {
@@ -56,6 +57,14 @@ namespace BYES.Plan
         private Text _confirmText;
         private Button _yesButton;
         private Button _noButton;
+        private string _runIdForAck = "unknown-run";
+        private int _frameSeqForAck = 1;
+
+        public void SetExecutionContext(string runId, int frameSeq)
+        {
+            _runIdForAck = string.IsNullOrWhiteSpace(runId) ? "unknown-run" : runId.Trim();
+            _frameSeqForAck = Mathf.Max(1, frameSeq);
+        }
 
         public void ExecuteSummary(ExecutionSummary summary, Action<string, bool> onConfirmDecision)
         {
@@ -95,13 +104,34 @@ namespace BYES.Plan
             {
                 case "speak":
                     Debug.Log($"[PlanExecutor] SPEAK: {command.text}");
+                    ByesFrameTelemetry.AckFeedback(
+                        _runIdForAck,
+                        _frameSeqForAck,
+                        "tts",
+                        true,
+                        ByesFrameTelemetry.NowUnixMs()
+                    );
                     break;
                 case "overlay":
                     LastOverlayText = command.label;
                     Debug.Log($"[PlanExecutor] OVERLAY: {command.label} ({command.text})");
+                    ByesFrameTelemetry.AckFeedback(
+                        _runIdForAck,
+                        _frameSeqForAck,
+                        "ar",
+                        true,
+                        ByesFrameTelemetry.NowUnixMs()
+                    );
                     break;
                 case "haptic":
                     Debug.Log("[PlanExecutor] HAPTIC trigger");
+                    ByesFrameTelemetry.AckFeedback(
+                        _runIdForAck,
+                        _frameSeqForAck,
+                        "haptic",
+                        true,
+                        ByesFrameTelemetry.NowUnixMs()
+                    );
                     break;
                 case "stop":
                     IsStopped = true;

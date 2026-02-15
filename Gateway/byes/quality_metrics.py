@@ -2662,6 +2662,8 @@ def extract_frame_user_e2e_summary_from_events_v1(
 ) -> dict[str, Any]:
     input_frames: set[tuple[str, int]] = set()
     ack_frames: set[tuple[str, int]] = set()
+    ack_frames_by_kind: defaultdict[str, set[tuple[str, int]]] = defaultdict(set)
+    ack_kind_latest: dict[tuple[str, int, str], tuple[int, int]] = {}
     deduped_by_key: dict[tuple[str, int], tuple[int, int, dict[str, Any], dict[str, Any]]] = {}
     raw_event_count = 0
 
@@ -2690,6 +2692,16 @@ def extract_frame_user_e2e_summary_from_events_v1(
             continue
         if name == "frame.ack":
             ack_frames.add(key)
+            ack_kind = _normalize_frame_ack_kind(payload.get("kind"))
+            ack_key = (run_id, int(seq), ack_kind)
+            ts_ms = _to_nonnegative_int(event.get("tsMs"))
+            if ts_ms is None:
+                ts_ms = _to_nonnegative_int(payload.get("feedbackTsMs"))
+            if ts_ms is None:
+                ts_ms = index
+            previous_ack = ack_kind_latest.get(ack_key)
+            if previous_ack is None or (int(ts_ms), int(index)) >= (previous_ack[0], previous_ack[1]):
+                ack_kind_latest[ack_key] = (int(ts_ms), int(index))
             continue
         if name != "frame.user_e2e":
             continue
@@ -2707,10 +2719,20 @@ def extract_frame_user_e2e_summary_from_events_v1(
     event_count = len(deduped_events)
     duplicates_dropped = int(max(0, raw_event_count - event_count))
     total_values: list[int] = []
+    totals_by_frame: dict[tuple[str, int], int] = {}
     for _ts_ms, _idx, _event, payload in deduped_events:
         total_ms = _to_nonnegative_int(payload.get("totalMs"))
         if total_ms is not None:
             total_values.append(int(total_ms))
+            frame_run_id = str(payload.get("runId", "")).strip() or str(_event.get("runId", "")).strip() or "unknown-run"
+            frame_seq = _to_nonnegative_int(payload.get("frameSeq"))
+            if frame_seq is None:
+                frame_seq = _to_nonnegative_int(_event.get("frameSeq"))
+            if frame_seq is not None and frame_seq > 0:
+                totals_by_frame[(frame_run_id, int(frame_seq))] = int(total_ms)
+
+    for run_id, frame_seq, ack_kind in ack_kind_latest.keys():
+        ack_frames_by_kind[ack_kind].add((run_id, frame_seq))
 
     frames_with_input = len(input_frames)
     frames_with_ack = len(ack_frames)
@@ -2729,6 +2751,46 @@ def extract_frame_user_e2e_summary_from_events_v1(
                 "ratio": coverage_ratio,
             },
             "totalMs": summarize_latency([]),
+            "byKind": {},
+            "tts": {
+                "count": 0,
+                "coverageRatio": 0.0 if frames_with_input > 0 else None,
+                "p50": 0,
+                "p90": 0,
+                "max": 0,
+            },
+        }
+
+    by_kind: dict[str, Any] = {}
+    for kind, frames in sorted(ack_frames_by_kind.items()):
+        kind_values = [totals_by_frame[key] for key in sorted(frames) if key in totals_by_frame]
+        kind_cov = None
+        if frames_with_input > 0:
+            kind_cov = round(_safe_ratio(len(frames), frames_with_input), 6)
+        by_kind[kind] = {
+            "count": int(len(kind_values)),
+            "coverageRatio": kind_cov,
+            "totalMs": summarize_latency(kind_values),
+        }
+
+    tts_bucket = by_kind.get("tts")
+    if isinstance(tts_bucket, dict):
+        tts_total = tts_bucket.get("totalMs")
+        tts_total = tts_total if isinstance(tts_total, dict) else {}
+        tts_summary = {
+            "count": int(tts_total.get("count", 0) or 0),
+            "coverageRatio": tts_bucket.get("coverageRatio"),
+            "p50": int(tts_total.get("p50", 0) or 0),
+            "p90": int(tts_total.get("p90", 0) or 0),
+            "max": int(tts_total.get("max", 0) or 0),
+        }
+    else:
+        tts_summary = {
+            "count": 0,
+            "coverageRatio": 0.0 if frames_with_input > 0 else None,
+            "p50": 0,
+            "p90": 0,
+            "max": 0,
         }
 
     return {
@@ -2741,7 +2803,20 @@ def extract_frame_user_e2e_summary_from_events_v1(
             "ratio": coverage_ratio,
         },
         "totalMs": summarize_latency(total_values),
+        "byKind": by_kind,
+        "tts": tts_summary,
     }
+
+
+def _normalize_frame_ack_kind(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"tts"}:
+        return "tts"
+    if raw in {"overlay", "ar"}:
+        return "ar"
+    if raw in {"haptic"}:
+        return "haptic"
+    return "other"
 
 
 def extract_risk_latency_metrics_from_events_v1(
