@@ -79,6 +79,12 @@ class RunSummary:
     plan_request_lines: int = 0
     plan_request_seg_included_count: int = 0
     plan_request_seg_chars_total: int = 0
+    plan_context_events_present: bool = False
+    plan_context_schema_ok: bool = False
+    plan_context_lines: int = 0
+    plan_ctx_used_true_count: int = 0
+    plan_seg_coverage_p90: float = 0.0
+    plan_pov_coverage_p90: float = 0.0
     score_delta: float | None = None
     baseline_score: float | None = None
     critical_fn_gate_required: bool = False
@@ -171,6 +177,12 @@ class RunSummary:
                 "planRequestLines": self.plan_request_lines,
                 "planRequestSegIncludedCount": self.plan_request_seg_included_count,
                 "planRequestSegCharsTotal": self.plan_request_seg_chars_total,
+                "planContextEventsPresent": self.plan_context_events_present,
+                "planContextSchemaOk": self.plan_context_schema_ok,
+                "planContextLines": self.plan_context_lines,
+                "planCtxUsedTrueCount": self.plan_ctx_used_true_count,
+                "planSegCoverageP90": self.plan_seg_coverage_p90,
+                "planPovCoverageP90": self.plan_pov_coverage_p90,
             },
             "baselineScore": self.baseline_score,
             "scoreDelta": self.score_delta,
@@ -611,6 +623,8 @@ def run_suite(
     run_require_seg_context_schema_ok: dict[str, bool] = {}
     run_require_plan_request_events_present: dict[str, bool] = {}
     run_require_plan_request_schema_ok: dict[str, bool] = {}
+    run_require_plan_context_events_present: dict[str, bool] = {}
+    run_require_plan_context_schema_ok: dict[str, bool] = {}
     failures: list[str] = []
     contract_lock_ok: bool | None = None
     contract_lock_detail = ""
@@ -642,6 +656,8 @@ def run_suite(
         run_require_seg_context_schema_ok[run_id] = _to_bool01(run_cfg.get("requireSegContextSchemaOk"), False)
         run_require_plan_request_events_present[run_id] = _to_bool01(run_cfg.get("requirePlanRequestEventsPresent"), False)
         run_require_plan_request_schema_ok[run_id] = _to_bool01(run_cfg.get("requirePlanRequestSchemaOk"), False)
+        run_require_plan_context_events_present[run_id] = _to_bool01(run_cfg.get("requirePlanContextEventsPresent"), False)
+        run_require_plan_context_schema_ok[run_id] = _to_bool01(run_cfg.get("requirePlanContextSchemaOk"), False)
         run_path = _resolve_input_path(run_path_text, suite_dir)
 
         ws_jsonl: Path | None = None
@@ -698,6 +714,12 @@ def run_suite(
                     run_summary.plan_request_lines = int(lint_summary.get("planRequestLines", 0) or 0)
                     run_summary.plan_request_seg_included_count = int(lint_summary.get("planRequestSegIncludedCount", 0) or 0)
                     run_summary.plan_request_seg_chars_total = int(lint_summary.get("planRequestSegCharsTotal", 0) or 0)
+                    run_summary.plan_context_events_present = bool(lint_summary.get("planContextEventsPresent", 0))
+                    run_summary.plan_context_schema_ok = bool(lint_summary.get("planContextSchemaOk", 0))
+                    run_summary.plan_context_lines = int(lint_summary.get("planContextLines", 0) or 0)
+                    run_summary.plan_ctx_used_true_count = int(lint_summary.get("planCtxUsedTrueCount", 0) or 0)
+                    run_summary.plan_seg_coverage_p90 = float(lint_summary.get("planSegCoverageP90", 0.0) or 0.0)
+                    run_summary.plan_pov_coverage_p90 = float(lint_summary.get("planPovCoverageP90", 0.0) or 0.0)
             except Exception:
                 # Lint stats are best-effort; report generation should remain authoritative.
                 pass
@@ -766,6 +788,10 @@ def run_suite(
             failures.append(f"{run.run_id}: plan.request events missing")
         if run_require_plan_request_schema_ok.get(run.run_id, False) and not bool(run.plan_request_schema_ok):
             failures.append(f"{run.run_id}: plan.request payload schema check failed")
+        if run_require_plan_context_events_present.get(run.run_id, False) and not bool(run.plan_context_events_present):
+            failures.append(f"{run.run_id}: plan.context_alignment events missing")
+        if run_require_plan_context_schema_ok.get(run.run_id, False) and not bool(run.plan_context_schema_ok):
+            failures.append(f"{run.run_id}: plan.context_alignment payload schema check failed")
         if fail_on_drop and run.baseline_score is not None and run.quality_score is not None:
             delta = run.quality_score - run.baseline_score
             if delta < -2.0:
@@ -849,6 +875,8 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "segContextChars={seg_context_chars} segContextSegmentsOut={seg_context_segments_out} "
                 "planRequestEventsPresent={plan_request_events_present} planRequestSchemaOk={plan_request_schema_ok} "
                 "planRequestSegIncludedCount={plan_request_seg_included_count} planRequestSegCharsTotal={plan_request_seg_chars_total} "
+                "planContextEventsPresent={plan_context_events_present} planContextSchemaOk={plan_context_schema_ok} "
+                "planCtxUsedTrueCount={plan_ctx_used_true_count} planSegCoverageP90={plan_seg_coverage_p90} planPovCoverageP90={plan_pov_coverage_p90} "
                 "povPresent={pov_present} povDecisions={pov_decisions} povTokenApprox={pov_token_approx} source={schema_src} "
                 "ocr={ocr_backend}/{ocr_model} risk={risk_backend}/{risk_model}".format(
                     run_id=run_id,
@@ -879,6 +907,11 @@ def _print_summary(result: dict[str, Any]) -> None:
                     plan_request_schema_ok=row.get("segLint", {}).get("planRequestSchemaOk", False),
                     plan_request_seg_included_count=row.get("segLint", {}).get("planRequestSegIncludedCount", 0),
                     plan_request_seg_chars_total=row.get("segLint", {}).get("planRequestSegCharsTotal", 0),
+                    plan_context_events_present=row.get("segLint", {}).get("planContextEventsPresent", False),
+                    plan_context_schema_ok=row.get("segLint", {}).get("planContextSchemaOk", False),
+                    plan_ctx_used_true_count=row.get("segLint", {}).get("planCtxUsedTrueCount", 0),
+                    plan_seg_coverage_p90=row.get("segLint", {}).get("planSegCoverageP90", 0.0),
+                    plan_pov_coverage_p90=row.get("segLint", {}).get("planPovCoverageP90", 0.0),
                     pov_present=row.get("pov", {}).get("present", False),
                     pov_decisions=row.get("pov", {}).get("decisions", 0),
                     pov_token_approx=row.get("pov", {}).get("tokenApprox", 0),

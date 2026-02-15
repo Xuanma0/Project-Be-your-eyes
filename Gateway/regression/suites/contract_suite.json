@@ -93,6 +93,15 @@
       "minPovDecisions": 0,
       "requirePlanRequestEventsPresent": true,
       "requirePlanRequestSchemaOk": true
+    },
+    {
+      "id": "fixture_with_plan_context_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_plan_context_alignment_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requirePlanContextEventsPresent": true,
+      "requirePlanContextSchemaOk": true
     }
   ]
 }

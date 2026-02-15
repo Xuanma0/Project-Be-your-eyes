@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import re
 import shutil
 import sys
@@ -400,6 +401,69 @@ def _seg_context_schema_ok(payload: dict[str, Any]) -> bool:
     return True
 
 
+def _plan_context_alignment_schema_ok(payload: dict[str, Any]) -> tuple[bool, float, float, bool]:
+    if not isinstance(payload, dict):
+        return False, 0.0, 0.0, False
+    if str(payload.get("schemaVersion", "")).strip() != "plan.context_alignment.v1":
+        return False, 0.0, 0.0, False
+
+    seg = payload.get("seg")
+    seg = seg if isinstance(seg, dict) else {}
+    pov = payload.get("pov")
+    pov = pov if isinstance(pov, dict) else {}
+    context_used = bool(payload.get("contextUsed"))
+
+    for key in ("present", "hit"):
+        if not isinstance(seg.get(key), bool):
+            return False, 0.0, 0.0, context_used
+        if not isinstance(pov.get(key), bool):
+            return False, 0.0, 0.0, context_used
+
+    for key in ("labelCount",):
+        try:
+            if int(seg.get(key, -1)) < 0:
+                return False, 0.0, 0.0, context_used
+        except Exception:
+            return False, 0.0, 0.0, context_used
+    for key in ("tokenCount", "hitCount"):
+        try:
+            if int(pov.get(key, -1)) < 0:
+                return False, 0.0, 0.0, context_used
+        except Exception:
+            return False, 0.0, 0.0, context_used
+
+    try:
+        seg_coverage = float(seg.get("coverage", 0.0))
+        pov_coverage = float(pov.get("coverage", 0.0))
+    except Exception:
+        return False, 0.0, 0.0, context_used
+    if not (0.0 <= seg_coverage <= 1.0):
+        return False, 0.0, 0.0, context_used
+    if not (0.0 <= pov_coverage <= 1.0):
+        return False, 0.0, 0.0, context_used
+
+    matched = seg.get("matched")
+    if not isinstance(matched, list):
+        return False, 0.0, 0.0, context_used
+    for item in matched:
+        if not isinstance(item, str):
+            return False, 0.0, 0.0, context_used
+
+    return True, float(seg_coverage), float(pov_coverage), context_used
+
+
+def _percentile_float(values: list[float], p: int) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(item) for item in values)
+    if len(ordered) == 1:
+        return float(ordered[0])
+    rank = max(0.0, min(1.0, p / 100.0))
+    idx = int(math.ceil(rank * len(ordered)) - 1)
+    idx = max(0, min(len(ordered) - 1, idx))
+    return float(ordered[idx])
+
+
 def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = False) -> tuple[int, dict[str, Any]]:
     warnings: list[str] = []
     errors: list[str] = []
@@ -508,6 +572,12 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         plan_request_schema_ok = 0
         plan_request_seg_included_count = 0
         plan_request_seg_chars_total = 0
+        plan_context_events_present = 0
+        plan_context_lines = 0
+        plan_context_schema_ok = 0
+        plan_ctx_used_true_count = 0
+        plan_seg_coverages: list[float] = []
+        plan_pov_coverages: list[float] = []
         seg_schema = _load_seg_contract_schema()
         if events_v1_rel:
             events_v1_path = run_root / events_v1_rel
@@ -642,6 +712,20 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                     if seg_included:
                                         plan_request_seg_included_count += 1
                                     plan_request_seg_chars_total += int(max(0, seg_chars))
+                                if name == "plan.context_alignment":
+                                    plan_context_events_present = 1
+                                    plan_context_lines += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    schema_ok, seg_cov, pov_cov, ctx_used = _plan_context_alignment_schema_ok(payload)
+                                    if schema_ok:
+                                        plan_context_schema_ok += 1
+                                        plan_seg_coverages.append(float(seg_cov))
+                                        plan_pov_coverages.append(float(pov_cov))
+                                        if ctx_used:
+                                            plan_ctx_used_true_count += 1
+                                    else:
+                                        warnings.append("plan.context_alignment payload missing required fields")
                                 if name == "seg.segment":
                                     seg_events_present = 1
                                     seg_lines += 1
@@ -863,6 +947,12 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "planRequestSchemaOk": int(plan_request_lines > 0 and plan_request_schema_ok == plan_request_lines),
             "planRequestSegIncludedCount": int(plan_request_seg_included_count),
             "planRequestSegCharsTotal": int(plan_request_seg_chars_total),
+            "planContextEventsPresent": int(plan_context_events_present),
+            "planContextLines": int(plan_context_lines),
+            "planContextSchemaOk": int(plan_context_lines > 0 and plan_context_schema_ok == plan_context_lines),
+            "planCtxUsedTrueCount": int(plan_ctx_used_true_count),
+            "planSegCoverageP90": round(float(_percentile_float(plan_seg_coverages, 90)), 6),
+            "planPovCoverageP90": round(float(_percentile_float(plan_pov_coverages, 90)), 6),
             "hazardUnknownKinds": len(hazard_unknown_kinds),
             "hazardAliasHits": int(hazard_alias_hits),
             "riskEventMissingFrameSeq": int(risk_event_missing_frame_seq),
@@ -917,6 +1007,12 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"planRequestSchemaOk: {summary['planRequestSchemaOk']}")
             print(f"planRequestSegIncludedCount: {summary['planRequestSegIncludedCount']}")
             print(f"planRequestSegCharsTotal: {summary['planRequestSegCharsTotal']}")
+            print(f"planContextEventsPresent: {summary['planContextEventsPresent']}")
+            print(f"planContextLines: {summary['planContextLines']}")
+            print(f"planContextSchemaOk: {summary['planContextSchemaOk']}")
+            print(f"planCtxUsedTrueCount: {summary['planCtxUsedTrueCount']}")
+            print(f"planSegCoverageP90: {summary['planSegCoverageP90']}")
+            print(f"planPovCoverageP90: {summary['planPovCoverageP90']}")
             print(f"hazardUnknownKinds: {summary['hazardUnknownKinds']}")
             print(f"hazardAliasHits: {summary['hazardAliasHits']}")
             print(f"riskEventMissingFrameSeq: {summary['riskEventMissingFrameSeq']}")

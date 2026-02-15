@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-be-your-eyes/contracts/plan.context_alignment.v1.json",
+  "title": "Plan Context Alignment v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "seg",
+    "pov",
+    "contextUsed"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "plan.context_alignment.v1"
+    },
+    "seg": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "present",
+        "labelCount",
+        "hit",
+        "coverage",
+        "matched"
+      ],
+      "properties": {
+        "present": {
+          "type": "boolean"
+        },
+        "labelCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hit": {
+          "type": "boolean"
+        },
+        "coverage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "matched": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "planTextChars": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "pov": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "present",
+        "tokenCount",
+        "hit",
+        "coverage",
+        "hitCount"
+      ],
+      "properties": {
+        "present": {
+          "type": "boolean"
+        },
+        "tokenCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hit": {
+          "type": "boolean"
+        },
+        "coverage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "hitCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "contextUsed": {
+      "type": "boolean"
+    }
+  }
+}

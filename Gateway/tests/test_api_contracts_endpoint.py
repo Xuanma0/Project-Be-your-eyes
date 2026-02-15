@@ -21,6 +21,7 @@ def test_api_contracts_endpoint_returns_lock_and_runtime_defaults() -> None:
         "byes.seg_request.v1",
         "seg.context.v1",
         "byes.plan_request.v1",
+        "plan.context_alignment.v1",
     ):
         assert key in versions
         row = versions[key]

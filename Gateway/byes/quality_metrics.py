@@ -1896,6 +1896,38 @@ def _safe_ratio(num: int, den: int) -> float:
     return num / den
 
 
+def _to_unit_float(value: Any) -> float:
+    try:
+        if value is None or isinstance(value, bool):
+            return 0.0
+        parsed = float(value)
+    except Exception:
+        return 0.0
+    if parsed < 0.0:
+        return 0.0
+    if parsed > 1.0:
+        return 1.0
+    return parsed
+
+
+def _mean_float(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values)) / float(len(values))
+
+
+def _percentile_float(values: list[float], p: int) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(item) for item in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = max(0.0, min(1.0, p / 100.0))
+    idx = int(math.ceil(rank * len(ordered)) - 1)
+    idx = max(0, min(len(ordered) - 1, idx))
+    return float(ordered[idx])
+
+
 def _f1(tp: int, fp: int, fn: int) -> float:
     precision = _safe_ratio(tp, tp + fp)
     recall = _safe_ratio(tp, tp + fn)
@@ -2349,6 +2381,69 @@ def extract_plan_rule_summary_from_events_v1(events: Iterable[dict[str, Any]]) -
         "present": count > 0,
         "ruleAppliedCount": int(count),
         "ruleHazardHintTop": top_hint,
+    }
+
+
+def extract_plan_context_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    event_count = 0
+    context_used_count = 0
+    seg_hit_count = 0
+    pov_hit_count = 0
+    seg_coverages: list[float] = []
+    pov_coverages: list[float] = []
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "plan.context_alignment":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        seg = payload.get("seg")
+        seg = seg if isinstance(seg, dict) else {}
+        pov = payload.get("pov")
+        pov = pov if isinstance(pov, dict) else {}
+
+        event_count += 1
+        if bool(payload.get("contextUsed")):
+            context_used_count += 1
+        if bool(seg.get("hit")):
+            seg_hit_count += 1
+        if bool(pov.get("hit")):
+            pov_hit_count += 1
+        seg_coverages.append(_to_unit_float(seg.get("coverage")))
+        pov_coverages.append(_to_unit_float(pov.get("coverage")))
+
+    if event_count <= 0:
+        return {
+            "present": False,
+            "events": 0,
+            "contextUsedRate": 0.0,
+            "seg": {"hitRate": 0.0, "coverageMean": 0.0, "coverageP90": 0.0},
+            "pov": {"hitRate": 0.0, "coverageMean": 0.0, "coverageP90": 0.0},
+        }
+
+    return {
+        "present": True,
+        "events": int(event_count),
+        "contextUsedRate": round(_safe_ratio(context_used_count, event_count), 6),
+        "seg": {
+            "hitRate": round(_safe_ratio(seg_hit_count, event_count), 6),
+            "coverageMean": round(_mean_float(seg_coverages), 6),
+            "coverageP90": round(_percentile_float(seg_coverages, 90), 6),
+        },
+        "pov": {
+            "hitRate": round(_safe_ratio(pov_hit_count, event_count), 6),
+            "coverageMean": round(_mean_float(pov_coverages), 6),
+            "coverageP90": round(_percentile_float(pov_coverages, 90), 6),
+        },
     }
 
 
