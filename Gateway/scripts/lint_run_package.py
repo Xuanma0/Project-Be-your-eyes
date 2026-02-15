@@ -527,9 +527,9 @@ def _plan_context_pack_schema_ok(
 def _frame_e2e_schema_ok(
     payload: dict[str, Any],
     schema: dict[str, Any] | None,
-) -> tuple[bool, int, bool]:
+) -> tuple[bool, int, bool, bool]:
     if not isinstance(payload, dict):
-        return False, 0, True
+        return False, 0, True, False
     schema_ok = True
     if schema is not None and jsonschema is not None:
         try:
@@ -538,26 +538,27 @@ def _frame_e2e_schema_ok(
             schema_ok = False
 
     if str(payload.get("schemaVersion", "")).strip() != "frame.e2e.v1":
-        return False, 0, True
+        return False, 0, True, False
     if not isinstance(payload.get("runId"), str):
-        return False, 0, True
+        return False, 0, True, False
     try:
         frame_seq = int(payload.get("frameSeq", 0))
         t0_ms = int(payload.get("t0Ms", -1))
         t1_ms = int(payload.get("t1Ms", -1))
         total_ms = int(payload.get("totalMs", -1))
     except Exception:
-        return False, 0, True
+        return False, 0, True, False
     if frame_seq <= 0 or t0_ms < 0 or t1_ms < 0 or total_ms < 0:
-        return False, 0, True
+        return False, 0, True, False
     if t1_ms < t0_ms:
-        return False, 0, True
+        return False, 0, True, False
 
     parts = payload.get("partsMs")
     parts = parts if isinstance(parts, dict) else {}
     present = payload.get("present")
     present = present if isinstance(present, dict) else {}
     part_values: list[int | None] = []
+    parts_sum = 0
     for key in ("segMs", "riskMs", "planMs", "executeMs", "confirmMs"):
         value = parts.get(key)
         if value is None:
@@ -566,15 +567,17 @@ def _frame_e2e_schema_ok(
         try:
             parsed = int(value)
         except Exception:
-            return False, 0, True
+            return False, 0, True, False
         if parsed < 0:
-            return False, 0, True
+            return False, 0, True, False
         part_values.append(parsed)
+        parts_sum += int(parsed)
     for key in ("seg", "risk", "plan", "execute", "confirm"):
         if not isinstance(present.get(key), bool):
-            return False, 0, True
+            return False, 0, True, False
     parts_missing = all(value is None for value in part_values)
-    return bool(schema_ok), max(0, total_ms), bool(parts_missing)
+    parts_sum_gt_total = parts_sum > max(0, total_ms) if not parts_missing else False
+    return bool(schema_ok), max(0, total_ms), bool(parts_missing), bool(parts_sum_gt_total)
 
 
 def _percentile_float(values: list[float], p: int) -> float:
@@ -713,6 +716,9 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         frame_e2e_schema_ok = 0
         frame_e2e_total_ms_values: list[float] = []
         frame_e2e_parts_missing_count = 0
+        frame_e2e_duplicate_count = 0
+        frame_e2e_parts_sum_gt_total_count = 0
+        frame_e2e_seen_keys: dict[tuple[str, int], int] = {}
         seg_schema = _load_seg_contract_schema()
         plan_context_pack_schema = _load_plan_context_pack_schema()
         frame_e2e_schema = _load_frame_e2e_schema()
@@ -883,7 +889,21 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                     frame_e2e_lines += 1
                                     payload = obj.get("payload")
                                     payload = payload if isinstance(payload, dict) else {}
-                                    schema_ok, total_ms, parts_missing = _frame_e2e_schema_ok(payload, frame_e2e_schema)
+                                    frame_run_id = str(payload.get("runId", "")).strip() or str(obj.get("runId", "")).strip()
+                                    frame_seq_raw = payload.get("frameSeq")
+                                    if frame_seq_raw is None:
+                                        frame_seq_raw = obj.get("frameSeq")
+                                    try:
+                                        frame_seq_value = int(frame_seq_raw)
+                                    except Exception:
+                                        frame_seq_value = 0
+                                    if frame_run_id and frame_seq_value > 0:
+                                        frame_key = (frame_run_id, frame_seq_value)
+                                        frame_e2e_seen_keys[frame_key] = int(frame_e2e_seen_keys.get(frame_key, 0)) + 1
+                                    schema_ok, total_ms, parts_missing, parts_sum_gt_total = _frame_e2e_schema_ok(
+                                        payload,
+                                        frame_e2e_schema,
+                                    )
                                     if schema_ok:
                                         frame_e2e_schema_ok += 1
                                         frame_e2e_total_ms_values.append(float(total_ms))
@@ -891,6 +911,8 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                         warnings.append("frame.e2e payload missing required fields")
                                     if parts_missing:
                                         frame_e2e_parts_missing_count += 1
+                                    if parts_sum_gt_total:
+                                        frame_e2e_parts_sum_gt_total_count += 1
                                 if name == "seg.segment":
                                     seg_events_present = 1
                                     seg_lines += 1
@@ -958,6 +980,9 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                 seg_context_trunc_segments_dropped = int(seg_context_truncation.get("segmentsDropped", 0) or 0)
                 seg_context_present = int(seg_context_segments_out > 0)
                 seg_context_schema_ok = int(_seg_context_schema_ok(seg_context_payload))
+                frame_e2e_duplicate_count = int(
+                    sum(max(0, int(count) - 1) for count in frame_e2e_seen_keys.values())
+                )
 
         pov_ir_present = 0
         pov_ir_schema_ok = 0
@@ -1136,6 +1161,8 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "frameE2eCount": int(frame_e2e_lines),
             "frameE2eTotalMsP90": round(float(_percentile_float(frame_e2e_total_ms_values, 90)), 6),
             "frameE2ePartsMissingCount": int(frame_e2e_parts_missing_count),
+            "frameE2eDuplicateCount": int(frame_e2e_duplicate_count),
+            "frameE2ePartsSumGtTotalCount": int(frame_e2e_parts_sum_gt_total_count),
             "hazardUnknownKinds": len(hazard_unknown_kinds),
             "hazardAliasHits": int(hazard_alias_hits),
             "riskEventMissingFrameSeq": int(risk_event_missing_frame_seq),
@@ -1206,6 +1233,8 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"frameE2eCount: {summary['frameE2eCount']}")
             print(f"frameE2eTotalMsP90: {summary['frameE2eTotalMsP90']}")
             print(f"frameE2ePartsMissingCount: {summary['frameE2ePartsMissingCount']}")
+            print(f"frameE2eDuplicateCount: {summary['frameE2eDuplicateCount']}")
+            print(f"frameE2ePartsSumGtTotalCount: {summary['frameE2ePartsSumGtTotalCount']}")
             print(f"hazardUnknownKinds: {summary['hazardUnknownKinds']}")
             print(f"hazardAliasHits: {summary['hazardAliasHits']}")
             print(f"riskEventMissingFrameSeq: {summary['riskEventMissingFrameSeq']}")

@@ -2544,8 +2544,8 @@ def extract_frame_e2e_summary_from_events_v1(
     *,
     frames_total_declared: int | None = None,
 ) -> dict[str, Any]:
-    event_count = 0
-    frame_seq_set: set[int] = set()
+    deduped_by_key: dict[tuple[str, int], tuple[int, int, dict[str, Any], dict[str, Any]]] = {}
+    raw_event_count = 0
     total_ms_values: list[int] = []
     part_values: dict[str, list[int]] = {
         "segMs": [],
@@ -2554,7 +2554,7 @@ def extract_frame_e2e_summary_from_events_v1(
         "executeMs": [],
         "confirmMs": [],
     }
-    for row in events:
+    for index, row in enumerate(events):
         if not isinstance(row, dict):
             continue
         event = row.get("event") if isinstance(row.get("event"), dict) else row
@@ -2568,28 +2568,57 @@ def extract_frame_e2e_summary_from_events_v1(
             continue
         payload = event.get("payload")
         payload = payload if isinstance(payload, dict) else {}
-        event_count += 1
+        raw_event_count += 1
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
         seq = _to_nonnegative_int(payload.get("frameSeq"))
         if seq is None:
             seq = _to_nonnegative_int(event.get("frameSeq"))
-        if seq is not None and seq > 0:
-            frame_seq_set.add(int(seq))
+        if seq is None or seq <= 0:
+            continue
+        ts_ms = _to_nonnegative_int(event.get("tsMs"))
+        if ts_ms is None:
+            ts_ms = _to_nonnegative_int(payload.get("t1Ms"))
+        if ts_ms is None:
+            ts_ms = index
+        key = (run_id, int(seq))
+        previous = deduped_by_key.get(key)
+        if previous is None or (ts_ms, index) >= (previous[0], previous[1]):
+            deduped_by_key[key] = (int(ts_ms), int(index), event, payload)
 
+    deduped_events = list(deduped_by_key.values())
+    event_count = len(deduped_events)
+    duplicates_dropped = int(max(0, raw_event_count - event_count))
+    frame_seq_set: set[tuple[str, int]] = set()
+    parts_sum_gt_total_count = 0
+    for _ts_ms, _idx, event, payload in deduped_events:
+        seq = _to_nonnegative_int(payload.get("frameSeq"))
+        if seq is None:
+            seq = _to_nonnegative_int(event.get("frameSeq"))
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        if seq is not None and seq > 0:
+            frame_seq_set.add((run_id, int(seq)))
         total_ms = _to_nonnegative_int(payload.get("totalMs"))
         if total_ms is not None:
             total_ms_values.append(int(total_ms))
-
         parts = payload.get("partsMs")
         parts = parts if isinstance(parts, dict) else {}
+        parts_sum = 0
+        parts_non_null = 0
         for key in ("segMs", "riskMs", "planMs", "executeMs", "confirmMs"):
             value = _to_nonnegative_int(parts.get(key))
             if value is not None:
                 part_values[key].append(int(value))
+                parts_sum += int(value)
+                parts_non_null += 1
+        if total_ms is not None and parts_non_null > 0 and parts_sum > int(total_ms):
+            parts_sum_gt_total_count += 1
 
     if event_count <= 0:
         return {
             "present": False,
             "events": 0,
+            "duplicatesDropped": 0,
+            "partsSumGtTotalCount": 0,
             "coverage": {
                 "framesWithE2E": 0,
                 "framesTotalDeclared": int(max(0, int(frames_total_declared or 0))) if frames_total_declared is not None else None,
@@ -2613,6 +2642,8 @@ def extract_frame_e2e_summary_from_events_v1(
     return {
         "present": True,
         "events": int(event_count),
+        "duplicatesDropped": int(duplicates_dropped),
+        "partsSumGtTotalCount": int(parts_sum_gt_total_count),
         "coverage": {
             "framesWithE2E": int(frames_with_e2e),
             "framesTotalDeclared": total_declared,

@@ -233,6 +233,10 @@ def _extract_combo_metrics(report_payload: dict[str, Any]) -> dict[str, Any]:
     overcautious = overcautious if isinstance(overcautious, dict) else {}
     latency_ms = plan_eval.get("latencyMs")
     latency_ms = latency_ms if isinstance(latency_ms, dict) else {}
+    frame_e2e = report_payload.get("frameE2E")
+    frame_e2e = frame_e2e if isinstance(frame_e2e, dict) else {}
+    frame_total = frame_e2e.get("totalMs")
+    frame_total = frame_total if isinstance(frame_total, dict) else {}
 
     return {
         "qualityScore": _to_float(quality_score),
@@ -241,13 +245,14 @@ def _extract_combo_metrics(report_payload: dict[str, Any]) -> dict[str, Any]:
         "confirmTimeouts": _to_int(confirm.get("timeouts")),
         "overcautiousRate": _to_float(overcautious.get("rate")),
         "planLatencyP90": _to_int(latency_ms.get("p90")),
+        "frameE2EP90": _to_int(frame_total.get("p90")),
     }
 
 
 def _recommend(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not rows:
         return {
-            "rule": "minimize confirm_timeouts -> truncation<=0.1 -> min plan_latency_p90 -> max qualityScore",
+            "rule": "minimize confirm_timeouts -> truncation<=0.1 -> min frame_e2e_p90 -> min plan_latency_p90 -> max qualityScore",
             "best": None,
         }
 
@@ -266,6 +271,19 @@ def _recommend(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not feasible:
         min_trunc = min(trunc_value(row) for row in stage)
         feasible = [row for row in stage if trunc_value(row) == min_trunc]
+
+    frame_latency_values = [
+        _to_int(row.get("metrics", {}).get("frameE2EP90"))
+        for row in feasible
+        if _to_int(row.get("metrics", {}).get("frameE2EP90")) is not None
+    ]
+    if frame_latency_values:
+        best_frame_latency = min(frame_latency_values)
+        feasible = [
+            row
+            for row in feasible
+            if (_to_int(row.get("metrics", {}).get("frameE2EP90")) or best_frame_latency) == best_frame_latency
+        ]
 
     latency_values = [
         _to_int(row.get("metrics", {}).get("planLatencyP90"))
@@ -295,8 +313,11 @@ def _recommend(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
     feasible.sort(key=lambda row: (int(row.get("maxChars", 0) or 0), str(row.get("mode", ""))))
     best = feasible[0]
+    rule = "minimize confirm_timeouts -> truncation<=0.1 -> min plan_latency_p90 -> max qualityScore"
+    if frame_latency_values:
+        rule = "minimize confirm_timeouts -> truncation<=0.1 -> min frame_e2e_p90 -> min plan_latency_p90 -> max qualityScore"
     return {
-        "rule": "minimize confirm_timeouts -> truncation<=0.1 -> min plan_latency_p90 -> max qualityScore",
+        "rule": rule,
         "best": {
             "maxChars": int(best.get("maxChars", 0) or 0),
             "mode": str(best.get("mode", "")),
@@ -312,8 +333,8 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         f"- budgets: `{payload.get('budgets', [])}`",
         f"- modes: `{payload.get('modes', [])}`",
         "",
-        "| maxChars | mode | charsP90 | truncRate | confirmTimeouts | planLatencyP90 | qualityScore | overcautiousRate | notes |",
-        "|---:|---|---:|---:|---:|---:|---:|---:|---|",
+        "| maxChars | mode | charsP90 | truncRate | confirmTimeouts | frameE2EP90 | planLatencyP90 | qualityScore | overcautiousRate | notes |",
+        "|---:|---|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for row in payload.get("rows", []):
         metrics = row.get("metrics", {})
@@ -328,12 +349,13 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         overcautious_text = "missing" if overcautious is None else f"{float(overcautious):.4f}"
 
         lines.append(
-            "| {max_chars} | {mode} | {chars} | {trunc} | {timeouts} | {latency} | {quality} | {over} | {notes} |".format(
+            "| {max_chars} | {mode} | {chars} | {trunc} | {timeouts} | {frame_e2e} | {latency} | {quality} | {over} | {notes} |".format(
                 max_chars=row.get("maxChars"),
                 mode=row.get("mode"),
                 chars=fmt(metrics.get("charsTotalP90")),
                 trunc=trunc_text,
                 timeouts=fmt(metrics.get("confirmTimeouts")),
+                frame_e2e=fmt(metrics.get("frameE2EP90")),
                 latency=fmt(metrics.get("planLatencyP90")),
                 quality=fmt(metrics.get("qualityScore")),
                 over=overcautious_text,
@@ -364,6 +386,7 @@ def evaluate_combo(
             "charsTotalP90": None,
             "truncationRate": None,
             "confirmTimeouts": None,
+            "frameE2EP90": None,
             "planLatencyP90": None,
             "qualityScore": None,
             "overcautiousRate": None,

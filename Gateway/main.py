@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import tempfile
 import time
 from pathlib import Path
@@ -2037,12 +2038,22 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
             events_rows, _ = load_events_v1_rows(run_package_dir, manifest)
 
         frame_seq = int(request.frameSeq) if isinstance(request.frameSeq, int) and request.frameSeq > 0 else None
+        safe_frame_seq = int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1
         run_id = (
             str(request.runId or "").strip()
             or str(manifest.get("runId", "")).strip()
             or str((pov_ir_from_package or {}).get("runId", "")).strip()
             or (run_package_dir.name if run_package_dir is not None else "")
         )
+        frame_e2e_events_path: Path | None = None
+        if can_write_events and run_package_dir is not None:
+            frame_e2e_events_path = _resolve_events_v1_path(run_package_dir, manifest)
+            _frame_e2e_begin_state(
+                events_path=frame_e2e_events_path,
+                run_id=run_id,
+                frame_seq=safe_frame_seq,
+                t0_hint_ms=started_at_ms,
+            )
         planner_provider = _resolve_planner_provider(provider)
         inline_pov_ir = gateway.pov_store.get(run_id) if planner_provider == "pov" else None
         pov_ir = inline_pov_ir if isinstance(inline_pov_ir, dict) else pov_ir_from_package
@@ -2132,6 +2143,16 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
                 plan_context_pack=plan_context_pack_payload,
                 t0_hint_ms=started_at_ms,
             )
+            if frame_e2e_events_path is not None:
+                _try_append_frame_e2e_event(
+                    events_path=frame_e2e_events_path,
+                    run_id=run_id,
+                    frame_seq=safe_frame_seq,
+                    t1_ms=_now_ms(),
+                    t0_hint_ms=started_at_ms,
+                    plan_ms=latency_ms,
+                    plan_present=True,
+                )
         else:
             planner = bundle.get("planner", {})
             planner = planner if isinstance(planner, dict) else {}
@@ -2229,12 +2250,10 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
             if isinstance(rule_row, dict):
                 existing_rows.append(rule_row)
             existing_rows.append(safety_row)
-            frame_e2e_row = _build_frame_e2e_event(
-                rows=existing_rows,
+            has_frame_e2e = _frame_e2e_exists_in_rows(
+                existing_rows,
                 run_id=run_id or "pov-live",
                 frame_seq=frame_seq or 1,
-                t1_ms=_now_ms(),
-                t0_hint_ms=started_at_ms,
             )
             await gateway._emit_inference_event(plan_context_pack_row)  # noqa: SLF001
             await gateway._emit_inference_event(plan_request_row)  # noqa: SLF001
@@ -2243,7 +2262,15 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
             if isinstance(rule_row, dict):
                 await gateway._emit_inference_event(rule_row)  # noqa: SLF001
             await gateway._emit_inference_event(safety_row)  # noqa: SLF001
-            await gateway._emit_inference_event(frame_e2e_row)  # noqa: SLF001
+            if not has_frame_e2e:
+                frame_e2e_row = _build_frame_e2e_event(
+                    rows=existing_rows,
+                    run_id=run_id or "pov-live",
+                    frame_seq=frame_seq or 1,
+                    t1_ms=_now_ms(),
+                    t0_hint_ms=started_at_ms,
+                )
+                await gateway._emit_inference_event(frame_e2e_row)  # noqa: SLF001
         return plan_payload
     except HTTPException:
         raise
@@ -2281,12 +2308,20 @@ async def execute_plan(request: PlanExecuteRequest) -> dict[str, Any]:
                 run_id=run_id_text or None,
             )
             _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+            events_path = _resolve_events_v1_path(run_package_dir, manifest)
             run_id = str(plan.get("runId", "")).strip() or str(manifest.get("runId", "")).strip() or run_package_dir.name
             frame_seq: int | None = None
             if isinstance(request.frameSeq, int) and request.frameSeq > 0:
                 frame_seq = int(request.frameSeq)
             elif isinstance(plan.get("frameSeq"), int) and int(plan.get("frameSeq", 0)) > 0:
                 frame_seq = int(plan.get("frameSeq", 0))
+            safe_frame_seq = int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1
+            _frame_e2e_begin_state(
+                events_path=events_path,
+                run_id=run_id,
+                frame_seq=safe_frame_seq,
+                t0_hint_ms=started_at_ms,
+            )
             latency_ms = int(max(0, (time.perf_counter() - started_at) * 1000.0))
             if can_write_events:
                 ui_events = _build_ui_events_from_commands(command_rows)
@@ -2301,6 +2336,15 @@ async def execute_plan(request: PlanExecuteRequest) -> dict[str, Any]:
                     pending_confirm_count=int(result.get("pendingConfirmCount", 0) or 0),
                     ui_events=ui_events,
                     t0_hint_ms=started_at_ms,
+                )
+                _try_append_frame_e2e_event(
+                    events_path=events_path,
+                    run_id=run_id,
+                    frame_seq=safe_frame_seq,
+                    t1_ms=_now_ms(),
+                    t0_hint_ms=started_at_ms,
+                    execute_ms=latency_ms,
+                    execute_present=True,
                 )
         return result
     except HTTPException:
@@ -2330,6 +2374,12 @@ async def confirm_response(request: ConfirmResponseRequest) -> dict[str, Any]:
         frame_seq = int(request.frameSeq)
         confirm_id = str(request.confirmId).strip()
         accepted = bool(request.accepted)
+        _frame_e2e_begin_state(
+            events_path=events_path,
+            run_id=run_id,
+            frame_seq=frame_seq,
+            t0_hint_ms=started_at_ms,
+        )
         now_ms = _now_ms()
         request_ts = _find_confirm_request_ts_ms(
             events_path,
@@ -2379,6 +2429,8 @@ async def confirm_response(request: ConfirmResponseRequest) -> dict[str, Any]:
             frame_seq=frame_seq,
             t1_ms=_now_ms(),
             t0_hint_ms=started_at_ms,
+            confirm_ms=latency_ms,
+            confirm_present=True,
         )
         return {
             "ok": True,
@@ -3016,6 +3068,165 @@ def _resolve_events_v1_path(run_package_dir: Path, manifest: dict[str, Any]) -> 
     return run_package_dir / events_rel
 
 
+_FRAME_E2E_STATE_LOCK = threading.Lock()
+_FRAME_E2E_STATE: dict[tuple[str, str, int], dict[str, Any]] = {}
+
+
+def _frame_e2e_state_key(events_path: Path, run_id: str, frame_seq: int) -> tuple[str, str, int]:
+    resolved = str(events_path.resolve()).lower()
+    safe_run_id = str(run_id or "").strip()
+    safe_frame_seq = int(max(1, int(frame_seq)))
+    return (resolved, safe_run_id, safe_frame_seq)
+
+
+def _frame_e2e_begin_state(
+    *,
+    events_path: Path,
+    run_id: str,
+    frame_seq: int,
+    t0_hint_ms: int | None = None,
+) -> None:
+    key = _frame_e2e_state_key(events_path, run_id, frame_seq)
+    t0_hint = _to_nonnegative_int_or_none(t0_hint_ms)
+    with _FRAME_E2E_STATE_LOCK:
+        state = _FRAME_E2E_STATE.get(key)
+        if not isinstance(state, dict):
+            state = {
+                "t0Ms": t0_hint,
+                "partsMs": {
+                    "segMs": None,
+                    "riskMs": None,
+                    "planMs": None,
+                    "executeMs": None,
+                    "confirmMs": None,
+                },
+                "present": {
+                    "seg": False,
+                    "risk": False,
+                    "plan": False,
+                    "execute": False,
+                    "confirm": False,
+                },
+                "emitted": False,
+            }
+            _FRAME_E2E_STATE[key] = state
+            return
+        if t0_hint is not None:
+            current_t0 = _to_nonnegative_int_or_none(state.get("t0Ms"))
+            if current_t0 is None:
+                state["t0Ms"] = t0_hint
+            else:
+                state["t0Ms"] = int(min(current_t0, t0_hint))
+
+
+def _frame_e2e_update_state(
+    *,
+    events_path: Path,
+    run_id: str,
+    frame_seq: int,
+    t0_hint_ms: int | None = None,
+    seg_ms: int | None = None,
+    risk_ms: int | None = None,
+    plan_ms: int | None = None,
+    execute_ms: int | None = None,
+    confirm_ms: int | None = None,
+    seg_present: bool | None = None,
+    risk_present: bool | None = None,
+    plan_present: bool | None = None,
+    execute_present: bool | None = None,
+    confirm_present: bool | None = None,
+) -> None:
+    _frame_e2e_begin_state(
+        events_path=events_path,
+        run_id=run_id,
+        frame_seq=frame_seq,
+        t0_hint_ms=t0_hint_ms,
+    )
+    key = _frame_e2e_state_key(events_path, run_id, frame_seq)
+    with _FRAME_E2E_STATE_LOCK:
+        state = _FRAME_E2E_STATE.get(key)
+        if not isinstance(state, dict):
+            return
+        parts = state.get("partsMs")
+        if not isinstance(parts, dict):
+            parts = {}
+            state["partsMs"] = parts
+        present = state.get("present")
+        if not isinstance(present, dict):
+            present = {}
+            state["present"] = present
+        for key_name, raw_value in (
+            ("segMs", seg_ms),
+            ("riskMs", risk_ms),
+            ("planMs", plan_ms),
+            ("executeMs", execute_ms),
+            ("confirmMs", confirm_ms),
+        ):
+            value = _to_nonnegative_int_or_none(raw_value)
+            if value is not None:
+                parts[key_name] = int(value)
+        for key_name, raw_value in (
+            ("seg", seg_present),
+            ("risk", risk_present),
+            ("plan", plan_present),
+            ("execute", execute_present),
+            ("confirm", confirm_present),
+        ):
+            if raw_value is None:
+                continue
+            present[key_name] = bool(present.get(key_name, False) or bool(raw_value))
+
+
+def _frame_e2e_state_snapshot(events_path: Path, run_id: str, frame_seq: int) -> dict[str, Any] | None:
+    key = _frame_e2e_state_key(events_path, run_id, frame_seq)
+    with _FRAME_E2E_STATE_LOCK:
+        state = _FRAME_E2E_STATE.get(key)
+        if not isinstance(state, dict):
+            return None
+        payload = {
+            "t0Ms": _to_nonnegative_int_or_none(state.get("t0Ms")),
+            "partsMs": {},
+            "present": {},
+            "emitted": bool(state.get("emitted")),
+        }
+        parts = state.get("partsMs")
+        parts = parts if isinstance(parts, dict) else {}
+        for key_name in ("segMs", "riskMs", "planMs", "executeMs", "confirmMs"):
+            payload["partsMs"][key_name] = _to_nonnegative_int_or_none(parts.get(key_name))
+        present = state.get("present")
+        present = present if isinstance(present, dict) else {}
+        for key_name in ("seg", "risk", "plan", "execute", "confirm"):
+            payload["present"][key_name] = bool(present.get(key_name, False))
+        return payload
+
+
+def _frame_e2e_mark_emitted(events_path: Path, run_id: str, frame_seq: int) -> None:
+    key = _frame_e2e_state_key(events_path, run_id, frame_seq)
+    with _FRAME_E2E_STATE_LOCK:
+        state = _FRAME_E2E_STATE.get(key)
+        if isinstance(state, dict):
+            state["emitted"] = True
+
+
+def _frame_e2e_already_emitted(events_path: Path, run_id: str, frame_seq: int) -> bool:
+    snapshot = _frame_e2e_state_snapshot(events_path, run_id, frame_seq)
+    return bool(snapshot and snapshot.get("emitted"))
+
+
+def _frame_e2e_exists_in_rows(rows: list[dict[str, Any]], *, run_id: str, frame_seq: int) -> bool:
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("name", "")).strip().lower() != "frame.e2e":
+            continue
+        if str(row.get("runId", "")).strip() != str(run_id or "").strip():
+            continue
+        if _to_nonnegative_int(row.get("frameSeq"), 0) != int(max(1, int(frame_seq))):
+            continue
+        return True
+    return False
+
+
 def _append_events_v1_rows(events_path: Path, rows: list[dict[str, Any]]) -> bool:
     if not events_path.exists() or not events_path.is_file():
         return False
@@ -3122,6 +3333,7 @@ def _build_frame_e2e_payload(
     frame_seq: int,
     t1_ms: int,
     t0_hint_ms: int | None = None,
+    state_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     frame_rows = _collect_frame_rows(rows, run_id=run_id, frame_seq=frame_seq)
     non_e2e_rows = [
@@ -3135,7 +3347,11 @@ def _build_frame_e2e_payload(
         if _to_nonnegative_int_or_none(row.get("tsMs")) is not None
     ]
     fallback_t0 = _to_nonnegative_int_or_none(t0_hint_ms)
+    state = state_snapshot if isinstance(state_snapshot, dict) else {}
+    state_t0 = _to_nonnegative_int_or_none(state.get("t0Ms"))
     t0_ms = min(ts_candidates) if ts_candidates else (fallback_t0 if fallback_t0 is not None else int(max(0, t1_ms)))
+    if state_t0 is not None:
+        t0_ms = min(int(max(0, t0_ms)), int(max(0, state_t0)))
     safe_t1 = max(int(max(0, t1_ms)), int(max(0, t0_ms)))
 
     seg_present = any(str(row.get("name", "")).strip().lower() == "seg.segment" for row in non_e2e_rows)
@@ -3157,6 +3373,28 @@ def _build_frame_e2e_payload(
         event_name="ui.confirm_response",
         fallback_payload_path=["latencyMs"],
     )
+    state_parts = state.get("partsMs")
+    state_parts = state_parts if isinstance(state_parts, dict) else {}
+    state_present = state.get("present")
+    state_present = state_present if isinstance(state_present, dict) else {}
+    seg_ms = _to_nonnegative_int_or_none(state_parts.get("segMs")) if _to_nonnegative_int_or_none(state_parts.get("segMs")) is not None else seg_ms
+    risk_ms = _to_nonnegative_int_or_none(state_parts.get("riskMs")) if _to_nonnegative_int_or_none(state_parts.get("riskMs")) is not None else risk_ms
+    plan_ms = _to_nonnegative_int_or_none(state_parts.get("planMs")) if _to_nonnegative_int_or_none(state_parts.get("planMs")) is not None else plan_ms
+    execute_ms = (
+        _to_nonnegative_int_or_none(state_parts.get("executeMs"))
+        if _to_nonnegative_int_or_none(state_parts.get("executeMs")) is not None
+        else execute_ms
+    )
+    confirm_ms = (
+        _to_nonnegative_int_or_none(state_parts.get("confirmMs"))
+        if _to_nonnegative_int_or_none(state_parts.get("confirmMs")) is not None
+        else confirm_ms
+    )
+    seg_present = bool(seg_present or bool(state_present.get("seg")))
+    risk_present = bool(risk_present or bool(state_present.get("risk")))
+    plan_present = bool(plan_present or bool(state_present.get("plan")))
+    execute_present = bool(execute_present or bool(state_present.get("execute")))
+    confirm_present = bool(confirm_present or bool(state_present.get("confirm")))
 
     return {
         "schemaVersion": "frame.e2e.v1",
@@ -3189,6 +3427,7 @@ def _build_frame_e2e_event(
     frame_seq: int,
     t1_ms: int,
     t0_hint_ms: int | None = None,
+    state_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = _build_frame_e2e_payload(
         rows=rows,
@@ -3196,6 +3435,7 @@ def _build_frame_e2e_event(
         frame_seq=frame_seq,
         t1_ms=t1_ms,
         t0_hint_ms=t0_hint_ms,
+        state_snapshot=state_snapshot,
     )
     return _build_byes_event(
         run_id=run_id,
@@ -3214,16 +3454,53 @@ def _try_append_frame_e2e_event(
     frame_seq: int,
     t1_ms: int,
     t0_hint_ms: int | None = None,
+    seg_ms: int | None = None,
+    risk_ms: int | None = None,
+    plan_ms: int | None = None,
+    execute_ms: int | None = None,
+    confirm_ms: int | None = None,
+    seg_present: bool | None = None,
+    risk_present: bool | None = None,
+    plan_present: bool | None = None,
+    execute_present: bool | None = None,
+    confirm_present: bool | None = None,
 ) -> bool:
+    safe_frame_seq = int(max(1, int(frame_seq)))
+    _frame_e2e_update_state(
+        events_path=events_path,
+        run_id=run_id,
+        frame_seq=safe_frame_seq,
+        t0_hint_ms=t0_hint_ms,
+        seg_ms=seg_ms,
+        risk_ms=risk_ms,
+        plan_ms=plan_ms,
+        execute_ms=execute_ms,
+        confirm_ms=confirm_ms,
+        seg_present=seg_present,
+        risk_present=risk_present,
+        plan_present=plan_present,
+        execute_present=execute_present,
+        confirm_present=confirm_present,
+    )
+    if _frame_e2e_already_emitted(events_path, run_id, safe_frame_seq):
+        return True
     existing = _read_events_v1_rows(events_path)
+    if _frame_e2e_exists_in_rows(existing, run_id=run_id, frame_seq=safe_frame_seq):
+        _frame_e2e_mark_emitted(events_path, run_id, safe_frame_seq)
+        return True
+    state_snapshot = _frame_e2e_state_snapshot(events_path, run_id, safe_frame_seq)
     row = _build_frame_e2e_event(
         rows=existing,
         run_id=run_id,
-        frame_seq=frame_seq,
+        frame_seq=safe_frame_seq,
         t1_ms=t1_ms,
         t0_hint_ms=t0_hint_ms,
+        state_snapshot=state_snapshot,
     )
-    return _append_events_v1_rows(events_path, [row])
+    ok = _append_events_v1_rows(events_path, [row])
+    if ok:
+        _frame_e2e_mark_emitted(events_path, run_id, safe_frame_seq)
+    return ok
 
 
 def _build_plan_request_event_payload(plan_request: dict[str, Any] | None, planner: dict[str, Any]) -> dict[str, Any]:
@@ -3379,6 +3656,14 @@ def _try_append_plan_events(
     t0_hint_ms: int | None = None,
 ) -> bool:
     events_path = _resolve_events_v1_path(run_package_dir, manifest)
+    _frame_e2e_update_state(
+        events_path=events_path,
+        run_id=run_id,
+        frame_seq=int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1,
+        t0_hint_ms=t0_hint_ms,
+        plan_ms=latency_ms,
+        plan_present=True,
+    )
     now_ms = _now_ms()
     safe_frame_seq = int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1
     planner_payload = {
@@ -3496,13 +3781,7 @@ def _try_append_plan_events(
         )
     if not _append_events_v1_rows(events_path, rows):
         return False
-    return _try_append_frame_e2e_event(
-        events_path=events_path,
-        run_id=run_id,
-        frame_seq=safe_frame_seq,
-        t1_ms=now_ms,
-        t0_hint_ms=t0_hint_ms,
-    )
+    return True
 
 
 def _try_append_plan_execute_event(
@@ -3519,6 +3798,14 @@ def _try_append_plan_execute_event(
     t0_hint_ms: int | None = None,
 ) -> bool:
     events_path = _resolve_events_v1_path(run_package_dir, manifest)
+    _frame_e2e_update_state(
+        events_path=events_path,
+        run_id=run_id,
+        frame_seq=int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1,
+        t0_hint_ms=t0_hint_ms,
+        execute_ms=latency_ms,
+        execute_present=True,
+    )
     safe_frame_seq = int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1
     rows: list[dict[str, Any]] = [
         _build_byes_event(
@@ -3559,13 +3846,7 @@ def _try_append_plan_execute_event(
             )
     if not _append_events_v1_rows(events_path, rows):
         return False
-    return _try_append_frame_e2e_event(
-        events_path=events_path,
-        run_id=run_id,
-        frame_seq=safe_frame_seq,
-        t1_ms=_now_ms(),
-        t0_hint_ms=t0_hint_ms,
-    )
+    return True
 
 
 def _build_byes_event(
