@@ -27,6 +27,10 @@ namespace Demo.UnitySentis
         public RawImage inputDisplay;
         [Tooltip("用于显示检测结果的RawImage组件")]
         public RawImage resultDisplay;
+
+        [Header("交互设置")]
+        [Tooltip("点击后启动推理的按钮")]
+        public Button runInferenceButton;
         
         [Header("检测设置")]
         [Tooltip("置信度阈值（低于此值的检测将被忽略）")]
@@ -39,6 +43,11 @@ namespace Demo.UnitySentis
         // Sentis组件
         private Model m_Model;
         private Worker m_Worker;
+
+        private void Awake()
+        {
+            SetupRunInferenceButton();
+        }
         
         // COCO数据集类别名称（80个类别）
         private static readonly string[] COCO_CLASS_NAMES = {
@@ -65,28 +74,30 @@ namespace Demo.UnitySentis
         
         private void Start()
         {
-            // 检查必需组件
-            if (modelAsset == null)
-            {
-                Debug.LogError("请指定YOLO26n ONNX模型文件");
-                return;
-            }
-            
-            if (inputTexture == null)
-            {
-                Debug.LogError("请指定输入图像");
-                return;
-            }
-            
-            // 初始化Sentis推理引擎
-            InitializeSentis();
-            
             // 显示输入图像
-            if (inputDisplay != null)
+            if (inputDisplay != null && inputTexture != null)
             {
                 inputDisplay.texture = inputTexture;
             }
-            RunInference();
+
+            //等待5秒
+            Invoke("RunInference", 5f);
+        }
+
+        /// <summary>
+        /// 绑定按钮点击事件：点击后启动推理
+        /// </summary>
+        private void SetupRunInferenceButton()
+        {
+            if (runInferenceButton == null)
+            {
+                Debug.LogWarning("未绑定推理按钮，请在Inspector中指定 runInferenceButton 后点击按钮启动推理");
+                return;
+            }
+
+            runInferenceButton.onClick.RemoveListener(RunInference);
+            runInferenceButton.onClick.AddListener(RunInference);
+            Debug.Log("推理按钮绑定完成，点击按钮开始推理");
         }
         
         /// <summary>
@@ -131,9 +142,9 @@ namespace Demo.UnitySentis
         /// </summary>
         public void RunInference()
         {
-            if (m_Worker == null)
+            Debug.Log("推理进程启动...");
+            if (!TryInitializeSentis())
             {
-                Debug.LogError("推理引擎未初始化");
                 return;
             }
 
@@ -173,6 +184,30 @@ namespace Demo.UnitySentis
 
                 Debug.Log($"检测到 {detections.Count} 个对象，耗时: {stopwatch.ElapsedMilliseconds} 毫秒");
             }
+        }
+
+        /// <summary>
+        /// 在首次推理时再初始化引擎，避免Start阶段因参数未配置导致按钮失效
+        /// </summary>
+        private bool TryInitializeSentis()
+        {
+            if (m_Worker != null)
+                return true;
+
+            if (modelAsset == null)
+            {
+                Debug.LogError("请指定YOLO26n ONNX模型文件");
+                return false;
+            }
+
+            if (inputTexture == null)
+            {
+                Debug.LogError("请指定输入图像");
+                return false;
+            }
+
+            InitializeSentis();
+            return m_Worker != null;
         }
         
         /// <summary>
@@ -377,6 +412,11 @@ namespace Demo.UnitySentis
         /// </summary>
         private void OnDestroy()
         {
+            if (runInferenceButton != null)
+            {
+                runInferenceButton.onClick.RemoveListener(RunInference);
+            }
+
             m_Worker?.Dispose();
             Debug.Log("Sentis推理引擎已清理");
         }
