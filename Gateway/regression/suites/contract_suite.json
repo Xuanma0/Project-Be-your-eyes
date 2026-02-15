@@ -120,6 +120,19 @@
       "minPovDecisions": 0,
       "requireFrameE2eEventsPresent": true,
       "requireFrameE2eSchemaOk": true
+    },
+    {
+      "id": "fixture_with_frame_user_e2e_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_frame_user_e2e_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireFrameInputEventsPresent": true,
+      "requireFrameInputSchemaOk": true,
+      "requireFrameAckEventsPresent": true,
+      "requireFrameAckSchemaOk": true,
+      "requireFrameUserE2eEventsPresent": true,
+      "requireFrameUserE2eSchemaOk": true
     }
   ]
 }

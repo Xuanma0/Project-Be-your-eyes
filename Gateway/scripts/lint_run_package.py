@@ -30,6 +30,8 @@ _SHA_LINE_RE = re.compile(r"^([a-fA-F0-9]{64})\s+\*?(.+)$")
 _SEG_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.seg.v1.json"
 _PLAN_CONTEXT_PACK_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "plan.context_pack.v1.json"
 _FRAME_E2E_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.e2e.v1.json"
+_FRAME_INPUT_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.input.v1.json"
+_FRAME_ACK_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.ack.v1.json"
 
 
 def _collect_hazard_stats_from_gt(path: Path) -> dict[str, Any]:
@@ -245,6 +247,30 @@ def _load_frame_e2e_schema() -> dict[str, Any] | None:
         return None
     try:
         payload = json.loads(_FRAME_E2E_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _load_frame_input_schema() -> dict[str, Any] | None:
+    if not _FRAME_INPUT_SCHEMA_PATH.exists():
+        return None
+    try:
+        payload = json.loads(_FRAME_INPUT_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _load_frame_ack_schema() -> dict[str, Any] | None:
+    if not _FRAME_ACK_SCHEMA_PATH.exists():
+        return None
+    try:
+        payload = json.loads(_FRAME_ACK_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     if not isinstance(payload, dict):
@@ -580,6 +606,79 @@ def _frame_e2e_schema_ok(
     return bool(schema_ok), max(0, total_ms), bool(parts_missing), bool(parts_sum_gt_total)
 
 
+def _frame_input_schema_ok(payload: dict[str, Any], schema: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    schema_ok = True
+    if schema is not None and jsonschema is not None:
+        try:
+            jsonschema.validate(payload, schema)
+        except Exception:
+            schema_ok = False
+
+    if str(payload.get("schemaVersion", "")).strip() != "frame.input.v1":
+        return False
+    if not isinstance(payload.get("runId"), str):
+        return False
+    try:
+        frame_seq = int(payload.get("frameSeq", 0))
+        recv_ts_ms = int(payload.get("recvTsMs", -1))
+    except Exception:
+        return False
+    if frame_seq <= 0 or recv_ts_ms < 0:
+        return False
+    capture_raw = payload.get("captureTsMs")
+    if capture_raw is not None:
+        try:
+            capture_ts_ms = int(capture_raw)
+        except Exception:
+            return False
+        if capture_ts_ms < 0:
+            return False
+    meta = payload.get("meta")
+    if meta is not None and not isinstance(meta, dict):
+        return False
+    if isinstance(meta, dict):
+        device_time_base = meta.get("deviceTimeBase")
+        if device_time_base is not None:
+            text = str(device_time_base).strip()
+            if text not in {"unix_ms", "monotonic_ms"}:
+                return False
+        device_id = meta.get("deviceId")
+        if device_id is not None and not isinstance(device_id, str):
+            return False
+    return bool(schema_ok)
+
+
+def _frame_ack_schema_ok(payload: dict[str, Any], schema: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    schema_ok = True
+    if schema is not None and jsonschema is not None:
+        try:
+            jsonschema.validate(payload, schema)
+        except Exception:
+            schema_ok = False
+
+    if str(payload.get("schemaVersion", "")).strip() != "frame.ack.v1":
+        return False
+    if not isinstance(payload.get("runId"), str):
+        return False
+    try:
+        frame_seq = int(payload.get("frameSeq", 0))
+        feedback_ts_ms = int(payload.get("feedbackTsMs", -1))
+    except Exception:
+        return False
+    if frame_seq <= 0 or feedback_ts_ms < 0:
+        return False
+    kind = str(payload.get("kind", "")).strip().lower()
+    if kind not in {"tts", "overlay", "haptic", "any"}:
+        return False
+    if not isinstance(payload.get("accepted"), bool):
+        return False
+    return bool(schema_ok)
+
+
 def _percentile_float(values: list[float], p: int) -> float:
     if not values:
         return 0.0
@@ -719,9 +818,23 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         frame_e2e_duplicate_count = 0
         frame_e2e_parts_sum_gt_total_count = 0
         frame_e2e_seen_keys: dict[tuple[str, int], int] = {}
+        frame_input_events_present = 0
+        frame_input_lines = 0
+        frame_input_schema_ok = 0
+        frame_ack_events_present = 0
+        frame_ack_lines = 0
+        frame_ack_schema_ok = 0
+        frame_user_e2e_events_present = 0
+        frame_user_e2e_lines = 0
+        frame_user_e2e_schema_ok = 0
+        frame_user_e2e_negative_count = 0
+        frame_user_e2e_duplicate_count = 0
+        frame_user_e2e_seen_keys: dict[tuple[str, int], int] = {}
         seg_schema = _load_seg_contract_schema()
         plan_context_pack_schema = _load_plan_context_pack_schema()
         frame_e2e_schema = _load_frame_e2e_schema()
+        frame_input_schema = _load_frame_input_schema()
+        frame_ack_schema = _load_frame_ack_schema()
         if events_v1_rel:
             events_v1_path = run_root / events_v1_rel
             if not events_v1_path.exists():
@@ -833,6 +946,24 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                         seg_prompt_warnings_count += 1
                                     if payload_ok:
                                         seg_prompt_schema_ok += 1
+                                if name == "frame.input":
+                                    frame_input_events_present = 1
+                                    frame_input_lines += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    if _frame_input_schema_ok(payload, frame_input_schema):
+                                        frame_input_schema_ok += 1
+                                    else:
+                                        warnings.append("frame.input payload missing required fields")
+                                if name == "frame.ack":
+                                    frame_ack_events_present = 1
+                                    frame_ack_lines += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    if _frame_ack_schema_ok(payload, frame_ack_schema):
+                                        frame_ack_schema_ok += 1
+                                    else:
+                                        warnings.append("frame.ack payload missing required fields")
                                 if name == "plan.request":
                                     plan_request_events_present = 1
                                     plan_request_lines += 1
@@ -913,6 +1044,44 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                         frame_e2e_parts_missing_count += 1
                                     if parts_sum_gt_total:
                                         frame_e2e_parts_sum_gt_total_count += 1
+                                if name == "frame.user_e2e":
+                                    frame_user_e2e_events_present = 1
+                                    frame_user_e2e_lines += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    frame_run_id = str(payload.get("runId", "")).strip() or str(obj.get("runId", "")).strip()
+                                    frame_seq_raw = payload.get("frameSeq")
+                                    if frame_seq_raw is None:
+                                        frame_seq_raw = obj.get("frameSeq")
+                                    try:
+                                        frame_seq_value = int(frame_seq_raw)
+                                    except Exception:
+                                        frame_seq_value = 0
+                                    if frame_run_id and frame_seq_value > 0:
+                                        frame_key = (frame_run_id, frame_seq_value)
+                                        frame_user_e2e_seen_keys[frame_key] = int(
+                                            frame_user_e2e_seen_keys.get(frame_key, 0)
+                                        ) + 1
+
+                                    t0_raw = payload.get("t0Ms")
+                                    t1_raw = payload.get("t1Ms")
+                                    try:
+                                        t0_ms = int(t0_raw) if t0_raw is not None else None
+                                        t1_ms = int(t1_raw) if t1_raw is not None else None
+                                    except Exception:
+                                        t0_ms = None
+                                        t1_ms = None
+                                    if t0_ms is not None and t1_ms is not None and int(t1_ms) < int(t0_ms):
+                                        frame_user_e2e_negative_count += 1
+
+                                    schema_ok, _total_ms, _parts_missing, _parts_sum_gt_total = _frame_e2e_schema_ok(
+                                        payload,
+                                        frame_e2e_schema,
+                                    )
+                                    if schema_ok:
+                                        frame_user_e2e_schema_ok += 1
+                                    else:
+                                        warnings.append("frame.user_e2e payload missing required fields")
                                 if name == "seg.segment":
                                     seg_events_present = 1
                                     seg_lines += 1
@@ -982,6 +1151,9 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                 seg_context_schema_ok = int(_seg_context_schema_ok(seg_context_payload))
                 frame_e2e_duplicate_count = int(
                     sum(max(0, int(count) - 1) for count in frame_e2e_seen_keys.values())
+                )
+                frame_user_e2e_duplicate_count = int(
+                    sum(max(0, int(count) - 1) for count in frame_user_e2e_seen_keys.values())
                 )
 
         pov_ir_present = 0
@@ -1163,6 +1335,17 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "frameE2ePartsMissingCount": int(frame_e2e_parts_missing_count),
             "frameE2eDuplicateCount": int(frame_e2e_duplicate_count),
             "frameE2ePartsSumGtTotalCount": int(frame_e2e_parts_sum_gt_total_count),
+            "frameInputEventsPresent": int(frame_input_events_present),
+            "frameInputLines": int(frame_input_lines),
+            "frameInputSchemaOk": int(frame_input_lines > 0 and frame_input_schema_ok == frame_input_lines),
+            "frameAckEventsPresent": int(frame_ack_events_present),
+            "frameAckLines": int(frame_ack_lines),
+            "frameAckSchemaOk": int(frame_ack_lines > 0 and frame_ack_schema_ok == frame_ack_lines),
+            "frameUserE2eEventsPresent": int(frame_user_e2e_events_present),
+            "frameUserE2eLines": int(frame_user_e2e_lines),
+            "frameUserE2eSchemaOk": int(frame_user_e2e_lines > 0 and frame_user_e2e_schema_ok == frame_user_e2e_lines),
+            "frameUserE2eNegativeCount": int(frame_user_e2e_negative_count),
+            "frameUserE2eDuplicateCount": int(frame_user_e2e_duplicate_count),
             "hazardUnknownKinds": len(hazard_unknown_kinds),
             "hazardAliasHits": int(hazard_alias_hits),
             "riskEventMissingFrameSeq": int(risk_event_missing_frame_seq),
@@ -1235,6 +1418,17 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"frameE2ePartsMissingCount: {summary['frameE2ePartsMissingCount']}")
             print(f"frameE2eDuplicateCount: {summary['frameE2eDuplicateCount']}")
             print(f"frameE2ePartsSumGtTotalCount: {summary['frameE2ePartsSumGtTotalCount']}")
+            print(f"frameInputEventsPresent: {summary['frameInputEventsPresent']}")
+            print(f"frameInputLines: {summary['frameInputLines']}")
+            print(f"frameInputSchemaOk: {summary['frameInputSchemaOk']}")
+            print(f"frameAckEventsPresent: {summary['frameAckEventsPresent']}")
+            print(f"frameAckLines: {summary['frameAckLines']}")
+            print(f"frameAckSchemaOk: {summary['frameAckSchemaOk']}")
+            print(f"frameUserE2eEventsPresent: {summary['frameUserE2eEventsPresent']}")
+            print(f"frameUserE2eLines: {summary['frameUserE2eLines']}")
+            print(f"frameUserE2eSchemaOk: {summary['frameUserE2eSchemaOk']}")
+            print(f"frameUserE2eNegativeCount: {summary['frameUserE2eNegativeCount']}")
+            print(f"frameUserE2eDuplicateCount: {summary['frameUserE2eDuplicateCount']}")
             print(f"hazardUnknownKinds: {summary['hazardUnknownKinds']}")
             print(f"hazardAliasHits: {summary['hazardAliasHits']}")
             print(f"riskEventMissingFrameSeq: {summary['riskEventMissingFrameSeq']}")

@@ -1,6 +1,6 @@
 {
   "schemaVersion": "byes.contract.lock.v1",
-  "generatedAtMs": 1771153355753,
+  "generatedAtMs": 1771159669586,
   "versions": {
     "byes.action_plan.v1": {
       "version": "byes.action_plan.v1",
@@ -32,11 +32,23 @@
       "sha256": "0c11710bca0f76d765aabe991298dc71c05cdf8a1ab61dbd590e203bec70deb7",
       "updatedAtMs": 1771071358532
     },
+    "frame.ack.v1": {
+      "version": "frame.ack.v1",
+      "path": "Gateway/contracts/frame.ack.v1.json",
+      "sha256": "ee40fb811327d15252e67aa860d6661271d5fbcd1b4c42eb46152da4743a6bd4",
+      "updatedAtMs": 1771158745797
+    },
     "frame.e2e.v1": {
       "version": "frame.e2e.v1",
       "path": "Gateway/contracts/frame.e2e.v1.json",
       "sha256": "7e1d0f8b86db47a65b5e9fc2ada0f448d0f59ce3bbf6c45a64aa12dc7c1a6ddd",
       "updatedAtMs": 1771152741774
+    },
+    "frame.input.v1": {
+      "version": "frame.input.v1",
+      "path": "Gateway/contracts/frame.input.v1.json",
+      "sha256": "dc87dadad1b4596847ccccb6d0bbf841d76894408045e0f987c158fffdc2bfa1",
+      "updatedAtMs": 1771158738422
     },
     "plan.context_alignment.v1": {
       "version": "plan.context_alignment.v1",

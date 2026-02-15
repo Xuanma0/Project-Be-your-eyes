@@ -434,6 +434,32 @@ Important leaderboard fields:
 - `plan_present`, `plan_risk_level`, `plan_actions`, `plan_guardrails`, `plan_score`
 - `plan_fallback_used`, `plan_json_valid`, `plan_prompt_version`
 
+## Frame User E2E (Capture -> Feedback)
+
+v4.59 adds capture/ack latency tracking to make true user-perceived E2E visible:
+- `frame.input` event (`frame.input.v1`): capture timestamp from device + gateway receive timestamp.
+- `frame.ack` event (`frame.ack.v1`): device feedback ACK (`tts|overlay|haptic|any`).
+- `frame.user_e2e` event (`frame.e2e.v1` payload): `totalMs = feedbackTsMs - t0`.
+
+Minimal API flow:
+
+```powershell
+# 1) upload/process frame (capture timestamp can be in meta or form field captureTsMs)
+curl -X POST "http://127.0.0.1:8000/api/frame" `
+  -F "image=@Gateway/tests/fixtures/run_package_with_frame_user_e2e_min/frames/frame_1.png" `
+  -F "meta={\"runId\":\"demo-user-e2e\",\"frameSeq\":1,\"captureTsMs\":1713002000000,\"runPackage\":\"Gateway/tests/fixtures/run_package_with_frame_user_e2e_min\"}"
+
+# 2) ACK when user feedback is rendered/played
+curl -X POST "http://127.0.0.1:8000/api/frame/ack" `
+  -H "Content-Type: application/json" `
+  -d "{\"runId\":\"demo-user-e2e\",\"frameSeq\":1,\"feedbackTsMs\":1713002000120,\"kind\":\"tts\",\"accepted\":true,\"runPackage\":\"Gateway/tests/fixtures/run_package_with_frame_user_e2e_min\"}"
+```
+
+Report and leaderboard fields:
+- `report.json.frameUserE2E.totalMs.{p50,p90,max}`
+- `report.json.frameUserE2E.coverage.ratio` (ACK coverage)
+- `/api/run_packages`: `frame_user_e2e_p90`, `frame_user_e2e_max`, `ack_coverage`
+
 ## Script Index (Most Used)
 
 - `scripts/replay_run_package.py`: replay a run package to produce events/metrics.

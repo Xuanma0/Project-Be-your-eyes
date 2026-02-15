@@ -2657,6 +2657,93 @@ def extract_frame_e2e_summary_from_events_v1(
     }
 
 
+def extract_frame_user_e2e_summary_from_events_v1(
+    events: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    input_frames: set[tuple[str, int]] = set()
+    ack_frames: set[tuple[str, int]] = set()
+    deduped_by_key: dict[tuple[str, int], tuple[int, int, dict[str, Any], dict[str, Any]]] = {}
+    raw_event_count = 0
+
+    for index, row in enumerate(events):
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        name = str(event.get("name", "")).strip().lower()
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        seq = _to_nonnegative_int(payload.get("frameSeq"))
+        if seq is None:
+            seq = _to_nonnegative_int(event.get("frameSeq"))
+        if seq is None or seq <= 0:
+            continue
+        key = (run_id, int(seq))
+        if name == "frame.input":
+            input_frames.add(key)
+            continue
+        if name == "frame.ack":
+            ack_frames.add(key)
+            continue
+        if name != "frame.user_e2e":
+            continue
+        raw_event_count += 1
+        ts_ms = _to_nonnegative_int(event.get("tsMs"))
+        if ts_ms is None:
+            ts_ms = _to_nonnegative_int(payload.get("t1Ms"))
+        if ts_ms is None:
+            ts_ms = index
+        previous = deduped_by_key.get(key)
+        if previous is None or (ts_ms, index) >= (previous[0], previous[1]):
+            deduped_by_key[key] = (int(ts_ms), int(index), event, payload)
+
+    deduped_events = list(deduped_by_key.values())
+    event_count = len(deduped_events)
+    duplicates_dropped = int(max(0, raw_event_count - event_count))
+    total_values: list[int] = []
+    for _ts_ms, _idx, _event, payload in deduped_events:
+        total_ms = _to_nonnegative_int(payload.get("totalMs"))
+        if total_ms is not None:
+            total_values.append(int(total_ms))
+
+    frames_with_input = len(input_frames)
+    frames_with_ack = len(ack_frames)
+    coverage_ratio = None
+    if frames_with_input > 0:
+        coverage_ratio = round(_safe_ratio(frames_with_ack, frames_with_input), 6)
+
+    if event_count <= 0:
+        return {
+            "present": False,
+            "events": 0,
+            "duplicatesDropped": 0,
+            "coverage": {
+                "framesWithInputDeclared": int(frames_with_input),
+                "framesWithAck": int(frames_with_ack),
+                "ratio": coverage_ratio,
+            },
+            "totalMs": summarize_latency([]),
+        }
+
+    return {
+        "present": True,
+        "events": int(event_count),
+        "duplicatesDropped": int(duplicates_dropped),
+        "coverage": {
+            "framesWithInputDeclared": int(frames_with_input),
+            "framesWithAck": int(frames_with_ack),
+            "ratio": coverage_ratio,
+        },
+        "totalMs": summarize_latency(total_values),
+    }
+
+
 def extract_risk_latency_metrics_from_events_v1(
     events: Iterable[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, dict[str, int]] | None]:

@@ -95,6 +95,14 @@ class RunSummary:
     frame_e2e_count: int = 0
     frame_e2e_total_ms_p90: float = 0.0
     frame_e2e_parts_missing_count: int = 0
+    frame_input_events_present: bool = False
+    frame_input_schema_ok: bool = False
+    frame_ack_events_present: bool = False
+    frame_ack_schema_ok: bool = False
+    frame_user_e2e_events_present: bool = False
+    frame_user_e2e_schema_ok: bool = False
+    frame_user_e2e_negative_count: int = 0
+    frame_user_e2e_duplicate_count: int = 0
     score_delta: float | None = None
     baseline_score: float | None = None
     critical_fn_gate_required: bool = False
@@ -210,6 +218,14 @@ class RunSummary:
                 "frameE2eCount": self.frame_e2e_count,
                 "frameE2eTotalMsP90": self.frame_e2e_total_ms_p90,
                 "frameE2ePartsMissingCount": self.frame_e2e_parts_missing_count,
+                "frameInputEventsPresent": self.frame_input_events_present,
+                "frameInputSchemaOk": self.frame_input_schema_ok,
+                "frameAckEventsPresent": self.frame_ack_events_present,
+                "frameAckSchemaOk": self.frame_ack_schema_ok,
+                "frameUserE2eEventsPresent": self.frame_user_e2e_events_present,
+                "frameUserE2eSchemaOk": self.frame_user_e2e_schema_ok,
+                "frameUserE2eNegativeCount": self.frame_user_e2e_negative_count,
+                "frameUserE2eDuplicateCount": self.frame_user_e2e_duplicate_count,
             },
             "baselineScore": self.baseline_score,
             "scoreDelta": self.score_delta,
@@ -656,6 +672,12 @@ def run_suite(
     run_require_plan_context_pack_schema_ok: dict[str, bool] = {}
     run_require_frame_e2e_events_present: dict[str, bool] = {}
     run_require_frame_e2e_schema_ok: dict[str, bool] = {}
+    run_require_frame_input_events_present: dict[str, bool] = {}
+    run_require_frame_input_schema_ok: dict[str, bool] = {}
+    run_require_frame_ack_events_present: dict[str, bool] = {}
+    run_require_frame_ack_schema_ok: dict[str, bool] = {}
+    run_require_frame_user_e2e_events_present: dict[str, bool] = {}
+    run_require_frame_user_e2e_schema_ok: dict[str, bool] = {}
     failures: list[str] = []
     contract_lock_ok: bool | None = None
     contract_lock_detail = ""
@@ -699,6 +721,18 @@ def run_suite(
         )
         run_require_frame_e2e_events_present[run_id] = _to_bool01(run_cfg.get("requireFrameE2eEventsPresent"), False)
         run_require_frame_e2e_schema_ok[run_id] = _to_bool01(run_cfg.get("requireFrameE2eSchemaOk"), False)
+        run_require_frame_input_events_present[run_id] = _to_bool01(run_cfg.get("requireFrameInputEventsPresent"), False)
+        run_require_frame_input_schema_ok[run_id] = _to_bool01(run_cfg.get("requireFrameInputSchemaOk"), False)
+        run_require_frame_ack_events_present[run_id] = _to_bool01(run_cfg.get("requireFrameAckEventsPresent"), False)
+        run_require_frame_ack_schema_ok[run_id] = _to_bool01(run_cfg.get("requireFrameAckSchemaOk"), False)
+        run_require_frame_user_e2e_events_present[run_id] = _to_bool01(
+            run_cfg.get("requireFrameUserE2eEventsPresent"),
+            False,
+        )
+        run_require_frame_user_e2e_schema_ok[run_id] = _to_bool01(
+            run_cfg.get("requireFrameUserE2eSchemaOk"),
+            False,
+        )
         run_path = _resolve_input_path(run_path_text, suite_dir)
 
         ws_jsonl: Path | None = None
@@ -772,6 +806,18 @@ def run_suite(
                     run_summary.frame_e2e_total_ms_p90 = float(lint_summary.get("frameE2eTotalMsP90", 0.0) or 0.0)
                     run_summary.frame_e2e_parts_missing_count = int(
                         lint_summary.get("frameE2ePartsMissingCount", 0) or 0
+                    )
+                    run_summary.frame_input_events_present = bool(lint_summary.get("frameInputEventsPresent", 0))
+                    run_summary.frame_input_schema_ok = bool(lint_summary.get("frameInputSchemaOk", 0))
+                    run_summary.frame_ack_events_present = bool(lint_summary.get("frameAckEventsPresent", 0))
+                    run_summary.frame_ack_schema_ok = bool(lint_summary.get("frameAckSchemaOk", 0))
+                    run_summary.frame_user_e2e_events_present = bool(lint_summary.get("frameUserE2eEventsPresent", 0))
+                    run_summary.frame_user_e2e_schema_ok = bool(lint_summary.get("frameUserE2eSchemaOk", 0))
+                    run_summary.frame_user_e2e_negative_count = int(
+                        lint_summary.get("frameUserE2eNegativeCount", 0) or 0
+                    )
+                    run_summary.frame_user_e2e_duplicate_count = int(
+                        lint_summary.get("frameUserE2eDuplicateCount", 0) or 0
                     )
             except Exception:
                 # Lint stats are best-effort; report generation should remain authoritative.
@@ -855,6 +901,18 @@ def run_suite(
             failures.append(f"{run.run_id}: frame.e2e events missing")
         if run_require_frame_e2e_schema_ok.get(run.run_id, False) and not bool(run.frame_e2e_schema_ok):
             failures.append(f"{run.run_id}: frame.e2e payload schema check failed")
+        if run_require_frame_input_events_present.get(run.run_id, False) and not bool(run.frame_input_events_present):
+            failures.append(f"{run.run_id}: frame.input events missing")
+        if run_require_frame_input_schema_ok.get(run.run_id, False) and not bool(run.frame_input_schema_ok):
+            failures.append(f"{run.run_id}: frame.input payload schema check failed")
+        if run_require_frame_ack_events_present.get(run.run_id, False) and not bool(run.frame_ack_events_present):
+            failures.append(f"{run.run_id}: frame.ack events missing")
+        if run_require_frame_ack_schema_ok.get(run.run_id, False) and not bool(run.frame_ack_schema_ok):
+            failures.append(f"{run.run_id}: frame.ack payload schema check failed")
+        if run_require_frame_user_e2e_events_present.get(run.run_id, False) and not bool(run.frame_user_e2e_events_present):
+            failures.append(f"{run.run_id}: frame.user_e2e events missing")
+        if run_require_frame_user_e2e_schema_ok.get(run.run_id, False) and not bool(run.frame_user_e2e_schema_ok):
+            failures.append(f"{run.run_id}: frame.user_e2e payload schema check failed")
         if fail_on_drop and run.baseline_score is not None and run.quality_score is not None:
             delta = run.quality_score - run.baseline_score
             if delta < -2.0:
@@ -944,6 +1002,10 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "planCtxTruncRate={plan_ctx_trunc_rate} planCtxCharsP90={plan_ctx_chars_p90} "
                 "frameE2eEventsPresent={frame_e2e_events_present} frameE2eSchemaOk={frame_e2e_schema_ok} "
                 "frameE2eCount={frame_e2e_count} frameE2eTotalMsP90={frame_e2e_total_ms_p90} "
+                "frameInputEventsPresent={frame_input_events_present} frameInputSchemaOk={frame_input_schema_ok} "
+                "frameAckEventsPresent={frame_ack_events_present} frameAckSchemaOk={frame_ack_schema_ok} "
+                "frameUserE2eEventsPresent={frame_user_e2e_events_present} frameUserE2eSchemaOk={frame_user_e2e_schema_ok} "
+                "frameUserE2eNegativeCount={frame_user_e2e_negative_count} frameUserE2eDuplicateCount={frame_user_e2e_duplicate_count} "
                 "povPresent={pov_present} povDecisions={pov_decisions} povTokenApprox={pov_token_approx} source={schema_src} "
                 "ocr={ocr_backend}/{ocr_model} risk={risk_backend}/{risk_model}".format(
                     run_id=run_id,
@@ -987,6 +1049,14 @@ def _print_summary(result: dict[str, Any]) -> None:
                     frame_e2e_schema_ok=row.get("segLint", {}).get("frameE2eSchemaOk", False),
                     frame_e2e_count=row.get("segLint", {}).get("frameE2eCount", 0),
                     frame_e2e_total_ms_p90=row.get("segLint", {}).get("frameE2eTotalMsP90", 0.0),
+                    frame_input_events_present=row.get("segLint", {}).get("frameInputEventsPresent", False),
+                    frame_input_schema_ok=row.get("segLint", {}).get("frameInputSchemaOk", False),
+                    frame_ack_events_present=row.get("segLint", {}).get("frameAckEventsPresent", False),
+                    frame_ack_schema_ok=row.get("segLint", {}).get("frameAckSchemaOk", False),
+                    frame_user_e2e_events_present=row.get("segLint", {}).get("frameUserE2eEventsPresent", False),
+                    frame_user_e2e_schema_ok=row.get("segLint", {}).get("frameUserE2eSchemaOk", False),
+                    frame_user_e2e_negative_count=row.get("segLint", {}).get("frameUserE2eNegativeCount", 0),
+                    frame_user_e2e_duplicate_count=row.get("segLint", {}).get("frameUserE2eDuplicateCount", 0),
                     pov_present=row.get("pov", {}).get("present", False),
                     pov_decisions=row.get("pov", {}).get("decisions", 0),
                     pov_token_approx=row.get("pov", {}).get("tokenApprox", 0),

@@ -366,6 +366,25 @@ class PlanExecuteRequest(BaseModel):
     frameSeq: int | None = None
 
 
+class FrameAckRequest(BaseModel):
+    runId: str
+    frameSeq: int
+    feedbackTsMs: int
+    kind: Literal["tts", "overlay", "haptic", "any"] = "any"
+    accepted: bool = True
+    runPackage: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_ack(self) -> "FrameAckRequest":
+        if not str(self.runId or "").strip():
+            raise ValueError("runId is required")
+        if int(self.frameSeq) <= 0:
+            raise ValueError("frameSeq must be >= 1")
+        if int(self.feedbackTsMs) < 0:
+            raise ValueError("feedbackTsMs must be >= 0")
+        return self
+
+
 class ConfirmResponseRequest(BaseModel):
     runId: str
     frameSeq: int
@@ -661,6 +680,22 @@ class GatewayApp:
         return None
 
     @staticmethod
+    def _resolve_event_frame_seq(seq: int, meta: dict[str, Any]) -> int:
+        event_frame_seq = int(max(1, int(seq)))
+        for key in ("clientSeq", "frameSeq", "frame_seq", "seq"):
+            raw_value = meta.get(key)
+            if raw_value is None:
+                continue
+            try:
+                parsed = int(raw_value)
+            except Exception:
+                continue
+            if parsed > 0:
+                event_frame_seq = int(parsed)
+                break
+        return int(max(1, event_frame_seq))
+
+    @staticmethod
     def _normalize_seg_prompt(prompt: dict[str, Any] | None) -> dict[str, Any] | None:
         return normalize_prompt(prompt)
 
@@ -752,18 +787,7 @@ class GatewayApp:
     async def _run_inference_for_frame(self, frame_bytes: bytes, seq: int, ts_ms: int, meta: dict[str, Any]) -> None:
         run_id = self._extract_run_id(meta)
         component = str(self.config.inference_event_component or "gateway")
-        event_frame_seq = seq
-        for key in ("clientSeq", "frameSeq", "frame_seq", "seq"):
-            raw_value = meta.get(key)
-            if raw_value is None:
-                continue
-            try:
-                parsed = int(raw_value)
-            except Exception:
-                continue
-            if parsed > 0:
-                event_frame_seq = parsed
-                break
+        event_frame_seq = self._resolve_event_frame_seq(seq, meta)
         if self.config.inference_enable_ocr:
             ocr_started_ms = _now_ms()
             try:
@@ -938,6 +962,10 @@ class GatewayApp:
         self.fusion.reset_runtime()
         self.scheduler.reset_runtime()
         self._inference_events.clear()
+        with _FRAME_E2E_STATE_LOCK:
+            _FRAME_E2E_STATE.clear()
+        with _FRAME_USER_E2E_STATE_LOCK:
+            _FRAME_USER_E2E_STATE.clear()
         self._last_safe_mode_pulse_ms = -1
         self._last_meta_warn_ms = {"meta_missing": -1, "meta_parse_error": -1}
         self._forced_crosscheck_kind = "none"
@@ -1451,10 +1479,14 @@ async def frame(
     request: Request,
     image: UploadFile | None = File(default=None),
     meta: str | None = Form(None),
+    captureTsMs: int | None = Form(default=None),
+    deviceId: str | None = Form(default=None),
+    deviceTimeBase: str | None = Form(default=None),
 ) -> dict[str, Any]:
     content_type = str(request.headers.get("content-type", "")).lower()
     frame_bytes: bytes | None = None
     raw_meta: str | None = None
+    recv_ts_ms = _now_ms()
 
     if "multipart/form-data" in content_type:
         if image is None:
@@ -1484,7 +1516,127 @@ async def frame(
         await gateway.emit_meta_health_warn("meta_missing", "frame_meta_not_provided")
 
     seq = await gateway.submit_frame(frame_bytes=frame_bytes, meta=meta_json, request=request, frame_meta=frame_meta)
+    run_id = gateway._extract_run_id(meta_json) or "unknown-run"  # noqa: SLF001
+    event_frame_seq = gateway._resolve_event_frame_seq(seq, meta_json)  # noqa: SLF001
+    capture_ts_ms = _to_nonnegative_int_or_none(meta_json.get("captureTsMs"))
+    if capture_ts_ms is None:
+        capture_ts_ms = _to_nonnegative_int_or_none(captureTsMs)
+    device_id = str(meta_json.get("deviceId", "")).strip() or (str(deviceId or "").strip() or None)
+    raw_time_base = str(meta_json.get("deviceTimeBase", "")).strip() or (str(deviceTimeBase or "").strip() or None)
+    frame_input_payload = _build_frame_input_payload(
+        run_id=run_id,
+        frame_seq=event_frame_seq,
+        capture_ts_ms=capture_ts_ms,
+        recv_ts_ms=recv_ts_ms,
+        device_time_base=raw_time_base,
+        device_id=device_id,
+    )
+    frame_input_event = _build_byes_event(
+        run_id=run_id,
+        frame_seq=event_frame_seq,
+        category="frame",
+        name="frame.input",
+        payload=frame_input_payload,
+    )
+    await gateway._emit_inference_event(frame_input_event)  # noqa: SLF001
+
+    t0_for_state = _to_nonnegative_int_or_none(capture_ts_ms)
+    if t0_for_state is None:
+        t0_for_state = int(max(0, recv_ts_ms))
+    _frame_user_e2e_mark_input(run_id, event_frame_seq, t0_for_state)
+
+    run_package_raw = str(meta_json.get("runPackage", "")).strip()
+    if run_package_raw:
+        cleanup_dir: Path | None = None
+        try:
+            run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
+                run_package_raw=run_package_raw,
+                run_id=run_id,
+            )
+            if can_write_events:
+                _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+                events_path = _resolve_events_v1_path(run_package_dir, manifest)
+                _append_events_v1_rows(events_path, [frame_input_event])
+                _frame_e2e_begin_state(
+                    events_path=events_path,
+                    run_id=run_id,
+                    frame_seq=event_frame_seq,
+                    t0_hint_ms=t0_for_state,
+                )
+        except Exception:
+            pass
+        finally:
+            if cleanup_dir is not None and cleanup_dir.exists():
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
     return {"ok": True, "bytes": len(frame_bytes), "seq": seq}
+
+
+@app.post("/api/frame/ack")
+async def frame_ack(request: FrameAckRequest) -> dict[str, Any]:
+    cleanup_dir: Path | None = None
+    run_id = str(request.runId or "").strip() or "unknown-run"
+    frame_seq = int(max(1, int(request.frameSeq)))
+    feedback_ts_ms = int(max(0, int(request.feedbackTsMs)))
+    ack_payload = _build_frame_ack_payload(
+        run_id=run_id,
+        frame_seq=frame_seq,
+        feedback_ts_ms=feedback_ts_ms,
+        kind=request.kind,
+        accepted=bool(request.accepted),
+    )
+    ack_event = _build_byes_event(
+        run_id=run_id,
+        frame_seq=frame_seq,
+        category="frame",
+        name="frame.ack",
+        payload=ack_payload,
+    )
+    await gateway._emit_inference_event(ack_event)  # noqa: SLF001
+    _frame_user_e2e_mark_ack(run_id, frame_seq, feedback_ts_ms, bool(request.accepted))
+
+    user_e2e_ms: int | None = None
+    snapshot = _frame_user_e2e_snapshot(run_id, frame_seq)
+    if isinstance(snapshot, dict):
+        t0_ms = _to_nonnegative_int_or_none(snapshot.get("t0Ms"))
+        if t0_ms is not None:
+            user_e2e_ms = int(feedback_ts_ms - t0_ms)
+
+    try:
+        run_package_raw = str(request.runPackage or "").strip() or None
+        run_package_dir: Path | None = None
+        can_write_events = False
+        try:
+            run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
+                run_package_raw=run_package_raw,
+                run_id=run_id,
+            )
+        except HTTPException as ex:
+            if int(ex.status_code) != 404:
+                raise
+            run_package_dir = None
+            can_write_events = False
+        if run_package_dir is not None and can_write_events:
+            _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+            events_path = _resolve_events_v1_path(run_package_dir, manifest)
+            _append_events_v1_rows(events_path, [ack_event])
+            _try_append_frame_user_e2e_event(
+                events_path=events_path,
+                run_id=run_id,
+                frame_seq=frame_seq,
+            )
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+    return {
+        "ok": True,
+        "runId": run_id,
+        "frameSeq": frame_seq,
+        "feedbackTsMs": feedback_ts_ms,
+        "kind": str(request.kind),
+        "accepted": bool(request.accepted),
+        "userE2eMs": user_e2e_ms,
+    }
 
 
 @app.post("/api/fault/set")
@@ -2473,6 +2625,8 @@ async def run_packages_list(
     max_seg_latency_p90: int | None = None,
     max_frame_e2e_p90: int | None = None,
     max_frame_e2e_max: int | None = None,
+    max_frame_user_e2e_p90: int | None = None,
+    max_frame_user_e2e_max: int | None = None,
     max_seg_ctx_chars: int | None = None,
     max_seg_ctx_trunc_dropped: int | None = None,
     max_plan_req_seg_chars_p90: int | None = None,
@@ -2521,6 +2675,8 @@ async def run_packages_list(
         max_seg_latency_p90=max_seg_latency_p90,
         max_frame_e2e_p90=max_frame_e2e_p90,
         max_frame_e2e_max=max_frame_e2e_max,
+        max_frame_user_e2e_p90=max_frame_user_e2e_p90,
+        max_frame_user_e2e_max=max_frame_user_e2e_max,
         max_seg_ctx_chars=max_seg_ctx_chars,
         max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
         max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
@@ -2570,6 +2726,8 @@ async def run_packages_list(
             "max_seg_latency_p90": max_seg_latency_p90,
             "max_frame_e2e_p90": max_frame_e2e_p90,
             "max_frame_e2e_max": max_frame_e2e_max,
+            "max_frame_user_e2e_p90": max_frame_user_e2e_p90,
+            "max_frame_user_e2e_max": max_frame_user_e2e_max,
             "max_seg_ctx_chars": max_seg_ctx_chars,
             "max_seg_ctx_trunc_dropped": max_seg_ctx_trunc_dropped,
             "max_plan_req_seg_chars_p90": max_plan_req_seg_chars_p90,
@@ -2623,6 +2781,8 @@ async def run_packages_export_json(
     max_seg_latency_p90: int | None = None,
     max_frame_e2e_p90: int | None = None,
     max_frame_e2e_max: int | None = None,
+    max_frame_user_e2e_p90: int | None = None,
+    max_frame_user_e2e_max: int | None = None,
     max_seg_ctx_chars: int | None = None,
     max_seg_ctx_trunc_dropped: int | None = None,
     max_plan_req_seg_chars_p90: int | None = None,
@@ -2671,6 +2831,8 @@ async def run_packages_export_json(
         max_seg_latency_p90=max_seg_latency_p90,
         max_frame_e2e_p90=max_frame_e2e_p90,
         max_frame_e2e_max=max_frame_e2e_max,
+        max_frame_user_e2e_p90=max_frame_user_e2e_p90,
+        max_frame_user_e2e_max=max_frame_user_e2e_max,
         max_seg_ctx_chars=max_seg_ctx_chars,
         max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
         max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
@@ -2726,6 +2888,8 @@ async def run_packages_export_csv(
     max_seg_latency_p90: int | None = None,
     max_frame_e2e_p90: int | None = None,
     max_frame_e2e_max: int | None = None,
+    max_frame_user_e2e_p90: int | None = None,
+    max_frame_user_e2e_max: int | None = None,
     max_seg_ctx_chars: int | None = None,
     max_seg_ctx_trunc_dropped: int | None = None,
     max_plan_req_seg_chars_p90: int | None = None,
@@ -2774,6 +2938,8 @@ async def run_packages_export_csv(
         max_seg_latency_p90=max_seg_latency_p90,
         max_frame_e2e_p90=max_frame_e2e_p90,
         max_frame_e2e_max=max_frame_e2e_max,
+        max_frame_user_e2e_p90=max_frame_user_e2e_p90,
+        max_frame_user_e2e_max=max_frame_user_e2e_max,
         max_seg_ctx_chars=max_seg_ctx_chars,
         max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
         max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
@@ -2836,6 +3002,9 @@ async def run_packages_export_csv(
         "frame_risk_p90",
         "frame_plan_p90",
         "frame_execute_p90",
+        "frame_user_e2e_p90",
+        "frame_user_e2e_max",
+        "ack_coverage",
         "seg_mask_f1_50",
         "seg_mask_coverage",
         "seg_mask_mean_iou",
@@ -3070,6 +3239,8 @@ def _resolve_events_v1_path(run_package_dir: Path, manifest: dict[str, Any]) -> 
 
 _FRAME_E2E_STATE_LOCK = threading.Lock()
 _FRAME_E2E_STATE: dict[tuple[str, str, int], dict[str, Any]] = {}
+_FRAME_USER_E2E_STATE_LOCK = threading.Lock()
+_FRAME_USER_E2E_STATE: dict[tuple[str, int], dict[str, Any]] = {}
 
 
 def _frame_e2e_state_key(events_path: Path, run_id: str, frame_seq: int) -> tuple[str, str, int]:
@@ -3077,6 +3248,74 @@ def _frame_e2e_state_key(events_path: Path, run_id: str, frame_seq: int) -> tupl
     safe_run_id = str(run_id or "").strip()
     safe_frame_seq = int(max(1, int(frame_seq)))
     return (resolved, safe_run_id, safe_frame_seq)
+
+
+def _frame_user_e2e_state_key(run_id: str, frame_seq: int) -> tuple[str, int]:
+    return (str(run_id or "").strip() or "unknown-run", int(max(1, int(frame_seq))))
+
+
+def _frame_user_e2e_mark_input(run_id: str, frame_seq: int, t0_ms: int | None) -> None:
+    key = _frame_user_e2e_state_key(run_id, frame_seq)
+    t0_value = _to_nonnegative_int_or_none(t0_ms)
+    with _FRAME_USER_E2E_STATE_LOCK:
+        state = _FRAME_USER_E2E_STATE.get(key)
+        if not isinstance(state, dict):
+            state = {"t0Ms": t0_value, "feedbackTsMs": None, "accepted": True, "emitted": False}
+            _FRAME_USER_E2E_STATE[key] = state
+            return
+        current_t0 = _to_nonnegative_int_or_none(state.get("t0Ms"))
+        if t0_value is not None and (current_t0 is None or t0_value < current_t0):
+            state["t0Ms"] = int(t0_value)
+
+
+def _frame_user_e2e_mark_ack(run_id: str, frame_seq: int, feedback_ts_ms: int, accepted: bool) -> None:
+    key = _frame_user_e2e_state_key(run_id, frame_seq)
+    feedback_value = _to_nonnegative_int_or_none(feedback_ts_ms)
+    with _FRAME_USER_E2E_STATE_LOCK:
+        state = _FRAME_USER_E2E_STATE.get(key)
+        if not isinstance(state, dict):
+            state = {"t0Ms": None, "feedbackTsMs": feedback_value, "accepted": bool(accepted), "emitted": False}
+            _FRAME_USER_E2E_STATE[key] = state
+            return
+        if feedback_value is not None:
+            state["feedbackTsMs"] = int(feedback_value)
+        state["accepted"] = bool(accepted)
+
+
+def _frame_user_e2e_snapshot(run_id: str, frame_seq: int) -> dict[str, Any] | None:
+    key = _frame_user_e2e_state_key(run_id, frame_seq)
+    with _FRAME_USER_E2E_STATE_LOCK:
+        state = _FRAME_USER_E2E_STATE.get(key)
+        if not isinstance(state, dict):
+            return None
+        return {
+            "t0Ms": _to_nonnegative_int_or_none(state.get("t0Ms")),
+            "feedbackTsMs": _to_nonnegative_int_or_none(state.get("feedbackTsMs")),
+            "accepted": bool(state.get("accepted", True)),
+            "emitted": bool(state.get("emitted", False)),
+        }
+
+
+def _frame_user_e2e_mark_emitted(run_id: str, frame_seq: int) -> None:
+    key = _frame_user_e2e_state_key(run_id, frame_seq)
+    with _FRAME_USER_E2E_STATE_LOCK:
+        state = _FRAME_USER_E2E_STATE.get(key)
+        if isinstance(state, dict):
+            state["emitted"] = True
+
+
+def _frame_user_e2e_exists_in_rows(rows: list[dict[str, Any]], *, run_id: str, frame_seq: int) -> bool:
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("name", "")).strip().lower() != "frame.user_e2e":
+            continue
+        if str(row.get("runId", "")).strip() != str(run_id or "").strip():
+            continue
+        if _to_nonnegative_int(row.get("frameSeq"), 0) != int(max(1, int(frame_seq))):
+            continue
+        return True
+    return False
 
 
 def _frame_e2e_begin_state(
@@ -3324,6 +3563,128 @@ def _latest_event_latency_ms(
             latest_ts = ts_ms
             value = latency
     return value
+
+
+def _build_frame_input_payload(
+    *,
+    run_id: str,
+    frame_seq: int,
+    capture_ts_ms: int | None,
+    recv_ts_ms: int,
+    device_time_base: str | None,
+    device_id: str | None,
+) -> dict[str, Any]:
+    normalized_time_base = str(device_time_base or "").strip().lower()
+    if normalized_time_base not in {"unix_ms", "monotonic_ms"}:
+        normalized_time_base = None
+    normalized_device_id = str(device_id or "").strip() or None
+    return {
+        "schemaVersion": "frame.input.v1",
+        "runId": str(run_id or "").strip() or "unknown-run",
+        "frameSeq": int(max(1, int(frame_seq))),
+        "captureTsMs": _to_nonnegative_int_or_none(capture_ts_ms),
+        "recvTsMs": int(max(0, int(recv_ts_ms))),
+        "meta": {
+            "deviceTimeBase": normalized_time_base,
+            "deviceId": normalized_device_id,
+        },
+    }
+
+
+def _build_frame_ack_payload(
+    *,
+    run_id: str,
+    frame_seq: int,
+    feedback_ts_ms: int,
+    kind: str,
+    accepted: bool,
+) -> dict[str, Any]:
+    normalized_kind = str(kind or "any").strip().lower()
+    if normalized_kind not in {"tts", "overlay", "haptic", "any"}:
+        normalized_kind = "any"
+    return {
+        "schemaVersion": "frame.ack.v1",
+        "runId": str(run_id or "").strip() or "unknown-run",
+        "frameSeq": int(max(1, int(frame_seq))),
+        "feedbackTsMs": int(max(0, int(feedback_ts_ms))),
+        "kind": normalized_kind,
+        "accepted": bool(accepted),
+    }
+
+
+def _build_frame_user_e2e_event(
+    *,
+    run_id: str,
+    frame_seq: int,
+    t0_ms: int,
+    feedback_ts_ms: int,
+) -> dict[str, Any]:
+    safe_t0 = int(max(0, int(t0_ms)))
+    safe_feedback = int(max(0, int(feedback_ts_ms)))
+    safe_t1 = int(max(safe_t0, safe_feedback))
+    total_ms = int(max(0, safe_t1 - safe_t0))
+    payload = {
+        "schemaVersion": "frame.e2e.v1",
+        "runId": str(run_id or "").strip() or "unknown-run",
+        "frameSeq": int(max(1, int(frame_seq))),
+        "t0Ms": safe_t0,
+        "t1Ms": safe_t1,
+        "totalMs": total_ms,
+        "partsMs": {
+            "segMs": None,
+            "riskMs": None,
+            "planMs": None,
+            "executeMs": None,
+            "confirmMs": None,
+        },
+        "present": {
+            "seg": False,
+            "risk": False,
+            "plan": False,
+            "execute": False,
+            "confirm": False,
+        },
+    }
+    return _build_byes_event(
+        run_id=str(run_id or "").strip() or "unknown-run",
+        frame_seq=int(max(1, int(frame_seq))),
+        category="frame",
+        name="frame.user_e2e",
+        latency_ms=total_ms,
+        payload=payload,
+    )
+
+
+def _try_append_frame_user_e2e_event(
+    *,
+    events_path: Path,
+    run_id: str,
+    frame_seq: int,
+) -> bool:
+    safe_frame_seq = int(max(1, int(frame_seq)))
+    snapshot = _frame_user_e2e_snapshot(run_id, safe_frame_seq)
+    if not isinstance(snapshot, dict):
+        return False
+    if bool(snapshot.get("emitted")):
+        return True
+    t0_ms = _to_nonnegative_int_or_none(snapshot.get("t0Ms"))
+    feedback_ts_ms = _to_nonnegative_int_or_none(snapshot.get("feedbackTsMs"))
+    if t0_ms is None or feedback_ts_ms is None:
+        return False
+    existing = _read_events_v1_rows(events_path)
+    if _frame_user_e2e_exists_in_rows(existing, run_id=run_id, frame_seq=safe_frame_seq):
+        _frame_user_e2e_mark_emitted(run_id, safe_frame_seq)
+        return True
+    row = _build_frame_user_e2e_event(
+        run_id=run_id,
+        frame_seq=safe_frame_seq,
+        t0_ms=t0_ms,
+        feedback_ts_ms=feedback_ts_ms,
+    )
+    ok = _append_events_v1_rows(events_path, [row])
+    if ok:
+        _frame_user_e2e_mark_emitted(run_id, safe_frame_seq)
+    return ok
 
 
 def _build_frame_e2e_payload(
@@ -4070,6 +4431,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     plan_context_pack_payload = plan_context_pack_payload if isinstance(plan_context_pack_payload, dict) else {}
     frame_e2e_payload = summary.get("frameE2E", {})
     frame_e2e_payload = frame_e2e_payload if isinstance(frame_e2e_payload, dict) else {}
+    frame_user_e2e_payload = summary.get("frameUserE2E", {})
+    frame_user_e2e_payload = frame_user_e2e_payload if isinstance(frame_user_e2e_payload, dict) else {}
     plan_quality_payload = summary.get("planQuality", {})
     plan_quality_payload = plan_quality_payload if isinstance(plan_quality_payload, dict) else {}
     plan_eval_payload = summary.get("planEval", {})
@@ -4142,6 +4505,9 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     frame_risk_p90: int | None = None
     frame_plan_p90: int | None = None
     frame_execute_p90: int | None = None
+    frame_user_e2e_p90: int | None = None
+    frame_user_e2e_max: int | None = None
+    ack_coverage: float | None = None
     plan_actions_payload = plan_payload.get("actions")
     if isinstance(plan_actions_payload, dict):
         raw_actions = _read_float(plan_actions_payload, "count")
@@ -4296,6 +4662,20 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         frame_execute_p90_raw = _read_float(execute_part, "p90")
         if frame_execute_p90_raw is not None:
             frame_execute_p90 = int(frame_execute_p90_raw)
+    if isinstance(frame_user_e2e_payload, dict) and bool(frame_user_e2e_payload.get("present")):
+        user_total = frame_user_e2e_payload.get("totalMs")
+        user_total = user_total if isinstance(user_total, dict) else {}
+        user_cov = frame_user_e2e_payload.get("coverage")
+        user_cov = user_cov if isinstance(user_cov, dict) else {}
+        user_p90_raw = _read_float(user_total, "p90")
+        if user_p90_raw is not None:
+            frame_user_e2e_p90 = int(user_p90_raw)
+        user_max_raw = _read_float(user_total, "max")
+        if user_max_raw is not None:
+            frame_user_e2e_max = int(user_max_raw)
+        ack_cov_raw = _read_float(user_cov, "ratio")
+        if ack_cov_raw is not None:
+            ack_coverage = float(ack_cov_raw)
     if isinstance(depth_risk, dict):
         critical = depth_risk.get("critical", {})
         delay = depth_risk.get("detectionDelayFrames", {})
@@ -4469,6 +4849,9 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "frame_risk_p90": frame_risk_p90,
         "frame_plan_p90": frame_plan_p90,
         "frame_execute_p90": frame_execute_p90,
+        "frame_user_e2e_p90": frame_user_e2e_p90,
+        "frame_user_e2e_max": frame_user_e2e_max,
+        "ack_coverage": ack_coverage,
         "summary": summary,
     }
     row.update(urls)
@@ -4495,6 +4878,8 @@ def _matches_run_filters(
     max_seg_latency_p90: int | None,
     max_frame_e2e_p90: int | None,
     max_frame_e2e_max: int | None,
+    max_frame_user_e2e_p90: int | None,
+    max_frame_user_e2e_max: int | None,
     max_seg_ctx_chars: int | None,
     max_seg_ctx_trunc_dropped: int | None,
     max_plan_req_seg_chars_p90: int | None,
@@ -4606,6 +4991,18 @@ def _matches_run_filters(
         if value is None:
             return False
         if int(value) > int(max_frame_e2e_max):
+            return False
+    if max_frame_user_e2e_p90 is not None:
+        value = row.get("frame_user_e2e_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_frame_user_e2e_p90):
+            return False
+    if max_frame_user_e2e_max is not None:
+        value = row.get("frame_user_e2e_max")
+        if value is None:
+            return False
+        if int(value) > int(max_frame_user_e2e_max):
             return False
     if max_seg_ctx_chars is not None:
         value = row.get("seg_ctx_chars")
@@ -4782,6 +5179,9 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "frame_risk_p90",
         "frame_plan_p90",
         "frame_execute_p90",
+        "frame_user_e2e_p90",
+        "frame_user_e2e_max",
+        "ack_coverage",
         "seg_mask_f1_50",
         "seg_mask_coverage",
         "seg_mask_mean_iou",
@@ -4856,6 +5256,8 @@ async def _query_run_package_rows(
     max_seg_latency_p90: int | None,
     max_frame_e2e_p90: int | None,
     max_frame_e2e_max: int | None,
+    max_frame_user_e2e_p90: int | None,
+    max_frame_user_e2e_max: int | None,
     max_seg_ctx_chars: int | None,
     max_seg_ctx_trunc_dropped: int | None,
     max_plan_req_seg_chars_p90: int | None,
@@ -4910,6 +5312,8 @@ async def _query_run_package_rows(
             max_seg_latency_p90=max_seg_latency_p90,
             max_frame_e2e_p90=max_frame_e2e_p90,
             max_frame_e2e_max=max_frame_e2e_max,
+            max_frame_user_e2e_p90=max_frame_user_e2e_p90,
+            max_frame_user_e2e_max=max_frame_user_e2e_max,
             max_seg_ctx_chars=max_seg_ctx_chars,
             max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
             max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
@@ -4992,6 +5396,8 @@ async def runs_dashboard(
     max_seg_latency_p90: int | None = None,
     max_frame_e2e_p90: int | None = None,
     max_frame_e2e_max: int | None = None,
+    max_frame_user_e2e_p90: int | None = None,
+    max_frame_user_e2e_max: int | None = None,
     max_seg_ctx_chars: int | None = None,
     max_seg_ctx_trunc_dropped: int | None = None,
     max_plan_req_seg_chars_p90: int | None = None,
@@ -5041,6 +5447,8 @@ async def runs_dashboard(
         max_seg_latency_p90=max_seg_latency_p90,
         max_frame_e2e_p90=max_frame_e2e_p90,
         max_frame_e2e_max=max_frame_e2e_max,
+        max_frame_user_e2e_p90=max_frame_user_e2e_p90,
+        max_frame_user_e2e_max=max_frame_user_e2e_max,
         max_seg_ctx_chars=max_seg_ctx_chars,
         max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
         max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
@@ -5088,6 +5496,12 @@ async def runs_dashboard(
         max_delay = "—" if max_delay_raw is None else str(max_delay_raw)
         risk_p90_raw = row.get("risk_latency_p90")
         risk_p90 = "—" if risk_p90_raw is None else str(risk_p90_raw)
+        frame_user_e2e_p90_raw = row.get("frame_user_e2e_p90")
+        frame_user_e2e_p90 = "—" if frame_user_e2e_p90_raw is None else str(int(frame_user_e2e_p90_raw))
+        frame_user_e2e_max_raw = row.get("frame_user_e2e_max")
+        frame_user_e2e_max = "—" if frame_user_e2e_max_raw is None else str(int(frame_user_e2e_max_raw))
+        ack_coverage_raw = row.get("ack_coverage")
+        ack_coverage = "—" if ack_coverage_raw is None else f"{float(ack_coverage_raw):.4f}"
         seg_f1_raw = row.get("seg_f1_50")
         seg_f1 = "—" if seg_f1_raw is None else f"{float(seg_f1_raw):.4f}"
         seg_cov_raw = row.get("seg_coverage")
@@ -5157,6 +5571,9 @@ async def runs_dashboard(
             f"<td>{html.escape(critical_misses)}</td>"
             f"<td>{html.escape(max_delay)}</td>"
             f"<td>{html.escape(risk_p90)}</td>"
+            f"<td>{html.escape(frame_user_e2e_p90)}</td>"
+            f"<td>{html.escape(frame_user_e2e_max)}</td>"
+            f"<td>{html.escape(ack_coverage)}</td>"
             f"<td>{html.escape(seg_f1)}</td>"
             f"<td>{html.escape(seg_cov)}</td>"
             f"<td>{html.escape(seg_mask_f1)}</td>"
@@ -5195,7 +5612,7 @@ async def runs_dashboard(
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='45' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='48' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -5213,6 +5630,8 @@ async def runs_dashboard(
     min_seg_mask_f1_50_value = html.escape("" if min_seg_mask_f1_50 is None else str(min_seg_mask_f1_50))
     min_seg_mask_coverage_value = html.escape("" if min_seg_mask_coverage is None else str(min_seg_mask_coverage))
     max_seg_latency_p90_value = html.escape("" if max_seg_latency_p90 is None else str(max_seg_latency_p90))
+    max_frame_user_e2e_p90_value = html.escape("" if max_frame_user_e2e_p90 is None else str(max_frame_user_e2e_p90))
+    max_frame_user_e2e_max_value = html.escape("" if max_frame_user_e2e_max is None else str(max_frame_user_e2e_max))
     max_seg_ctx_chars_value = html.escape("" if max_seg_ctx_chars is None else str(max_seg_ctx_chars))
     max_seg_ctx_trunc_dropped_value = html.escape(
         "" if max_seg_ctx_trunc_dropped is None else str(max_seg_ctx_trunc_dropped)
@@ -5313,6 +5732,8 @@ async def runs_dashboard(
       <label>max_critical_misses: <input type="number" min="0" name="max_critical_misses" value="{max_critical_misses_value}" /></label>
       <label>max_risk_latency_p90: <input type="number" min="0" name="max_risk_latency_p90" value="{max_risk_latency_p90_value}" /></label>
       <label>max_risk_latency_max: <input type="number" min="0" name="max_risk_latency_max" value="{max_risk_latency_max_value}" /></label>
+      <label>max_frame_user_e2e_p90: <input type="number" min="0" name="max_frame_user_e2e_p90" value="{max_frame_user_e2e_p90_value}" /></label>
+      <label>max_frame_user_e2e_max: <input type="number" min="0" name="max_frame_user_e2e_max" value="{max_frame_user_e2e_max_value}" /></label>
       <label>min_seg_f1_50: <input type="number" step="0.0001" min="0" max="1" name="min_seg_f1_50" value="{min_seg_f1_50_value}" /></label>
       <label>min_seg_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_seg_coverage" value="{min_seg_coverage_value}" /></label>
       <label>min_seg_mask_f1_50: <input type="number" step="0.0001" min="0" max="1" name="min_seg_mask_f1_50" value="{min_seg_mask_f1_50_value}" /></label>
@@ -5345,6 +5766,9 @@ async def runs_dashboard(
           <option value="safety_score" {"selected" if sort_value == "safety_score" else ""}>safety_score</option>
           <option value="quality" {"selected" if sort_value == "quality" else ""}>quality</option>
           <option value="risk_latency_p90" {"selected" if sort_value == "risk_latency_p90" else ""}>risk_latency_p90</option>
+          <option value="frame_user_e2e_p90" {"selected" if sort_value == "frame_user_e2e_p90" else ""}>frame_user_e2e_p90</option>
+          <option value="frame_user_e2e_max" {"selected" if sort_value == "frame_user_e2e_max" else ""}>frame_user_e2e_max</option>
+          <option value="ack_coverage" {"selected" if sort_value == "ack_coverage" else ""}>ack_coverage</option>
           <option value="seg_f1_50" {"selected" if sort_value == "seg_f1_50" else ""}>seg_f1_50</option>
           <option value="seg_coverage" {"selected" if sort_value == "seg_coverage" else ""}>seg_coverage</option>
           <option value="seg_mask_f1_50" {"selected" if sort_value == "seg_mask_f1_50" else ""}>seg_mask_f1_50</option>
@@ -5383,8 +5807,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -5400,6 +5824,9 @@ async def runs_dashboard(
           <th>Critical FN</th>
           <th>MaxDelay(fr)</th>
           <th>Risk p90(ms)</th>
+          <th>User E2E p90(ms)</th>
+          <th>User E2E max(ms)</th>
+          <th>ACK Coverage</th>
           <th>Seg F1@0.5</th>
           <th>Seg Coverage</th>
           <th>Seg Mask F1@0.5</th>
