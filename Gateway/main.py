@@ -319,12 +319,33 @@ class PlanConstraintsRequest(BaseModel):
         return self
 
 
+class PlanContextPackOverrideRequest(BaseModel):
+    maxChars: int | None = None
+    mode: Literal[
+        "seg_plus_pov_plus_risk",
+        "seg_plus_pov",
+        "pov_plus_risk",
+        "seg_only",
+        "pov_only",
+        "risk_only",
+    ] | None = None
+
+    @model_validator(mode="after")
+    def _validate_override(self) -> "PlanContextPackOverrideRequest":
+        if self.maxChars is None and self.mode is None:
+            raise ValueError("contextPackOverride requires maxChars or mode")
+        if self.maxChars is not None and int(self.maxChars) < 0:
+            raise ValueError("contextPackOverride.maxChars must be >= 0")
+        return self
+
+
 class PlanGenerateRequest(BaseModel):
     runPackage: str | None = None
     runId: str | None = None
     frameSeq: int | None = 1
     budget: PlanBudgetRequest = PlanBudgetRequest()
     constraints: PlanConstraintsRequest = PlanConstraintsRequest()
+    contextPackOverride: PlanContextPackOverrideRequest | None = None
 
     @model_validator(mode="after")
     def _validate_source(self) -> "PlanGenerateRequest":
@@ -1804,14 +1825,30 @@ async def get_plan_context(
         "pov_only",
         "risk_only",
     ] = str(DEFAULT_PLAN_CONTEXT_PACK_BUDGET["mode"]),
+    ctxMaxChars: int | None = None,
+    ctxMode: Literal[
+        "seg_plus_pov_plus_risk",
+        "seg_plus_pov",
+        "pov_plus_risk",
+        "seg_only",
+        "pov_only",
+        "risk_only",
+    ] | None = None,
 ) -> dict[str, Any]:
     run_id = str(runId or "").strip()
     if not run_id:
         raise HTTPException(status_code=400, detail="runId is required")
 
+    budget_override_used = ctxMaxChars is not None or ctxMode is not None
+    effective_max_chars = int(ctxMaxChars) if ctxMaxChars is not None else int(maxChars)
+    effective_mode = (
+        str(ctxMode).strip()
+        if ctxMode is not None
+        else str(mode or DEFAULT_PLAN_CONTEXT_PACK_BUDGET["mode"]).strip()
+    )
     budget = {
-        "maxChars": max(0, int(maxChars)),
-        "mode": str(mode or DEFAULT_PLAN_CONTEXT_PACK_BUDGET["mode"]).strip() or str(DEFAULT_PLAN_CONTEXT_PACK_BUDGET["mode"]),
+        "maxChars": max(0, int(effective_max_chars)),
+        "mode": effective_mode or str(DEFAULT_PLAN_CONTEXT_PACK_BUDGET["mode"]),
     }
 
     cleanup_dir: Path | None = None
@@ -1874,7 +1911,9 @@ async def get_plan_context(
             risk_context=risk_summary,
             budget=budget,
         )
-        return context_pack
+        response_payload = dict(context_pack) if isinstance(context_pack, dict) else {}
+        response_payload["budgetOverrideUsed"] = bool(budget_override_used)
+        return response_payload
     finally:
         if cleanup_dir is not None and cleanup_dir.exists():
             shutil.rmtree(cleanup_dir, ignore_errors=True)
@@ -2017,6 +2056,15 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
             "allowHaptic": bool(request.constraints.allowHaptic),
             "maxActions": int(request.constraints.maxActions),
         }
+        context_pack_override_payload: dict[str, Any] | None = None
+        if isinstance(request.contextPackOverride, PlanContextPackOverrideRequest):
+            override_payload: dict[str, Any] = {}
+            if request.contextPackOverride.maxChars is not None:
+                override_payload["maxChars"] = int(max(0, int(request.contextPackOverride.maxChars)))
+            if request.contextPackOverride.mode is not None:
+                override_payload["mode"] = str(request.contextPackOverride.mode).strip()
+            if override_payload:
+                context_pack_override_payload = override_payload
         bundle = generate_action_plan(
             pov_ir=pov_ir,
             run_id=run_id,
@@ -2028,6 +2076,7 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
             run_package_path=str(run_package_dir) if run_package_dir is not None else None,
             planner_provider=planner_provider,
             planner_pov_ir=inline_pov_ir if isinstance(inline_pov_ir, dict) else None,
+            plan_context_pack_budget=context_pack_override_payload,
         )
         plan_payload = bundle.get("plan")
         if not isinstance(plan_payload, dict):
@@ -3109,7 +3158,7 @@ def _try_append_plan_events(
             "frameSeq": safe_frame_seq,
             "component": "gateway",
             "category": "plan",
-            "name": "plan.request",
+            "name": "plan.context_pack",
             "phase": "result",
             "status": "ok",
             "latencyMs": int(max(0, latency_ms)),

@@ -14,6 +14,8 @@ _ALLOWED_MODES = {
     "risk_only",
 }
 
+PLAN_CONTEXT_PACK_MODES = tuple(sorted(_ALLOWED_MODES))
+
 DEFAULT_PLAN_CONTEXT_PACK_BUDGET = {
     "maxChars": 2000,
     "mode": "seg_plus_pov_plus_risk",

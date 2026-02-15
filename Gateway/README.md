@@ -213,6 +213,20 @@ Response is `seg.context.v1`:
 
 `report.json` also includes `segContext` (for leaderboard/regression visibility).
 
+Plan context pack (risk+pov+seg, budgeted):
+
+```powershell
+# default budget from env/runtime defaults
+curl "http://127.0.0.1:8000/api/plan/context?runId=<run_id>"
+
+# per-request override (v4.56)
+curl "http://127.0.0.1:8000/api/plan/context?runId=<run_id>&ctxMaxChars=512&ctxMode=pov_plus_risk"
+```
+
+Notes:
+- `budgetOverrideUsed=true` appears only in `/api/plan/context` API response for convenience.
+- `plan.context_pack` event payload remains `plan.context_pack.v1` contract-compatible (no extra override field).
+
 ## Planning API (/api/plan)
 
 Generate an `ActionPlan v1` from POV context + risk events.
@@ -229,6 +243,14 @@ curl -X POST "http://127.0.0.1:8000/api/plan" `
   -d '{"runPackage":"Gateway/tests/fixtures/run_package_with_risk_gt_and_pov_min","frameSeq":2,"budget":{"maxChars":2000,"maxTokensApprox":256,"mode":"decisions_plus_highlights"},"constraints":{"allowConfirm":true,"allowHaptic":false,"maxActions":3}}'
 ```
 
+Per-request plan context pack override during plan generation (v4.56):
+
+```powershell
+curl -X POST "http://127.0.0.1:8000/api/plan" `
+  -H "Content-Type: application/json" `
+  -d '{"runPackage":"Gateway/tests/fixtures/run_package_with_risk_gt_and_pov_min","frameSeq":2,"budget":{"maxChars":2000,"maxTokensApprox":256,"mode":"decisions_plus_highlights"},"constraints":{"allowConfirm":true,"allowHaptic":false,"maxActions":3},"contextPackOverride":{"maxChars":512,"mode":"pov_plus_risk"}}'
+```
+
 SafetyKernel guardrails:
 - `critical`: injects `stop` when missing and forces non-stop actions to `requiresConfirm=true`.
 - `high`: forces `requiresConfirm=true` for actions that were not gated.
@@ -238,6 +260,19 @@ Audit outputs:
 - `events/events_v1.jsonl`: appends `plan.generate` and `safety.kernel` events (and `plan.execute` when using `/api/plan/execute`).
 - `report.json`: check `plan` for `riskLevel`, action counts/types, and `guardrailsApplied`.
 - leaderboard (`/api/run_packages`, `/runs`): `plan_present`, `plan_risk_level`, `plan_actions`, `plan_guardrails`.
+
+Plan context pack sweep helper (local tooling, not CI gate):
+
+```powershell
+python scripts/sweep_plan_context_pack.py `
+  --run-package tests/fixtures/run_package_with_risk_gt_and_pov_min `
+  --budgets 128,256,512 `
+  --modes seg_plus_pov_plus_risk,pov_plus_risk,risk_only
+```
+
+Outputs:
+- `%TEMP%\\byes_plan_ctx_sweep\\latest.json`
+- `%TEMP%\\byes_plan_ctx_sweep\\latest.md`
 
 Minimal execute + confirm loop:
 

@@ -233,6 +233,7 @@ def generate_action_plan(
     run_package_path: str | None = None,
     planner_provider: str | None = None,
     planner_pov_ir: dict[str, Any] | None = None,
+    plan_context_pack_budget: dict[str, Any] | None = None,
     backend: PlannerBackend | None = None,
 ) -> dict[str, Any]:
     context_pack = build_context_pack(pov_ir, budget=budget, mode=mode)
@@ -259,7 +260,7 @@ def generate_action_plan(
         seg_context=seg_context,
         pov_context=context_pack,
         risk_context=risk_summary,
-        budget=None,
+        budget=plan_context_pack_budget,
     )
 
     planner_backend = backend if backend is not None else get_planner_backend()
