@@ -112,6 +112,10 @@ class RunSummary:
     frame_user_e2e_schema_ok: bool = False
     frame_user_e2e_negative_count: int = 0
     frame_user_e2e_duplicate_count: int = 0
+    models_present: bool = False
+    models_schema_ok: bool = False
+    models_missing_required_total: int = 0
+    models_enabled_total: int = 0
     score_delta: float | None = None
     baseline_score: float | None = None
     critical_fn_gate_required: bool = False
@@ -251,6 +255,10 @@ class RunSummary:
                 "frameUserE2eSchemaOk": self.frame_user_e2e_schema_ok,
                 "frameUserE2eNegativeCount": self.frame_user_e2e_negative_count,
                 "frameUserE2eDuplicateCount": self.frame_user_e2e_duplicate_count,
+                "modelsPresent": self.models_present,
+                "modelsSchemaOk": self.models_schema_ok,
+                "modelsMissingRequiredTotal": self.models_missing_required_total,
+                "modelsEnabledTotal": self.models_enabled_total,
             },
             "baselineScore": self.baseline_score,
             "scoreDelta": self.score_delta,
@@ -718,6 +726,8 @@ def run_suite(
     run_require_frame_ack_schema_ok: dict[str, bool] = {}
     run_require_frame_user_e2e_events_present: dict[str, bool] = {}
     run_require_frame_user_e2e_schema_ok: dict[str, bool] = {}
+    run_require_models_present: dict[str, bool] = {}
+    run_require_models_missing_required_zero: dict[str, bool] = {}
     failures: list[str] = []
     contract_lock_ok: bool | None = None
     contract_lock_detail = ""
@@ -773,6 +783,11 @@ def run_suite(
         )
         run_require_frame_user_e2e_schema_ok[run_id] = _to_bool01(
             run_cfg.get("requireFrameUserE2eSchemaOk"),
+            False,
+        )
+        run_require_models_present[run_id] = _to_bool01(run_cfg.get("requireModelsPresent"), False)
+        run_require_models_missing_required_zero[run_id] = _to_bool01(
+            run_cfg.get("requireModelsMissingRequiredZero"),
             False,
         )
         run_path = _resolve_input_path(run_path_text, suite_dir)
@@ -865,6 +880,12 @@ def run_suite(
                     run_summary.frame_user_e2e_duplicate_count = int(
                         lint_summary.get("frameUserE2eDuplicateCount", 0) or 0
                     )
+                    run_summary.models_present = bool(lint_summary.get("modelsPresent", 0))
+                    run_summary.models_schema_ok = bool(lint_summary.get("modelsSchemaOk", 0))
+                    run_summary.models_missing_required_total = int(
+                        lint_summary.get("modelsMissingRequiredTotal", 0) or 0
+                    )
+                    run_summary.models_enabled_total = int(lint_summary.get("modelsEnabledTotal", 0) or 0)
             except Exception:
                 # Lint stats are best-effort; report generation should remain authoritative.
                 pass
@@ -963,6 +984,12 @@ def run_suite(
             failures.append(f"{run.run_id}: frame.user_e2e events missing")
         if run_require_frame_user_e2e_schema_ok.get(run.run_id, False) and not bool(run.frame_user_e2e_schema_ok):
             failures.append(f"{run.run_id}: frame.user_e2e payload schema check failed")
+        if run_require_models_present.get(run.run_id, False) and not bool(run.models_present):
+            failures.append(f"{run.run_id}: models.manifest events missing")
+        if run_require_models_missing_required_zero.get(run.run_id, False) and int(run.models_missing_required_total or 0) > 0:
+            failures.append(
+                f"{run.run_id}: models missingRequiredTotal {int(run.models_missing_required_total or 0)} > 0"
+            )
         if fail_on_drop and run.baseline_score is not None and run.quality_score is not None:
             delta = run.quality_score - run.baseline_score
             if delta < -2.0:
@@ -1057,6 +1084,8 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "frameAckEventsPresent={frame_ack_events_present} frameAckSchemaOk={frame_ack_schema_ok} "
                 "frameUserE2eEventsPresent={frame_user_e2e_events_present} frameUserE2eSchemaOk={frame_user_e2e_schema_ok} "
                 "frameUserE2eNegativeCount={frame_user_e2e_negative_count} frameUserE2eDuplicateCount={frame_user_e2e_duplicate_count} "
+                "modelsPresent={models_present} modelsSchemaOk={models_schema_ok} "
+                "modelsMissingRequiredTotal={models_missing_required_total} modelsEnabledTotal={models_enabled_total} "
                 "povPresent={pov_present} povDecisions={pov_decisions} povTokenApprox={pov_token_approx} source={schema_src} "
                 "ocr={ocr_backend}/{ocr_model} risk={risk_backend}/{risk_model}".format(
                     run_id=run_id,
@@ -1114,6 +1143,10 @@ def _print_summary(result: dict[str, Any]) -> None:
                     frame_user_e2e_schema_ok=row.get("segLint", {}).get("frameUserE2eSchemaOk", False),
                     frame_user_e2e_negative_count=row.get("segLint", {}).get("frameUserE2eNegativeCount", 0),
                     frame_user_e2e_duplicate_count=row.get("segLint", {}).get("frameUserE2eDuplicateCount", 0),
+                    models_present=row.get("segLint", {}).get("modelsPresent", False),
+                    models_schema_ok=row.get("segLint", {}).get("modelsSchemaOk", False),
+                    models_missing_required_total=row.get("segLint", {}).get("modelsMissingRequiredTotal", 0),
+                    models_enabled_total=row.get("segLint", {}).get("modelsEnabledTotal", 0),
                     pov_present=row.get("pov", {}).get("present", False),
                     pov_decisions=row.get("pov", {}).get("decisions", 0),
                     pov_token_approx=row.get("pov", {}).get("tokenApprox", 0),

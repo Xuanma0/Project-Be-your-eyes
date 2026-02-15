@@ -33,6 +33,7 @@ from byes.quality_metrics import (  # noqa: E402
     extract_plan_rule_summary_from_events_v1,
     extract_plan_context_summary_from_events_v1,
     extract_plan_context_pack_summary_from_events_v1,
+    extract_models_summary_from_events_v1,
     extract_frame_e2e_summary_from_events_v1,
     extract_frame_user_e2e_summary_from_events_v1,
     extract_event_schema_stats,
@@ -1048,6 +1049,7 @@ def generate_report_outputs(
         frames_total_declared=frames_total_declared,
     )
     summary["frameUserE2E"] = extract_frame_user_e2e_summary_from_events_v1(event_rows)
+    summary["models"] = extract_models_summary_from_events_v1(event_rows)
     summary["povPlan"] = compute_pov_plan_metrics(pov_ir_payload, summary.get("plan"))
     inferred_summary = extract_inference_summary_from_ws_events(event_source_path)
     events_v1_inferred = infer_inference_summary_from_events_v1(event_rows)

@@ -24,6 +24,7 @@ def test_api_contracts_endpoint_returns_lock_and_runtime_defaults() -> None:
         "plan.context_alignment.v1",
         "plan.context_pack.v1",
         "frame.e2e.v1",
+        "byes.models.v1",
     ):
         assert key in versions
         row = versions[key]
@@ -62,3 +63,6 @@ def test_api_contracts_endpoint_returns_lock_and_runtime_defaults() -> None:
     assert isinstance(plan_context_budget, dict)
     assert int(plan_context_budget.get("maxChars", 0)) > 0
     assert str(plan_context_budget.get("mode", "")).strip()
+    models_defaults = runtime_defaults.get("models", {})
+    assert isinstance(models_defaults, dict)
+    assert str(models_defaults.get("checkScript", "")).strip()

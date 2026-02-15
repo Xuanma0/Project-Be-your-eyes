@@ -2807,6 +2807,81 @@ def extract_plan_context_pack_summary_from_events_v1(events: Iterable[dict[str, 
     }
 
 
+def extract_models_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    latest_payload: dict[str, Any] | None = None
+    latest_ts = -1
+    latest_idx = -1
+    for idx, row in enumerate(events):
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "models.manifest":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        ts = _to_nonnegative_int(event.get("tsMs"))
+        if ts > latest_ts or (ts == latest_ts and idx > latest_idx):
+            latest_payload = payload
+            latest_ts = ts
+            latest_idx = idx
+
+    if not isinstance(latest_payload, dict):
+        return {
+            "present": False,
+            "componentsTotal": 0,
+            "enabledTotal": 0,
+            "missingRequiredTotal": 0,
+            "missingRequiredTop": [],
+        }
+
+    summary = latest_payload.get("summary")
+    summary = summary if isinstance(summary, dict) else {}
+    components = latest_payload.get("components")
+    components = components if isinstance(components, list) else []
+
+    missing_top: list[dict[str, Any]] = []
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        if not bool(component.get("enabled")):
+            continue
+        name = str(component.get("name", "")).strip()
+        required = component.get("required")
+        required = required if isinstance(required, list) else []
+        for req in required:
+            if not isinstance(req, dict):
+                continue
+            if bool(req.get("exists")):
+                continue
+            missing_top.append(
+                {
+                    "component": name or None,
+                    "id": str(req.get("id", "")).strip() or None,
+                    "envVar": str(req.get("envVar", "")).strip() or None,
+                    "kind": str(req.get("kind", "")).strip() or None,
+                }
+            )
+            if len(missing_top) >= 5:
+                break
+        if len(missing_top) >= 5:
+            break
+
+    return {
+        "present": True,
+        "componentsTotal": _to_nonnegative_int(summary.get("componentsTotal")),
+        "enabledTotal": _to_nonnegative_int(summary.get("enabledTotal")),
+        "missingRequiredTotal": _to_nonnegative_int(summary.get("missingRequiredTotal")),
+        "missingRequiredTop": missing_top,
+    }
+
+
 def extract_frame_e2e_summary_from_events_v1(
     events: Iterable[dict[str, Any]],
     *,

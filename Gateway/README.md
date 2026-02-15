@@ -545,3 +545,19 @@ Report and leaderboard fields:
 - 5-minute demo script: `docs/QUICK_DEMO.md`
 - Terminology: `docs/GLOSSARY.md`
 - Command index: `docs/COMMANDS.md`
+
+## Model/Artifact Manifest (`/api/models`)
+
+Use this to answer "what artifacts/env/endpoints are required on this machine right now?".
+
+- API:
+  - `GET /api/models`
+  - returns `byes.models.v1` with per-component provider/model/endpoint + required/optional dependencies.
+- CLI self-check:
+  - `python Gateway/scripts/verify_models.py --json`
+  - `python Gateway/scripts/verify_models.py --check --quiet`
+
+Interpretation:
+- `missingRequiredTotal == 0`: all enabled components are configured.
+- `missingRequiredTotal > 0`: one or more enabled components are missing required env/file/endpoint configuration.
+- `provider=mock`: component is enabled but does not require real model artifacts.

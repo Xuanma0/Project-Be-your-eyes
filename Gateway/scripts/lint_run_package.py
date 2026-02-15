@@ -33,6 +33,7 @@ _PLAN_CONTEXT_PACK_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "plan.context_pack
 _FRAME_E2E_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.e2e.v1.json"
 _FRAME_INPUT_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.input.v1.json"
 _FRAME_ACK_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.ack.v1.json"
+_MODELS_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.models.v1.json"
 
 
 def _collect_hazard_stats_from_gt(path: Path) -> dict[str, Any]:
@@ -284,6 +285,18 @@ def _load_frame_ack_schema() -> dict[str, Any] | None:
         return None
     try:
         payload = json.loads(_FRAME_ACK_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _load_models_schema() -> dict[str, Any] | None:
+    if not _MODELS_SCHEMA_PATH.exists():
+        return None
+    try:
+        payload = json.loads(_MODELS_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     if not isinstance(payload, dict):
@@ -934,12 +947,18 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         frame_user_e2e_negative_count = 0
         frame_user_e2e_duplicate_count = 0
         frame_user_e2e_seen_keys: dict[tuple[str, int], int] = {}
+        models_present = 0
+        models_lines = 0
+        models_schema_ok = 0
+        models_missing_required_total = 0
+        models_enabled_total = 0
         seg_schema = _load_seg_contract_schema()
         depth_schema = _load_depth_contract_schema()
         plan_context_pack_schema = _load_plan_context_pack_schema()
         frame_e2e_schema = _load_frame_e2e_schema()
         frame_input_schema = _load_frame_input_schema()
         frame_ack_schema = _load_frame_ack_schema()
+        models_schema = _load_models_schema()
         if events_v1_rel:
             events_v1_path = run_root / events_v1_rel
             if not events_v1_path.exists():
@@ -1128,6 +1147,42 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                         plan_context_pack_trunc_dropped_total += int(max(0, chars_dropped))
                                     else:
                                         warnings.append("plan.context_pack payload missing required fields")
+                                if name == "models.manifest":
+                                    models_present = 1
+                                    models_lines += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    schema_ok = False
+                                    if (
+                                        isinstance(payload, dict)
+                                        and str(payload.get("schemaVersion", "")).strip() == "byes.models.v1"
+                                        and isinstance(payload.get("summary"), dict)
+                                        and isinstance(payload.get("components"), list)
+                                    ):
+                                        schema_ok = True
+                                    if schema_ok and jsonschema is not None and isinstance(models_schema, dict):
+                                        try:
+                                            jsonschema.validate(instance=payload, schema=models_schema)
+                                        except Exception:
+                                            schema_ok = False
+                                    if schema_ok:
+                                        models_schema_ok += 1
+                                        summary_payload = payload.get("summary")
+                                        summary_payload = summary_payload if isinstance(summary_payload, dict) else {}
+                                        models_missing_required_total = int(
+                                            max(
+                                                models_missing_required_total,
+                                                int(summary_payload.get("missingRequiredTotal", 0) or 0),
+                                            )
+                                        )
+                                        models_enabled_total = int(
+                                            max(
+                                                models_enabled_total,
+                                                int(summary_payload.get("enabledTotal", 0) or 0),
+                                            )
+                                        )
+                                    else:
+                                        warnings.append("models.manifest payload missing required fields")
                                 if name == "frame.e2e":
                                     frame_e2e_events_present = 1
                                     frame_e2e_lines += 1
@@ -1485,6 +1540,11 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                 6,
             ),
             "planCtxCharsP90": round(float(_percentile_float(plan_context_pack_chars, 90)), 6),
+            "modelsPresent": int(models_present),
+            "modelsLines": int(models_lines),
+            "modelsSchemaOk": int(models_lines > 0 and models_schema_ok == models_lines),
+            "modelsMissingRequiredTotal": int(models_missing_required_total),
+            "modelsEnabledTotal": int(models_enabled_total),
             "frameE2eEventsPresent": int(frame_e2e_events_present),
             "frameE2eSchemaOk": int(frame_e2e_lines > 0 and frame_e2e_schema_ok == frame_e2e_lines),
             "frameE2eCount": int(frame_e2e_lines),
@@ -1580,6 +1640,11 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"planContextPackSchemaOk: {summary['planContextPackSchemaOk']}")
             print(f"planCtxTruncRate: {summary['planCtxTruncRate']}")
             print(f"planCtxCharsP90: {summary['planCtxCharsP90']}")
+            print(f"modelsPresent: {summary['modelsPresent']}")
+            print(f"modelsLines: {summary['modelsLines']}")
+            print(f"modelsSchemaOk: {summary['modelsSchemaOk']}")
+            print(f"modelsMissingRequiredTotal: {summary['modelsMissingRequiredTotal']}")
+            print(f"modelsEnabledTotal: {summary['modelsEnabledTotal']}")
             print(f"frameE2eEventsPresent: {summary['frameE2eEventsPresent']}")
             print(f"frameE2eSchemaOk: {summary['frameE2eSchemaOk']}")
             print(f"frameE2eCount: {summary['frameE2eCount']}")

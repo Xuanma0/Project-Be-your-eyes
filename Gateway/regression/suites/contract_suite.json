@@ -142,6 +142,15 @@
       "requireFrameAckSchemaOk": true,
       "requireFrameUserE2eEventsPresent": true,
       "requireFrameUserE2eSchemaOk": true
+    },
+    {
+      "id": "fixture_with_models_manifest_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_models_manifest_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireModelsPresent": true,
+      "requireModelsMissingRequiredZero": true
     }
   ]
 }
