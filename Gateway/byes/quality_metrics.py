@@ -90,6 +90,39 @@ def load_gt_seg_v1(path: Path) -> dict[int, list[dict[str, Any]]]:
     return records
 
 
+def load_gt_depth_v1(path: Path) -> dict[int, dict[str, Any]]:
+    records: dict[int, dict[str, Any]] = {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return records
+
+    frames: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        rows = payload.get("frames")
+        if isinstance(rows, list):
+            frames = [row for row in rows if isinstance(row, dict)]
+    elif isinstance(payload, list):
+        frames = [row for row in payload if isinstance(row, dict)]
+
+    for row in frames:
+        seq = _extract_frame_seq(row)
+        if seq is None:
+            continue
+        grid = _normalize_depth_grid_object(row.get("grid"))
+        if not isinstance(grid, dict):
+            continue
+        record: dict[str, Any] = {"grid": grid}
+        width = _parse_int(row.get("imageWidth"))
+        height = _parse_int(row.get("imageHeight"))
+        if width is not None and width > 0:
+            record["imageWidth"] = width
+        if height is not None and height > 0:
+            record["imageHeight"] = height
+        records[seq] = record
+    return records
+
+
 def extract_pred_seg_from_ws_events(
     ws_events_jsonl_path: Path,
 ) -> tuple[dict[int, list[dict[str, Any]]], set[int], list[int]]:
@@ -159,6 +192,84 @@ def extract_pred_seg_from_ws_events(
 
     compact = {seq: rows for seq, rows in pred_map.items()}
     return compact, pred_event_frames, latencies
+
+
+def extract_pred_depth_from_ws_events(
+    ws_events_jsonl_path: Path,
+) -> tuple[dict[int, dict[str, Any]], set[int], list[int]]:
+    pred_map: dict[int, dict[str, Any]] = {}
+    pred_event_frames: set[int] = set()
+    latencies: list[int] = []
+
+    normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
+    normalized_events = normalized_summary.get("events", [])
+    for event in normalized_events:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "depth.estimate":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        seq = _parse_int(event.get("frameSeq"))
+        if seq is None:
+            continue
+        pred_event_frames.add(seq)
+        latency = _parse_int(event.get("latencyMs"))
+        if latency is not None and latency >= 0:
+            latencies.append(latency)
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        grid = _normalize_depth_grid_object(payload.get("grid"))
+        if not isinstance(grid, dict):
+            continue
+        row: dict[str, Any] = {"grid": grid}
+        width = _parse_int(payload.get("imageWidth"))
+        height = _parse_int(payload.get("imageHeight"))
+        if width is not None and width > 0:
+            row["imageWidth"] = width
+        if height is not None and height > 0:
+            row["imageHeight"] = height
+        pred_map[seq] = row
+
+    if normalized_events:
+        return pred_map, pred_event_frames, latencies
+
+    for row in _iter_jsonl(ws_events_jsonl_path):
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "depth.estimate":
+            continue
+        if str(event.get("phase", "")).strip().lower() not in {"", "result"}:
+            continue
+        if str(event.get("status", "")).strip().lower() not in {"", "ok"}:
+            continue
+        seq = _extract_frame_seq(event)
+        if seq is None:
+            continue
+        pred_event_frames.add(seq)
+        latency = _extract_latency_ms(event)
+        if latency is not None and latency >= 0:
+            latencies.append(latency)
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        grid = _normalize_depth_grid_object(payload.get("grid"))
+        if not isinstance(grid, dict):
+            continue
+        out: dict[str, Any] = {"grid": grid}
+        width = _parse_int(payload.get("imageWidth"))
+        height = _parse_int(payload.get("imageHeight"))
+        if width is not None and width > 0:
+            out["imageWidth"] = width
+        if height is not None and height > 0:
+            out["imageHeight"] = height
+        pred_map[seq] = out
+
+    return pred_map, pred_event_frames, latencies
 
 
 def extract_pred_ocr_from_ws_events(ws_events_jsonl_path: Path) -> dict[int, dict[str, Any]]:
@@ -1246,6 +1357,121 @@ def compute_seg_metrics(
     return payload
 
 
+def compute_depth_metrics(
+    gt_map: dict[int, dict[str, Any]],
+    pred_map: dict[int, dict[str, Any]],
+    pred_event_frames: set[int],
+    latencies: list[int],
+    frames_total: int,
+) -> dict[str, Any]:
+    frames_total_safe = max(0, int(frames_total))
+    frames_with_gt = len([seq for seq, row in gt_map.items() if isinstance(row, dict) and isinstance(row.get("grid"), dict)])
+    frames_with_pred = len({seq for seq in pred_event_frames if isinstance(seq, int)})
+    coverage = _safe_ratio(frames_with_pred, frames_with_gt)
+
+    abs_rel_values: list[float] = []
+    sq_err_values: list[float] = []
+    delta1_hits = 0
+    delta1_total = 0
+    top_bad_cells: list[dict[str, Any]] = []
+    valid_frames = 0
+    all_frames = sorted(set(gt_map.keys()) | set(pred_map.keys()) | set(pred_event_frames))
+
+    for frame_seq in all_frames:
+        gt_row = gt_map.get(frame_seq)
+        gt_row = gt_row if isinstance(gt_row, dict) else {}
+        pred_row = pred_map.get(frame_seq)
+        pred_row = pred_row if isinstance(pred_row, dict) else {}
+        gt_grid = _normalize_depth_grid_object(gt_row.get("grid"))
+        pred_grid = _normalize_depth_grid_object(pred_row.get("grid"))
+        if not isinstance(gt_grid, dict) or not isinstance(pred_grid, dict):
+            continue
+        gt_size = gt_grid.get("size")
+        pred_size = pred_grid.get("size")
+        if not isinstance(gt_size, list) or not isinstance(pred_size, list):
+            continue
+        if len(gt_size) != 2 or len(pred_size) != 2:
+            continue
+        if int(gt_size[0]) != int(pred_size[0]) or int(gt_size[1]) != int(pred_size[1]):
+            continue
+        gt_values = gt_grid.get("values")
+        pred_values = pred_grid.get("values")
+        if not isinstance(gt_values, list) or not isinstance(pred_values, list):
+            continue
+        if len(gt_values) != len(pred_values):
+            continue
+
+        valid_frames += 1
+        gw = int(gt_size[0])
+        valid_index_count = 0
+        for idx, (gt_raw, pred_raw) in enumerate(zip(gt_values, pred_values)):
+            try:
+                gt_val = float(gt_raw)
+                pred_val = float(pred_raw)
+            except Exception:
+                continue
+            if gt_val <= 0.0:
+                continue
+            valid_index_count += 1
+            abs_rel = abs(pred_val - gt_val) / gt_val
+            sq_err = (pred_val - gt_val) ** 2
+            abs_rel_values.append(abs_rel)
+            sq_err_values.append(sq_err)
+            ratio = max((pred_val / gt_val) if gt_val > 0 else float("inf"), (gt_val / pred_val) if pred_val > 0 else float("inf"))
+            delta1_total += 1
+            if ratio < 1.25:
+                delta1_hits += 1
+            if len(top_bad_cells) < 8:
+                top_bad_cells.append(
+                    {
+                        "frameSeq": int(frame_seq),
+                        "index": int(idx),
+                        "x": int(idx % max(1, gw)),
+                        "y": int(idx // max(1, gw)),
+                        "gt": int(round(gt_val)),
+                        "pred": int(round(pred_val)),
+                        "absRel": round(abs_rel, 6),
+                    }
+                )
+            else:
+                worst_index = min(range(len(top_bad_cells)), key=lambda i: float(top_bad_cells[i].get("absRel", 0.0)))
+                if abs_rel > float(top_bad_cells[worst_index].get("absRel", 0.0)):
+                    top_bad_cells[worst_index] = {
+                        "frameSeq": int(frame_seq),
+                        "index": int(idx),
+                        "x": int(idx % max(1, gw)),
+                        "y": int(idx // max(1, gw)),
+                        "gt": int(round(gt_val)),
+                        "pred": int(round(pred_val)),
+                        "absRel": round(abs_rel, 6),
+                    }
+        if valid_index_count <= 0:
+            valid_frames = max(0, valid_frames - 1)
+
+    top_bad_cells = sorted(top_bad_cells, key=lambda row: -float(row.get("absRel", 0.0)))[:5]
+    latency_stats = summarize_latency(latencies)
+    rmse = math.sqrt(_safe_ratio(sum(sq_err_values), len(sq_err_values))) if sq_err_values else 0.0
+
+    return {
+        "present": bool(gt_map or pred_event_frames),
+        "framesTotal": frames_total_safe,
+        "framesWithGt": int(frames_with_gt),
+        "framesWithPred": int(frames_with_pred),
+        "coverage": float(coverage),
+        "absRel": float(_safe_ratio(sum(abs_rel_values), len(abs_rel_values))),
+        "rmse": float(rmse),
+        "delta1": float(_safe_ratio(delta1_hits, delta1_total)),
+        "validFrames": int(valid_frames),
+        "latencyMs": {
+            "count": int(latency_stats.get("count", 0) or 0),
+            "p50": int(latency_stats.get("p50", 0) or 0),
+            "p90": int(latency_stats.get("p90", 0) or 0),
+            "max": int(latency_stats.get("max", 0) or 0),
+        },
+        "topBadCells": top_bad_cells,
+    }
+
+
 def compute_quality_score(
     safety_score: float,
     ocr_metrics: dict[str, Any] | None,
@@ -1548,6 +1774,40 @@ def _normalize_seg_object(item: Any) -> dict[str, Any] | None:
     if isinstance(mask, dict):
         row["mask"] = mask
     return row
+
+
+def _normalize_depth_grid_object(grid_raw: Any) -> dict[str, Any] | None:
+    if not isinstance(grid_raw, dict):
+        return None
+    fmt = str(grid_raw.get("format", "")).strip()
+    if fmt != "grid_u16_mm_v1":
+        return None
+    unit = str(grid_raw.get("unit", "")).strip().lower()
+    if unit != "mm":
+        return None
+    size_raw = grid_raw.get("size")
+    if not isinstance(size_raw, list) or len(size_raw) != 2:
+        return None
+    try:
+        gw = int(size_raw[0])
+        gh = int(size_raw[1])
+    except Exception:
+        return None
+    if gw <= 0 or gh <= 0:
+        return None
+    values_raw = grid_raw.get("values")
+    if not isinstance(values_raw, list):
+        return None
+    values: list[int] = []
+    for item in values_raw:
+        try:
+            parsed = int(item)
+        except Exception:
+            return None
+        values.append(max(0, min(65535, parsed)))
+    if len(values) != gw * gh:
+        return None
+    return {"format": "grid_u16_mm_v1", "size": [gw, gh], "unit": "mm", "values": values}
 
 
 def _bbox_iou(a: list[float], b: list[float]) -> float:
@@ -2097,6 +2357,7 @@ def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict
         "ocr": {"backend": None, "model": None, "endpoint": None},
         "risk": {"backend": None, "model": None, "endpoint": None},
         "seg": {"backend": None, "model": None, "endpoint": None},
+        "depth": {"backend": None, "model": None, "endpoint": None},
     }
 
     normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
@@ -2111,6 +2372,8 @@ def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict
             bucket = summary["risk"]
         elif name == "seg.segment":
             bucket = summary["seg"]
+        elif name == "depth.estimate":
+            bucket = summary["depth"]
         elif name == "seg.prompt":
             payload = event.get("payload")
             if isinstance(payload, dict):
@@ -2143,6 +2406,8 @@ def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict
             _merge_seg_prompt_fields(summary["seg"], event.get("payload"))
         if "seg" in blob or "segment" in blob:
             _merge_inference_fields(summary["seg"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
+        if "depth" in blob and "risk.depth" not in blob:
+            _merge_inference_fields(summary["depth"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
 
     _finalize_seg_prompt_bucket(summary["seg"])
     return summary
@@ -2153,6 +2418,7 @@ def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> 
         "ocr": {"backend": None, "model": None, "endpoint": None},
         "risk": {"backend": None, "model": None, "endpoint": None},
         "seg": {"backend": None, "model": None, "endpoint": None},
+        "depth": {"backend": None, "model": None, "endpoint": None},
     }
     for row in events:
         if not isinstance(row, dict):
@@ -2174,6 +2440,8 @@ def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> 
             bucket = summary["risk"]
         elif name == "seg.segment":
             bucket = summary["seg"]
+        elif name == "depth.estimate":
+            bucket = summary["depth"]
         elif name == "seg.prompt":
             payload = event.get("payload")
             if isinstance(payload, dict):
@@ -3027,7 +3295,7 @@ def _to_bool(value: Any) -> bool:
 
 
 def _has_any_inference(summary: dict[str, dict[str, Any]]) -> bool:
-    for tool in ("ocr", "risk", "seg"):
+    for tool in ("ocr", "risk", "seg", "depth"):
         bucket = summary.get(tool, {})
         if not isinstance(bucket, dict):
             continue

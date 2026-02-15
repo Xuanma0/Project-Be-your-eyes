@@ -28,6 +28,7 @@ from byes.schemas.pov_ir_schema import validate_pov_ir
 
 _SHA_LINE_RE = re.compile(r"^([a-fA-F0-9]{64})\s+\*?(.+)$")
 _SEG_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.seg.v1.json"
+_DEPTH_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.depth.v1.json"
 _PLAN_CONTEXT_PACK_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "plan.context_pack.v1.json"
 _FRAME_E2E_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.e2e.v1.json"
 _FRAME_INPUT_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.input.v1.json"
@@ -230,6 +231,18 @@ def _load_seg_contract_schema() -> dict[str, Any] | None:
     return payload
 
 
+def _load_depth_contract_schema() -> dict[str, Any] | None:
+    if not _DEPTH_SCHEMA_PATH.exists():
+        return None
+    try:
+        payload = json.loads(_DEPTH_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
 def _load_plan_context_pack_schema() -> dict[str, Any] | None:
     if not _PLAN_CONTEXT_PACK_SCHEMA_PATH.exists():
         return None
@@ -377,6 +390,74 @@ def _validate_seg_payload(
         mask_size_mismatch,
         mask_bad_counts,
     )
+
+
+def _validate_depth_payload(
+    payload: dict[str, Any],
+    schema: dict[str, Any] | None,
+) -> tuple[bool, int, int, bool]:
+    payload_ok = True
+    grid_bad_size = 0
+    grid_out_of_range = 0
+    grid_present = False
+
+    if schema is not None and jsonschema is not None:
+        try:
+            jsonschema.validate(payload, schema)
+        except Exception:
+            payload_ok = False
+
+    grid = payload.get("grid")
+    if not isinstance(grid, dict):
+        return payload_ok, grid_bad_size, grid_out_of_range, grid_present
+
+    grid_present = True
+    fmt = str(grid.get("format", "")).strip()
+    unit = str(grid.get("unit", "")).strip().lower()
+    if fmt != "grid_u16_mm_v1" or unit != "mm":
+        payload_ok = False
+        grid_bad_size += 1
+        return payload_ok, grid_bad_size, grid_out_of_range, grid_present
+
+    size_raw = grid.get("size")
+    if not isinstance(size_raw, list) or len(size_raw) != 2:
+        payload_ok = False
+        grid_bad_size += 1
+        return payload_ok, grid_bad_size, grid_out_of_range, grid_present
+    try:
+        gw = int(size_raw[0])
+        gh = int(size_raw[1])
+    except Exception:
+        payload_ok = False
+        grid_bad_size += 1
+        return payload_ok, grid_bad_size, grid_out_of_range, grid_present
+    if gw <= 0 or gh <= 0:
+        payload_ok = False
+        grid_bad_size += 1
+        return payload_ok, grid_bad_size, grid_out_of_range, grid_present
+
+    values_raw = grid.get("values")
+    if not isinstance(values_raw, list):
+        payload_ok = False
+        grid_bad_size += 1
+        return payload_ok, grid_bad_size, grid_out_of_range, grid_present
+
+    if len(values_raw) != gw * gh:
+        payload_ok = False
+        grid_bad_size += 1
+
+    for value in values_raw:
+        try:
+            parsed = int(value)
+        except Exception:
+            payload_ok = False
+            grid_out_of_range += 1
+            continue
+        if parsed < 0 or parsed > 65535:
+            payload_ok = False
+            grid_out_of_range += 1
+
+    return payload_ok, grid_bad_size, grid_out_of_range, grid_present
 
 
 def _validate_seg_mask(mask: Any) -> tuple[bool, int, int]:
@@ -805,6 +886,14 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         seg_context_chars = 0
         seg_context_segments_out = 0
         seg_context_trunc_segments_dropped = 0
+        depth_events_present = 0
+        depth_lines = 0
+        depth_schema_ok = 0
+        depth_normalized = 0
+        depth_payload_schema_ok = 0
+        depth_grid_present_count = 0
+        depth_grid_bad_size_count = 0
+        depth_grid_out_of_range_count = 0
         plan_request_events_present = 0
         plan_request_lines = 0
         plan_request_schema_ok = 0
@@ -846,6 +935,7 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         frame_user_e2e_duplicate_count = 0
         frame_user_e2e_seen_keys: dict[tuple[str, int], int] = {}
         seg_schema = _load_seg_contract_schema()
+        depth_schema = _load_depth_contract_schema()
         plan_context_pack_schema = _load_plan_context_pack_schema()
         frame_e2e_schema = _load_frame_e2e_schema()
         frame_input_schema = _load_frame_input_schema()
@@ -1143,6 +1233,35 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                     seg_mask_schema_ok += int(mask_schema_ok)
                                     seg_mask_size_mismatch_count += int(mask_size_mismatch)
                                     seg_mask_bad_counts_count += int(mask_bad_counts)
+                                if name == "depth.estimate":
+                                    depth_events_present = 1
+                                    depth_lines += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    has_grid_count = isinstance(payload.get("gridCount"), (int, float))
+                                    has_grid = isinstance(payload.get("grid"), dict)
+                                    if (
+                                        str(obj.get("schemaVersion", "")).strip() == "byes.event.v1"
+                                        and str(obj.get("category", "")).strip().lower() == "tool"
+                                        and str(obj.get("phase", "")).strip().lower() == "result"
+                                        and str(obj.get("status", "")).strip().lower() == "ok"
+                                        and (has_grid_count or has_grid)
+                                    ):
+                                        depth_schema_ok += 1
+                                    else:
+                                        warnings.append("depth.estimate envelope invalid")
+                                    depth_ok, grid_bad_size, grid_oor, grid_present = _validate_depth_payload(
+                                        payload,
+                                        depth_schema,
+                                    )
+                                    if depth_ok:
+                                        depth_payload_schema_ok += 1
+                                    else:
+                                        warnings.append("depth.estimate payload invalid")
+                                    depth_grid_bad_size_count += int(grid_bad_size)
+                                    depth_grid_out_of_range_count += int(grid_oor)
+                                    if grid_present:
+                                        depth_grid_present_count += 1
                 except Exception as exc:  # noqa: BLE001
                     warnings.append(f"eventsV1 read failed: {exc}")
                 events_v1_norm = collect_normalized_ws_events(events_v1_path)
@@ -1153,6 +1272,13 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                         event
                         for event in (events_v1_norm.get("events", []) if isinstance(events_v1_norm.get("events"), list) else [])
                         if isinstance(event, dict) and str(event.get("name", "")).strip().lower() == "seg.segment"
+                    ]
+                )
+                depth_normalized = len(
+                    [
+                        event
+                        for event in (events_v1_norm.get("events", []) if isinstance(events_v1_norm.get("events"), list) else [])
+                        if isinstance(event, dict) and str(event.get("name", "")).strip().lower() == "depth.estimate"
                     ]
                 )
                 seg_context_budget = {
@@ -1327,6 +1453,14 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "segContextChars": int(seg_context_chars),
             "segContextSegmentsOut": int(seg_context_segments_out),
             "segContextTruncSegmentsDropped": int(seg_context_trunc_segments_dropped),
+            "depthEventsPresent": int(depth_events_present),
+            "depthLines": int(depth_lines),
+            "depthSchemaOk": int(depth_schema_ok),
+            "depthPayloadSchemaOk": int(depth_lines > 0 and depth_payload_schema_ok == depth_lines),
+            "depthNormalized": int(depth_normalized),
+            "depthGridPresentCount": int(depth_grid_present_count),
+            "depthGridBadSizeCount": int(depth_grid_bad_size_count),
+            "depthGridOutOfRangeCount": int(depth_grid_out_of_range_count),
             "planRequestEventsPresent": int(plan_request_events_present),
             "planRequestLines": int(plan_request_lines),
             "planRequestSchemaOk": int(plan_request_lines > 0 and plan_request_schema_ok == plan_request_lines),
@@ -1422,6 +1556,14 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"segContextChars: {summary['segContextChars']}")
             print(f"segContextSegmentsOut: {summary['segContextSegmentsOut']}")
             print(f"segContextTruncSegmentsDropped: {summary['segContextTruncSegmentsDropped']}")
+            print(f"depthEventsPresent: {summary['depthEventsPresent']}")
+            print(f"depthLines: {summary['depthLines']}")
+            print(f"depthSchemaOk: {summary['depthSchemaOk']}")
+            print(f"depthPayloadSchemaOk: {summary['depthPayloadSchemaOk']}")
+            print(f"depthNormalized: {summary['depthNormalized']}")
+            print(f"depthGridPresentCount: {summary['depthGridPresentCount']}")
+            print(f"depthGridBadSizeCount: {summary['depthGridBadSizeCount']}")
+            print(f"depthGridOutOfRangeCount: {summary['depthGridOutOfRangeCount']}")
             print(f"planRequestEventsPresent: {summary['planRequestEventsPresent']}")
             print(f"planRequestLines: {summary['planRequestLines']}")
             print(f"planRequestSchemaOk: {summary['planRequestSchemaOk']}")

@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-be-your-eyes/contracts/byes.depth.v1.json",
+  "title": "BYES Depth Payload v1",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "backend": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "endpoint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "imageWidth": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "imageHeight": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "grid": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": true,
+      "required": [
+        "format",
+        "size",
+        "unit",
+        "values"
+      ],
+      "properties": {
+        "format": {
+          "const": "grid_u16_mm_v1"
+        },
+        "size": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "unit": {
+          "const": "mm"
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          }
+        }
+      }
+    },
+    "gridCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "valuesCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "warningsCount": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

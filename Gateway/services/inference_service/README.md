@@ -1,7 +1,7 @@
 # Inference Service Deployment Guide
 
 TL;DR:
-- `inference_service` provides pluggable `/ocr`, `/risk`, and `/seg` endpoints.
+- `inference_service` provides pluggable `/ocr`, `/risk`, `/seg`, and `/depth` endpoints.
 - Keep CI lightweight: optional OCR/depth dependencies are split into extra requirements files.
 - For replay/report/regression usage, read `Gateway/README.md`.
 
@@ -28,6 +28,11 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
   - request supports optional:
     - `targets: string[]`
     - `prompt: {"schemaVersion":"byes.seg_request.v1","targets":[...],"text":"...","boxes":[...],"points":[...],"meta":{"promptVersion":"v1"}}`
+- `POST /depth` -> `{"grid":{"format":"grid_u16_mm_v1","size":[gw,gh],"unit":"mm","values":[...]}, "gridCount": <int>, "valuesCount": <int>, "latencyMs": <int>, "model": "<id>" }`
+  - request supports optional:
+    - `runId: string`
+    - `frameSeq: int`
+    - `targets: string[]` (reserved for future providers)
 
 ## Provider Matrix
 
@@ -40,6 +45,8 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
 | Risk | heuristic | `BYES_SERVICE_RISK_PROVIDER=heuristic` | `requirements-heuristic-risk.txt` |
 | Seg | mock | `BYES_SERVICE_SEG_PROVIDER=mock` | none |
 | Seg | http | `BYES_SERVICE_SEG_PROVIDER=http` | none (calls external endpoint) |
+| Depth tool (`/depth`) | mock | `BYES_SERVICE_DEPTH_PROVIDER=mock` | none |
+| Depth tool (`/depth`) | http | `BYES_SERVICE_DEPTH_PROVIDER=http` | none (calls external endpoint) |
 | Depth (for heuristic risk) | none/synth/midas/onnx | `BYES_SERVICE_DEPTH_PROVIDER=<...>` | midas/onnx are optional |
 
 ## Seg Provider (mock/http)
@@ -88,6 +95,42 @@ python -m uvicorn services.reference_seg_service.app:app --app-dir Gateway --hos
 $env:BYES_SERVICE_SEG_PROVIDER="http"
 $env:BYES_SERVICE_SEG_ENDPOINT="http://127.0.0.1:19231/seg"
 $env:BYES_SERVICE_SEG_MODEL_ID="reference-seg-v1"
+python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
+```
+
+## Depth Tool Provider (mock/http)
+
+- `mock` (default for `/depth`): returns deterministic low-resolution depth grid.
+- `http`: forwards image to external depth endpoint and normalizes output.
+- Response shape for Gateway metrics/events:
+  - `grid`: `{format:"grid_u16_mm_v1", size:[gw,gh], unit:"mm", values:[0..65535]}`
+  - `gridCount`, `valuesCount`
+  - `latencyMs`, `model`, `backend`, `endpoint`
+
+Required env for `http`:
+
+```powershell
+$env:BYES_SERVICE_DEPTH_PROVIDER="http"
+$env:BYES_SERVICE_DEPTH_ENDPOINT="http://127.0.0.1:19241/depth"
+```
+
+Optional:
+
+```powershell
+$env:BYES_SERVICE_DEPTH_MODEL_ID="reference-depth-v1"
+$env:BYES_SERVICE_DEPTH_TIMEOUT_MS="1200"
+```
+
+Reference depth chain example:
+
+```powershell
+# start reference depth service first
+python -m uvicorn services.reference_depth_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19241
+
+# then start inference_service with depth provider=http
+$env:BYES_SERVICE_DEPTH_PROVIDER="http"
+$env:BYES_SERVICE_DEPTH_ENDPOINT="http://127.0.0.1:19241/depth"
+$env:BYES_SERVICE_DEPTH_MODEL_ID="reference-depth-v1"
 python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
 ```
 
@@ -148,6 +191,8 @@ Recommended default input size is `256` (can test `384`/`518` with sweep tools).
 | `BYES_SERVICE_SEG_ENDPOINT` | empty | seg endpoint URL (`http` provider) |
 | `BYES_SERVICE_SEG_TIMEOUT_MS` | `1200` | seg HTTP timeout ms |
 | `BYES_SERVICE_DEPTH_MODEL_ID` | provider default | depth model metadata tag |
+| `BYES_SERVICE_DEPTH_ENDPOINT` | empty | depth endpoint URL (`http` provider for `/depth`) |
+| `BYES_SERVICE_DEPTH_TIMEOUT_MS` | `1200` | depth HTTP timeout ms (`/depth`) |
 | `BYES_SERVICE_DEPTH_ONNX_PATH` | empty | ONNX depth model path (`onnx` provider) |
 | `BYES_SERVICE_DEPTH_INPUT_SIZE` | `256` | ONNX depth input resolution |
 | `BYES_SERVICE_RISK_DEBUG` | `0` | include `debug` evidence in `/risk` |

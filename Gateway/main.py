@@ -31,9 +31,9 @@ from byes.frame_tracker import FrameTracker
 from byes.fusion import FusionEngine
 from byes.governor import SloGovernor
 from byes.intent import IntentManager
-from byes.inference.event_emitters import emit_ocr_events, emit_risk_events, emit_seg_events
-from byes.inference.registry import get_ocr_backend, get_risk_backend, get_seg_backend
-from byes.inference.backends.base import OCRResult, RiskResult, SegResult
+from byes.inference.event_emitters import emit_ocr_events, emit_risk_events, emit_seg_events, emit_depth_events
+from byes.inference.registry import get_ocr_backend, get_risk_backend, get_seg_backend, get_depth_backend
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult
 from byes.inference.prompt_budget import normalize_prompt, pack_prompt
 from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events
 from byes.inference.plan_context_pack import (
@@ -490,6 +490,7 @@ class GatewayApp:
         self.ocr_backend = get_ocr_backend(self.config)
         self.risk_backend = get_risk_backend(self.config)
         self.seg_backend = get_seg_backend(self.config)
+        self.depth_backend = get_depth_backend(self.config)
         self._inference_events: list[dict[str, Any]] = []
         self._inference_events_limit = 2048
         self.scheduler = Scheduler(
@@ -530,6 +531,7 @@ class GatewayApp:
         self.ocr_backend = get_ocr_backend(self.config)
         self.risk_backend = get_risk_backend(self.config)
         self.seg_backend = get_seg_backend(self.config)
+        self.depth_backend = get_depth_backend(self.config)
         self._inference_events.clear()
         self._external_readiness = {}
         self.registry.clear()
@@ -829,6 +831,43 @@ class GatewayApp:
                 backend=getattr(self.risk_backend, "name", None),
                 model=getattr(self.risk_backend, "model_id", None),
                 endpoint=getattr(self.risk_backend, "endpoint", None),
+            )
+
+        if self.config.inference_enable_depth:
+            depth_started_ms = _now_ms()
+            depth_backend_name = getattr(self.depth_backend, "name", None)
+            depth_model_id = getattr(self.depth_backend, "model_id", None)
+            depth_endpoint = getattr(self.depth_backend, "endpoint", None)
+            try:
+                depth_result = await self.depth_backend.infer(
+                    frame_bytes,
+                    seq,
+                    ts_ms,
+                    run_id=run_id,
+                    targets=None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                depth_result = DepthResult(
+                    status="error",
+                    error=exc.__class__.__name__,
+                    payload={
+                        "reason": exc.__class__.__name__,
+                        "gridCount": 0,
+                        "valuesCount": 0,
+                    },
+                    latency_ms=max(0, _now_ms() - depth_started_ms),
+                )
+            await emit_depth_events(
+                depth_result,
+                frame_seq=event_frame_seq,
+                ts_ms=_now_ms(),
+                started_ts_ms=depth_started_ms,
+                sink=self._emit_inference_event,
+                run_id=run_id,
+                component=component,
+                backend=depth_backend_name,
+                model=depth_model_id,
+                endpoint=depth_endpoint,
             )
 
         if self.config.inference_enable_seg:
@@ -2620,6 +2659,10 @@ async def run_packages_list(
     max_risk_latency_max: int | None = None,
     min_seg_f1_50: float | None = None,
     min_seg_coverage: float | None = None,
+    min_depth_delta1: float | None = None,
+    max_depth_absrel: float | None = None,
+    min_depth_coverage: float | None = None,
+    max_depth_latency_p90: int | None = None,
     min_seg_mask_f1_50: float | None = None,
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
@@ -2673,6 +2716,10 @@ async def run_packages_list(
         max_risk_latency_max=max_risk_latency_max,
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
+        min_depth_delta1=min_depth_delta1,
+        max_depth_absrel=max_depth_absrel,
+        min_depth_coverage=min_depth_coverage,
+        max_depth_latency_p90=max_depth_latency_p90,
         min_seg_mask_f1_50=min_seg_mask_f1_50,
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
@@ -2727,6 +2774,10 @@ async def run_packages_list(
             "max_risk_latency_max": max_risk_latency_max,
             "min_seg_f1_50": min_seg_f1_50,
             "min_seg_coverage": min_seg_coverage,
+            "min_depth_delta1": min_depth_delta1,
+            "max_depth_absrel": max_depth_absrel,
+            "min_depth_coverage": min_depth_coverage,
+            "max_depth_latency_p90": max_depth_latency_p90,
             "min_seg_mask_f1_50": min_seg_mask_f1_50,
             "min_seg_mask_coverage": min_seg_mask_coverage,
             "max_seg_latency_p90": max_seg_latency_p90,
@@ -2785,6 +2836,10 @@ async def run_packages_export_json(
     max_risk_latency_max: int | None = None,
     min_seg_f1_50: float | None = None,
     min_seg_coverage: float | None = None,
+    min_depth_delta1: float | None = None,
+    max_depth_absrel: float | None = None,
+    min_depth_coverage: float | None = None,
+    max_depth_latency_p90: int | None = None,
     min_seg_mask_f1_50: float | None = None,
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
@@ -2838,6 +2893,10 @@ async def run_packages_export_json(
         max_risk_latency_max=max_risk_latency_max,
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
+        min_depth_delta1=min_depth_delta1,
+        max_depth_absrel=max_depth_absrel,
+        min_depth_coverage=min_depth_coverage,
+        max_depth_latency_p90=max_depth_latency_p90,
         min_seg_mask_f1_50=min_seg_mask_f1_50,
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
@@ -2898,6 +2957,10 @@ async def run_packages_export_csv(
     max_risk_latency_max: int | None = None,
     min_seg_f1_50: float | None = None,
     min_seg_coverage: float | None = None,
+    min_depth_delta1: float | None = None,
+    max_depth_absrel: float | None = None,
+    min_depth_coverage: float | None = None,
+    max_depth_latency_p90: int | None = None,
     min_seg_mask_f1_50: float | None = None,
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
@@ -2951,6 +3014,10 @@ async def run_packages_export_csv(
         max_risk_latency_max=max_risk_latency_max,
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
+        min_depth_delta1=min_depth_delta1,
+        max_depth_absrel=max_depth_absrel,
+        min_depth_coverage=min_depth_coverage,
+        max_depth_latency_p90=max_depth_latency_p90,
         min_seg_mask_f1_50=min_seg_mask_f1_50,
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
@@ -3017,6 +3084,11 @@ async def run_packages_export_csv(
         "seg_f1_50",
         "seg_latency_p90",
         "seg_coverage",
+        "depth_absrel",
+        "depth_rmse",
+        "depth_delta1",
+        "depth_coverage",
+        "depth_latency_p90",
         "frame_e2e_p90",
         "frame_e2e_max",
         "frame_seg_p90",
@@ -4441,6 +4513,7 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     depth_risk = quality_payload.get("depthRisk", {}) if isinstance(quality_payload, dict) else {}
     risk_latency = quality_payload.get("riskLatencyMs", {}) if isinstance(quality_payload, dict) else {}
     seg_quality = quality_payload.get("seg", {}) if isinstance(quality_payload, dict) else {}
+    depth_quality = quality_payload.get("depth", {}) if isinstance(quality_payload, dict) else {}
     pov_payload = summary.get("pov", {})
     pov_payload = pov_payload if isinstance(pov_payload, dict) else {}
     pov_context = summary.get("povContext", {})
@@ -4474,6 +4547,11 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     seg_f1_50: float | None = None
     seg_latency_p90: int | None = None
     seg_coverage: float | None = None
+    depth_absrel: float | None = None
+    depth_rmse: float | None = None
+    depth_delta1: float | None = None
+    depth_coverage: float | None = None
+    depth_latency_p90: int | None = None
     seg_mask_f1_50: float | None = None
     seg_mask_coverage: float | None = None
     seg_mask_mean_iou: float | None = None
@@ -4773,6 +4851,24 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         raw_mask_iou = _read_float(seg_quality, "maskMeanIoU")
         if raw_mask_iou is not None:
             seg_mask_mean_iou = float(raw_mask_iou)
+    if isinstance(depth_quality, dict):
+        raw_absrel = _read_float(depth_quality, "absRel")
+        if raw_absrel is not None:
+            depth_absrel = float(raw_absrel)
+        raw_rmse = _read_float(depth_quality, "rmse")
+        if raw_rmse is not None:
+            depth_rmse = float(raw_rmse)
+        raw_delta1 = _read_float(depth_quality, "delta1")
+        if raw_delta1 is not None:
+            depth_delta1 = float(raw_delta1)
+        raw_depth_cov = _read_float(depth_quality, "coverage")
+        if raw_depth_cov is not None:
+            depth_coverage = float(raw_depth_cov)
+        depth_latency = depth_quality.get("latencyMs")
+        depth_latency = depth_latency if isinstance(depth_latency, dict) else {}
+        raw_depth_p90 = _read_float(depth_latency, "p90")
+        if raw_depth_p90 is not None:
+            depth_latency_p90 = int(raw_depth_p90)
     seg_context_stats = seg_context_payload.get("stats")
     seg_context_stats = seg_context_stats if isinstance(seg_context_stats, dict) else {}
     seg_context_out = seg_context_stats.get("out")
@@ -4853,6 +4949,11 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "seg_f1_50": seg_f1_50,
         "seg_latency_p90": seg_latency_p90,
         "seg_coverage": seg_coverage,
+        "depth_absrel": depth_absrel,
+        "depth_rmse": depth_rmse,
+        "depth_delta1": depth_delta1,
+        "depth_coverage": depth_coverage,
+        "depth_latency_p90": depth_latency_p90,
         "seg_mask_f1_50": seg_mask_f1_50,
         "seg_mask_coverage": seg_mask_coverage,
         "seg_mask_mean_iou": seg_mask_mean_iou,
@@ -4936,6 +5037,10 @@ def _matches_run_filters(
     max_risk_latency_max: int | None,
     min_seg_f1_50: float | None,
     min_seg_coverage: float | None,
+    min_depth_delta1: float | None,
+    max_depth_absrel: float | None,
+    min_depth_coverage: float | None,
+    max_depth_latency_p90: int | None,
     min_seg_mask_f1_50: float | None,
     min_seg_mask_coverage: float | None,
     max_seg_latency_p90: int | None,
@@ -5027,6 +5132,30 @@ def _matches_run_filters(
         if value is None:
             return False
         if float(value) < float(min_seg_coverage):
+            return False
+    if min_depth_delta1 is not None:
+        value = row.get("depth_delta1")
+        if value is None:
+            return False
+        if float(value) < float(min_depth_delta1):
+            return False
+    if max_depth_absrel is not None:
+        value = row.get("depth_absrel")
+        if value is None:
+            return False
+        if float(value) > float(max_depth_absrel):
+            return False
+    if min_depth_coverage is not None:
+        value = row.get("depth_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_depth_coverage):
+            return False
+    if max_depth_latency_p90 is not None:
+        value = row.get("depth_latency_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_depth_latency_p90):
             return False
     if min_seg_mask_f1_50 is not None:
         value = row.get("seg_mask_f1_50")
@@ -5257,6 +5386,11 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "seg_f1_50",
         "seg_latency_p90",
         "seg_coverage",
+        "depth_absrel",
+        "depth_rmse",
+        "depth_delta1",
+        "depth_coverage",
+        "depth_latency_p90",
         "frame_e2e_p90",
         "frame_e2e_max",
         "frame_seg_p90",
@@ -5335,6 +5469,10 @@ async def _query_run_package_rows(
     max_risk_latency_max: int | None,
     min_seg_f1_50: float | None,
     min_seg_coverage: float | None,
+    min_depth_delta1: float | None,
+    max_depth_absrel: float | None,
+    min_depth_coverage: float | None,
+    max_depth_latency_p90: int | None,
     min_seg_mask_f1_50: float | None,
     min_seg_mask_coverage: float | None,
     max_seg_latency_p90: int | None,
@@ -5394,6 +5532,10 @@ async def _query_run_package_rows(
             max_risk_latency_max=max_risk_latency_max,
             min_seg_f1_50=min_seg_f1_50,
             min_seg_coverage=min_seg_coverage,
+            min_depth_delta1=min_depth_delta1,
+            max_depth_absrel=max_depth_absrel,
+            min_depth_coverage=min_depth_coverage,
+            max_depth_latency_p90=max_depth_latency_p90,
             min_seg_mask_f1_50=min_seg_mask_f1_50,
             min_seg_mask_coverage=min_seg_mask_coverage,
             max_seg_latency_p90=max_seg_latency_p90,
@@ -5481,6 +5623,10 @@ async def runs_dashboard(
     max_risk_latency_max: int | None = None,
     min_seg_f1_50: float | None = None,
     min_seg_coverage: float | None = None,
+    min_depth_delta1: float | None = None,
+    max_depth_absrel: float | None = None,
+    min_depth_coverage: float | None = None,
+    max_depth_latency_p90: int | None = None,
     min_seg_mask_f1_50: float | None = None,
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
@@ -5535,6 +5681,10 @@ async def runs_dashboard(
         max_risk_latency_max=max_risk_latency_max,
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
+        min_depth_delta1=min_depth_delta1,
+        max_depth_absrel=max_depth_absrel,
+        min_depth_coverage=min_depth_coverage,
+        max_depth_latency_p90=max_depth_latency_p90,
         min_seg_mask_f1_50=min_seg_mask_f1_50,
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
@@ -5620,6 +5770,16 @@ async def runs_dashboard(
         seg_mask_iou = "—" if seg_mask_iou_raw is None else f"{float(seg_mask_iou_raw):.4f}"
         seg_p90_raw = row.get("seg_latency_p90")
         seg_p90 = "—" if seg_p90_raw is None else str(int(seg_p90_raw))
+        depth_absrel_raw = row.get("depth_absrel")
+        depth_absrel = "—" if depth_absrel_raw is None else f"{float(depth_absrel_raw):.4f}"
+        depth_rmse_raw = row.get("depth_rmse")
+        depth_rmse = "—" if depth_rmse_raw is None else f"{float(depth_rmse_raw):.2f}"
+        depth_delta1_raw = row.get("depth_delta1")
+        depth_delta1 = "—" if depth_delta1_raw is None else f"{float(depth_delta1_raw):.4f}"
+        depth_cov_raw = row.get("depth_coverage")
+        depth_cov = "—" if depth_cov_raw is None else f"{float(depth_cov_raw):.4f}"
+        depth_p90_raw = row.get("depth_latency_p90")
+        depth_p90 = "—" if depth_p90_raw is None else str(int(depth_p90_raw))
         seg_ctx_chars_raw = row.get("seg_ctx_chars")
         seg_ctx_chars = "—" if seg_ctx_chars_raw is None else str(int(seg_ctx_chars_raw))
         seg_ctx_segments_raw = row.get("seg_ctx_segments")
@@ -5691,6 +5851,11 @@ async def runs_dashboard(
             f"<td>{html.escape(seg_mask_cov)}</td>"
             f"<td>{html.escape(seg_mask_iou)}</td>"
             f"<td>{html.escape(seg_p90)}</td>"
+            f"<td>{html.escape(depth_absrel)}</td>"
+            f"<td>{html.escape(depth_rmse)}</td>"
+            f"<td>{html.escape(depth_delta1)}</td>"
+            f"<td>{html.escape(depth_cov)}</td>"
+            f"<td>{html.escape(depth_p90)}</td>"
             f"<td>{html.escape(seg_ctx_chars)}</td>"
             f"<td>{html.escape(seg_ctx_segments)}</td>"
             f"<td>{html.escape(seg_ctx_trunc)}</td>"
@@ -5723,7 +5888,7 @@ async def runs_dashboard(
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='55' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='60' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -5738,6 +5903,10 @@ async def runs_dashboard(
     max_risk_latency_max_value = html.escape("" if max_risk_latency_max is None else str(max_risk_latency_max))
     min_seg_f1_50_value = html.escape("" if min_seg_f1_50 is None else str(min_seg_f1_50))
     min_seg_coverage_value = html.escape("" if min_seg_coverage is None else str(min_seg_coverage))
+    min_depth_delta1_value = html.escape("" if min_depth_delta1 is None else str(min_depth_delta1))
+    max_depth_absrel_value = html.escape("" if max_depth_absrel is None else str(max_depth_absrel))
+    min_depth_coverage_value = html.escape("" if min_depth_coverage is None else str(min_depth_coverage))
+    max_depth_latency_p90_value = html.escape("" if max_depth_latency_p90 is None else str(max_depth_latency_p90))
     min_seg_mask_f1_50_value = html.escape("" if min_seg_mask_f1_50 is None else str(min_seg_mask_f1_50))
     min_seg_mask_coverage_value = html.escape("" if min_seg_mask_coverage is None else str(min_seg_mask_coverage))
     max_seg_latency_p90_value = html.escape("" if max_seg_latency_p90 is None else str(max_seg_latency_p90))
@@ -5859,6 +6028,10 @@ async def runs_dashboard(
       <label>min_ack_kind_diversity: <input type="number" min="0" name="min_ack_kind_diversity" value="{min_ack_kind_diversity_value}" /></label>
       <label>min_seg_f1_50: <input type="number" step="0.0001" min="0" max="1" name="min_seg_f1_50" value="{min_seg_f1_50_value}" /></label>
       <label>min_seg_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_seg_coverage" value="{min_seg_coverage_value}" /></label>
+      <label>min_depth_delta1: <input type="number" step="0.0001" min="0" max="1" name="min_depth_delta1" value="{min_depth_delta1_value}" /></label>
+      <label>max_depth_absrel: <input type="number" step="0.0001" min="0" name="max_depth_absrel" value="{max_depth_absrel_value}" /></label>
+      <label>min_depth_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_depth_coverage" value="{min_depth_coverage_value}" /></label>
+      <label>max_depth_latency_p90: <input type="number" min="0" name="max_depth_latency_p90" value="{max_depth_latency_p90_value}" /></label>
       <label>min_seg_mask_f1_50: <input type="number" step="0.0001" min="0" max="1" name="min_seg_mask_f1_50" value="{min_seg_mask_f1_50_value}" /></label>
       <label>min_seg_mask_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_seg_mask_coverage" value="{min_seg_mask_coverage_value}" /></label>
       <label>max_seg_latency_p90: <input type="number" min="0" name="max_seg_latency_p90" value="{max_seg_latency_p90_value}" /></label>
@@ -5897,6 +6070,11 @@ async def runs_dashboard(
           <option value="ack_coverage" {"selected" if sort_value == "ack_coverage" else ""}>ack_coverage</option>
           <option value="seg_f1_50" {"selected" if sort_value == "seg_f1_50" else ""}>seg_f1_50</option>
           <option value="seg_coverage" {"selected" if sort_value == "seg_coverage" else ""}>seg_coverage</option>
+          <option value="depth_absrel" {"selected" if sort_value == "depth_absrel" else ""}>depth_absrel</option>
+          <option value="depth_rmse" {"selected" if sort_value == "depth_rmse" else ""}>depth_rmse</option>
+          <option value="depth_delta1" {"selected" if sort_value == "depth_delta1" else ""}>depth_delta1</option>
+          <option value="depth_coverage" {"selected" if sort_value == "depth_coverage" else ""}>depth_coverage</option>
+          <option value="depth_latency_p90" {"selected" if sort_value == "depth_latency_p90" else ""}>depth_latency_p90</option>
           <option value="seg_mask_f1_50" {"selected" if sort_value == "seg_mask_f1_50" else ""}>seg_mask_f1_50</option>
           <option value="seg_mask_coverage" {"selected" if sort_value == "seg_mask_coverage" else ""}>seg_mask_coverage</option>
           <option value="seg_mask_mean_iou" {"selected" if sort_value == "seg_mask_mean_iou" else ""}>seg_mask_mean_iou</option>
@@ -5933,8 +6111,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -5964,6 +6142,11 @@ async def runs_dashboard(
           <th>Seg Mask Coverage</th>
           <th>Seg Mask mIoU</th>
           <th>Seg p90(ms)</th>
+          <th>Depth AbsRel</th>
+          <th>Depth RMSE</th>
+          <th>Depth Delta1</th>
+          <th>Depth Coverage</th>
+          <th>Depth p90(ms)</th>
           <th>SegCtx Chars</th>
           <th>SegCtx Segments</th>
           <th>SegCtx DropSeg</th>

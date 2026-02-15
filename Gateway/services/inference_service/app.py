@@ -11,9 +11,9 @@ from fastapi import FastAPI, HTTPException
 from PIL import Image
 from pydantic import BaseModel
 
-from services.inference_service.providers.base import OCRProvider, RiskProvider, SegProvider
-from services.inference_service.providers import create_seg_provider
-from services.inference_service.providers.depth_base import DepthProvider
+from services.inference_service.providers.base import OCRProvider, RiskProvider, SegProvider, DepthProvider
+from services.inference_service.providers import create_seg_provider, create_depth_provider
+from services.inference_service.providers.depth_base import DepthProvider as RiskDepthProvider
 from services.inference_service.providers.depth_none import NoneDepthProvider
 from services.inference_service.providers.depth_synth import SynthDepthProvider
 from services.inference_service.providers.onnx_depth import OnnxDepthProvider
@@ -41,8 +41,9 @@ class InferenceRequest(BaseModel):
 app = FastAPI(title="BYES Reference Inference Service")
 _OCR_PROVIDER: OCRProvider | None = None
 _RISK_PROVIDER: RiskProvider | None = None
-_DEPTH_PROVIDER: DepthProvider | None = None
+_DEPTH_PROVIDER: RiskDepthProvider | None = None
 _SEG_PROVIDER: SegProvider | None = None
+_TOOL_DEPTH_PROVIDER: DepthProvider | None = None
 
 
 def _decode_image_b64(value: str) -> bytes:
@@ -83,7 +84,7 @@ def _select_risk_provider() -> RiskProvider:
     return ReferenceRiskProvider()
 
 
-def _select_depth_provider() -> DepthProvider:
+def _select_depth_provider() -> RiskDepthProvider:
     name = str(os.getenv("BYES_SERVICE_DEPTH_PROVIDER", "none")).strip().lower()
     if name == "synth":
         return SynthDepthProvider()
@@ -103,6 +104,13 @@ def _select_seg_provider() -> SegProvider:
     return create_seg_provider(name=name)
 
 
+def _select_tool_depth_provider() -> DepthProvider:
+    name = str(os.getenv("BYES_SERVICE_DEPTH_PROVIDER", "mock")).strip().lower()
+    if name not in {"mock", "http"}:
+        name = str(os.getenv("BYES_SERVICE_DEPTH_TOOL_PROVIDER", "mock")).strip().lower()
+    return create_depth_provider(name=name or "mock")
+
+
 def get_ocr_provider() -> OCRProvider:
     global _OCR_PROVIDER  # noqa: PLW0603
     if _OCR_PROVIDER is None:
@@ -119,7 +127,7 @@ def get_risk_provider() -> RiskProvider:
     return _RISK_PROVIDER
 
 
-def get_depth_provider() -> DepthProvider:
+def get_depth_provider() -> RiskDepthProvider:
     global _DEPTH_PROVIDER  # noqa: PLW0603
     if _DEPTH_PROVIDER is None:
         _DEPTH_PROVIDER = _select_depth_provider()
@@ -135,9 +143,20 @@ def get_seg_provider() -> SegProvider:
     return _SEG_PROVIDER
 
 
+def get_tool_depth_provider() -> DepthProvider:
+    global _TOOL_DEPTH_PROVIDER  # noqa: PLW0603
+    if _TOOL_DEPTH_PROVIDER is None:
+        _TOOL_DEPTH_PROVIDER = _select_tool_depth_provider()
+        print(
+            f"[inference_service] selected DEPTH_TOOL provider={_TOOL_DEPTH_PROVIDER.name} model={_TOOL_DEPTH_PROVIDER.model}"
+        )
+    return _TOOL_DEPTH_PROVIDER
+
+
 @app.on_event("startup")
 def _startup_provider() -> None:
     get_depth_provider()
+    get_tool_depth_provider()
     get_ocr_provider()
     get_risk_provider()
     get_seg_provider()
@@ -149,6 +168,7 @@ def healthz() -> dict[str, Any]:
     risk_provider = get_risk_provider()
     depth_provider = get_depth_provider()
     seg_provider = get_seg_provider()
+    depth_tool_provider = get_tool_depth_provider()
     return {
         "ok": True,
         "ocrProvider": ocr_provider.name,
@@ -159,6 +179,8 @@ def healthz() -> dict[str, Any]:
         "depthModel": depth_provider.model,
         "segProvider": seg_provider.name,
         "segModel": seg_provider.model,
+        "depthToolProvider": depth_tool_provider.name,
+        "depthToolModel": depth_tool_provider.model,
     }
 
 
@@ -325,6 +347,57 @@ def infer_seg(request: InferenceRequest) -> dict[str, Any]:
         response["targetsUsed"] = [str(item).strip() for item in targets_used_raw if str(item).strip()]
     elif targets:
         response["targetsUsed"] = targets
+    return response
+
+
+@app.post("/depth")
+def infer_depth(request: InferenceRequest) -> dict[str, Any]:
+    started = _now_ms()
+    image = _decode_pil_image(request.image_b64)
+    provider = get_tool_depth_provider()
+    targets = [str(item).strip() for item in (request.targets or []) if str(item).strip()]
+    try:
+        result = provider.infer(image, request.frameSeq, request.runId, targets=targets or None)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"depth_infer_failed:{exc.__class__.__name__}") from exc
+
+    grid = result.get("grid")
+    grid = grid if isinstance(grid, dict) else None
+    model = str(result.get("model", provider.model)).strip() or provider.model
+    latency_ms = max(0, _now_ms() - started)
+    backend = str(result.get("backend", provider.name)).strip().lower() or provider.name
+    endpoint = result.get("endpoint", provider.endpoint)
+    endpoint_text = str(endpoint).strip() if endpoint is not None else ""
+    response: dict[str, Any] = {
+        "latencyMs": latency_ms,
+        "model": model,
+        "backend": backend,
+        "endpoint": endpoint_text or None,
+        "gridCount": int(result.get("gridCount", 1 if isinstance(grid, dict) else 0) or 0),
+        "valuesCount": int(result.get("valuesCount", 0) or 0),
+    }
+    image_width = result.get("imageWidth")
+    image_height = result.get("imageHeight")
+    try:
+        if image_width is not None and int(image_width) > 0:
+            response["imageWidth"] = int(image_width)
+    except Exception:
+        pass
+    try:
+        if image_height is not None and int(image_height) > 0:
+            response["imageHeight"] = int(image_height)
+    except Exception:
+        pass
+    if isinstance(grid, dict):
+        response["grid"] = grid
+    warnings_count = result.get("warningsCount")
+    try:
+        if warnings_count is not None and int(warnings_count) > 0:
+            response["warningsCount"] = int(warnings_count)
+    except Exception:
+        pass
     return response
 
 

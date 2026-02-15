@@ -5,7 +5,7 @@ import inspect
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse, urlunparse
 
-from byes.inference.backends.base import OCRResult, RiskResult, SegResult
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult
 
 SCHEMA_VERSION = "byes.event.v1"
 
@@ -174,6 +174,50 @@ async def emit_seg_events(
             component=component,
             category="tool",
             name="seg.segment",
+            phase=phase,
+            status=normalized_status,
+            latency_ms=latency_ms,
+            payload=payload,
+            run_id=run_id,
+        ),
+    )
+
+
+async def emit_depth_events(
+    result: DepthResult,
+    *,
+    frame_seq: int | None,
+    ts_ms: int,
+    sink: EventSink,
+    run_id: str | None = None,
+    component: str = "gateway",
+    started_ts_ms: int | None = None,
+    backend: str | None = None,
+    model: str | None = None,
+    endpoint: str | None = None,
+) -> None:
+    payload = _sanitize_payload(result.payload)
+    payload = _with_inference_metadata(payload, backend=backend, model=model, endpoint=endpoint)
+    if "backend" not in payload:
+        payload["backend"] = str(backend or "").strip().lower() or None
+    if "model" not in payload:
+        payload["model"] = str(model or "").strip() or None
+    if "endpoint" not in payload:
+        payload["endpoint"] = _sanitize_endpoint(endpoint)
+    payload = _normalize_depth_payload(payload, result.grid)
+    if result.error and "reason" not in payload:
+        payload["reason"] = result.error
+    normalized_status = _normalize_status(result.status, result.error)
+    phase = _phase_for_status(normalized_status)
+    latency_ms = _resolve_latency_ms(result.latency_ms, started_ts_ms, ts_ms)
+    await _emit(
+        sink,
+        _base_event(
+            ts_ms=ts_ms,
+            frame_seq=frame_seq,
+            component=component,
+            category="tool",
+            name="depth.estimate",
             phase=phase,
             status=normalized_status,
             latency_ms=latency_ms,
@@ -417,3 +461,76 @@ def _normalize_seg_mask(mask_raw: Any) -> tuple[dict[str, Any] | None, int]:
         return None, 1
 
     return {"format": "rle_v1", "size": [h, w], "counts": counts}, 0
+
+
+def _normalize_depth_payload(payload: dict[str, Any], raw_grid: Any) -> dict[str, Any]:
+    out = dict(payload) if isinstance(payload, dict) else {}
+    warnings_count = _to_nonnegative_int(out.get("warningsCount"))
+
+    image_width = _to_positive_int(out.get("imageWidth"))
+    image_height = _to_positive_int(out.get("imageHeight"))
+    if image_width is not None:
+        out["imageWidth"] = image_width
+    if image_height is not None:
+        out["imageHeight"] = image_height
+
+    grid_raw = raw_grid if isinstance(raw_grid, dict) else out.get("grid")
+    grid, grid_warnings = _normalize_depth_grid(grid_raw)
+    warnings_count += grid_warnings
+    if isinstance(grid, dict):
+        out["grid"] = grid
+        values = grid.get("values")
+        values_count = len(values) if isinstance(values, list) else 0
+        out["valuesCount"] = values_count
+        out["gridCount"] = 1
+    else:
+        out.pop("grid", None)
+        out["valuesCount"] = 0
+        out["gridCount"] = 0
+
+    if warnings_count > 0:
+        out["warningsCount"] = int(warnings_count)
+    elif "warningsCount" in out:
+        out.pop("warningsCount", None)
+    return out
+
+
+def _normalize_depth_grid(raw: Any) -> tuple[dict[str, Any] | None, int]:
+    if not isinstance(raw, dict):
+        return None, 0
+
+    warnings = 0
+    fmt = str(raw.get("format", "")).strip()
+    if fmt != "grid_u16_mm_v1":
+        return None, 1
+    unit = str(raw.get("unit", "")).strip().lower()
+    if unit != "mm":
+        return None, 1
+
+    size_raw = raw.get("size")
+    if not isinstance(size_raw, list) or len(size_raw) != 2:
+        return None, 1
+    try:
+        gw = int(size_raw[0])
+        gh = int(size_raw[1])
+    except Exception:
+        return None, 1
+    if gw <= 0 or gh <= 0:
+        return None, 1
+
+    values_raw = raw.get("values")
+    if not isinstance(values_raw, list):
+        return None, 1
+    values: list[int] = []
+    for value in values_raw:
+        try:
+            parsed = int(value)
+        except Exception:
+            return None, 1
+        clamped = max(0, min(65535, parsed))
+        if clamped != parsed:
+            warnings += 1
+        values.append(clamped)
+    if len(values) != gw * gh:
+        return None, warnings + 1
+    return {"format": "grid_u16_mm_v1", "size": [gw, gh], "unit": "mm", "values": values}, warnings

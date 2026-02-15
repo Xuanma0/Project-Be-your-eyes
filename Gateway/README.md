@@ -190,6 +190,63 @@ Expected evidence:
 - `seg.segment.payload.segments[*].mask` keeps `rle_v1`.
 - `report.json -> quality.seg` includes `maskCoverage`, `maskFramesWithGt`, `maskFramesWithPred`.
 
+## Depth Estimation (mock/http)
+
+Enable depth event emission in Gateway:
+
+```powershell
+cd Gateway
+$env:BYES_ENABLE_DEPTH="1"
+$env:BYES_DEPTH_BACKEND="mock"   # or http
+$env:BYES_DEPTH_MODEL_ID="mock-depth-v1"
+# when using http backend:
+# $env:BYES_DEPTH_HTTP_URL="http://127.0.0.1:19120/depth"
+```
+
+Expected evidence:
+- `events/events_v1.jsonl` contains `name="depth.estimate"` with `grid`, `backend`, `model`, `endpoint`.
+- `report.json -> inference.depth` is inferred from `depth.estimate`.
+- `report.json -> quality.depth` includes `absRel`, `rmse`, `delta1`, `coverage`, `latencyMs`.
+
+Depth quality evaluation (grid metrics):
+
+```powershell
+python scripts/report_run.py --run-package tests/fixtures/run_package_with_depth_gt_min
+python scripts/run_regression_suite.py --suite regression/suites/contract_suite.json --baseline regression/baselines/baseline.json --fail-on-drop
+```
+
+`report.json -> quality.depth` fields:
+- `framesTotal / framesWithGt / framesWithPred / coverage`
+- `absRel / rmse / delta1`
+- `latencyMs` (`p50/p90/max`)
+- `topBadCells` (debug samples)
+
+Leaderboard fields:
+- columns: `depth_absrel`, `depth_rmse`, `depth_delta1`, `depth_coverage`, `depth_latency_p90`
+- filters: `min_depth_delta1`, `max_depth_absrel`, `min_depth_coverage`, `max_depth_latency_p90`
+- sort: `sort=depth_absrel|depth_rmse|depth_delta1|depth_coverage|depth_latency_p90`
+
+Reference depth HTTP chain (Gateway -> inference_service -> reference_depth_service):
+
+```powershell
+# terminal 1: reference depth service
+python -m uvicorn services.reference_depth_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19241
+
+# terminal 2: inference_service (depth provider=http -> reference depth service)
+$env:BYES_SERVICE_DEPTH_PROVIDER="http"
+$env:BYES_SERVICE_DEPTH_ENDPOINT="http://127.0.0.1:19241/depth"
+$env:BYES_SERVICE_DEPTH_MODEL_ID="reference-depth-v1"
+python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
+
+# terminal 3: Gateway replay/report with depth enabled
+cd Gateway
+$env:BYES_ENABLE_DEPTH="1"
+$env:BYES_DEPTH_BACKEND="http"
+$env:BYES_DEPTH_HTTP_URL="http://127.0.0.1:19120/depth"
+python scripts/replay_run_package.py --run-package tests/fixtures/run_package_with_depth_gt_min --reset
+python scripts/report_run.py --run-package tests/fixtures/run_package_with_depth_gt_min
+```
+
 Seg prompt budget sweep (local tooling, not CI gate):
 
 ```powershell

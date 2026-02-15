@@ -29,6 +29,7 @@
 - `plan.generate`
 - `plan.execute`
 - `seg.segment`
+- `depth.estimate`
 - `ui.command`
 - `ui.confirm_request`
 - `ui.confirm_response`
@@ -127,5 +128,33 @@
   "status": "ok",
   "latencyMs": 300,
   "payload": {"reason": "critical_latch"}
+}
+```
+
+### 5) Depth estimate result
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000000950,
+  "frameSeq": 1,
+  "component": "gateway",
+  "category": "tool",
+  "name": "depth.estimate",
+  "phase": "result",
+  "status": "ok",
+  "latencyMs": 42,
+  "payload": {
+    "backend": "http",
+    "model": "reference-depth-v1",
+    "endpoint": "http://127.0.0.1:19241/depth",
+    "grid": {
+      "format": "grid_u16_mm_v1",
+      "size": [16, 16],
+      "unit": "mm",
+      "values": [1000, 1002, 1004]
+    },
+    "gridCount": 1,
+    "valuesCount": 256
+  }
 }
 ```

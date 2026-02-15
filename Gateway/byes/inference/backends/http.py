@@ -8,7 +8,7 @@ from urllib.parse import urlparse, urlunparse
 
 import httpx
 
-from byes.inference.backends.base import OCRResult, RiskResult, SegResult
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult
 
 
 def _now_ms() -> int:
@@ -249,6 +249,97 @@ class HttpSegBackend:
             self.model_id = text
 
 
+class HttpDepthBackend:
+    name = "http"
+
+    def __init__(self, url: str, timeout_ms: int = 1200, model_id: str | None = None) -> None:
+        self.url = str(url).strip()
+        self.timeout_ms = max(1, int(timeout_ms))
+        self.model_id = str(model_id or "").strip() or None
+        self.endpoint = _sanitize_endpoint(self.url)
+
+    async def infer(
+        self,
+        image_bytes: bytes,
+        frame_seq: int | None,
+        ts_ms: int,
+        run_id: str | None = None,
+        targets: list[str] | None = None,
+    ) -> DepthResult:
+        started = _now_ms()
+        request_payload: dict[str, Any] = {
+            "frameSeq": frame_seq,
+            "tsMs": ts_ms,
+            "image_b64": base64.b64encode(image_bytes).decode("ascii"),
+        }
+        run_id_text = str(run_id or "").strip()
+        if run_id_text:
+            request_payload["runId"] = run_id_text
+        targets_normalized = [str(item).strip() for item in (targets or []) if str(item).strip()]
+        if targets_normalized:
+            request_payload["targets"] = targets_normalized
+        try:
+            timeout_s = max(0.05, self.timeout_ms / 1000.0)
+            async with httpx.AsyncClient(timeout=timeout_s) as client:
+                response = await client.post(self.url, json=request_payload)
+            latency = max(0, _now_ms() - started)
+            if response.status_code >= 400:
+                return DepthResult(
+                    grid=None,
+                    latency_ms=latency,
+                    status="timeout" if response.status_code == 408 else "error",
+                    error=f"http_{response.status_code}",
+                    payload={"error": f"http_{response.status_code}", "gridCount": 0, "valuesCount": 0},
+                )
+            payload = response.json()
+            self._update_model_id(payload)
+            normalized_payload = _normalize_payload(payload)
+            grid = None
+            if isinstance(payload, dict):
+                grid = _normalize_depth_grid(payload.get("grid"))
+            if isinstance(grid, dict):
+                normalized_payload["grid"] = grid
+                normalized_payload["gridCount"] = 1
+                normalized_payload["valuesCount"] = len(grid.get("values", []))
+            else:
+                normalized_payload.setdefault("gridCount", 0)
+                normalized_payload.setdefault("valuesCount", 0)
+            return DepthResult(
+                grid=grid,
+                latency_ms=latency,
+                status="ok",
+                payload=normalized_payload,
+            )
+        except httpx.TimeoutException as exc:
+            latency = max(0, _now_ms() - started)
+            return DepthResult(
+                grid=None,
+                latency_ms=latency,
+                status="timeout",
+                error=exc.__class__.__name__,
+                payload={"error": exc.__class__.__name__, "gridCount": 0, "valuesCount": 0},
+            )
+        except Exception as exc:  # noqa: BLE001
+            latency = max(0, _now_ms() - started)
+            return DepthResult(
+                grid=None,
+                latency_ms=latency,
+                status="error",
+                error=exc.__class__.__name__,
+                payload={"error": exc.__class__.__name__, "gridCount": 0, "valuesCount": 0},
+            )
+
+    def _update_model_id(self, payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        value = payload.get("model")
+        if value is None:
+            return
+        text = str(value).strip()
+        if text:
+            self.model_id = text
+
+
 def _normalize_payload(payload: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
         out = dict(payload)
@@ -289,3 +380,35 @@ def _collect_risk_threshold_overrides_from_env() -> dict[str, float]:
         except Exception:  # noqa: BLE001
             continue
     return out
+
+
+def _normalize_depth_grid(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    if str(raw.get("format", "")).strip() != "grid_u16_mm_v1":
+        return None
+    if str(raw.get("unit", "")).strip().lower() != "mm":
+        return None
+    size_raw = raw.get("size")
+    if not isinstance(size_raw, list) or len(size_raw) != 2:
+        return None
+    try:
+        gw = int(size_raw[0])
+        gh = int(size_raw[1])
+    except Exception:
+        return None
+    if gw <= 0 or gh <= 0:
+        return None
+    values_raw = raw.get("values")
+    if not isinstance(values_raw, list):
+        return None
+    values: list[int] = []
+    for item in values_raw:
+        try:
+            parsed = int(item)
+        except Exception:
+            return None
+        values.append(max(0, min(65535, parsed)))
+    if len(values) != gw * gh:
+        return None
+    return {"format": "grid_u16_mm_v1", "size": [gw, gh], "unit": "mm", "values": values}

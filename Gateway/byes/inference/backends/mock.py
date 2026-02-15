@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from byes.inference.backends.base import OCRResult, RiskResult, SegResult
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult
 
 
 def _now_ms() -> int:
@@ -92,5 +92,45 @@ class MockSegBackend:
                 "backend": "mock",
                 "targetsCount": len(normalized_targets),
                 "targetsUsed": normalized_targets,
+            },
+        )
+
+
+class MockDepthBackend:
+    name = "mock"
+
+    def __init__(self, model_id: str = "mock-depth", grid_size: tuple[int, int] = (16, 16)) -> None:
+        self.model_id: str | None = str(model_id or "").strip() or "mock-depth"
+        self.endpoint: str | None = None
+        self._grid_size = (max(1, int(grid_size[0])), max(1, int(grid_size[1])))
+
+    async def infer(
+        self,
+        image_bytes: bytes,
+        frame_seq: int | None,
+        ts_ms: int,
+        run_id: str | None = None,
+        targets: list[str] | None = None,
+    ) -> DepthResult:
+        started = _now_ms()
+        del image_bytes, ts_ms, run_id, targets
+        gw, gh = self._grid_size
+        seq = int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1
+        base = 900 + (seq % 5) * 25
+        values: list[int] = []
+        for y in range(gh):
+            for x in range(gw):
+                values.append(int(max(0, min(65535, base + x * 6 + y * 4))))
+        latency = max(0, _now_ms() - started)
+        grid = {"format": "grid_u16_mm_v1", "size": [gw, gh], "unit": "mm", "values": values}
+        return DepthResult(
+            grid=grid,
+            latency_ms=latency,
+            status="ok",
+            payload={
+                "grid": grid,
+                "gridCount": 1,
+                "valuesCount": len(values),
+                "backend": self.name,
             },
         )
