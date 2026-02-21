@@ -5,6 +5,7 @@ import contextlib
 import csv
 import hashlib
 import html
+import importlib.util
 import io
 import json
 import os
@@ -13,6 +14,7 @@ import shutil
 import threading
 import tempfile
 import time
+import wave
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 from typing import Any, Literal
@@ -408,6 +410,24 @@ class ConfirmResponseRequest(BaseModel):
         return self
 
 
+class TtsSynthesizeRequest(BaseModel):
+    text: str
+    speaker: str = "Chelsie"
+    language: str = "Auto"
+    instruct: str = ""
+
+    @model_validator(mode="after")
+    def _validate_text(self) -> "TtsSynthesizeRequest":
+        cleaned = str(self.text or "").strip()
+        if not cleaned:
+            raise ValueError("text is required")
+        self.text = cleaned
+        self.speaker = str(self.speaker or "Chelsie").strip() or "Chelsie"
+        self.language = str(self.language or "Auto").strip() or "Auto"
+        self.instruct = str(self.instruct or "")
+        return self
+
+
 class ConnectionManager:
     def __init__(self) -> None:
         self.active: set[WebSocket] = set()
@@ -530,6 +550,10 @@ class GatewayApp:
         self.run_packages_index_path = self.run_packages_root / "index.json"
         self._run_packages_lock = asyncio.Lock()
         self.pov_store = PovStore()
+        self._tts_service: Any | None = None
+        self._tts_ready = False
+        self._tts_reason = "not_initialized"
+        self._tts_tested_at_ms = -1
 
     async def startup(self) -> None:
         self.run_packages_root.mkdir(parents=True, exist_ok=True)
@@ -573,6 +597,107 @@ class GatewayApp:
         await self.scheduler.start()
         self.degradation.set_ws_client_count(0)
         self._degrade_watchdog_task = asyncio.create_task(self._degradation_watchdog_loop())
+        await self._startup_tts_probe()
+
+    async def _startup_tts_probe(self) -> None:
+        self._tts_ready = False
+        self._tts_reason = "probing"
+        self._tts_tested_at_ms = _now_ms()
+        try:
+            await asyncio.to_thread(self._initialize_tts_service_and_test)
+        except Exception as exc:  # noqa: BLE001
+            self._tts_service = None
+            self._tts_ready = False
+            self._tts_reason = f"startup_probe_failed:{exc.__class__.__name__}"
+            self._tts_tested_at_ms = _now_ms()
+
+    def _initialize_tts_service_and_test(self) -> None:
+        script_path = Path(__file__).resolve().parent / "AI" / "Qwen TTS" / "qwen_tts_call.py"
+        if not script_path.exists():
+            self._tts_service = None
+            self._tts_ready = False
+            self._tts_reason = f"script_not_found:{script_path}"
+            self._tts_tested_at_ms = _now_ms()
+            return
+
+        spec = importlib.util.spec_from_file_location("byes_qwen_tts_call", str(script_path))
+        if spec is None or spec.loader is None:
+            self._tts_service = None
+            self._tts_ready = False
+            self._tts_reason = "module_spec_invalid"
+            self._tts_tested_at_ms = _now_ms()
+            return
+
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        get_service = getattr(module, "get_tts_service", None)
+        if get_service is None:
+            self._tts_service = None
+            self._tts_ready = False
+            self._tts_reason = "get_tts_service_missing"
+            self._tts_tested_at_ms = _now_ms()
+            return
+
+        service = get_service()
+        probe_text = os.getenv("BYES_TTS_STARTUP_TEST_TEXT", "startup tts probe")
+        probe_speaker = os.getenv("BYES_TTS_STARTUP_TEST_SPEAKER", "Chelsie")
+        wav, sr = service.synthesize(text=probe_text, speaker=probe_speaker, language="Auto", instruct="")
+        sample_count = 0
+        try:
+            sample_count = int(len(wav))
+        except Exception:
+            sample_count = 0
+        if sample_count <= 0 or int(sr) <= 0:
+            raise RuntimeError("tts_probe_invalid_audio")
+
+        self._tts_service = service
+        self._tts_ready = True
+        self._tts_reason = "ok"
+        self._tts_tested_at_ms = _now_ms()
+
+    @staticmethod
+    def _wav_to_bytes(wav: Any, sample_rate: int) -> bytes:
+        import numpy as np
+
+        array = np.asarray(wav)
+        if array.ndim > 1:
+            array = array.reshape(-1)
+        array = np.nan_to_num(array, nan=0.0, posinf=1.0, neginf=-1.0)
+        pcm = np.clip(array, -1.0, 1.0)
+        pcm16 = (pcm * 32767.0).astype(np.int16)
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(max(8000, int(sample_rate)))
+            wav_file.writeframes(pcm16.tobytes())
+        return buf.getvalue()
+
+    async def synthesize_tts_wav(self, req: TtsSynthesizeRequest) -> bytes:
+        if self._tts_service is None or not self._tts_ready:
+            raise RuntimeError("tts_not_ready")
+        service = self._tts_service
+        if service is None:
+            raise RuntimeError("tts_not_ready")
+
+        def _run() -> tuple[Any, int]:
+            return service.synthesize(
+                text=req.text,
+                speaker=req.speaker,
+                language=req.language,
+                instruct=req.instruct,
+            )
+
+        wav, sr = await asyncio.to_thread(_run)
+        return self._wav_to_bytes(wav, int(sr))
+
+    def tts_status(self) -> dict[str, Any]:
+        return {
+            "ready": bool(self._tts_ready),
+            "reason": str(self._tts_reason),
+            "testedAtMs": int(self._tts_tested_at_ms),
+        }
 
     def _to_run_packages_relative(self, path: Path) -> str:
         root = self.run_packages_root.resolve()
@@ -1516,6 +1641,25 @@ def list_tools() -> dict[str, Any]:
 @app.get("/api/external_readiness")
 def external_readiness() -> dict[str, Any]:
     return {"tools": gateway._external_readiness}  # noqa: SLF001
+
+
+@app.get("/api/tts/status")
+def tts_status() -> dict[str, Any]:
+    return {"ok": True, **gateway.tts_status()}
+
+
+@app.post("/api/tts/synthesize")
+async def tts_synthesize(request: TtsSynthesizeRequest) -> Response:
+    if not gateway.tts_status().get("ready", False):
+        raise HTTPException(status_code=503, detail=f"tts_unavailable:{gateway.tts_status().get('reason', 'unknown')}")
+    try:
+        wav_bytes = await gateway.synthesize_tts_wav(request)
+    except Exception as ex:  # noqa: BLE001
+        gateway._tts_ready = False  # noqa: SLF001
+        gateway._tts_reason = f"runtime_failed:{ex.__class__.__name__}"  # noqa: SLF001
+        gateway._tts_tested_at_ms = _now_ms()  # noqa: SLF001
+        raise HTTPException(status_code=503, detail=f"tts_runtime_failed:{ex.__class__.__name__}") from ex
+    return Response(content=wav_bytes, media_type="audio/wav")
 
 
 @app.post("/api/frame")

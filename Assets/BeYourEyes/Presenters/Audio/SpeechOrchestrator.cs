@@ -81,14 +81,13 @@ namespace BeYourEyes.Presenters.Audio
                 return;
             }
 
-            var androidBackend = new AndroidTtsBackend();
-            if (androidBackend.Initialize(this, speechRate, pitch))
+            var cloudFirstBackend = new CloudGatewayTtsBackend();
+            if (cloudFirstBackend.Initialize(this, speechRate, pitch))
             {
-                ttsBackend = androidBackend;
+                ttsBackend = cloudFirstBackend;
                 return;
             }
 
-            androidBackend.Shutdown();
             var dummy = new DummyTtsBackend();
             dummy.Initialize(this, speechRate, pitch);
             ttsBackend = dummy;
