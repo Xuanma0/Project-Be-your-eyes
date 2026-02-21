@@ -5,6 +5,28 @@ TL;DR:
 - It supports replay-first evaluation: `RunPackage -> events_v1 -> report.json -> leaderboard -> regression gate`.
 - For provider deployment details, read `Gateway/services/inference_service/README.md`.
 
+## Environment Setup (PowerShell, required)
+
+Option A: `venv`
+
+```powershell
+cd Gateway
+python -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+```
+
+Option B: conda
+
+```powershell
+cd Gateway
+conda create -n byes python=3.11 -y
+conda activate byes
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+```
+
 ## Common Commands (PowerShell)
 
 ```powershell

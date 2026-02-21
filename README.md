@@ -15,27 +15,49 @@ Project-Be-your-eyes (Be Your Eyes) is an event-driven assistive perception syst
 
 ## Quick Start (PowerShell)
 
-### 1) Run Gateway tests only
+### 1) Prepare Python environment (required for Gateway)
+
+Option A: `venv`
+
+```powershell
+cd Gateway
+python -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+```
+
+Option B: conda
+
+```powershell
+cd Gateway
+conda create -n byes python=3.11 -y
+conda activate byes
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+```
+
+### 2) Run Gateway tests only
 
 ```powershell
 cd Gateway
 python -m pytest -q
 ```
 
-### 2) Minimal replay
+### 3) Minimal replay
 
 ```powershell
 cd ..
 python Gateway/scripts/replay_run_package.py --run-package Gateway/tests/fixtures/run_package_with_risk_gt_min --reset
 ```
 
-### 3) Generate report
+### 4) Generate report
 
 ```powershell
 python Gateway/scripts/report_run.py --run-package Gateway/tests/fixtures/run_package_with_risk_gt_min
 ```
 
-### 4) Run regression
+### 5) Run regression
 
 ```powershell
 python Gateway/scripts/run_regression_suite.py --suite Gateway/regression/suites/baseline_suite.json --baseline Gateway/regression/baselines/baseline.json --fail-on-drop --fail-on-critical-fn
