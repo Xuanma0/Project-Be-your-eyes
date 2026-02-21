@@ -24,13 +24,29 @@ class HttpOCRBackend:
         self.model_id = str(model_id or "").strip() or None
         self.endpoint = _sanitize_endpoint(self.url)
 
-    async def infer(self, image_bytes: bytes, frame_seq: int | None, ts_ms: int) -> OCRResult:
+    async def infer(
+        self,
+        image_bytes: bytes,
+        frame_seq: int | None,
+        ts_ms: int,
+        run_id: str | None = None,
+        targets: list[str] | None = None,
+        prompt: dict[str, Any] | None = None,
+    ) -> OCRResult:
         started = _now_ms()
-        request_payload = {
+        request_payload: dict[str, Any] = {
             "frameSeq": frame_seq,
             "tsMs": ts_ms,
             "image_b64": base64.b64encode(image_bytes).decode("ascii"),
         }
+        run_id_text = str(run_id or "").strip()
+        if run_id_text:
+            request_payload["runId"] = run_id_text
+        targets_normalized = [str(item).strip() for item in (targets or []) if str(item).strip()]
+        if targets_normalized:
+            request_payload["targets"] = targets_normalized
+        if isinstance(prompt, dict):
+            request_payload["prompt"] = prompt
         try:
             timeout_s = max(0.05, self.timeout_ms / 1000.0)
             async with httpx.AsyncClient(timeout=timeout_s) as client:
@@ -39,6 +55,7 @@ class HttpOCRBackend:
             if response.status_code >= 400:
                 return OCRResult(
                     text="",
+                    lines=[],
                     latency_ms=latency,
                     status="timeout" if response.status_code == 408 else "error",
                     error=f"http_{response.status_code}",
@@ -46,11 +63,23 @@ class HttpOCRBackend:
                 )
             payload = response.json()
             self._update_model_id(payload)
+            lines: list[dict[str, Any]] = []
             text = ""
             if isinstance(payload, dict):
-                text = str(payload.get("text", payload.get("summary", "")) or "")
+                raw_lines = payload.get("lines")
+                if isinstance(raw_lines, list):
+                    for row in raw_lines:
+                        normalized = _normalize_ocr_line(row)
+                        if normalized is not None:
+                            lines.append(normalized)
+                text = str(payload.get("text", payload.get("summary", "")) or "").strip()
+            if not lines and text:
+                lines = [{"text": text}]
+            if not text and lines:
+                text = " ".join(str(item.get("text", "")).strip() for item in lines if str(item.get("text", "")).strip())
             return OCRResult(
                 text=text,
+                lines=lines,
                 latency_ms=latency,
                 status="ok",
                 payload=_normalize_payload(payload),
@@ -60,6 +89,7 @@ class HttpOCRBackend:
             latency = max(0, _now_ms() - started)
             return OCRResult(
                 text="",
+                lines=[],
                 latency_ms=latency,
                 status="timeout",
                 error=exc.__class__.__name__,
@@ -69,6 +99,7 @@ class HttpOCRBackend:
             latency = max(0, _now_ms() - started)
             return OCRResult(
                 text="",
+                lines=[],
                 latency_ms=latency,
                 status="error",
                 error=exc.__class__.__name__,
@@ -349,6 +380,37 @@ def _normalize_payload(payload: Any) -> dict[str, Any]:
         out.pop("duration_ms", None)
         return out
     return {"raw": payload}
+
+
+def _normalize_ocr_line(raw: Any) -> dict[str, Any] | None:
+    if isinstance(raw, str):
+        text = raw.strip()
+        return {"text": text} if text else None
+    if not isinstance(raw, dict):
+        return None
+    text = str(raw.get("text", "")).strip()
+    if not text:
+        return None
+    out: dict[str, Any] = {"text": text}
+    score = raw.get("score")
+    if score is not None:
+        try:
+            parsed = float(score)
+            out["score"] = max(0.0, min(1.0, parsed))
+        except Exception:
+            pass
+    bbox = raw.get("bbox")
+    if isinstance(bbox, list) and len(bbox) == 4:
+        coords: list[float] = []
+        for value in bbox:
+            try:
+                coords.append(float(value))
+            except Exception:
+                coords = []
+                break
+        if len(coords) == 4:
+            out["bbox"] = coords
+    return out
 
 
 def _sanitize_endpoint(url: str) -> str | None:

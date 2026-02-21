@@ -16,13 +16,33 @@ _FRAME_RE = re.compile(r"(?:frame[_-]?|seq[_-]?)(\d+)", re.IGNORECASE)
 
 def load_gt_ocr_jsonl(path: Path) -> dict[int, str]:
     rows: dict[int, str] = {}
+    if path.suffix.lower() == ".json":
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            return rows
+        frames: list[dict[str, Any]] = []
+        if isinstance(payload, dict):
+            raw_frames = payload.get("frames")
+            if isinstance(raw_frames, list):
+                frames = [item for item in raw_frames if isinstance(item, dict)]
+        elif isinstance(payload, list):
+            frames = [item for item in payload if isinstance(item, dict)]
+        for item in frames:
+            seq = _extract_frame_seq(item)
+            if seq is None:
+                continue
+            text = _extract_ocr_text(item)
+            rows[seq] = text
+        return rows
+
     for item in _iter_jsonl(path):
         if not isinstance(item, dict):
             continue
         seq = _extract_frame_seq(item)
         if seq is None:
             continue
-        text = _read_text(item)
+        text = _extract_ocr_text(item)
         rows[seq] = text
     return rows
 
@@ -279,21 +299,14 @@ def extract_pred_ocr_from_ws_events(ws_events_jsonl_path: Path) -> dict[int, dic
     for event in normalized_events:
         name = str(event.get("name", "")).strip().lower()
         phase = str(event.get("phase", "")).strip().lower()
-        if name != "ocr.scan_text":
+        if name not in {"ocr.scan_text", "ocr.read"}:
             continue
         if phase and phase not in {"result", "info"}:
             continue
         seq = _parse_int(event.get("frameSeq"))
         if seq is None:
             continue
-        payload = event.get("payload")
-        text = ""
-        if isinstance(payload, dict):
-            text = str(payload.get("text", "")).strip()
-            if not text:
-                text = str(payload.get("summary", "")).strip()
-        if not text:
-            text = str(event.get("name", "")).strip() if False else ""
+        text = _extract_ocr_text(event)
         if not text:
             continue
         latency_ms = _parse_int(event.get("latencyMs"))
@@ -424,7 +437,7 @@ def extract_ocr_intent_frames_from_ws_events(ws_events_jsonl_path: Path) -> set[
     for event in normalized_events:
         name = str(event.get("name", "")).strip().lower()
         phase = str(event.get("phase", "")).strip().lower()
-        if name == "ocr.scan_text" and phase == "start":
+        if name in {"ocr.scan_text", "ocr.read"} and phase == "start":
             seq = _parse_int(event.get("frameSeq"))
             if seq is not None:
                 intent_frames.add(seq)
@@ -2366,7 +2379,7 @@ def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict
         if not isinstance(event, dict):
             continue
         name = str(event.get("name", "")).strip().lower()
-        if name == "ocr.scan_text":
+        if name in {"ocr.scan_text", "ocr.read"}:
             bucket = summary["ocr"]
         elif name in {"risk.hazards", "risk.depth"}:
             bucket = summary["risk"]
@@ -2434,7 +2447,7 @@ def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> 
             continue
 
         name = str(event.get("name", "")).strip().lower()
-        if name == "ocr.scan_text":
+        if name in {"ocr.scan_text", "ocr.read"}:
             bucket = summary["ocr"]
         elif name == "risk.hazards":
             bucket = summary["risk"]

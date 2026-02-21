@@ -12,16 +12,13 @@ from PIL import Image
 from pydantic import BaseModel
 
 from services.inference_service.providers.base import OCRProvider, RiskProvider, SegProvider, DepthProvider
-from services.inference_service.providers import create_seg_provider, create_depth_provider
+from services.inference_service.providers import create_ocr_provider, create_seg_provider, create_depth_provider
 from services.inference_service.providers.depth_base import DepthProvider as RiskDepthProvider
 from services.inference_service.providers.depth_none import NoneDepthProvider
 from services.inference_service.providers.depth_synth import SynthDepthProvider
 from services.inference_service.providers.onnx_depth import OnnxDepthProvider
 from services.inference_service.providers.heuristic_risk import HeuristicRiskProvider
-from services.inference_service.providers.paddleocr_ocr import PaddleOcrProvider
-from services.inference_service.providers.reference_ocr import ReferenceOcrProvider
 from services.inference_service.providers.reference_risk import ReferenceRiskProvider
-from services.inference_service.providers.tesseract_ocr import TesseractOcrProvider
 from services.inference_service.providers.utils import postprocess_text
 
 
@@ -69,12 +66,8 @@ def _decode_pil_image(value: str) -> Image.Image:
 
 
 def _select_ocr_provider() -> OCRProvider:
-    name = str(os.getenv("BYES_SERVICE_OCR_PROVIDER", "reference")).strip().lower()
-    if name == "tesseract":
-        return TesseractOcrProvider()
-    if name == "paddleocr":
-        return PaddleOcrProvider()
-    return ReferenceOcrProvider()
+    name = str(os.getenv("BYES_SERVICE_OCR_PROVIDER", "mock")).strip().lower()
+    return create_ocr_provider(name=name)
 
 
 def _select_risk_provider() -> RiskProvider:
@@ -198,16 +191,61 @@ def infer_ocr(request: InferenceRequest) -> dict[str, Any]:
 
     provider = get_ocr_provider()
     try:
-        result = provider.infer(image, request.frameSeq)
+        try:
+            result = provider.infer(
+                image,
+                request.frameSeq,
+                request.runId,
+                targets=request.targets,
+                prompt=request.prompt,
+            )
+        except TypeError:
+            result = provider.infer(image, request.frameSeq)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"ocr_infer_failed:{exc.__class__.__name__}") from exc
 
-    text = postprocess_text(str(result.get("text", "")))
+    lines_raw = result.get("lines")
+    lines, warnings_count = _normalize_ocr_lines(
+        lines_raw if isinstance(lines_raw, list) else [],
+        image_width=int(result.get("imageWidth", image.width) or image.width),
+        image_height=int(result.get("imageHeight", image.height) or image.height),
+    )
+    if not lines:
+        text_fallback = postprocess_text(str(result.get("text", "")))
+        if text_fallback:
+            lines = [{"text": text_fallback}]
+    if not lines:
+        warnings_count += 1
+    lines_count = len(lines)
+    text = postprocess_text(" ".join(str(row.get("text", "")).strip() for row in lines if isinstance(row, dict)))
     model = str(result.get("model", provider.model)).strip() or provider.model
     latency_ms = max(0, _now_ms() - started)
-    return {"text": text, "latencyMs": latency_ms, "model": model}
+    backend = str(result.get("backend", provider.name)).strip().lower() or provider.name
+    endpoint = result.get("endpoint", getattr(provider, "endpoint", None))
+    endpoint_text = str(endpoint).strip() if endpoint is not None else ""
+    response: dict[str, Any] = {
+        "schemaVersion": "byes.ocr.v1",
+        "runId": request.runId,
+        "frameSeq": request.frameSeq,
+        "lines": lines,
+        "linesCount": lines_count,
+        "text": text,
+        "latencyMs": latency_ms,
+        "model": model,
+        "backend": backend,
+        "endpoint": endpoint_text or None,
+        "imageWidth": int(result.get("imageWidth", image.width) or image.width),
+        "imageHeight": int(result.get("imageHeight", image.height) or image.height),
+    }
+    try:
+        warnings_count += max(0, int(result.get("warningsCount", 0) or 0))
+    except Exception:
+        pass
+    if warnings_count > 0:
+        response["warningsCount"] = int(warnings_count)
+    return response
 
 
 @app.post("/risk")
@@ -443,3 +481,76 @@ def _normalize_seg_mask(raw: Any) -> dict[str, Any] | None:
     if total != h * w:
         return None
     return {"format": "rle_v1", "size": [h, w], "counts": counts}
+
+
+def _normalize_ocr_lines(
+    rows: list[Any],
+    *,
+    image_width: int | None,
+    image_height: int | None,
+) -> tuple[list[dict[str, Any]], int]:
+    warnings_count = 0
+    normalized: list[dict[str, Any]] = []
+    width = int(image_width) if isinstance(image_width, int) and image_width > 0 else None
+    height = int(image_height) if isinstance(image_height, int) and image_height > 0 else None
+    for row in rows:
+        if isinstance(row, str):
+            text = postprocess_text(row)
+            if not text:
+                warnings_count += 1
+                continue
+            normalized.append({"text": text})
+            continue
+        if not isinstance(row, dict):
+            warnings_count += 1
+            continue
+        text = postprocess_text(str(row.get("text", "")))
+        if not text:
+            warnings_count += 1
+            continue
+        out: dict[str, Any] = {"text": text}
+        score_raw = row.get("score")
+        if score_raw is not None:
+            try:
+                score = float(score_raw)
+            except Exception:
+                score = 0.0
+                warnings_count += 1
+            score_clamped = max(0.0, min(1.0, score))
+            if score_clamped != score:
+                warnings_count += 1
+            out["score"] = score_clamped
+        bbox_raw = row.get("bbox")
+        if isinstance(bbox_raw, list) and len(bbox_raw) == 4:
+            try:
+                x0, y0, x1, y1 = [float(v) for v in bbox_raw]
+            except Exception:
+                warnings_count += 1
+            else:
+                if x0 > x1:
+                    x0, x1 = x1, x0
+                    warnings_count += 1
+                if y0 > y1:
+                    y0, y1 = y1, y0
+                    warnings_count += 1
+                if width is not None:
+                    old = (x0, x1)
+                    x0 = max(0.0, min(float(width), x0))
+                    x1 = max(0.0, min(float(width), x1))
+                    if old != (x0, x1):
+                        warnings_count += 1
+                if height is not None:
+                    old = (y0, y1)
+                    y0 = max(0.0, min(float(height), y0))
+                    y1 = max(0.0, min(float(height), y1))
+                    if old != (y0, y1):
+                        warnings_count += 1
+                if x1 <= x0:
+                    x1 = x0 + 1.0
+                    warnings_count += 1
+                if y1 <= y0:
+                    y1 = y0 + 1.0
+                    warnings_count += 1
+                out["bbox"] = [x0, y0, x1, y1]
+        normalized.append(out)
+    return normalized, warnings_count

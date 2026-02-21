@@ -34,3 +34,19 @@ def test_verify_models_script_smoke() -> None:
     )
     assert result_missing.returncode != 0
     assert "missingRequired=" in result_missing.stdout
+
+    env_ocr = os.environ.copy()
+    env_ocr["BYES_ENABLE_OCR"] = "1"
+    env_ocr["BYES_SERVICE_OCR_PROVIDER"] = "http"
+    env_ocr["BYES_SERVICE_OCR_ENDPOINT"] = ""
+    env_ocr["BYES_OCR_HTTP_URL"] = ""
+    result_ocr_missing = subprocess.run(
+        [sys.executable, str(script), "--check", "--quiet"],
+        cwd=repo_root,
+        env=env_ocr,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result_ocr_missing.returncode != 0
+    assert "missingRequired=" in result_ocr_missing.stdout

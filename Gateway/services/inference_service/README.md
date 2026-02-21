@@ -22,7 +22,7 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
 
 ## API Contract
 
-- `POST /ocr` -> `{"text": "...", "latencyMs": <int>, "model": "<id>"}`
+- `POST /ocr` -> `{"schemaVersion":"byes.ocr.v1","runId":"...","frameSeq":1,"lines":[{"text":"...","score":0.9,"bbox":[x0,y0,x1,y1]}],"linesCount":1,"latencyMs":<int>,"backend":"...","model":"...","endpoint":"...","warningsCount":0}`
 - `POST /risk` -> `{"hazards": [...], "latencyMs": <int>, "model": "<id>"}`
 - `POST /seg` -> `{"segments": [{"label":"...","score":0.0,"bbox":[x0,y0,x1,y1],"mask?":{"format":"rle_v1","size":[H,W],"counts":[...]}}], "latencyMs": <int>, "model": "<id>"}`
   - request supports optional:
@@ -38,6 +38,8 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
 
 | Domain | Provider | Env Value | Optional Dependency |
 |---|---|---|---|
+| OCR | mock | `BYES_SERVICE_OCR_PROVIDER=mock` | none |
+| OCR | http | `BYES_SERVICE_OCR_PROVIDER=http` | none (calls external endpoint) |
 | OCR | reference | `BYES_SERVICE_OCR_PROVIDER=reference` | none |
 | OCR | tesseract | `BYES_SERVICE_OCR_PROVIDER=tesseract` | `requirements-tesseract.txt` |
 | OCR | paddleocr | `BYES_SERVICE_OCR_PROVIDER=paddleocr` | `requirements-paddleocr.txt` |
@@ -95,6 +97,38 @@ python -m uvicorn services.reference_seg_service.app:app --app-dir Gateway --hos
 $env:BYES_SERVICE_SEG_PROVIDER="http"
 $env:BYES_SERVICE_SEG_ENDPOINT="http://127.0.0.1:19231/seg"
 $env:BYES_SERVICE_SEG_MODEL_ID="reference-seg-v1"
+python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
+```
+
+## OCR Provider (mock/http)
+
+- `mock` (default): returns deterministic OCR lines for contract/testing paths.
+- `http`: forwards image to external OCR endpoint and normalizes `byes.ocr.v1` response fields.
+
+Required env for `http`:
+
+```powershell
+$env:BYES_SERVICE_OCR_PROVIDER="http"
+$env:BYES_SERVICE_OCR_ENDPOINT="http://127.0.0.1:19251/ocr"
+```
+
+Optional:
+
+```powershell
+$env:BYES_SERVICE_OCR_MODEL_ID="reference-ocr-v1"
+$env:BYES_SERVICE_OCR_TIMEOUT_MS="1200"
+```
+
+Reference OCR chain example:
+
+```powershell
+# start reference ocr service first
+python -m uvicorn services.reference_ocr_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19251
+
+# then start inference_service with ocr provider=http
+$env:BYES_SERVICE_OCR_PROVIDER="http"
+$env:BYES_SERVICE_OCR_ENDPOINT="http://127.0.0.1:19251/ocr"
+$env:BYES_SERVICE_OCR_MODEL_ID="reference-ocr-v1"
 python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
 ```
 
@@ -181,7 +215,7 @@ Recommended default input size is `256` (can test `384`/`518` with sweep tools).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `BYES_SERVICE_OCR_PROVIDER` | `reference` | OCR provider selection |
+| `BYES_SERVICE_OCR_PROVIDER` | `mock` | OCR provider selection |
 | `BYES_SERVICE_RISK_PROVIDER` | `reference` | risk provider selection |
 | `BYES_SERVICE_SEG_PROVIDER` | `mock` | segmentation provider selection (`mock|http`) |
 | `BYES_SERVICE_DEPTH_PROVIDER` | `none` | depth provider for heuristic risk |

@@ -1585,7 +1585,9 @@ def _build_quality_top_findings(
 
 
 def _resolve_ground_truth(run_package_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
-    default_ocr_rel = "ground_truth/ocr.jsonl"
+    default_ocr_rel = "gt/ocr_gt_v1.json"
+    default_ocr_rel_alt = "ground_truth/ocr_gt_v1.json"
+    default_ocr_rel_legacy = "ground_truth/ocr.jsonl"
     default_risk_rel = "ground_truth/depth_risk.jsonl"
     default_seg_rel = "gt/seg_gt_v1.json"
     default_seg_rel_alt = "ground_truth/seg_gt_v1.json"
@@ -1608,6 +1610,10 @@ def _resolve_ground_truth(run_package_dir: Path, manifest: dict[str, Any]) -> di
     )
     if not ocr_rel and (run_package_dir / default_ocr_rel).exists():
         ocr_rel = default_ocr_rel
+    if not ocr_rel and (run_package_dir / default_ocr_rel_alt).exists():
+        ocr_rel = default_ocr_rel_alt
+    if not ocr_rel and (run_package_dir / default_ocr_rel_legacy).exists():
+        ocr_rel = default_ocr_rel_legacy
     if not risk_rel and (run_package_dir / default_risk_rel).exists():
         risk_rel = default_risk_rel
     if not seg_rel and (run_package_dir / default_seg_rel).exists():

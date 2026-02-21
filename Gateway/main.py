@@ -798,7 +798,14 @@ class GatewayApp:
         if self.config.inference_enable_ocr:
             ocr_started_ms = _now_ms()
             try:
-                ocr_result = await self.ocr_backend.infer(frame_bytes, seq, ts_ms)
+                ocr_result = await self.ocr_backend.infer(
+                    frame_bytes,
+                    seq,
+                    ts_ms,
+                    run_id=run_id,
+                    targets=None,
+                    prompt=None,
+                )
             except Exception as exc:  # noqa: BLE001
                 ocr_result = OCRResult(status="error", error=exc.__class__.__name__, payload={"reason": exc.__class__.__name__})
             await emit_ocr_events(
@@ -2667,6 +2674,10 @@ async def run_packages_list(
     max_critical_misses: int | None = None,
     max_risk_latency_p90: int | None = None,
     max_risk_latency_max: int | None = None,
+    max_ocr_cer: float | None = None,
+    min_ocr_exact_match_rate: float | None = None,
+    min_ocr_coverage: float | None = None,
+    max_ocr_latency_p90: int | None = None,
     min_seg_f1_50: float | None = None,
     min_seg_coverage: float | None = None,
     min_depth_delta1: float | None = None,
@@ -2725,6 +2736,10 @@ async def run_packages_list(
         max_critical_misses=max_critical_misses,
         max_risk_latency_p90=max_risk_latency_p90,
         max_risk_latency_max=max_risk_latency_max,
+        max_ocr_cer=max_ocr_cer,
+        min_ocr_exact_match_rate=min_ocr_exact_match_rate,
+        min_ocr_coverage=min_ocr_coverage,
+        max_ocr_latency_p90=max_ocr_latency_p90,
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
         min_depth_delta1=min_depth_delta1,
@@ -2784,6 +2799,10 @@ async def run_packages_list(
             "max_critical_misses": max_critical_misses,
             "max_risk_latency_p90": max_risk_latency_p90,
             "max_risk_latency_max": max_risk_latency_max,
+            "max_ocr_cer": max_ocr_cer,
+            "min_ocr_exact_match_rate": min_ocr_exact_match_rate,
+            "min_ocr_coverage": min_ocr_coverage,
+            "max_ocr_latency_p90": max_ocr_latency_p90,
             "min_seg_f1_50": min_seg_f1_50,
             "min_seg_coverage": min_seg_coverage,
             "min_depth_delta1": min_depth_delta1,
@@ -2847,6 +2866,10 @@ async def run_packages_export_json(
     max_critical_misses: int | None = None,
     max_risk_latency_p90: int | None = None,
     max_risk_latency_max: int | None = None,
+    max_ocr_cer: float | None = None,
+    min_ocr_exact_match_rate: float | None = None,
+    min_ocr_coverage: float | None = None,
+    max_ocr_latency_p90: int | None = None,
     min_seg_f1_50: float | None = None,
     min_seg_coverage: float | None = None,
     min_depth_delta1: float | None = None,
@@ -2905,6 +2928,10 @@ async def run_packages_export_json(
         max_critical_misses=max_critical_misses,
         max_risk_latency_p90=max_risk_latency_p90,
         max_risk_latency_max=max_risk_latency_max,
+        max_ocr_cer=max_ocr_cer,
+        min_ocr_exact_match_rate=min_ocr_exact_match_rate,
+        min_ocr_coverage=min_ocr_coverage,
+        max_ocr_latency_p90=max_ocr_latency_p90,
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
         min_depth_delta1=min_depth_delta1,
@@ -2970,6 +2997,10 @@ async def run_packages_export_csv(
     max_critical_misses: int | None = None,
     max_risk_latency_p90: int | None = None,
     max_risk_latency_max: int | None = None,
+    max_ocr_cer: float | None = None,
+    min_ocr_exact_match_rate: float | None = None,
+    min_ocr_coverage: float | None = None,
+    max_ocr_latency_p90: int | None = None,
     min_seg_f1_50: float | None = None,
     min_seg_coverage: float | None = None,
     min_depth_delta1: float | None = None,
@@ -3028,6 +3059,10 @@ async def run_packages_export_csv(
         max_critical_misses=max_critical_misses,
         max_risk_latency_p90=max_risk_latency_p90,
         max_risk_latency_max=max_risk_latency_max,
+        max_ocr_cer=max_ocr_cer,
+        min_ocr_exact_match_rate=min_ocr_exact_match_rate,
+        min_ocr_coverage=min_ocr_coverage,
+        max_ocr_latency_p90=max_ocr_latency_p90,
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
         min_depth_delta1=min_depth_delta1,
@@ -3098,6 +3133,10 @@ async def run_packages_export_csv(
         "max_delay_frames",
         "risk_latency_p90",
         "risk_latency_max",
+        "ocr_cer",
+        "ocr_exact_match_rate",
+        "ocr_coverage",
+        "ocr_latency_p90",
         "seg_f1_50",
         "seg_latency_p90",
         "seg_coverage",
@@ -4531,6 +4570,7 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     confirm_timeouts = int(confirm_behavior.get("timeouts", 0) or 0) if isinstance(confirm_behavior, dict) else 0
     depth_risk = quality_payload.get("depthRisk", {}) if isinstance(quality_payload, dict) else {}
     risk_latency = quality_payload.get("riskLatencyMs", {}) if isinstance(quality_payload, dict) else {}
+    ocr_quality = quality_payload.get("ocr", {}) if isinstance(quality_payload, dict) else {}
     seg_quality = quality_payload.get("seg", {}) if isinstance(quality_payload, dict) else {}
     depth_quality = quality_payload.get("depth", {}) if isinstance(quality_payload, dict) else {}
     pov_payload = summary.get("pov", {})
@@ -4565,6 +4605,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     max_delay_frames: int | None = None
     risk_latency_p90: int | None = None
     risk_latency_max: int | None = None
+    ocr_cer: float | None = None
+    ocr_exact_match_rate: float | None = None
+    ocr_coverage: float | None = None
+    ocr_latency_p90: int | None = None
     seg_f1_50: float | None = None
     seg_latency_p90: int | None = None
     seg_coverage: float | None = None
@@ -4860,6 +4904,21 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         raw_max = _read_float(risk_latency, "max")
         if raw_max is not None:
             risk_latency_max = int(raw_max)
+    if isinstance(ocr_quality, dict):
+        raw_cer = _read_float(ocr_quality, "cer")
+        if raw_cer is not None:
+            ocr_cer = float(raw_cer)
+        raw_exact = _read_float(ocr_quality, "exactMatchRate")
+        if raw_exact is not None:
+            ocr_exact_match_rate = float(raw_exact)
+        raw_ocr_cov = _read_float(ocr_quality, "coverage")
+        if raw_ocr_cov is not None:
+            ocr_coverage = float(raw_ocr_cov)
+        ocr_latency = ocr_quality.get("latencyMs")
+        ocr_latency = ocr_latency if isinstance(ocr_latency, dict) else {}
+        raw_ocr_p90 = _read_float(ocr_latency, "p90")
+        if raw_ocr_p90 is not None:
+            ocr_latency_p90 = int(raw_ocr_p90)
     if isinstance(seg_quality, dict):
         raw_f1 = _read_float(seg_quality, "f1At50")
         if raw_f1 is not None:
@@ -4976,6 +5035,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "riskLatencyMax": risk_latency_max,
         "risk_latency_p90": risk_latency_p90,
         "risk_latency_max": risk_latency_max,
+        "ocr_cer": ocr_cer,
+        "ocr_exact_match_rate": ocr_exact_match_rate,
+        "ocr_coverage": ocr_coverage,
+        "ocr_latency_p90": ocr_latency_p90,
         "seg_f1_50": seg_f1_50,
         "seg_latency_p90": seg_latency_p90,
         "seg_coverage": seg_coverage,
@@ -5067,6 +5130,10 @@ def _matches_run_filters(
     max_critical_misses: int | None,
     max_risk_latency_p90: int | None,
     max_risk_latency_max: int | None,
+    max_ocr_cer: float | None,
+    min_ocr_exact_match_rate: float | None,
+    min_ocr_coverage: float | None,
+    max_ocr_latency_p90: int | None,
     min_seg_f1_50: float | None,
     min_seg_coverage: float | None,
     min_depth_delta1: float | None,
@@ -5153,6 +5220,30 @@ def _matches_run_filters(
         if value is None:
             return False
         if int(value) > int(max_risk_latency_max):
+            return False
+    if max_ocr_cer is not None:
+        value = row.get("ocr_cer")
+        if value is None:
+            return False
+        if float(value) > float(max_ocr_cer):
+            return False
+    if min_ocr_exact_match_rate is not None:
+        value = row.get("ocr_exact_match_rate")
+        if value is None:
+            return False
+        if float(value) < float(min_ocr_exact_match_rate):
+            return False
+    if min_ocr_coverage is not None:
+        value = row.get("ocr_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_ocr_coverage):
+            return False
+    if max_ocr_latency_p90 is not None:
+        value = row.get("ocr_latency_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_ocr_latency_p90):
             return False
     if min_seg_f1_50 is not None:
         value = row.get("seg_f1_50")
@@ -5422,6 +5513,10 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "quality",
         "quality_score",
         "risk_latency_p90",
+        "ocr_cer",
+        "ocr_exact_match_rate",
+        "ocr_coverage",
+        "ocr_latency_p90",
         "seg_f1_50",
         "seg_latency_p90",
         "seg_coverage",
@@ -5506,6 +5601,10 @@ async def _query_run_package_rows(
     max_critical_misses: int | None,
     max_risk_latency_p90: int | None,
     max_risk_latency_max: int | None,
+    max_ocr_cer: float | None,
+    min_ocr_exact_match_rate: float | None,
+    min_ocr_coverage: float | None,
+    max_ocr_latency_p90: int | None,
     min_seg_f1_50: float | None,
     min_seg_coverage: float | None,
     min_depth_delta1: float | None,
@@ -5570,6 +5669,10 @@ async def _query_run_package_rows(
             max_critical_misses=max_critical_misses,
             max_risk_latency_p90=max_risk_latency_p90,
             max_risk_latency_max=max_risk_latency_max,
+            max_ocr_cer=max_ocr_cer,
+            min_ocr_exact_match_rate=min_ocr_exact_match_rate,
+            min_ocr_coverage=min_ocr_coverage,
+            max_ocr_latency_p90=max_ocr_latency_p90,
             min_seg_f1_50=min_seg_f1_50,
             min_seg_coverage=min_seg_coverage,
             min_depth_delta1=min_depth_delta1,
@@ -5662,6 +5765,10 @@ async def runs_dashboard(
     max_critical_misses: int | None = None,
     max_risk_latency_p90: int | None = None,
     max_risk_latency_max: int | None = None,
+    max_ocr_cer: float | None = None,
+    min_ocr_exact_match_rate: float | None = None,
+    min_ocr_coverage: float | None = None,
+    max_ocr_latency_p90: int | None = None,
     min_seg_f1_50: float | None = None,
     min_seg_coverage: float | None = None,
     min_depth_delta1: float | None = None,
@@ -5721,6 +5828,10 @@ async def runs_dashboard(
         max_critical_misses=max_critical_misses,
         max_risk_latency_p90=max_risk_latency_p90,
         max_risk_latency_max=max_risk_latency_max,
+        max_ocr_cer=max_ocr_cer,
+        min_ocr_exact_match_rate=min_ocr_exact_match_rate,
+        min_ocr_coverage=min_ocr_coverage,
+        max_ocr_latency_p90=max_ocr_latency_p90,
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
         min_depth_delta1=min_depth_delta1,
@@ -5785,6 +5896,14 @@ async def runs_dashboard(
         max_delay = "—" if max_delay_raw is None else str(max_delay_raw)
         risk_p90_raw = row.get("risk_latency_p90")
         risk_p90 = "—" if risk_p90_raw is None else str(risk_p90_raw)
+        ocr_cer_raw = row.get("ocr_cer")
+        ocr_cer = "—" if ocr_cer_raw is None else f"{float(ocr_cer_raw):.4f}"
+        ocr_exact_raw = row.get("ocr_exact_match_rate")
+        ocr_exact = "—" if ocr_exact_raw is None else f"{float(ocr_exact_raw):.4f}"
+        ocr_cov_raw = row.get("ocr_coverage")
+        ocr_cov = "—" if ocr_cov_raw is None else f"{float(ocr_cov_raw):.4f}"
+        ocr_p90_raw = row.get("ocr_latency_p90")
+        ocr_p90 = "—" if ocr_p90_raw is None else str(int(ocr_p90_raw))
         frame_user_e2e_p90_raw = row.get("frame_user_e2e_p90")
         frame_user_e2e_p90 = "—" if frame_user_e2e_p90_raw is None else str(int(frame_user_e2e_p90_raw))
         frame_user_e2e_max_raw = row.get("frame_user_e2e_max")
@@ -5884,6 +6003,10 @@ async def runs_dashboard(
             f"<td>{html.escape(critical_misses)}</td>"
             f"<td>{html.escape(max_delay)}</td>"
             f"<td>{html.escape(risk_p90)}</td>"
+            f"<td>{html.escape(ocr_cer)}</td>"
+            f"<td>{html.escape(ocr_exact)}</td>"
+            f"<td>{html.escape(ocr_cov)}</td>"
+            f"<td>{html.escape(ocr_p90)}</td>"
             f"<td>{html.escape(frame_user_e2e_p90)}</td>"
             f"<td>{html.escape(frame_user_e2e_max)}</td>"
             f"<td>{html.escape(frame_user_e2e_tts_p90)}</td>"
@@ -5937,7 +6060,7 @@ async def runs_dashboard(
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='60' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='80' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -5950,6 +6073,10 @@ async def runs_dashboard(
     max_critical_misses_value = html.escape("" if max_critical_misses is None else str(max_critical_misses))
     max_risk_latency_p90_value = html.escape("" if max_risk_latency_p90 is None else str(max_risk_latency_p90))
     max_risk_latency_max_value = html.escape("" if max_risk_latency_max is None else str(max_risk_latency_max))
+    max_ocr_cer_value = html.escape("" if max_ocr_cer is None else str(max_ocr_cer))
+    min_ocr_exact_match_rate_value = html.escape("" if min_ocr_exact_match_rate is None else str(min_ocr_exact_match_rate))
+    min_ocr_coverage_value = html.escape("" if min_ocr_coverage is None else str(min_ocr_coverage))
+    max_ocr_latency_p90_value = html.escape("" if max_ocr_latency_p90 is None else str(max_ocr_latency_p90))
     min_seg_f1_50_value = html.escape("" if min_seg_f1_50 is None else str(min_seg_f1_50))
     min_seg_coverage_value = html.escape("" if min_seg_coverage is None else str(min_seg_coverage))
     min_depth_delta1_value = html.escape("" if min_depth_delta1 is None else str(min_depth_delta1))
@@ -6073,6 +6200,10 @@ async def runs_dashboard(
       <label>max_critical_misses: <input type="number" min="0" name="max_critical_misses" value="{max_critical_misses_value}" /></label>
       <label>max_risk_latency_p90: <input type="number" min="0" name="max_risk_latency_p90" value="{max_risk_latency_p90_value}" /></label>
       <label>max_risk_latency_max: <input type="number" min="0" name="max_risk_latency_max" value="{max_risk_latency_max_value}" /></label>
+      <label>max_ocr_cer: <input type="number" step="0.0001" min="0" name="max_ocr_cer" value="{max_ocr_cer_value}" /></label>
+      <label>min_ocr_exact_match_rate: <input type="number" step="0.0001" min="0" max="1" name="min_ocr_exact_match_rate" value="{min_ocr_exact_match_rate_value}" /></label>
+      <label>min_ocr_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_ocr_coverage" value="{min_ocr_coverage_value}" /></label>
+      <label>max_ocr_latency_p90: <input type="number" min="0" name="max_ocr_latency_p90" value="{max_ocr_latency_p90_value}" /></label>
       <label>max_frame_user_e2e_p90: <input type="number" min="0" name="max_frame_user_e2e_p90" value="{max_frame_user_e2e_p90_value}" /></label>
       <label>max_frame_user_e2e_max: <input type="number" min="0" name="max_frame_user_e2e_max" value="{max_frame_user_e2e_max_value}" /></label>
       <label>max_frame_user_e2e_tts_p90: <input type="number" min="0" name="max_frame_user_e2e_tts_p90" value="{max_frame_user_e2e_tts_p90_value}" /></label>
@@ -6115,6 +6246,10 @@ async def runs_dashboard(
           <option value="safety_score" {"selected" if sort_value == "safety_score" else ""}>safety_score</option>
           <option value="quality" {"selected" if sort_value == "quality" else ""}>quality</option>
           <option value="risk_latency_p90" {"selected" if sort_value == "risk_latency_p90" else ""}>risk_latency_p90</option>
+          <option value="ocr_cer" {"selected" if sort_value == "ocr_cer" else ""}>ocr_cer</option>
+          <option value="ocr_exact_match_rate" {"selected" if sort_value == "ocr_exact_match_rate" else ""}>ocr_exact_match_rate</option>
+          <option value="ocr_coverage" {"selected" if sort_value == "ocr_coverage" else ""}>ocr_coverage</option>
+          <option value="ocr_latency_p90" {"selected" if sort_value == "ocr_latency_p90" else ""}>ocr_latency_p90</option>
           <option value="frame_user_e2e_p90" {"selected" if sort_value == "frame_user_e2e_p90" else ""}>frame_user_e2e_p90</option>
           <option value="frame_user_e2e_max" {"selected" if sort_value == "frame_user_e2e_max" else ""}>frame_user_e2e_max</option>
           <option value="frame_user_e2e_tts_p90" {"selected" if sort_value == "frame_user_e2e_tts_p90" else ""}>frame_user_e2e_tts_p90</option>
@@ -6166,8 +6301,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -6183,6 +6318,10 @@ async def runs_dashboard(
           <th>Critical FN</th>
           <th>MaxDelay(fr)</th>
           <th>Risk p90(ms)</th>
+          <th>OCR CER</th>
+          <th>OCR Exact</th>
+          <th>OCR Coverage</th>
+          <th>OCR p90(ms)</th>
           <th>User E2E p90(ms)</th>
           <th>User E2E max(ms)</th>
           <th>User E2E tts p90(ms)</th>

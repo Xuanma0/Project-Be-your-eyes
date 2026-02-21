@@ -27,6 +27,7 @@ from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_con
 from byes.schemas.pov_ir_schema import validate_pov_ir
 
 _SHA_LINE_RE = re.compile(r"^([a-fA-F0-9]{64})\s+\*?(.+)$")
+_OCR_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.ocr.v1.json"
 _SEG_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.seg.v1.json"
 _DEPTH_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.depth.v1.json"
 _PLAN_CONTEXT_PACK_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "plan.context_pack.v1.json"
@@ -232,6 +233,18 @@ def _load_seg_contract_schema() -> dict[str, Any] | None:
     return payload
 
 
+def _load_ocr_contract_schema() -> dict[str, Any] | None:
+    if not _OCR_SCHEMA_PATH.exists():
+        return None
+    try:
+        payload = json.loads(_OCR_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
 def _load_depth_contract_schema() -> dict[str, Any] | None:
     if not _DEPTH_SCHEMA_PATH.exists():
         return None
@@ -403,6 +416,65 @@ def _validate_seg_payload(
         mask_size_mismatch,
         mask_bad_counts,
     )
+
+
+def _validate_ocr_payload(
+    payload: dict[str, Any],
+    schema: dict[str, Any] | None,
+) -> tuple[bool, int]:
+    payload_ok = True
+    warnings_count = 0
+    if schema is not None and jsonschema is not None:
+        try:
+            jsonschema.validate(payload, schema)
+        except Exception:
+            payload_ok = False
+
+    lines = payload.get("lines")
+    if not isinstance(lines, list):
+        return False, warnings_count + 1
+
+    for row in lines:
+        if not isinstance(row, dict):
+            payload_ok = False
+            warnings_count += 1
+            continue
+        text = str(row.get("text", "")).strip()
+        if not text:
+            payload_ok = False
+            warnings_count += 1
+        score = row.get("score")
+        if score is not None:
+            try:
+                score_value = float(score)
+            except Exception:
+                payload_ok = False
+                warnings_count += 1
+            else:
+                if score_value < 0.0 or score_value > 1.0:
+                    payload_ok = False
+                    warnings_count += 1
+        bbox = row.get("bbox")
+        if bbox is not None:
+            if not isinstance(bbox, list) or len(bbox) != 4:
+                payload_ok = False
+                warnings_count += 1
+            else:
+                try:
+                    coords = [float(value) for value in bbox]
+                except Exception:
+                    payload_ok = False
+                    warnings_count += 1
+                else:
+                    if not (coords[0] < coords[2] and coords[1] < coords[3]):
+                        payload_ok = False
+                        warnings_count += 1
+
+    lines_count = payload.get("linesCount")
+    if isinstance(lines_count, int) and lines_count >= 0 and lines_count != len(lines):
+        warnings_count += 1
+        payload_ok = False
+    return payload_ok, warnings_count
 
 
 def _validate_depth_payload(
@@ -873,6 +945,12 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         events_v1_rows: list[dict[str, Any]] = []
         pov_events_count = 0
         pov_decision_events_count = 0
+        ocr_events_present = 0
+        ocr_lines = 0
+        ocr_schema_ok = 0
+        ocr_payload_schema_ok = 0
+        ocr_normalized = 0
+        ocr_warnings_count = 0
         seg_events_present = 0
         seg_lines = 0
         seg_schema_ok = 0
@@ -952,6 +1030,7 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         models_schema_ok = 0
         models_missing_required_total = 0
         models_enabled_total = 0
+        ocr_schema = _load_ocr_contract_schema()
         seg_schema = _load_seg_contract_schema()
         depth_schema = _load_depth_contract_schema()
         plan_context_pack_schema = _load_plan_context_pack_schema()
@@ -1070,6 +1149,41 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                         seg_prompt_warnings_count += 1
                                     if payload_ok:
                                         seg_prompt_schema_ok += 1
+                                if name in {"ocr.read", "ocr.scan_text"}:
+                                    phase = str(obj.get("phase", "")).strip().lower()
+                                    status = str(obj.get("status", "")).strip().lower()
+                                    if phase and phase not in {"result", "info"}:
+                                        continue
+                                    if status and status not in {"ok"}:
+                                        continue
+                                    ocr_events_present = 1
+                                    ocr_lines += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    normalized_payload = dict(payload)
+                                    if name == "ocr.scan_text":
+                                        text_value = str(normalized_payload.get("text", "")).strip()
+                                        if text_value:
+                                            normalized_payload["lines"] = [{"text": text_value}]
+                                            normalized_payload["linesCount"] = 1
+                                        else:
+                                            normalized_payload.setdefault("lines", [])
+                                            normalized_payload.setdefault("linesCount", 0)
+                                    if "linesCount" not in normalized_payload and isinstance(normalized_payload.get("lines"), list):
+                                        normalized_payload["linesCount"] = len(normalized_payload.get("lines", []))
+                                    payload_ok, payload_warnings = _validate_ocr_payload(normalized_payload, ocr_schema)
+                                    ocr_warnings_count += int(max(0, payload_warnings))
+                                    if payload_ok:
+                                        ocr_payload_schema_ok += 1
+                                    else:
+                                        warnings.append("ocr.read payload invalid")
+                                    if (
+                                        str(obj.get("schemaVersion", "")).strip() == "byes.event.v1"
+                                        and str(obj.get("category", "")).strip().lower() == "tool"
+                                        and str(obj.get("phase", "")).strip().lower() == "result"
+                                        and str(obj.get("status", "")).strip().lower() == "ok"
+                                    ):
+                                        ocr_schema_ok += 1
                                 if name == "frame.input":
                                     frame_input_events_present = 1
                                     frame_input_lines += 1
@@ -1322,6 +1436,13 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                 events_v1_norm = collect_normalized_ws_events(events_v1_path)
                 events_v1_normalized = int(events_v1_norm.get("normalizedEvents", 0) or 0)
                 warnings.extend(events_v1_norm.get("warnings", []))
+                ocr_normalized = len(
+                    [
+                        event
+                        for event in (events_v1_norm.get("events", []) if isinstance(events_v1_norm.get("events"), list) else [])
+                        if isinstance(event, dict) and str(event.get("name", "")).strip().lower() in {"ocr.read", "ocr.scan_text"}
+                    ]
+                )
                 seg_normalized = len(
                     [
                         event
@@ -1481,6 +1602,12 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "povIrDecisions": int(pov_ir_decisions),
             "povEventsCount": int(pov_events_count),
             "povConsistencyWarnings": int(pov_consistency_warnings),
+            "ocrEventsPresent": int(ocr_events_present),
+            "ocrLines": int(ocr_lines),
+            "ocrSchemaOk": int(ocr_schema_ok),
+            "ocrPayloadSchemaOk": int(ocr_lines > 0 and ocr_payload_schema_ok == ocr_lines),
+            "ocrNormalized": int(ocr_normalized),
+            "ocrWarningsCount": int(ocr_warnings_count),
             "segEventsPresent": int(seg_events_present),
             "segLines": int(seg_lines),
             "segSchemaOk": int(seg_schema_ok),
@@ -1589,6 +1716,12 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"povIrDecisions: {summary['povIrDecisions']}")
             print(f"povEventsCount: {summary['povEventsCount']}")
             print(f"povConsistencyWarnings: {summary['povConsistencyWarnings']}")
+            print(f"ocrEventsPresent: {summary['ocrEventsPresent']}")
+            print(f"ocrLines: {summary['ocrLines']}")
+            print(f"ocrSchemaOk: {summary['ocrSchemaOk']}")
+            print(f"ocrPayloadSchemaOk: {summary['ocrPayloadSchemaOk']}")
+            print(f"ocrNormalized: {summary['ocrNormalized']}")
+            print(f"ocrWarningsCount: {summary['ocrWarningsCount']}")
             print(f"segEventsPresent: {summary['segEventsPresent']}")
             print(f"segLines: {summary['segLines']}")
             print(f"segSchemaOk: {summary['segSchemaOk']}")

@@ -19,17 +19,28 @@ class MockOCRBackend:
         self.model_id: str | None = str(model_id or "").strip() or "mock-ocr"
         self.endpoint: str | None = None
 
-    async def infer(self, image_bytes: bytes, frame_seq: int | None, ts_ms: int) -> OCRResult:
+    async def infer(
+        self,
+        image_bytes: bytes,
+        frame_seq: int | None,
+        ts_ms: int,
+        run_id: str | None = None,
+        targets: list[str] | None = None,
+        prompt: dict[str, Any] | None = None,
+    ) -> OCRResult:
         started = _now_ms()
-        del image_bytes, frame_seq, ts_ms
+        del image_bytes, frame_seq, ts_ms, run_id, targets, prompt
         latency = max(0, _now_ms() - started)
+        lines = [{"text": self._text, "score": max(0.0, min(1.0, self._confidence))}]
         return OCRResult(
             text=self._text,
+            lines=lines,
             latency_ms=latency,
             status="ok",
             payload={
-                "text": self._text,
-                "confidence": self._confidence,
+                "schemaVersion": "byes.ocr.v1",
+                "lines": lines,
+                "linesCount": 1,
                 "backend": "mock",
             },
         )

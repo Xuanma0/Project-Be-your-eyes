@@ -271,6 +271,63 @@ python scripts/replay_run_package.py --run-package tests/fixtures/run_package_wi
 python scripts/report_run.py --run-package tests/fixtures/run_package_with_depth_gt_min
 ```
 
+## OCR (mock/http)
+
+Enable OCR event emission in Gateway:
+
+```powershell
+cd Gateway
+$env:BYES_ENABLE_OCR="1"
+$env:BYES_OCR_BACKEND="mock"   # or http
+$env:BYES_OCR_MODEL_ID="mock-ocr-v1"
+# when using http backend:
+# $env:BYES_OCR_HTTP_URL="http://127.0.0.1:19120/ocr"
+```
+
+Expected evidence:
+- `events/events_v1.jsonl` contains `name="ocr.read"` with payload `lines`, `linesCount`, `backend`, `model`, `endpoint`.
+- `report.json -> inference.ocr` is inferred from `ocr.read`.
+- `report.json -> quality.ocr` includes `exactMatchRate`, `cer`, `coverage`, `latencyMs`.
+
+OCR quality evaluation:
+
+```powershell
+python scripts/report_run.py --run-package tests/fixtures/run_package_with_ocr_gt_min
+python scripts/run_regression_suite.py --suite regression/suites/contract_suite.json --baseline regression/baselines/baseline.json --fail-on-drop
+```
+
+`report.json -> quality.ocr` fields:
+- `framesTotal / framesWithGt / framesWithPred / coverage`
+- `exactMatchRate / cer / wer`
+- `latencyMs` (`p50/p90/max`)
+- `topErrors` (debug samples)
+
+Leaderboard fields:
+- columns: `ocr_cer`, `ocr_exact_match_rate`, `ocr_coverage`, `ocr_latency_p90`
+- filters: `max_ocr_cer`, `min_ocr_exact_match_rate`, `min_ocr_coverage`, `max_ocr_latency_p90`
+- sort: `sort=ocr_cer|ocr_exact_match_rate|ocr_coverage|ocr_latency_p90`
+
+Reference OCR HTTP chain (Gateway -> inference_service -> reference_ocr_service):
+
+```powershell
+# terminal 1: reference ocr service
+python -m uvicorn services.reference_ocr_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19251
+
+# terminal 2: inference_service (ocr provider=http -> reference ocr service)
+$env:BYES_SERVICE_OCR_PROVIDER="http"
+$env:BYES_SERVICE_OCR_ENDPOINT="http://127.0.0.1:19251/ocr"
+$env:BYES_SERVICE_OCR_MODEL_ID="reference-ocr-v1"
+python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
+
+# terminal 3: Gateway replay/report with ocr enabled
+cd Gateway
+$env:BYES_ENABLE_OCR="1"
+$env:BYES_OCR_BACKEND="http"
+$env:BYES_OCR_HTTP_URL="http://127.0.0.1:19120/ocr"
+python scripts/replay_run_package.py --run-package tests/fixtures/run_package_with_ocr_gt_min --reset
+python scripts/report_run.py --run-package tests/fixtures/run_package_with_ocr_gt_min
+```
+
 Seg prompt budget sweep (local tooling, not CI gate):
 
 ```powershell

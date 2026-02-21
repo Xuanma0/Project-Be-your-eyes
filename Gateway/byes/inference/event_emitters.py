@@ -66,7 +66,7 @@ async def emit_ocr_events(
             frame_seq=frame_seq,
             component=component,
             category="tool",
-            name="ocr.scan_text",
+            name="ocr.read",
             phase="start",
             status="ok",
             latency_ms=None,
@@ -76,8 +76,7 @@ async def emit_ocr_events(
     )
     payload = _sanitize_payload(result.payload)
     payload = _with_inference_metadata(payload, backend=backend, model=model, endpoint=endpoint)
-    if result.text and "text" not in payload:
-        payload["text"] = result.text
+    payload = _normalize_ocr_payload(payload, raw_lines=result.lines, text_hint=result.text, frame_seq=frame_seq, run_id=run_id)
     if result.error and "reason" not in payload:
         payload["reason"] = result.error
     normalized_status = _normalize_status(result.status, result.error)
@@ -90,7 +89,7 @@ async def emit_ocr_events(
             frame_seq=frame_seq,
             component=component,
             category="tool",
-            name="ocr.scan_text",
+            name="ocr.read",
             phase=phase,
             status=normalized_status,
             latency_ms=latency_ms,
@@ -488,6 +487,114 @@ def _normalize_depth_payload(payload: dict[str, Any], raw_grid: Any) -> dict[str
         out["valuesCount"] = 0
         out["gridCount"] = 0
 
+    if warnings_count > 0:
+        out["warningsCount"] = int(warnings_count)
+    elif "warningsCount" in out:
+        out.pop("warningsCount", None)
+    return out
+
+
+def _normalize_ocr_payload(
+    payload: dict[str, Any],
+    *,
+    raw_lines: Any,
+    text_hint: str | None,
+    frame_seq: int | None,
+    run_id: str | None,
+) -> dict[str, Any]:
+    out = dict(payload) if isinstance(payload, dict) else {}
+    warnings_count = _to_nonnegative_int(out.get("warningsCount"))
+
+    image_width = _to_positive_int(out.get("imageWidth"))
+    image_height = _to_positive_int(out.get("imageHeight"))
+    if image_width is not None:
+        out["imageWidth"] = image_width
+    if image_height is not None:
+        out["imageHeight"] = image_height
+
+    normalized_lines: list[dict[str, Any]] = []
+    rows = raw_lines if isinstance(raw_lines, list) else out.get("lines")
+    rows = rows if isinstance(rows, list) else []
+    for row in rows:
+        if isinstance(row, str):
+            text = str(row).strip()
+            if not text:
+                warnings_count += 1
+                continue
+            normalized_lines.append({"text": text})
+            continue
+        if not isinstance(row, dict):
+            warnings_count += 1
+            continue
+        text = str(row.get("text", "")).strip()
+        if not text:
+            warnings_count += 1
+            continue
+        normalized_row: dict[str, Any] = {"text": text}
+        score = _to_float(row.get("score"))
+        if score is not None:
+            score_clamped = _clamp_float(score, 0.0, 1.0)
+            if score_clamped != score:
+                warnings_count += 1
+            normalized_row["score"] = score_clamped
+        bbox_raw = row.get("bbox")
+        if isinstance(bbox_raw, list) and len(bbox_raw) == 4:
+            coords: list[float] = []
+            parse_failed = False
+            for value in bbox_raw:
+                parsed = _to_float(value)
+                if parsed is None:
+                    parse_failed = True
+                    break
+                coords.append(parsed)
+            if parse_failed:
+                warnings_count += 1
+            else:
+                x0, y0, x1, y1 = coords
+                if x0 > x1:
+                    x0, x1 = x1, x0
+                    warnings_count += 1
+                if y0 > y1:
+                    y0, y1 = y1, y0
+                    warnings_count += 1
+                if image_width is not None:
+                    old = (x0, x1)
+                    x0 = _clamp_float(x0, 0.0, float(image_width))
+                    x1 = _clamp_float(x1, 0.0, float(image_width))
+                    if old != (x0, x1):
+                        warnings_count += 1
+                if image_height is not None:
+                    old = (y0, y1)
+                    y0 = _clamp_float(y0, 0.0, float(image_height))
+                    y1 = _clamp_float(y1, 0.0, float(image_height))
+                    if old != (y0, y1):
+                        warnings_count += 1
+                if x1 <= x0:
+                    x1 = x0 + 1.0
+                    warnings_count += 1
+                if y1 <= y0:
+                    y1 = y0 + 1.0
+                    warnings_count += 1
+                normalized_row["bbox"] = [x0, y0, x1, y1]
+        normalized_lines.append(normalized_row)
+
+    if not normalized_lines:
+        fallback_text = str(out.get("text", "")).strip() or str(text_hint or "").strip()
+        if fallback_text:
+            normalized_lines.append({"text": fallback_text})
+        elif "reason" not in out:
+            warnings_count += 1
+
+    merged_text = " ".join(
+        str(item.get("text", "")).strip() for item in normalized_lines if isinstance(item, dict) and str(item.get("text", "")).strip()
+    ).strip()
+    out["schemaVersion"] = "byes.ocr.v1"
+    out["runId"] = run_id
+    out["frameSeq"] = frame_seq
+    out["lines"] = normalized_lines
+    out["linesCount"] = len(normalized_lines)
+    if merged_text:
+        out["text"] = merged_text
     if warnings_count > 0:
         out["warningsCount"] = int(warnings_count)
     elif "warningsCount" in out:

@@ -7,6 +7,7 @@ from typing import Any, Protocol
 @dataclass(slots=True)
 class OCRResult:
     text: str = ""
+    lines: list[dict[str, Any]] = field(default_factory=list)
     latency_ms: int | None = None
     status: str = "ok"
     error: str | None = None
@@ -45,7 +46,15 @@ class OCRBackend(Protocol):
     model_id: str | None
     endpoint: str | None
 
-    async def infer(self, image_bytes: bytes, frame_seq: int | None, ts_ms: int) -> OCRResult:
+    async def infer(
+        self,
+        image_bytes: bytes,
+        frame_seq: int | None,
+        ts_ms: int,
+        run_id: str | None = None,
+        targets: list[str] | None = None,
+        prompt: dict[str, Any] | None = None,
+    ) -> OCRResult:
         ...
 
 

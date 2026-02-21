@@ -8,7 +8,7 @@
 - `frameSeq`: optional frame sequence id.
 - `component`: `unity|gateway|cloud|sim|unknown`.
 - `category`: `tool|safety|system|scenario|metric|ui|unknown`.
-- `name`: normalized event name (`ocr.scan_text`, `risk.hazards`, `safety.confirm`, etc.).
+- `name`: normalized event name (`ocr.read`, `risk.hazards`, `safety.confirm`, etc.).
 - `phase`: optional lifecycle stage (`start|result|error|info`).
 - `status`: optional normalized status (`ok|timeout|cancel|error`).
 - `latencyMs`: optional latency in ms.
@@ -20,7 +20,7 @@
 - `raw`: optional raw event (debug use only).
 
 ## Name Catalog (v4.35 additions included)
-- `ocr.scan_text`
+- `ocr.read`
 - `risk.hazards`
 - `safety.confirm`
 - `safety.latch`
@@ -60,7 +60,7 @@
   "frameSeq": 1,
   "component": "gateway",
   "category": "tool",
-  "name": "ocr.scan_text",
+  "name": "ocr.read",
   "phase": "start",
   "status": "ok",
   "latencyMs": null,
@@ -76,11 +76,18 @@
   "frameSeq": 1,
   "component": "gateway",
   "category": "tool",
-  "name": "ocr.scan_text",
+  "name": "ocr.read",
   "phase": "result",
   "status": "ok",
   "latencyMs": 110,
-  "payload": {"text": "EXIT", "backend": "http", "model": "paddleocr-v4", "endpoint": "http://127.0.0.1:9001/ocr"}
+  "payload": {
+    "schemaVersion": "byes.ocr.v1",
+    "lines": [{"text": "EXIT", "score": 0.99, "bbox": [10, 20, 80, 60]}],
+    "linesCount": 1,
+    "backend": "http",
+    "model": "reference-ocr-v1",
+    "endpoint": "http://127.0.0.1:19120/ocr"
+  }
 }
 ```
 

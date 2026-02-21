@@ -8,8 +8,16 @@ from PIL import Image
 class OCRProvider(Protocol):
     name: str
     model: str
+    endpoint: str | None
 
-    def infer(self, image: Image.Image, frame_seq: int | None) -> dict[str, Any]:
+    def infer(
+        self,
+        image: Image.Image,
+        frame_seq: int | None,
+        run_id: str | None = None,
+        targets: list[str] | None = None,
+        prompt: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         ...
 
 

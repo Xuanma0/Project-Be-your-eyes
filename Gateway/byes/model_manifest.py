@@ -192,7 +192,7 @@ def _ocr_component(config: GatewayConfig) -> dict[str, Any]:
         required.append(
             _endpoint_requirement(
                 "ocr_http_endpoint",
-                "BYES_OCR_HTTP_URL",
+                "BYES_OCR_HTTP_URL|BYES_SERVICE_OCR_ENDPOINT",
                 endpoint,
                 "OCR HTTP backend endpoint.",
             )

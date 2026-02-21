@@ -1,0 +1,22 @@
+﻿{
+  "schemaVersion": "byes.ocr_gt.v1",
+  "runId": "fixture-ocr-gt",
+  "frames": [
+    {
+      "frameSeq": 1,
+      "lines": [
+        {"text": "EXIT", "score": 0.99, "bbox": [1,1,8,8]}
+      ],
+      "imageWidth": 16,
+      "imageHeight": 16
+    },
+    {
+      "frameSeq": 2,
+      "lines": [
+        {"text": "NO ENTRY", "score": 0.95, "bbox": [1,1,12,10]}
+      ],
+      "imageWidth": 16,
+      "imageHeight": 16
+    }
+  ]
+}

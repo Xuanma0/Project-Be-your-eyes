@@ -62,6 +62,10 @@ class RunSummary:
     risk_backend: str | None = None
     ocr_model: str | None = None
     risk_model: str | None = None
+    ocr_events_present: bool = False
+    ocr_payload_schema_ok: bool = False
+    ocr_lines: int = 0
+    ocr_schema_ok_lines: int = 0
     seg_events_present: bool = False
     seg_payload_schema_ok: bool = False
     seg_lines: int = 0
@@ -206,6 +210,10 @@ class RunSummary:
             "topFindings": self.top_findings,
             "segLint": {
                 "eventsPresent": self.seg_events_present,
+                "ocrEventsPresent": self.ocr_events_present,
+                "ocrPayloadSchemaOk": self.ocr_payload_schema_ok,
+                "ocrLines": self.ocr_lines,
+                "ocrSchemaOkLines": self.ocr_schema_ok_lines,
                 "payloadSchemaOk": self.seg_payload_schema_ok,
                 "segLines": self.seg_lines,
                 "segSchemaOkLines": self.seg_schema_ok_lines,
@@ -701,6 +709,8 @@ def run_suite(
     run_min_quality_override: dict[str, float | None] = {}
     run_require_pov_present: dict[str, bool] = {}
     run_min_pov_decisions_override: dict[str, int | None] = {}
+    run_require_ocr_events_present: dict[str, bool] = {}
+    run_require_ocr_payload_schema_ok: dict[str, bool] = {}
     run_require_seg_events_present: dict[str, bool] = {}
     run_require_seg_payload_schema_ok: dict[str, bool] = {}
     run_require_depth_events_present: dict[str, bool] = {}
@@ -745,6 +755,8 @@ def run_suite(
         run_min_quality_override[run_id] = _try_float(run_cfg.get("minQualityScore"))
         run_require_pov_present[run_id] = _to_bool01(run_cfg.get("requirePovPresent"), False)
         run_min_pov_decisions_override[run_id] = _try_int(run_cfg.get("minPovDecisions"))
+        run_require_ocr_events_present[run_id] = _to_bool01(run_cfg.get("requireOcrEventsPresent"), False)
+        run_require_ocr_payload_schema_ok[run_id] = _to_bool01(run_cfg.get("requireOcrPayloadSchemaOk"), False)
         run_require_seg_events_present[run_id] = _to_bool01(run_cfg.get("requireSegEventsPresent"), False)
         run_require_seg_payload_schema_ok[run_id] = _to_bool01(run_cfg.get("requireSegPayloadSchemaOk"), False)
         run_require_depth_events_present[run_id] = _to_bool01(run_cfg.get("requireDepthEventsPresent"), False)
@@ -822,6 +834,10 @@ def run_suite(
             try:
                 _lint_code, lint_summary = lint_run_package(run_input_path, strict=False, quiet=True)
                 if isinstance(lint_summary, dict):
+                    run_summary.ocr_events_present = bool(lint_summary.get("ocrEventsPresent", 0))
+                    run_summary.ocr_payload_schema_ok = bool(lint_summary.get("ocrPayloadSchemaOk", 0))
+                    run_summary.ocr_lines = int(lint_summary.get("ocrLines", 0) or 0)
+                    run_summary.ocr_schema_ok_lines = int(lint_summary.get("ocrSchemaOk", 0) or 0)
                     run_summary.seg_events_present = bool(lint_summary.get("segEventsPresent", 0))
                     run_summary.seg_payload_schema_ok = bool(lint_summary.get("segPayloadSchemaOk", 0))
                     run_summary.seg_lines = int(lint_summary.get("segLines", 0) or 0)
@@ -932,6 +948,10 @@ def run_suite(
             failures.append(
                 f"{run.run_id}: pov.decisions {int(run.pov_decisions or 0)} < minPovDecisions {int(effective_min_pov_decisions)}"
             )
+        if run_require_ocr_events_present.get(run.run_id, False) and not bool(run.ocr_events_present):
+            failures.append(f"{run.run_id}: ocr events missing (ocr.read)")
+        if run_require_ocr_payload_schema_ok.get(run.run_id, False) and not bool(run.ocr_payload_schema_ok):
+            failures.append(f"{run.run_id}: ocr payload schema check failed")
         if run_require_seg_events_present.get(run.run_id, False) and not bool(run.seg_events_present):
             failures.append(f"{run.run_id}: seg events missing (seg.segment)")
         if run_require_seg_payload_schema_ok.get(run.run_id, False) and not bool(run.seg_payload_schema_ok):
@@ -1066,6 +1086,7 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "confirmTimeouts={confirm_timeouts} critical_fn={critical_fn} riskDelayP90={risk_delay_p90} riskDelayMax={risk_delay_max} "
                 "riskLatencyP90={risk_latency_p90} riskLatencyMax={risk_latency_max} segF1@0.5={seg_f1} segCoverage={seg_cov} segLatencyP90={seg_p90} "
                 "depthAbsRel={depth_absrel} depthDelta1={depth_delta1} depthCoverage={depth_cov} depthLatencyP90={depth_p90} "
+                "ocrEventsPresent={ocr_events_present} ocrPayloadSchemaOk={ocr_payload_schema_ok} "
                 "segEventsPresent={seg_events_present} segPayloadSchemaOk={seg_payload_schema_ok} depthEventsPresent={depth_events_present} depthPayloadSchemaOk={depth_payload_schema_ok} "
                 "segPromptEventsPresent={seg_prompt_events_present} segPromptPayloadSchemaOk={seg_prompt_payload_schema_ok} "
                 "segPromptBudgetPresent={seg_prompt_budget_present} segPromptTruncationPresent={seg_prompt_truncation_present} "
@@ -1105,6 +1126,8 @@ def _print_summary(result: dict[str, Any]) -> None:
                     depth_delta1=row.get("depth", {}).get("delta1", None),
                     depth_cov=row.get("depth", {}).get("coverage", None),
                     depth_p90=row.get("depth", {}).get("latencyP90", None),
+                    ocr_events_present=row.get("segLint", {}).get("ocrEventsPresent", False),
+                    ocr_payload_schema_ok=row.get("segLint", {}).get("ocrPayloadSchemaOk", False),
                     seg_events_present=row.get("segLint", {}).get("eventsPresent", False),
                     seg_payload_schema_ok=row.get("segLint", {}).get("payloadSchemaOk", False),
                     depth_events_present=row.get("segLint", {}).get("depthEventsPresent", False),

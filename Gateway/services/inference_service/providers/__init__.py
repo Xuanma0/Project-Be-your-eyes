@@ -10,13 +10,31 @@ from services.inference_service.providers.onnx_depth import OnnxDepthProvider
 from services.inference_service.providers.depth_synth import SynthDepthProvider
 from services.inference_service.providers.http_seg import HttpSegProvider
 from services.inference_service.providers.http_depth import HttpDepthProvider
+from services.inference_service.providers.http_ocr import HttpOcrProvider
 from services.inference_service.providers.heuristic_risk import HeuristicRiskProvider
 from services.inference_service.providers.mock_seg import MockSegProvider
 from services.inference_service.providers.mock_depth import MockDepthProvider
+from services.inference_service.providers.mock_ocr import MockOcrProvider
 from services.inference_service.providers.paddleocr_ocr import PaddleOcrProvider
 from services.inference_service.providers.reference_ocr import ReferenceOcrProvider
 from services.inference_service.providers.reference_risk import ReferenceRiskProvider
 from services.inference_service.providers.tesseract_ocr import TesseractOcrProvider
+
+
+def create_ocr_provider(name: str | None = None) -> OCRProvider:
+    provider = str(name or os.getenv("BYES_SERVICE_OCR_PROVIDER", "mock")).strip().lower()
+    model_id = str(os.getenv("BYES_SERVICE_OCR_MODEL_ID", "")).strip() or None
+    if provider == "http":
+        endpoint = str(os.getenv("BYES_SERVICE_OCR_ENDPOINT", "")).strip()
+        timeout_ms = int(str(os.getenv("BYES_SERVICE_OCR_TIMEOUT_MS", "1200")).strip() or "1200")
+        return HttpOcrProvider(endpoint=endpoint, model_id=model_id, timeout_ms=timeout_ms)
+    if provider == "reference":
+        return ReferenceOcrProvider()
+    if provider == "tesseract":
+        return TesseractOcrProvider()
+    if provider == "paddleocr":
+        return PaddleOcrProvider()
+    return MockOcrProvider(model_id=model_id)
 
 
 def create_seg_provider(name: str | None = None) -> SegProvider:
@@ -51,6 +69,9 @@ __all__ = [
     "ReferenceOcrProvider",
     "TesseractOcrProvider",
     "PaddleOcrProvider",
+    "MockOcrProvider",
+    "HttpOcrProvider",
+    "create_ocr_provider",
     "ReferenceRiskProvider",
     "HeuristicRiskProvider",
     "MockSegProvider",
