@@ -2,7 +2,7 @@
 
 ## 一句话总结
 
-Unity（或回放夹具）将帧发送到 Gateway；Gateway 调用可插拔推理后端，产出标准化 `events_v1`，随后由 report/leaderboard/regression 消费这些产物，用于可复现的安全评估。
+Unity（或回放夹具）将帧发送到 Gateway；Gateway 调用可插拔推理后端，产出标准化 `events_v1`，随后由报告/排行榜/回归流程消费这些产物，用于可复现的安全评估。
 
 ## 端到端数据流
 
@@ -12,7 +12,7 @@ Unity / RunPackage replay
         v
 Gateway (/api/frame, scheduler, fusion, safety)
         |
-        +--> inference backend: mock or http
+        +--> 推理后端: mock 或 http
                  |
                  v
         inference_service (/ocr, /risk)
@@ -23,7 +23,7 @@ events/events_v1.jsonl  + metrics_before/after
         v
 report_run.py -> report.json + report.md
         |
-        +--> /api/run_packages + /runs leaderboard
+        +--> /api/run_packages + /runs 排行榜
         |
         +--> run_regression_suite.py + CI gate
 ```
@@ -35,7 +35,7 @@ report_run.py -> report.json + report.md
 - `Gateway/byes/*`
   - 调度、安全内核、指标、推理后端适配器。
 - `Gateway/services/inference_service/*`
-  - OCR/risk provider 选择，以及可选 ONNX 深度推理。
+  - OCR/risk 提供方选择，以及可选 ONNX 深度推理。
 - `Gateway/scripts/*`
   - 回放/报告/回归/扫参/标定工具链。
 

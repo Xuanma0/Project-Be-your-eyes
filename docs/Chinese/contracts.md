@@ -40,7 +40,7 @@ curl http://127.0.0.1:8000/api/contracts
 响应包含：
 
 - `versions`：来自 `contract.lock.json` 的 version/path/sha256/updatedAtMs
-- `runtimeDefaults`：关键运行时契约元数据（POV 上下文预算、planner 默认值、风险阈值默认值）
+- `runtimeDefaults`：关键运行时契约元数据（POV 上下文预算、规划器默认值、风险阈值默认值）
 
 ## POV-Compiler 同步流程
 

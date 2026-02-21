@@ -176,3 +176,72 @@ Assets/                               # Unity client and scene integration
 - 5-minute demo script: `docs/QUICK_DEMO.md`
 - Terms: `docs/GLOSSARY.md`
 - Command index: `docs/COMMANDS.md`
+
+## Documentation Index
+
+### Root
+
+- [README.md](README.md)
+
+### docs/English
+
+- [docs/English/ARCHITECTURE.md](docs/English/ARCHITECTURE.md)
+- [docs/English/COMMANDS.md](docs/English/COMMANDS.md)
+- [docs/English/contracts.md](docs/English/contracts.md)
+- [docs/English/event_schema_v1.md](docs/English/event_schema_v1.md)
+- [docs/English/GLOSSARY.md](docs/English/GLOSSARY.md)
+- [docs/English/hazard_taxonomy_v1.md](docs/English/hazard_taxonomy_v1.md)
+- [docs/English/pov_planner_adapter.md](docs/English/pov_planner_adapter.md)
+- [docs/English/QUICK_DEMO.md](docs/English/QUICK_DEMO.md)
+
+### docs/Chinese
+
+- [docs/Chinese/README.md](docs/Chinese/README.md)
+- [docs/Chinese/ARCHITECTURE.md](docs/Chinese/ARCHITECTURE.md)
+- [docs/Chinese/COMMANDS.md](docs/Chinese/COMMANDS.md)
+- [docs/Chinese/contracts.md](docs/Chinese/contracts.md)
+- [docs/Chinese/event_schema_v1.md](docs/Chinese/event_schema_v1.md)
+- [docs/Chinese/GLOSSARY.md](docs/Chinese/GLOSSARY.md)
+- [docs/Chinese/hazard_taxonomy_v1.md](docs/Chinese/hazard_taxonomy_v1.md)
+- [docs/Chinese/pov_planner_adapter.md](docs/Chinese/pov_planner_adapter.md)
+- [docs/Chinese/QUICK_DEMO.md](docs/Chinese/QUICK_DEMO.md)
+
+### Gateway Core
+
+- [Gateway/README.md](Gateway/README.md)
+- [Gateway/docs/Chinese/README.md](Gateway/docs/Chinese/README.md)
+- [Gateway/regression/README.md](Gateway/regression/README.md)
+
+### Gateway Services
+
+- [Gateway/services/inference_service/README.md](Gateway/services/inference_service/README.md)
+- [Gateway/services/planner_service/README.md](Gateway/services/planner_service/README.md)
+- [Gateway/services/reference_depth_service/README.md](Gateway/services/reference_depth_service/README.md)
+- [Gateway/services/reference_seg_service/README.md](Gateway/services/reference_seg_service/README.md)
+
+### Gateway Service Prompts
+
+- [Gateway/services/planner_service/prompts/planner_system.md](Gateway/services/planner_service/prompts/planner_system.md)
+- [Gateway/services/planner_service/prompts/planner_user.md](Gateway/services/planner_service/prompts/planner_user.md)
+
+### Gateway External Services
+
+- [Gateway/external/real_depth_service/README.md](Gateway/external/real_depth_service/README.md)
+- [Gateway/external/real_ocr_service/README.md](Gateway/external/real_ocr_service/README.md)
+- [Gateway/external/real_vlm_service/README.md](Gateway/external/real_vlm_service/README.md)
+
+### Gateway Test Fixtures
+
+- [Gateway/tests/fixtures/pov_ir_v1_min/README.md](Gateway/tests/fixtures/pov_ir_v1_min/README.md)
+- [Gateway/tests/fixtures/pov_plan_min/README.md](Gateway/tests/fixtures/pov_plan_min/README.md)
+- [Gateway/tests/fixtures/run_package_with_plan_http_min/README.md](Gateway/tests/fixtures/run_package_with_plan_http_min/README.md)
+- [Gateway/tests/fixtures/run_package_with_plan_llm_stub_min/README.md](Gateway/tests/fixtures/run_package_with_plan_llm_stub_min/README.md)
+- [Gateway/tests/fixtures/run_package_with_risk_gt_and_pov_min/README.md](Gateway/tests/fixtures/run_package_with_risk_gt_and_pov_min/README.md)
+- [Gateway/tests/fixtures/run_package_with_events_v1_min/report.md](Gateway/tests/fixtures/run_package_with_events_v1_min/report.md)
+- [Gateway/tests/fixtures/run_package_with_schema_v1_events_min/report.md](Gateway/tests/fixtures/run_package_with_schema_v1_events_min/report.md)
+
+### Unity / Assets Docs
+
+- [Assets/BeYourEyes/Docs/architecture.md](Assets/BeYourEyes/Docs/architecture.md)
+- [Assets/BeYourEyes/Docs/Spatial Audio Demo.md](Assets/BeYourEyes/Docs/Spatial%20Audio%20Demo.md)
+- [Assets/Samples/XR Hands/1.7.1/HandVisualizer/README.md](Assets/Samples/XR%20Hands/1.7.1/HandVisualizer/README.md)

@@ -1,5 +1,7 @@
 # Gateway Developer & Evaluation Guide
 
+[中文说明 / Chinese Version](docs/Chinese/README.md)
+
 TL;DR:
 - `Gateway` is the runtime hub: receives frames/events, calls inference backends, emits normalized events.
 - It supports replay-first evaluation: `RunPackage -> events_v1 -> report.json -> leaderboard -> regression gate`.

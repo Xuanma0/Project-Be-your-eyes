@@ -16,7 +16,7 @@
 
 与真值相比漏检关键风险。在报告中字段为：`quality.depthRisk.critical.missCriticalCount`。
 
-## Leaderboard
+## 排行榜（Leaderboard）
 
 Run 列表 API/页面（`/api/run_packages`、`/runs`），汇总质量、延迟、确认行为与关键漏检。
 
@@ -26,16 +26,16 @@ Run 列表 API/页面（`/api/run_packages`、`/runs`），汇总质量、延迟
 - 质量下降门禁，
 - critical FN 硬门禁（受门禁 run 的 `missCriticalCount` 必须保持为 `0`）。
 
-## Inference Backend
+## 推理后端（Inference Backend）
 
 Gateway 侧 OCR/risk 后端模式（`mock` 或 `http`），用于获取模型推理结果。
 
-## inference_service Provider
+## inference_service 提供方（Provider）
 
 服务侧通过环境变量选择的实现：
-- OCR provider（`reference`、`tesseract`、`paddleocr`）
-- risk provider（`reference`、`heuristic`）
-- depth provider（`none`、`synth`、`midas`、`onnx`）
+- OCR 提供方（`reference`、`tesseract`、`paddleocr`）
+- risk 提供方（`reference`、`heuristic`）
+- depth 提供方（`none`、`synth`、`midas`、`onnx`）
 
 ## Latch / Preempt / Fallback
 

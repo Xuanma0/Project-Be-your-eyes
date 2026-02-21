@@ -1,13 +1,13 @@
-# POV Planner Adapter v1
+# POV 规划器适配器 v1
 
 本文档定义了从 `pov.ir.v1` 到 `byes.action_plan.v1` 的确定性适配器。
 
 ## 范围
 
-- Provider：`Gateway/services/planner_service` 中的 `BYES_PLANNER_PROVIDER=pov`。
+- 提供方（Provider）：`Gateway/services/planner_service` 中的 `BYES_PLANNER_PROVIDER=pov`。
 - 输入：
-  - 首选：planner 请求体内联 `povIr` 对象；
-  - 兼容方式：`runPackagePath` 指向包含 `pov/pov_ir_v1.json` 的 run package。
+  - 首选：规划器请求体内联 `povIr` 对象；
+  - 兼容方式：`runPackagePath` 指向包含 `pov/pov_ir_v1.json` 的回放包。
 - 输出：由 `validate_action_plan.py` 严格校验的 `byes.action_plan.v1`。
 
 ## 映射规则（MVP）
@@ -30,11 +30,11 @@
 - 使用 `constraints.maxActions` 对 actions 做校验和裁剪。
 - 按 `priority` 保持确定性顺序。
 
-## Fallback
+## 回退（Fallback）
 
 当 `pov/pov_ir_v1.json` 缺失或无效时：
-- 回退到 reference planner，
-- 设置 planner 元数据：
+- 回退到 reference 规划器，
+- 设置规划器元数据：
   - `fallbackUsed=true`
   - `fallbackReason=missing_pov_ir` 或 `pov_adapter_error`
   - `jsonValid=false`
@@ -43,7 +43,7 @@
 
 1. 在 Gateway 上通过 `POST /api/pov/ingest` 提交完整 `pov.ir.v1` 负载。
 2. Gateway 将每个 `runId` 的最新 POV 保存到内存（`PovStore`）。
-3. `POST /api/plan?provider=pov` 可将内联 `povIr` 转发给 planner service。
+3. `POST /api/plan?provider=pov` 可将内联 `povIr` 转发给规划器服务。
 4. 产生事件：
    - `pov.ingest`
    - `plan.generate`

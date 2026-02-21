@@ -9,7 +9,7 @@ cd Gateway
 python -m pytest -q
 ```
 
-2. 校验 run package 夹具：
+2. 校验回放包夹具：
 
 ```powershell
 python scripts/lint_run_package.py --run-package tests/fixtures/run_package_with_events_v1_min
