@@ -1,5 +1,7 @@
 # Project-Be-your-eyes
 
+[中文说明 / Chinese Version](docs/Chinese/README.md)
+
 Project-Be-your-eyes (Be Your Eyes) is an event-driven assistive perception system for Unity + Gateway + pluggable inference, with replayable evaluation and safety gating for `risk + ocr` pipelines.
 
 ## Why This Project
