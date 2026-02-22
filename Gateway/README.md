@@ -187,6 +187,35 @@ python scripts/replay_run_package.py --run-package tests/fixtures/run_package_wi
 python scripts/report_run.py --run-package tests/fixtures/run_package_with_seg_gt_min
 ```
 
+SAM3 seg HTTP chain (Gateway -> inference_service -> sam3_seg_service):
+
+```powershell
+# terminal 1: sam3 seg service (fixture mode for deterministic runs)
+$env:BYES_SAM3_MODE="fixture"
+$env:BYES_SAM3_FIXTURE_DIR="Gateway/tests/fixtures/run_package_with_sam3_fixture_seg_min"
+$env:BYES_SAM3_MODEL_ID="sam3-v1"
+python -m uvicorn services.sam3_seg_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19271
+
+# terminal 2: inference_service (seg provider=http -> sam3 seg service)
+$env:BYES_SERVICE_SEG_PROVIDER="http"
+$env:BYES_SERVICE_SEG_ENDPOINT="http://127.0.0.1:19271/seg"
+$env:BYES_SERVICE_SEG_HTTP_DOWNSTREAM="sam3"
+$env:BYES_SERVICE_SEG_MODEL_ID="sam3-v1"
+python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
+
+# terminal 3: Gateway replay/report with seg enabled
+cd Gateway
+$env:BYES_ENABLE_SEG="1"
+$env:BYES_SEG_BACKEND="http"
+$env:BYES_SEG_HTTP_URL="http://127.0.0.1:19120/seg"
+python scripts/replay_run_package.py --run-package tests/fixtures/run_package_with_sam3_fixture_seg_min --reset
+python scripts/report_run.py --run-package tests/fixtures/run_package_with_sam3_fixture_seg_min
+```
+
+SAM3 model readiness check:
+- `/api/models` will require `BYES_SAM3_CKPT_PATH` when `BYES_ENABLE_SEG=1`, `BYES_SEG_BACKEND=http`, and downstream is `sam3`.
+- Use `python scripts/verify_models.py --check --quiet` to fail fast on missing checkpoint/endpoint config.
+
 Prompt + mask HTTP e2e (deterministic fixture):
 
 ```powershell

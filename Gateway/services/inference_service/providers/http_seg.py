@@ -17,7 +17,13 @@ def _now_ms() -> int:
 class HttpSegProvider:
     name = "http"
 
-    def __init__(self, endpoint: str, model_id: str | None = None, timeout_ms: int = 1200) -> None:
+    def __init__(
+        self,
+        endpoint: str,
+        model_id: str | None = None,
+        timeout_ms: int = 1200,
+        downstream: str | None = None,
+    ) -> None:
         endpoint_text = str(endpoint or "").strip()
         if not endpoint_text:
             raise RuntimeError("missing BYES_SERVICE_SEG_ENDPOINT; set seg endpoint URL for http provider")
@@ -25,6 +31,10 @@ class HttpSegProvider:
         self.endpoint = _sanitize_endpoint(endpoint_text)
         self.timeout_ms = max(1, int(timeout_ms))
         self.model = str(model_id or "").strip() or "http-seg"
+        downstream_value = str(downstream or "").strip().lower() or "reference"
+        if downstream_value not in {"reference", "sam3"}:
+            downstream_value = "reference"
+        self.downstream = downstream_value
 
     def infer(
         self,
@@ -81,6 +91,7 @@ class HttpSegProvider:
             "endpoint": self.endpoint,
             "targetsCount": int(body.get("targetsCount", len(targets_used)) or 0),
             "targetsUsed": body.get("targetsUsed", targets_used),
+            "downstream": self.downstream,
         }
 
 

@@ -408,6 +408,9 @@ def infer_seg(request: InferenceRequest) -> dict[str, Any]:
         response["targetsUsed"] = [str(item).strip() for item in targets_used_raw if str(item).strip()]
     elif targets:
         response["targetsUsed"] = targets
+    downstream_value = result.get("downstream")
+    if isinstance(downstream_value, str) and downstream_value.strip():
+        response["downstream"] = downstream_value.strip().lower()
     return response
 
 

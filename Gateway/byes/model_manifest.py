@@ -107,6 +107,14 @@ def _seg_component(config: GatewayConfig) -> dict[str, Any]:
     enabled = bool(config.inference_enable_seg)
     provider = str(config.inference_seg_backend or "mock").strip().lower() or "mock"
     endpoint = config.inference_seg_http_url if provider == "http" else None
+    downstream = (
+        _clean(os.getenv("BYES_SEG_HTTP_DOWNSTREAM"))
+        or _clean(os.getenv("BYES_SERVICE_SEG_HTTP_DOWNSTREAM"))
+        or "reference"
+    )
+    downstream = str(downstream).strip().lower() if downstream is not None else "reference"
+    if downstream not in {"reference", "sam3"}:
+        downstream = "reference"
     required: list[dict[str, Any]] = []
     optional = [
         _file_requirement(
@@ -125,12 +133,24 @@ def _seg_component(config: GatewayConfig) -> dict[str, Any]:
                 "Segmentation HTTP backend endpoint.",
             )
         )
+        if downstream == "sam3":
+            required.append(
+                _file_requirement(
+                    "sam3_ckpt_path",
+                    "BYES_SAM3_CKPT_PATH",
+                    "SAM3 checkpoint path required when seg downstream is sam3.",
+                )
+            )
     if enabled and provider == "mock":
         warnings.append("seg enabled with mock provider (no real model inference).")
+    if enabled and provider == "http" and downstream == "sam3":
+        warnings.append("seg http downstream=sam3 requires local SAM3 checkpoint availability.")
+    if enabled and provider == "http" and downstream == "reference":
+        warnings.append("seg http downstream=reference uses fixture-backed segmentation service.")
     return _component(
         name="seg",
         enabled=enabled,
-        provider=provider,
+        provider=(f"{provider}:{downstream}" if provider == "http" else provider),
         model_id=config.inference_seg_model_id,
         endpoint=endpoint,
         required=required,

@@ -66,3 +66,20 @@ def test_verify_models_script_smoke() -> None:
     )
     assert result_slam_missing.returncode != 0
     assert "missingRequired=" in result_slam_missing.stdout
+
+    env_sam3 = os.environ.copy()
+    env_sam3["BYES_ENABLE_SEG"] = "1"
+    env_sam3["BYES_SEG_BACKEND"] = "http"
+    env_sam3["BYES_SEG_HTTP_URL"] = "http://127.0.0.1:19271/seg"
+    env_sam3["BYES_SERVICE_SEG_HTTP_DOWNSTREAM"] = "sam3"
+    env_sam3["BYES_SAM3_CKPT_PATH"] = ""
+    result_sam3_missing = subprocess.run(
+        [sys.executable, str(script), "--check", "--quiet"],
+        cwd=repo_root,
+        env=env_sam3,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result_sam3_missing.returncode != 0
+    assert "missingRequired=" in result_sam3_missing.stdout

@@ -82,6 +82,7 @@ Required env for `http`:
 ```powershell
 $env:BYES_SERVICE_SEG_PROVIDER="http"
 $env:BYES_SERVICE_SEG_ENDPOINT="http://127.0.0.1:19120/seg"
+$env:BYES_SERVICE_SEG_HTTP_DOWNSTREAM="reference"  # or sam3
 ```
 
 Optional:
@@ -169,6 +170,22 @@ python -m uvicorn services.reference_depth_service.app:app --app-dir Gateway --h
 $env:BYES_SERVICE_DEPTH_PROVIDER="http"
 $env:BYES_SERVICE_DEPTH_ENDPOINT="http://127.0.0.1:19241/depth"
 $env:BYES_SERVICE_DEPTH_MODEL_ID="reference-depth-v1"
+python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
+```
+
+SAM3 seg chain example (fixture mode service for CI/local deterministic testing):
+
+```powershell
+# start sam3_seg_service in fixture mode first
+$env:BYES_SAM3_MODE="fixture"
+$env:BYES_SAM3_FIXTURE_DIR="Gateway/tests/fixtures/run_package_with_sam3_fixture_seg_min"
+python -m uvicorn services.sam3_seg_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19271
+
+# then start inference_service with seg provider=http and downstream=sam3
+$env:BYES_SERVICE_SEG_PROVIDER="http"
+$env:BYES_SERVICE_SEG_ENDPOINT="http://127.0.0.1:19271/seg"
+$env:BYES_SERVICE_SEG_HTTP_DOWNSTREAM="sam3"
+$env:BYES_SERVICE_SEG_MODEL_ID="sam3-v1"
 python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
 ```
 
