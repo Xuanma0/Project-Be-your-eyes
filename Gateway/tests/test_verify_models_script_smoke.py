@@ -83,3 +83,20 @@ def test_verify_models_script_smoke() -> None:
     )
     assert result_sam3_missing.returncode != 0
     assert "missingRequired=" in result_sam3_missing.stdout
+
+    env_da3 = os.environ.copy()
+    env_da3["BYES_ENABLE_DEPTH"] = "1"
+    env_da3["BYES_DEPTH_BACKEND"] = "http"
+    env_da3["BYES_DEPTH_HTTP_URL"] = "http://127.0.0.1:19281/depth"
+    env_da3["BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM"] = "da3"
+    env_da3["BYES_DA3_MODEL_PATH"] = ""
+    result_da3_missing = subprocess.run(
+        [sys.executable, str(script), "--check", "--quiet"],
+        cwd=repo_root,
+        env=env_da3,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result_da3_missing.returncode != 0
+    assert "missingRequired=" in result_da3_missing.stdout

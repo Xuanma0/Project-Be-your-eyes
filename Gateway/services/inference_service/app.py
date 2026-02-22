@@ -462,6 +462,9 @@ def infer_depth(request: InferenceRequest) -> dict[str, Any]:
             response["warningsCount"] = int(warnings_count)
     except Exception:
         pass
+    downstream_value = result.get("downstream")
+    if isinstance(downstream_value, str) and downstream_value.strip():
+        response["downstream"] = downstream_value.strip().lower()
     return response
 
 

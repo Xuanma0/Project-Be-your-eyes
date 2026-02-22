@@ -163,6 +163,14 @@ def _depth_component(config: GatewayConfig) -> dict[str, Any]:
     enabled = bool(config.inference_enable_depth)
     provider = str(config.inference_depth_backend or "mock").strip().lower() or "mock"
     endpoint = config.inference_depth_http_url if provider == "http" else None
+    downstream = (
+        _clean(os.getenv("BYES_DEPTH_HTTP_DOWNSTREAM"))
+        or _clean(os.getenv("BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM"))
+        or "reference"
+    )
+    downstream = str(downstream).strip().lower() if downstream is not None else "reference"
+    if downstream not in {"reference", "da3"}:
+        downstream = "reference"
     required: list[dict[str, Any]] = []
     optional = [
         _file_requirement(
@@ -176,17 +184,29 @@ def _depth_component(config: GatewayConfig) -> dict[str, Any]:
         required.append(
             _endpoint_requirement(
                 "depth_http_endpoint",
-                "BYES_DEPTH_HTTP_URL",
+                "BYES_DEPTH_HTTP_URL|BYES_SERVICE_DEPTH_ENDPOINT",
                 endpoint,
                 "Depth HTTP backend endpoint.",
             )
         )
+        if downstream == "da3":
+            required.append(
+                _file_requirement(
+                    "da3_model_path",
+                    "BYES_DA3_MODEL_PATH",
+                    "DA3 model path required when depth downstream is da3.",
+                )
+            )
     if enabled and provider == "mock":
         warnings.append("depth enabled with mock provider (no real model inference).")
+    if enabled and provider == "http" and downstream == "da3":
+        warnings.append("depth http downstream=da3 requires local DA3 model availability.")
+    if enabled and provider == "http" and downstream == "reference":
+        warnings.append("depth http downstream=reference uses fixture-backed depth service.")
     return _component(
         name="depth",
         enabled=enabled,
-        provider=provider,
+        provider=(f"{provider}:{downstream}" if provider == "http" else provider),
         model_id=config.inference_depth_model_id,
         endpoint=endpoint,
         required=required,

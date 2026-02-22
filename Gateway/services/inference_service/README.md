@@ -151,6 +151,7 @@ Required env for `http`:
 ```powershell
 $env:BYES_SERVICE_DEPTH_PROVIDER="http"
 $env:BYES_SERVICE_DEPTH_ENDPOINT="http://127.0.0.1:19241/depth"
+$env:BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM="reference"  # or da3
 ```
 
 Optional:
@@ -170,6 +171,22 @@ python -m uvicorn services.reference_depth_service.app:app --app-dir Gateway --h
 $env:BYES_SERVICE_DEPTH_PROVIDER="http"
 $env:BYES_SERVICE_DEPTH_ENDPOINT="http://127.0.0.1:19241/depth"
 $env:BYES_SERVICE_DEPTH_MODEL_ID="reference-depth-v1"
+python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
+```
+
+DA3 depth chain example (fixture mode service for CI/local deterministic testing):
+
+```powershell
+# start da3_depth_service in fixture mode first
+$env:BYES_DA3_MODE="fixture"
+$env:BYES_DA3_FIXTURE_DIR="Gateway/tests/fixtures/run_package_with_da3_fixture_depth_min"
+python -m uvicorn services.da3_depth_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19281
+
+# then start inference_service with depth provider=http and downstream=da3
+$env:BYES_SERVICE_DEPTH_PROVIDER="http"
+$env:BYES_SERVICE_DEPTH_ENDPOINT="http://127.0.0.1:19281/depth"
+$env:BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM="da3"
+$env:BYES_SERVICE_DEPTH_MODEL_ID="da3-v1"
 python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
 ```
 
@@ -281,9 +298,11 @@ Recommended default input size is `256` (can test `384`/`518` with sweep tools).
 | `BYES_SERVICE_SEG_MODEL_ID` | provider default | seg model metadata tag |
 | `BYES_SERVICE_SEG_ENDPOINT` | empty | seg endpoint URL (`http` provider) |
 | `BYES_SERVICE_SEG_TIMEOUT_MS` | `1200` | seg HTTP timeout ms |
+| `BYES_SERVICE_SEG_HTTP_DOWNSTREAM` | `reference` | seg downstream selector (`reference|sam3`) for http provider |
 | `BYES_SERVICE_DEPTH_MODEL_ID` | provider default | depth model metadata tag |
 | `BYES_SERVICE_DEPTH_ENDPOINT` | empty | depth endpoint URL (`http` provider for `/depth`) |
 | `BYES_SERVICE_DEPTH_TIMEOUT_MS` | `1200` | depth HTTP timeout ms (`/depth`) |
+| `BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM` | `reference` | depth downstream selector (`reference|da3`) for http provider |
 | `BYES_SERVICE_SLAM_PROVIDER` | `mock` | SLAM provider selection (`mock|http`) |
 | `BYES_SERVICE_SLAM_MODEL_ID` | provider default | slam model metadata tag |
 | `BYES_SERVICE_SLAM_ENDPOINT` | empty | slam endpoint URL (`http` provider for `/slam/pose`) |

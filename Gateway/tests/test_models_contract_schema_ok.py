@@ -52,3 +52,25 @@ def test_models_manifest_seg_sam3_required_ckpt(monkeypatch) -> None:  # type: i
     sam3_req = next((row for row in required if isinstance(row, dict) and row.get("id") == "sam3_ckpt_path"), None)
     assert isinstance(sam3_req, dict)
     assert bool(sam3_req.get("exists")) is False
+
+
+def test_models_manifest_depth_da3_required_model(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("BYES_ENABLE_DEPTH", "1")
+    monkeypatch.setenv("BYES_DEPTH_BACKEND", "http")
+    monkeypatch.setenv("BYES_DEPTH_HTTP_URL", "http://127.0.0.1:19281/depth")
+    monkeypatch.setenv("BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM", "da3")
+    monkeypatch.delenv("BYES_DA3_MODEL_PATH", raising=False)
+
+    manifest = build_model_manifest(load_config())
+    components = manifest.get("components")
+    assert isinstance(components, list)
+    depth = next(
+        (item for item in components if isinstance(item, dict) and str(item.get("name", "")).strip() == "depth"),
+        None,
+    )
+    assert isinstance(depth, dict)
+    required = depth.get("required")
+    assert isinstance(required, list)
+    da3_req = next((row for row in required if isinstance(row, dict) and row.get("id") == "da3_model_path"), None)
+    assert isinstance(da3_req, dict)
+    assert bool(da3_req.get("exists")) is False

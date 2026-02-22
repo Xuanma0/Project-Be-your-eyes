@@ -17,7 +17,13 @@ def _now_ms() -> int:
 class HttpDepthProvider:
     name = "http"
 
-    def __init__(self, endpoint: str, model_id: str | None = None, timeout_ms: int = 1200) -> None:
+    def __init__(
+        self,
+        endpoint: str,
+        model_id: str | None = None,
+        timeout_ms: int = 1200,
+        downstream: str | None = None,
+    ) -> None:
         endpoint_text = str(endpoint or "").strip()
         if not endpoint_text:
             raise RuntimeError("missing BYES_SERVICE_DEPTH_ENDPOINT; set depth endpoint URL for http provider")
@@ -25,6 +31,10 @@ class HttpDepthProvider:
         self.endpoint = _sanitize_endpoint(endpoint_text)
         self.timeout_ms = max(1, int(timeout_ms))
         self.model = str(model_id or "").strip() or "http-depth"
+        downstream_value = str(downstream or "").strip().lower() or "reference"
+        if downstream_value not in {"reference", "da3"}:
+            downstream_value = "reference"
+        self.downstream = downstream_value
 
     def infer(
         self,
@@ -71,6 +81,7 @@ class HttpDepthProvider:
             "endpoint": body.get("endpoint", self.endpoint),
             "latencyMs": latency_ms,
             "warningsCount": int(body.get("warningsCount", 0) or 0),
+            "downstream": self.downstream,
         }
         if isinstance(grid, dict):
             out["grid"] = grid

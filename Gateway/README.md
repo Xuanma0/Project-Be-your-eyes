@@ -300,6 +300,35 @@ python scripts/replay_run_package.py --run-package tests/fixtures/run_package_wi
 python scripts/report_run.py --run-package tests/fixtures/run_package_with_depth_gt_min
 ```
 
+DA3 depth HTTP chain (Gateway -> inference_service -> da3_depth_service):
+
+```powershell
+# terminal 1: da3 depth service (fixture mode for deterministic runs)
+$env:BYES_DA3_MODE="fixture"
+$env:BYES_DA3_FIXTURE_DIR="Gateway/tests/fixtures/run_package_with_da3_fixture_depth_min"
+$env:BYES_DA3_MODEL_ID="da3-v1"
+python -m uvicorn services.da3_depth_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19281
+
+# terminal 2: inference_service (depth provider=http -> da3 depth service)
+$env:BYES_SERVICE_DEPTH_PROVIDER="http"
+$env:BYES_SERVICE_DEPTH_ENDPOINT="http://127.0.0.1:19281/depth"
+$env:BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM="da3"
+$env:BYES_SERVICE_DEPTH_MODEL_ID="da3-v1"
+python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
+
+# terminal 3: Gateway replay/report with depth enabled
+cd Gateway
+$env:BYES_ENABLE_DEPTH="1"
+$env:BYES_DEPTH_BACKEND="http"
+$env:BYES_DEPTH_HTTP_URL="http://127.0.0.1:19120/depth"
+python scripts/replay_run_package.py --run-package tests/fixtures/run_package_with_da3_fixture_depth_min --reset
+python scripts/report_run.py --run-package tests/fixtures/run_package_with_da3_fixture_depth_min
+```
+
+DA3 model readiness check:
+- `/api/models` will require `BYES_DA3_MODEL_PATH` when `BYES_ENABLE_DEPTH=1`, `BYES_DEPTH_BACKEND=http`, and depth downstream is `da3`.
+- Use `python scripts/verify_models.py --check --quiet` to fail fast on missing model/endpoint config.
+
 ## OCR (mock/http)
 
 Enable OCR event emission in Gateway:
