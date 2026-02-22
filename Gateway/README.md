@@ -437,6 +437,25 @@ python scripts/replay_run_package.py --run-package tests/fixtures/run_package_wi
 python scripts/report_run.py --run-package tests/fixtures/run_package_with_slam_pose_gt_min
 ```
 
+pySLAM offline trajectory ingest (TUM -> `slam.pose` events):
+
+```powershell
+# 1) run pySLAM with SAVE_TRAJECTORY enabled (tum output)
+# output example: D:\pyslam\pyslam\results\byes_runpkg\byes_traj_final.txt
+
+# 2) ingest trajectory into run package events/events_v1.jsonl
+python scripts/ingest_pyslam_tum.py `
+  --run-package tests/fixtures/run_package_with_slam_pose_gt_min `
+  --tum D:\pyslam\pyslam\results\byes_runpkg\byes_traj_final.txt
+
+# 3) generate report with slam quality metrics and inferred inference.slam
+python scripts/report_run.py --run-package tests/fixtures/run_package_with_slam_pose_gt_min
+```
+
+Notes:
+- `ingest_pyslam_tum.py` first tries timestamp nearest-neighbor matching (`frames_meta.jsonl` + `--tolerance-ms`), then falls back to frame-index mapping when needed.
+- Emitted events use `name="slam.pose"`, `backend="offline"`, `model="pyslam"`, payload schema `byes.slam_pose.v1`.
+
 Seg prompt budget sweep (local tooling, not CI gate):
 
 ```powershell
