@@ -9,9 +9,11 @@ from byes.inference.backends.base import (
     SegResult,
     DepthBackend,
     DepthResult,
+    SlamBackend,
+    SlamResult,
 )
-from byes.inference.backends.http import HttpOCRBackend, HttpRiskBackend, HttpSegBackend, HttpDepthBackend
-from byes.inference.backends.mock import MockOCRBackend, MockRiskBackend, MockSegBackend, MockDepthBackend
+from byes.inference.backends.http import HttpOCRBackend, HttpRiskBackend, HttpSegBackend, HttpDepthBackend, HttpSlamBackend
+from byes.inference.backends.mock import MockOCRBackend, MockRiskBackend, MockSegBackend, MockDepthBackend, MockSlamBackend
 
 __all__ = [
     "OCRBackend",
@@ -22,12 +24,16 @@ __all__ = [
     "SegResult",
     "DepthBackend",
     "DepthResult",
+    "SlamBackend",
+    "SlamResult",
     "HttpOCRBackend",
     "HttpRiskBackend",
     "HttpSegBackend",
     "HttpDepthBackend",
+    "HttpSlamBackend",
     "MockOCRBackend",
     "MockRiskBackend",
     "MockSegBackend",
     "MockDepthBackend",
+    "MockSlamBackend",
 ]

@@ -328,6 +328,57 @@ python scripts/replay_run_package.py --run-package tests/fixtures/run_package_wi
 python scripts/report_run.py --run-package tests/fixtures/run_package_with_ocr_gt_min
 ```
 
+## SLAM Pose (mock/http)
+
+Enable SLAM pose event emission in Gateway:
+
+```powershell
+cd Gateway
+$env:BYES_ENABLE_SLAM="1"
+$env:BYES_SLAM_BACKEND="mock"   # or http
+$env:BYES_SLAM_MODEL_ID="mock-slam-v1"
+# when using http backend:
+# $env:BYES_SLAM_HTTP_URL="http://127.0.0.1:19120/slam/pose"
+```
+
+Expected evidence:
+- `events/events_v1.jsonl` contains `name="slam.pose"` with payload `trackingState`, `pose`, `backend`, `model`, `endpoint`.
+- `report.json -> inference.slam` is inferred from `slam.pose`.
+- `report.json -> quality.slam` includes `trackingRate`, `lostRate`, `relocalizedCount`, `longestLostStreak`, `coverage`, `latencyMs`.
+
+SLAM stability evaluation:
+
+```powershell
+python scripts/report_run.py --run-package tests/fixtures/run_package_with_slam_pose_gt_min
+python scripts/run_regression_suite.py --suite regression/suites/contract_suite.json --baseline regression/baselines/baseline.json --fail-on-drop
+```
+
+Leaderboard fields:
+- columns: `slam_tracking_rate`, `slam_lost_rate`, `slam_relocalized`, `slam_latency_p90`
+- filters: `min_slam_tracking_rate`, `max_slam_lost_rate`, `max_slam_latency_p90`
+- sort: `sort=slam_tracking_rate|slam_lost_rate|slam_latency_p90`
+
+Reference SLAM HTTP chain (Gateway -> inference_service -> reference_slam_service):
+
+```powershell
+# terminal 1: reference slam service
+python -m uvicorn services.reference_slam_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19261
+
+# terminal 2: inference_service (slam provider=http -> reference slam service)
+$env:BYES_SERVICE_SLAM_PROVIDER="http"
+$env:BYES_SERVICE_SLAM_ENDPOINT="http://127.0.0.1:19261/slam/pose"
+$env:BYES_SERVICE_SLAM_MODEL_ID="reference-slam-v1"
+python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
+
+# terminal 3: Gateway replay/report with slam enabled
+cd Gateway
+$env:BYES_ENABLE_SLAM="1"
+$env:BYES_SLAM_BACKEND="http"
+$env:BYES_SLAM_HTTP_URL="http://127.0.0.1:19120/slam/pose"
+python scripts/replay_run_package.py --run-package tests/fixtures/run_package_with_slam_pose_gt_min --reset
+python scripts/report_run.py --run-package tests/fixtures/run_package_with_slam_pose_gt_min
+```
+
 Seg prompt budget sweep (local tooling, not CI gate):
 
 ```powershell

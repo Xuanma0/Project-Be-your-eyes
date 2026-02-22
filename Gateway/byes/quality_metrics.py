@@ -143,6 +143,40 @@ def load_gt_depth_v1(path: Path) -> dict[int, dict[str, Any]]:
     return records
 
 
+def load_gt_slam_pose_v1(path: Path) -> dict[int, dict[str, Any]]:
+    records: dict[int, dict[str, Any]] = {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return records
+
+    frames: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        rows = payload.get("frames")
+        if isinstance(rows, list):
+            frames = [row for row in rows if isinstance(row, dict)]
+    elif isinstance(payload, list):
+        frames = [row for row in payload if isinstance(row, dict)]
+
+    for row in frames:
+        seq = _extract_frame_seq(row)
+        if seq is None:
+            continue
+        pose = _normalize_slam_pose_object(row.get("pose"))
+        if not isinstance(pose, dict):
+            continue
+        tracking_state = _normalize_slam_tracking_state(row.get("trackingState"))
+        if not tracking_state:
+            continue
+        out: dict[str, Any] = {"trackingState": tracking_state, "pose": pose}
+        map_id = row.get("mapId")
+        map_id_text = str(map_id).strip() if map_id is not None else ""
+        if map_id_text:
+            out["mapId"] = map_id_text
+        records[seq] = out
+    return records
+
+
 def extract_pred_seg_from_ws_events(
     ws_events_jsonl_path: Path,
 ) -> tuple[dict[int, list[dict[str, Any]]], set[int], list[int]]:
@@ -287,6 +321,86 @@ def extract_pred_depth_from_ws_events(
             out["imageWidth"] = width
         if height is not None and height > 0:
             out["imageHeight"] = height
+        pred_map[seq] = out
+
+    return pred_map, pred_event_frames, latencies
+
+
+def extract_pred_slam_from_ws_events(
+    ws_events_jsonl_path: Path,
+) -> tuple[dict[int, dict[str, Any]], set[int], list[int]]:
+    pred_map: dict[int, dict[str, Any]] = {}
+    pred_event_frames: set[int] = set()
+    latencies: list[int] = []
+
+    normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
+    normalized_events = normalized_summary.get("events", [])
+    for event in normalized_events:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "slam.pose":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        seq = _parse_int(event.get("frameSeq"))
+        if seq is None:
+            continue
+        pred_event_frames.add(seq)
+        latency = _parse_int(event.get("latencyMs"))
+        if latency is not None and latency >= 0:
+            latencies.append(latency)
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        pose = _normalize_slam_pose_object(payload.get("pose"))
+        if not isinstance(pose, dict):
+            continue
+        tracking_state = _normalize_slam_tracking_state(payload.get("trackingState"))
+        if not tracking_state:
+            continue
+        row: dict[str, Any] = {"trackingState": tracking_state, "pose": pose}
+        map_id = payload.get("mapId")
+        map_id_text = str(map_id).strip() if map_id is not None else ""
+        if map_id_text:
+            row["mapId"] = map_id_text
+        pred_map[seq] = row
+
+    if normalized_events:
+        return pred_map, pred_event_frames, latencies
+
+    for row in _iter_jsonl(ws_events_jsonl_path):
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "slam.pose":
+            continue
+        if str(event.get("phase", "")).strip().lower() not in {"", "result"}:
+            continue
+        if str(event.get("status", "")).strip().lower() not in {"", "ok"}:
+            continue
+        seq = _extract_frame_seq(event)
+        if seq is None:
+            continue
+        pred_event_frames.add(seq)
+        latency = _extract_latency_ms(event)
+        if latency is not None and latency >= 0:
+            latencies.append(latency)
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        pose = _normalize_slam_pose_object(payload.get("pose"))
+        if not isinstance(pose, dict):
+            continue
+        tracking_state = _normalize_slam_tracking_state(payload.get("trackingState"))
+        if not tracking_state:
+            continue
+        out: dict[str, Any] = {"trackingState": tracking_state, "pose": pose}
+        map_id = payload.get("mapId")
+        map_id_text = str(map_id).strip() if map_id is not None else ""
+        if map_id_text:
+            out["mapId"] = map_id_text
         pred_map[seq] = out
 
     return pred_map, pred_event_frames, latencies
@@ -1485,6 +1599,72 @@ def compute_depth_metrics(
     }
 
 
+def compute_slam_metrics(
+    gt_map: dict[int, dict[str, Any]],
+    pred_map: dict[int, dict[str, Any]],
+    pred_event_frames: set[int],
+    latencies: list[int],
+    frames_total: int,
+) -> dict[str, Any]:
+    frames_total_safe = max(0, int(frames_total))
+    frames_with_gt = len([seq for seq, row in gt_map.items() if isinstance(row, dict)])
+    frames_with_pred = len({seq for seq in pred_event_frames if isinstance(seq, int)})
+    coverage_denom = frames_with_gt if frames_with_gt > 0 else frames_total_safe
+    coverage = _safe_ratio(frames_with_pred, coverage_denom)
+
+    all_frames = sorted(set(gt_map.keys()) | set(pred_map.keys()) | set(pred_event_frames))
+    tracking_count = 0
+    lost_count = 0
+    relocalized_count = 0
+    longest_lost_streak = 0
+    current_lost_streak = 0
+    top_lost_frames: list[int] = []
+
+    for frame_seq in all_frames:
+        pred_row = pred_map.get(frame_seq)
+        pred_row = pred_row if isinstance(pred_row, dict) else {}
+        state = _normalize_slam_tracking_state(pred_row.get("trackingState"))
+        if not state:
+            continue
+        if state == "tracking":
+            tracking_count += 1
+            current_lost_streak = 0
+        elif state == "lost":
+            lost_count += 1
+            current_lost_streak += 1
+            longest_lost_streak = max(longest_lost_streak, current_lost_streak)
+            if len(top_lost_frames) < 10:
+                top_lost_frames.append(int(frame_seq))
+        elif state == "relocalized":
+            relocalized_count += 1
+            current_lost_streak = 0
+        else:
+            current_lost_streak = 0
+
+    latency_stats = summarize_latency(latencies)
+    denom = max(1, frames_with_pred)
+    return {
+        "present": bool(gt_map or pred_event_frames),
+        "framesTotal": frames_total_safe,
+        "framesWithGt": int(frames_with_gt),
+        "framesWithPred": int(frames_with_pred),
+        "coverage": float(coverage),
+        "tracking": {
+            "trackingRate": float(_safe_ratio(tracking_count, denom)),
+            "lostRate": float(_safe_ratio(lost_count, denom)),
+            "relocalizedCount": int(relocalized_count),
+            "longestLostStreak": int(longest_lost_streak),
+            "topLostFrames": top_lost_frames[:5],
+        },
+        "latencyMs": {
+            "count": int(latency_stats.get("count", 0) or 0),
+            "p50": int(latency_stats.get("p50", 0) or 0),
+            "p90": int(latency_stats.get("p90", 0) or 0),
+            "max": int(latency_stats.get("max", 0) or 0),
+        },
+    }
+
+
 def compute_quality_score(
     safety_score: float,
     ocr_metrics: dict[str, Any] | None,
@@ -1821,6 +2001,32 @@ def _normalize_depth_grid_object(grid_raw: Any) -> dict[str, Any] | None:
     if len(values) != gw * gh:
         return None
     return {"format": "grid_u16_mm_v1", "size": [gw, gh], "unit": "mm", "values": values}
+
+
+def _normalize_slam_tracking_state(raw: Any) -> str:
+    value = str(raw or "").strip().lower()
+    if value in {"tracking", "lost", "relocalized", "initializing"}:
+        return value
+    if value:
+        return "unknown"
+    return ""
+
+
+def _normalize_slam_pose_object(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    t_raw = raw.get("t")
+    q_raw = raw.get("q")
+    if not isinstance(t_raw, list) or len(t_raw) != 3:
+        return None
+    if not isinstance(q_raw, list) or len(q_raw) != 4:
+        return None
+    try:
+        t = [float(t_raw[0]), float(t_raw[1]), float(t_raw[2])]
+        q = [float(q_raw[0]), float(q_raw[1]), float(q_raw[2]), float(q_raw[3])]
+    except Exception:
+        return None
+    return {"t": t, "q": q}
 
 
 def _bbox_iou(a: list[float], b: list[float]) -> float:
@@ -2371,6 +2577,7 @@ def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict
         "risk": {"backend": None, "model": None, "endpoint": None},
         "seg": {"backend": None, "model": None, "endpoint": None},
         "depth": {"backend": None, "model": None, "endpoint": None},
+        "slam": {"backend": None, "model": None, "endpoint": None},
     }
 
     normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
@@ -2387,6 +2594,8 @@ def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict
             bucket = summary["seg"]
         elif name == "depth.estimate":
             bucket = summary["depth"]
+        elif name == "slam.pose":
+            bucket = summary["slam"]
         elif name == "seg.prompt":
             payload = event.get("payload")
             if isinstance(payload, dict):
@@ -2421,6 +2630,8 @@ def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict
             _merge_inference_fields(summary["seg"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
         if "depth" in blob and "risk.depth" not in blob:
             _merge_inference_fields(summary["depth"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
+        if "slam.pose" in blob:
+            _merge_inference_fields(summary["slam"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
 
     _finalize_seg_prompt_bucket(summary["seg"])
     return summary
@@ -2432,6 +2643,7 @@ def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> 
         "risk": {"backend": None, "model": None, "endpoint": None},
         "seg": {"backend": None, "model": None, "endpoint": None},
         "depth": {"backend": None, "model": None, "endpoint": None},
+        "slam": {"backend": None, "model": None, "endpoint": None},
     }
     for row in events:
         if not isinstance(row, dict):
@@ -2455,6 +2667,8 @@ def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> 
             bucket = summary["seg"]
         elif name == "depth.estimate":
             bucket = summary["depth"]
+        elif name == "slam.pose":
+            bucket = summary["slam"]
         elif name == "seg.prompt":
             payload = event.get("payload")
             if isinstance(payload, dict):
@@ -3383,7 +3597,7 @@ def _to_bool(value: Any) -> bool:
 
 
 def _has_any_inference(summary: dict[str, dict[str, Any]]) -> bool:
-    for tool in ("ocr", "risk", "seg", "depth"):
+    for tool in ("ocr", "risk", "seg", "depth", "slam"):
         bucket = summary.get(tool, {})
         if not isinstance(bucket, dict):
             continue

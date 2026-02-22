@@ -1,0 +1,245 @@
+from __future__ import annotations
+
+import io
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+from PIL import Image
+
+from byes.inference.backends.http import HttpSlamBackend
+from main import app, gateway
+
+jsonschema = pytest.importorskip("jsonschema")
+
+
+def _pick_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+def _wait_health(url: str, timeout_sec: float = 20.0) -> None:
+    deadline = time.time() + timeout_sec
+    last_error: str | None = None
+    while time.time() < deadline:
+        try:
+            response = httpx.get(url, timeout=1.0)
+            if response.status_code == 200:
+                return
+            last_error = f"http_{response.status_code}"
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc.__class__.__name__)
+        time.sleep(0.2)
+    raise RuntimeError(f"service_not_ready:{url}:{last_error}")
+
+
+def _encode_test_png() -> bytes:
+    image = Image.new("RGB", (16, 16), (32, 64, 96))
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _start_uvicorn(
+    *,
+    module_path: str,
+    gateway_root: Path,
+    port: int,
+    env: dict[str, str],
+    log_path: Path,
+) -> tuple[subprocess.Popen[bytes], Any]:
+    log_file = log_path.open("w", encoding="utf-8")
+    cmd = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        module_path,
+        "--app-dir",
+        str(gateway_root),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--log-level",
+        "warning",
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        cwd=gateway_root.parent,
+        env=env,
+        stdout=log_file,
+        stderr=log_file,
+    )
+    return proc, log_file
+
+
+def _stop_process(proc: subprocess.Popen[bytes] | None, log_file: Any | None) -> None:
+    if proc is not None and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except Exception:  # noqa: BLE001
+            proc.kill()
+    if log_file is not None:
+        log_file.close()
+
+
+def test_slam_http_reference_e2e(tmp_path: Path) -> None:
+    tests_dir = Path(__file__).resolve().parent
+    gateway_root = tests_dir.parent
+    fixture_src = tests_dir / "fixtures" / "run_package_with_slam_pose_gt_min"
+    run_pkg = tmp_path / "run_pkg_slam_e2e"
+    shutil.copytree(fixture_src, run_pkg)
+
+    ref_port = _pick_port()
+    inf_port = _pick_port()
+    ref_log = tmp_path / "reference_slam_service.log"
+    inf_log = tmp_path / "inference_service_slam.log"
+
+    ref_proc: subprocess.Popen[bytes] | None = None
+    inf_proc: subprocess.Popen[bytes] | None = None
+    ref_log_file: Any | None = None
+    inf_log_file: Any | None = None
+
+    original_enable_seg = gateway.config.inference_enable_seg
+    original_enable_depth = gateway.config.inference_enable_depth
+    original_enable_ocr = gateway.config.inference_enable_ocr
+    original_enable_risk = gateway.config.inference_enable_risk
+    original_enable_slam = gateway.config.inference_enable_slam
+    original_slam_backend = gateway.slam_backend
+    original_scheduler_seq = int(getattr(gateway.scheduler, "_seq", 0))
+    original_scheduler_latest_seq = int(getattr(gateway.scheduler, "_latest_seq", 0))
+
+    try:
+        ref_env = dict(os.environ)
+        ref_env["BYES_REF_SLAM_FIXTURE_DIR"] = str(run_pkg)
+        ref_env["BYES_REF_SLAM_RUN_ID"] = "fixture-slam-gt"
+        ref_proc, ref_log_file = _start_uvicorn(
+            module_path="services.reference_slam_service.app:app",
+            gateway_root=gateway_root,
+            port=ref_port,
+            env=ref_env,
+            log_path=ref_log,
+        )
+        _wait_health(f"http://127.0.0.1:{ref_port}/healthz")
+
+        schema_path = gateway_root / "contracts" / "byes.slam_pose.v1.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8-sig"))
+        ref_probe = httpx.post(
+            f"http://127.0.0.1:{ref_port}/slam/pose",
+            json={"runId": "fixture-slam-gt", "frameSeq": 1, "image_b64": ""},
+            timeout=3.0,
+        )
+        assert ref_probe.status_code == 200, ref_probe.text
+        ref_payload = ref_probe.json()
+        jsonschema.validate(ref_payload, schema)
+        assert isinstance(ref_payload.get("pose"), dict)
+
+        inf_env = dict(os.environ)
+        inf_env["BYES_SERVICE_SLAM_PROVIDER"] = "http"
+        inf_env["BYES_SERVICE_SLAM_ENDPOINT"] = f"http://127.0.0.1:{ref_port}/slam/pose"
+        inf_env["BYES_SERVICE_SLAM_MODEL_ID"] = "reference-slam-v1"
+        inf_proc, inf_log_file = _start_uvicorn(
+            module_path="services.inference_service.app:app",
+            gateway_root=gateway_root,
+            port=inf_port,
+            env=inf_env,
+            log_path=inf_log,
+        )
+        _wait_health(f"http://127.0.0.1:{inf_port}/healthz")
+
+        with TestClient(app) as client:
+            reset = client.post("/api/dev/reset")
+            assert reset.status_code == 200, reset.text
+            object.__setattr__(gateway.config, "inference_enable_seg", False)
+            object.__setattr__(gateway.config, "inference_enable_depth", False)
+            object.__setattr__(gateway.config, "inference_enable_ocr", False)
+            object.__setattr__(gateway.config, "inference_enable_risk", False)
+            object.__setattr__(gateway.config, "inference_enable_slam", True)
+            gateway.slam_backend = HttpSlamBackend(
+                url=f"http://127.0.0.1:{inf_port}/slam/pose",
+                timeout_ms=2000,
+                model_id="slam-http-e2e",
+            )
+            setattr(gateway.scheduler, "_seq", 0)
+            setattr(gateway.scheduler, "_latest_seq", 0)
+            gateway.drain_inference_events()
+            image_bytes = _encode_test_png()
+            for frame_seq in (1, 2):
+                frame_path = run_pkg / "frames" / f"frame_{frame_seq}.png"
+                meta = json.dumps({"runId": "fixture-slam-gt", "sessionId": "fixture-slam-gt", "frameSeq": frame_seq})
+                response = client.post(
+                    "/api/frame",
+                    files={"image": (frame_path.name, image_bytes, "image/png")},
+                    data={"meta": meta},
+                )
+                assert response.status_code == 200, response.text
+
+        events = gateway.drain_inference_events()
+        slam_rows = [
+            row
+            for row in events
+            if isinstance(row, dict)
+            and str(row.get("name", "")).strip() == "slam.pose"
+            and str(row.get("phase", "")).strip() == "result"
+            and str(row.get("status", "")).strip() == "ok"
+        ]
+        assert len(slam_rows) >= 2
+        assert any(isinstance((row.get("payload") or {}).get("pose"), dict) for row in slam_rows)
+
+        events_path = run_pkg / "events" / "events_v1.jsonl"
+        events_path.write_text(
+            "\n".join(json.dumps(item, ensure_ascii=False) for item in events if isinstance(item, dict)) + "\n",
+            encoding="utf-8",
+        )
+
+        report_script = gateway_root / "scripts" / "report_run.py"
+        report_md = tmp_path / "report_slam_http_e2e.md"
+        report_json = tmp_path / "report_slam_http_e2e.json"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(report_script),
+                "--run-package",
+                str(run_pkg),
+                "--output",
+                str(report_md),
+                "--output-json",
+                str(report_json),
+            ],
+            cwd=gateway_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
+        payload = json.loads(report_json.read_text(encoding="utf-8-sig"))
+        quality = payload.get("quality", {})
+        slam = quality.get("slam", {})
+        assert isinstance(slam, dict)
+        assert bool(slam.get("present")) is True
+        assert float(slam.get("coverage", 0.0)) == 1.0
+        assert int(slam.get("framesWithPred", 0)) == 2
+    finally:
+        _stop_process(inf_proc, inf_log_file)
+        _stop_process(ref_proc, ref_log_file)
+        object.__setattr__(gateway.config, "inference_enable_seg", original_enable_seg)
+        object.__setattr__(gateway.config, "inference_enable_depth", original_enable_depth)
+        object.__setattr__(gateway.config, "inference_enable_ocr", original_enable_ocr)
+        object.__setattr__(gateway.config, "inference_enable_risk", original_enable_risk)
+        object.__setattr__(gateway.config, "inference_enable_slam", original_enable_slam)
+        gateway.slam_backend = original_slam_backend
+        setattr(gateway.scheduler, "_seq", original_scheduler_seq)
+        setattr(gateway.scheduler, "_latest_seq", original_scheduler_latest_seq)
+        gateway.drain_inference_events()
+

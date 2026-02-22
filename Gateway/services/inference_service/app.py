@@ -11,8 +11,13 @@ from fastapi import FastAPI, HTTPException
 from PIL import Image
 from pydantic import BaseModel
 
-from services.inference_service.providers.base import OCRProvider, RiskProvider, SegProvider, DepthProvider
-from services.inference_service.providers import create_ocr_provider, create_seg_provider, create_depth_provider
+from services.inference_service.providers.base import OCRProvider, RiskProvider, SegProvider, DepthProvider, SlamProvider
+from services.inference_service.providers import (
+    create_ocr_provider,
+    create_seg_provider,
+    create_depth_provider,
+    create_slam_provider,
+)
 from services.inference_service.providers.depth_base import DepthProvider as RiskDepthProvider
 from services.inference_service.providers.depth_none import NoneDepthProvider
 from services.inference_service.providers.depth_synth import SynthDepthProvider
@@ -41,6 +46,7 @@ _RISK_PROVIDER: RiskProvider | None = None
 _DEPTH_PROVIDER: RiskDepthProvider | None = None
 _SEG_PROVIDER: SegProvider | None = None
 _TOOL_DEPTH_PROVIDER: DepthProvider | None = None
+_SLAM_PROVIDER: SlamProvider | None = None
 
 
 def _decode_image_b64(value: str) -> bytes:
@@ -104,6 +110,11 @@ def _select_tool_depth_provider() -> DepthProvider:
     return create_depth_provider(name=name or "mock")
 
 
+def _select_slam_provider() -> SlamProvider:
+    name = str(os.getenv("BYES_SERVICE_SLAM_PROVIDER", "mock")).strip().lower()
+    return create_slam_provider(name=name)
+
+
 def get_ocr_provider() -> OCRProvider:
     global _OCR_PROVIDER  # noqa: PLW0603
     if _OCR_PROVIDER is None:
@@ -146,6 +157,14 @@ def get_tool_depth_provider() -> DepthProvider:
     return _TOOL_DEPTH_PROVIDER
 
 
+def get_slam_provider() -> SlamProvider:
+    global _SLAM_PROVIDER  # noqa: PLW0603
+    if _SLAM_PROVIDER is None:
+        _SLAM_PROVIDER = _select_slam_provider()
+        print(f"[inference_service] selected SLAM provider={_SLAM_PROVIDER.name} model={_SLAM_PROVIDER.model}")
+    return _SLAM_PROVIDER
+
+
 @app.on_event("startup")
 def _startup_provider() -> None:
     get_depth_provider()
@@ -153,6 +172,7 @@ def _startup_provider() -> None:
     get_ocr_provider()
     get_risk_provider()
     get_seg_provider()
+    get_slam_provider()
 
 
 @app.get("/healthz")
@@ -162,6 +182,7 @@ def healthz() -> dict[str, Any]:
     depth_provider = get_depth_provider()
     seg_provider = get_seg_provider()
     depth_tool_provider = get_tool_depth_provider()
+    slam_provider = get_slam_provider()
     return {
         "ok": True,
         "ocrProvider": ocr_provider.name,
@@ -174,6 +195,8 @@ def healthz() -> dict[str, Any]:
         "segModel": seg_provider.model,
         "depthToolProvider": depth_tool_provider.name,
         "depthToolModel": depth_tool_provider.model,
+        "slamProvider": slam_provider.name,
+        "slamModel": slam_provider.model,
     }
 
 
@@ -439,6 +462,56 @@ def infer_depth(request: InferenceRequest) -> dict[str, Any]:
     return response
 
 
+@app.post("/slam/pose")
+def infer_slam_pose(request: InferenceRequest) -> dict[str, Any]:
+    started = _now_ms()
+    image = _decode_pil_image(request.image_b64)
+    provider = get_slam_provider()
+    targets = [str(item).strip() for item in (request.targets or []) if str(item).strip()]
+    prompt = dict(request.prompt) if isinstance(request.prompt, dict) else None
+    try:
+        try:
+            result = provider.infer(image, request.frameSeq, request.runId, targets=targets or None, prompt=prompt)
+        except TypeError:
+            result = provider.infer(image, request.frameSeq, request.runId, targets=targets or None)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"slam_infer_failed:{exc.__class__.__name__}") from exc
+
+    pose = _normalize_slam_pose(result.get("pose"))
+    tracking_state = _normalize_slam_tracking_state(result.get("trackingState"))
+    if not isinstance(pose, dict) or not tracking_state:
+        raise HTTPException(status_code=500, detail="slam_invalid_output")
+    model = str(result.get("model", provider.model)).strip() or provider.model
+    latency_ms = max(0, _now_ms() - started)
+    backend = str(result.get("backend", provider.name)).strip().lower() or provider.name
+    endpoint = result.get("endpoint", provider.endpoint)
+    endpoint_text = str(endpoint).strip() if endpoint is not None else ""
+    response: dict[str, Any] = {
+        "schemaVersion": "byes.slam_pose.v1",
+        "runId": request.runId,
+        "frameSeq": request.frameSeq,
+        "trackingState": tracking_state,
+        "pose": pose,
+        "latencyMs": latency_ms,
+        "model": model,
+        "backend": backend,
+        "endpoint": endpoint_text or None,
+    }
+    map_id = result.get("mapId")
+    map_id_text = str(map_id).strip() if map_id is not None else ""
+    if map_id_text:
+        response["mapId"] = map_id_text
+    cov = result.get("cov")
+    if isinstance(cov, dict):
+        response["cov"] = cov
+    warnings_count = _to_nonnegative_int(result.get("warningsCount"))
+    if warnings_count > 0:
+        response["warningsCount"] = warnings_count
+    return response
+
+
 # TODO: replace infer_ocr and infer_risk internals with real model pipelines:
 # - OCR: PaddleOCR/Tesseract tokenizer + postprocess
 # - Risk: depth model + hazard projection and thresholding
@@ -481,6 +554,40 @@ def _normalize_seg_mask(raw: Any) -> dict[str, Any] | None:
     if total != h * w:
         return None
     return {"format": "rle_v1", "size": [h, w], "counts": counts}
+
+
+def _normalize_slam_tracking_state(raw: Any) -> str:
+    value = str(raw or "").strip().lower()
+    if value in {"tracking", "lost", "relocalized", "initializing"}:
+        return value
+    if value:
+        return "unknown"
+    return ""
+
+
+def _normalize_slam_pose(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    t_raw = raw.get("t")
+    q_raw = raw.get("q")
+    if not isinstance(t_raw, list) or len(t_raw) != 3:
+        return None
+    if not isinstance(q_raw, list) or len(q_raw) != 4:
+        return None
+    try:
+        t = [float(t_raw[0]), float(t_raw[1]), float(t_raw[2])]
+        q = [float(q_raw[0]), float(q_raw[1]), float(q_raw[2]), float(q_raw[3])]
+    except Exception:
+        return None
+    out: dict[str, Any] = {"t": t, "q": q}
+    frame = str(raw.get("frame", "")).strip().lower()
+    if frame in {"world_to_cam", "cam_to_world"}:
+        out["frame"] = frame
+    map_id = raw.get("mapId")
+    map_id_text = str(map_id).strip() if map_id is not None else ""
+    if map_id_text:
+        out["mapId"] = map_id_text
+    return out
 
 
 def _normalize_ocr_lines(
@@ -554,3 +661,10 @@ def _normalize_ocr_lines(
                 out["bbox"] = [x0, y0, x1, y1]
         normalized.append(out)
     return normalized, warnings_count
+
+
+def _to_nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except Exception:
+        return 0

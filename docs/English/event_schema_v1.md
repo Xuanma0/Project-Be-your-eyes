@@ -30,6 +30,7 @@
 - `plan.execute`
 - `seg.segment`
 - `depth.estimate`
+- `slam.pose`
 - `ui.command`
 - `ui.confirm_request`
 - `ui.confirm_response`
@@ -162,6 +163,34 @@
     },
     "gridCount": 1,
     "valuesCount": 256
+  }
+}
+```
+
+### 6) SLAM pose result
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000001010,
+  "frameSeq": 2,
+  "component": "gateway",
+  "category": "tool",
+  "name": "slam.pose",
+  "phase": "result",
+  "status": "ok",
+  "latencyMs": 36,
+  "payload": {
+    "schemaVersion": "byes.slam_pose.v1",
+    "backend": "http",
+    "model": "reference-slam-v1",
+    "endpoint": "http://127.0.0.1:19261/slam/pose",
+    "trackingState": "tracking",
+    "pose": {
+      "t": [0.1, 0.0, 0.0],
+      "q": [0.0, 0.0, 0.0, 1.0],
+      "frame": "world_to_cam"
+    },
+    "warningsCount": 0
   }
 }
 ```

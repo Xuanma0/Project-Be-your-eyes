@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse, urlunparse
 
-from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult, SlamResult
 
 SCHEMA_VERSION = "byes.event.v1"
 
@@ -217,6 +218,50 @@ async def emit_depth_events(
             component=component,
             category="tool",
             name="depth.estimate",
+            phase=phase,
+            status=normalized_status,
+            latency_ms=latency_ms,
+            payload=payload,
+            run_id=run_id,
+        ),
+    )
+
+
+async def emit_slam_pose_events(
+    result: SlamResult,
+    *,
+    frame_seq: int | None,
+    ts_ms: int,
+    sink: EventSink,
+    run_id: str | None = None,
+    component: str = "gateway",
+    started_ts_ms: int | None = None,
+    backend: str | None = None,
+    model: str | None = None,
+    endpoint: str | None = None,
+) -> None:
+    payload = _sanitize_payload(result.payload)
+    payload = _with_inference_metadata(payload, backend=backend, model=model, endpoint=endpoint)
+    if "backend" not in payload:
+        payload["backend"] = str(backend or "").strip().lower() or None
+    if "model" not in payload:
+        payload["model"] = str(model or "").strip() or None
+    if "endpoint" not in payload:
+        payload["endpoint"] = _sanitize_endpoint(endpoint)
+    payload = _normalize_slam_payload(payload, tracking_state=result.tracking_state, pose=result.pose)
+    if result.error and "reason" not in payload:
+        payload["reason"] = result.error
+    normalized_status = _normalize_status(result.status, result.error)
+    phase = _phase_for_status(normalized_status)
+    latency_ms = _resolve_latency_ms(result.latency_ms, started_ts_ms, ts_ms)
+    await _emit(
+        sink,
+        _base_event(
+            ts_ms=ts_ms,
+            frame_seq=frame_seq,
+            component=component,
+            category="tool",
+            name="slam.pose",
             phase=phase,
             status=normalized_status,
             latency_ms=latency_ms,
@@ -486,6 +531,80 @@ def _normalize_depth_payload(payload: dict[str, Any], raw_grid: Any) -> dict[str
         out.pop("grid", None)
         out["valuesCount"] = 0
         out["gridCount"] = 0
+
+    if warnings_count > 0:
+        out["warningsCount"] = int(warnings_count)
+    elif "warningsCount" in out:
+        out.pop("warningsCount", None)
+    return out
+
+
+def _normalize_slam_payload(payload: dict[str, Any], *, tracking_state: str | None, pose: Any) -> dict[str, Any]:
+    out = dict(payload) if isinstance(payload, dict) else {}
+    warnings_count = _to_nonnegative_int(out.get("warningsCount"))
+    out["schemaVersion"] = "byes.slam_pose.v1"
+
+    state = str(out.get("trackingState", tracking_state or "")).strip().lower()
+    if state not in {"tracking", "lost", "relocalized", "initializing"}:
+        if state:
+            warnings_count += 1
+        state = "unknown"
+    out["trackingState"] = state
+
+    pose_raw = pose if isinstance(pose, dict) else out.get("pose")
+    pose_obj = pose_raw if isinstance(pose_raw, dict) else {}
+    t_raw = pose_obj.get("t")
+    q_raw = pose_obj.get("q")
+    t: list[float] = [0.0, 0.0, 0.0]
+    q: list[float] = [0.0, 0.0, 0.0, 1.0]
+    if isinstance(t_raw, list) and len(t_raw) == 3:
+        parsed_t: list[float] = []
+        for value in t_raw:
+            parsed = _to_float(value)
+            if parsed is None:
+                parsed_t = []
+                break
+            parsed_t.append(parsed)
+        if len(parsed_t) == 3:
+            t = parsed_t
+        else:
+            warnings_count += 1
+    else:
+        warnings_count += 1
+
+    if isinstance(q_raw, list) and len(q_raw) == 4:
+        parsed_q: list[float] = []
+        for value in q_raw:
+            parsed = _to_float(value)
+            if parsed is None:
+                parsed_q = []
+                break
+            parsed_q.append(parsed)
+        if len(parsed_q) == 4:
+            norm = math.sqrt(sum((item * item) for item in parsed_q))
+            if norm > 1e-9:
+                q = [item / norm for item in parsed_q]
+                if abs(norm - 1.0) > 1e-3:
+                    warnings_count += 1
+            else:
+                warnings_count += 1
+        else:
+            warnings_count += 1
+    else:
+        warnings_count += 1
+
+    pose_out: dict[str, Any] = {"t": t, "q": q}
+    frame = str(pose_obj.get("frame", "")).strip().lower()
+    if frame in {"world_to_cam", "cam_to_world"}:
+        pose_out["frame"] = frame
+    map_id = pose_obj.get("mapId")
+    map_id_text = str(map_id).strip() if map_id is not None else ""
+    if map_id_text:
+        pose_out["mapId"] = map_id_text
+    cov = pose_obj.get("cov")
+    if isinstance(cov, dict):
+        pose_out["cov"] = cov
+    out["pose"] = pose_out
 
     if warnings_count > 0:
         out["warningsCount"] = int(warnings_count)

@@ -1,0 +1,13 @@
+{
+  "scenarioTag": "fixture_events_v1_inference_slam_min",
+  "startMs": 1707002000000,
+  "endMs": 1707002000500,
+  "wsJsonl": "events/events_v1.jsonl",
+  "eventsV1Jsonl": "events/events_v1.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "frameCountSent": 1,
+  "eventCountAccepted": 2,
+  "errors": []
+}
+

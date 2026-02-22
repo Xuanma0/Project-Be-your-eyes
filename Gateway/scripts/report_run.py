@@ -24,6 +24,7 @@ if str(GATEWAY_ROOT) not in sys.path:
 from byes.quality_metrics import (  # noqa: E402
     compute_seg_metrics,
     compute_depth_metrics,
+    compute_slam_metrics,
     compute_depth_risk_metrics,
     compute_ocr_metrics,
     compute_quality_score,
@@ -45,10 +46,12 @@ from byes.quality_metrics import (  # noqa: E402
     extract_pred_ocr_from_ws_events,
     extract_pred_seg_from_ws_events,
     extract_pred_depth_from_ws_events,
+    extract_pred_slam_from_ws_events,
     load_gt_ocr_jsonl,
     load_gt_risk_jsonl,
     load_gt_seg_v1,
     load_gt_depth_v1,
+    load_gt_slam_pose_v1,
 )
 from byes.pov_metrics import compute_pov_metrics, load_pov_ir_from_run_package  # noqa: E402
 from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text  # noqa: E402
@@ -1103,6 +1106,7 @@ def generate_report_outputs(
         "eventSchema": event_schema_stats,
         "riskLatencyMs": risk_latency_stats,
         "depth": {"present": False},
+        "slam": {"present": False},
     }
     if risk_timings_stats is not None:
         quality_payload["riskTimingsMs"] = risk_timings_stats
@@ -1121,10 +1125,12 @@ def generate_report_outputs(
         risk_path_raw = str(gt_cfg.get("riskPath", "")).strip()
         seg_path_raw = str(gt_cfg.get("segPath", "")).strip()
         depth_path_raw = str(gt_cfg.get("depthPath", "")).strip()
+        slam_path_raw = str(gt_cfg.get("slamPath", "")).strip()
         ocr_gt = load_gt_ocr_jsonl(Path(ocr_path_raw)) if ocr_path_raw else {}
         risk_gt: dict[int, list[dict[str, Any]]] = {}
         seg_gt: dict[int, list[dict[str, Any]]] = {}
         depth_gt: dict[int, dict[str, Any]] = {}
+        slam_gt: dict[int, dict[str, Any]] = {}
         risk_norm_meta = {"unknownKinds": [], "aliasHits": [], "warningsCount": 0}
         if risk_path_raw:
             risk_gt_result = load_gt_risk_jsonl(Path(risk_path_raw), return_meta=True)
@@ -1136,10 +1142,13 @@ def generate_report_outputs(
             seg_gt = load_gt_seg_v1(Path(seg_path_raw))
         if depth_path_raw:
             depth_gt = load_gt_depth_v1(Path(depth_path_raw))
+        if slam_path_raw:
+            slam_gt = load_gt_slam_pose_v1(Path(slam_path_raw))
         pred_ocr = extract_pred_ocr_from_ws_events(event_source_path)
         ocr_intent_frames = extract_ocr_intent_frames_from_ws_events(event_source_path)
         pred_segs, pred_seg_event_frames, seg_latencies = extract_pred_seg_from_ws_events(event_source_path)
         pred_depth, pred_depth_event_frames, depth_latencies = extract_pred_depth_from_ws_events(event_source_path)
+        pred_slam, pred_slam_event_frames, slam_latencies = extract_pred_slam_from_ws_events(event_source_path)
         pred_hazard_result = extract_pred_hazards_from_ws_events(event_source_path, return_meta=True)
         pred_hazards: dict[int, list[dict[str, Any]]] = {}
         pred_norm_meta = {"unknownKinds": [], "aliasHits": [], "warningsCount": 0}
@@ -1151,6 +1160,7 @@ def generate_report_outputs(
         risk_metrics = None
         seg_metrics = None
         depth_metrics = None
+        slam_metrics = None
         window = int(gt_cfg.get("matchWindowFrames", 2) or 2)
         if risk_gt:
             merged_norm = _merge_hazard_normalization_meta(risk_norm_meta, pred_norm_meta)
@@ -1175,6 +1185,14 @@ def generate_report_outputs(
                 depth_latencies,
                 frames_total,
             )
+        if slam_gt or pred_slam_event_frames:
+            slam_metrics = compute_slam_metrics(
+                slam_gt,
+                pred_slam,
+                pred_slam_event_frames,
+                slam_latencies,
+                frames_total,
+            )
         critical_frames = _collect_critical_gt_frames(risk_gt) if risk_gt else None
         safety_behavior = extract_safety_behavior_from_ws_events(
             event_source_path,
@@ -1190,6 +1208,7 @@ def generate_report_outputs(
             "ocr": ocr_metrics,
             "depthRisk": risk_metrics,
             "depth": {"present": False},
+            "slam": {"present": False},
             "safetyBehavior": safety_behavior,
             "eventSchema": event_schema_stats,
             "topFindings": top_findings,
@@ -1201,6 +1220,8 @@ def generate_report_outputs(
             quality_payload["seg"] = seg_metrics
         if depth_metrics is not None:
             quality_payload["depth"] = depth_metrics
+        if slam_metrics is not None:
+            quality_payload["slam"] = slam_metrics
         if risk_timings_stats is not None:
             quality_payload["riskTimingsMs"] = risk_timings_stats
     else:
@@ -1220,7 +1241,7 @@ def _merge_inference_summary(
     fallback: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     merged: dict[str, dict[str, Any]] = {}
-    for tool_name in ("ocr", "risk", "seg", "depth"):
+    for tool_name in ("ocr", "risk", "seg", "depth", "slam"):
         primary_bucket = primary.get(tool_name, {}) if isinstance(primary, dict) else {}
         fallback_bucket = fallback.get(tool_name, {}) if isinstance(fallback, dict) else {}
         bucket: dict[str, Any] = {
@@ -1593,6 +1614,8 @@ def _resolve_ground_truth(run_package_dir: Path, manifest: dict[str, Any]) -> di
     default_seg_rel_alt = "ground_truth/seg_gt_v1.json"
     default_depth_rel = "gt/depth_gt_v1.json"
     default_depth_rel_alt = "ground_truth/depth_gt_v1.json"
+    default_slam_rel = "gt/slam_pose_gt_v1.json"
+    default_slam_rel_alt = "ground_truth/slam_pose_gt_v1.json"
     gt_raw = manifest.get("groundTruth")
     gt_cfg = gt_raw if isinstance(gt_raw, dict) else {}
 
@@ -1607,6 +1630,11 @@ def _resolve_ground_truth(run_package_dir: Path, manifest: dict[str, Any]) -> di
         str(gt_cfg.get("depthJson", "")).strip()
         or str(gt_cfg.get("depthGtJson", "")).strip()
         or str(gt_cfg.get("depthPath", "")).strip()
+    )
+    slam_rel = (
+        str(gt_cfg.get("slamJson", "")).strip()
+        or str(gt_cfg.get("slamPoseJson", "")).strip()
+        or str(gt_cfg.get("slamPath", "")).strip()
     )
     if not ocr_rel and (run_package_dir / default_ocr_rel).exists():
         ocr_rel = default_ocr_rel
@@ -1624,11 +1652,16 @@ def _resolve_ground_truth(run_package_dir: Path, manifest: dict[str, Any]) -> di
         depth_rel = default_depth_rel
     if not depth_rel and (run_package_dir / default_depth_rel_alt).exists():
         depth_rel = default_depth_rel_alt
+    if not slam_rel and (run_package_dir / default_slam_rel).exists():
+        slam_rel = default_slam_rel
+    if not slam_rel and (run_package_dir / default_slam_rel_alt).exists():
+        slam_rel = default_slam_rel_alt
 
     ocr_path = run_package_dir / ocr_rel if ocr_rel else None
     risk_path = run_package_dir / risk_rel if risk_rel else None
     seg_path = run_package_dir / seg_rel if seg_rel else None
     depth_path = run_package_dir / depth_rel if depth_rel else None
+    slam_path = run_package_dir / slam_rel if slam_rel else None
     if ocr_path is not None and not ocr_path.exists():
         ocr_path = None
     if risk_path is not None and not risk_path.exists():
@@ -1637,6 +1670,8 @@ def _resolve_ground_truth(run_package_dir: Path, manifest: dict[str, Any]) -> di
         seg_path = None
     if depth_path is not None and not depth_path.exists():
         depth_path = None
+    if slam_path is not None and not slam_path.exists():
+        slam_path = None
 
     raw_window = gt_cfg.get("matchWindowFrames", 2)
     try:
@@ -1646,11 +1681,12 @@ def _resolve_ground_truth(run_package_dir: Path, manifest: dict[str, Any]) -> di
     window = max(0, window)
 
     return {
-        "hasGroundTruth": bool(ocr_path or risk_path or seg_path or depth_path),
+        "hasGroundTruth": bool(ocr_path or risk_path or seg_path or depth_path or slam_path),
         "ocrPath": str(ocr_path) if ocr_path is not None else "",
         "riskPath": str(risk_path) if risk_path is not None else "",
         "segPath": str(seg_path) if seg_path is not None else "",
         "depthPath": str(depth_path) if depth_path is not None else "",
+        "slamPath": str(slam_path) if slam_path is not None else "",
         "matchWindowFrames": window,
     }
 

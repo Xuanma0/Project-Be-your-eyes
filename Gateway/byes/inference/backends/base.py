@@ -41,6 +41,16 @@ class DepthResult:
     payload: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class SlamResult:
+    tracking_state: str = "unknown"
+    pose: dict[str, Any] = field(default_factory=dict)
+    latency_ms: int | None = None
+    status: str = "ok"
+    error: str | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
 class OCRBackend(Protocol):
     name: str
     model_id: str | None
@@ -97,4 +107,21 @@ class DepthBackend(Protocol):
         run_id: str | None = None,
         targets: list[str] | None = None,
     ) -> DepthResult:
+        ...
+
+
+class SlamBackend(Protocol):
+    name: str
+    model_id: str | None
+    endpoint: str | None
+
+    async def infer(
+        self,
+        image_bytes: bytes,
+        frame_seq: int | None,
+        ts_ms: int,
+        run_id: str | None = None,
+        targets: list[str] | None = None,
+        prompt: dict[str, Any] | None = None,
+    ) -> SlamResult:
         ...

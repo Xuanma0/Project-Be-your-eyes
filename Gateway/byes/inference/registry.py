@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 
 from byes.config import GatewayConfig
-from byes.inference.backends.base import OCRBackend, RiskBackend, SegBackend, DepthBackend
-from byes.inference.backends.http import HttpOCRBackend, HttpRiskBackend, HttpSegBackend, HttpDepthBackend
-from byes.inference.backends.mock import MockOCRBackend, MockRiskBackend, MockSegBackend, MockDepthBackend
+from byes.inference.backends.base import OCRBackend, RiskBackend, SegBackend, DepthBackend, SlamBackend
+from byes.inference.backends.http import HttpOCRBackend, HttpRiskBackend, HttpSegBackend, HttpDepthBackend, HttpSlamBackend
+from byes.inference.backends.mock import MockOCRBackend, MockRiskBackend, MockSegBackend, MockDepthBackend, MockSlamBackend
 
 
 def _backend_name(value: str) -> str:
@@ -57,3 +57,15 @@ def get_depth_backend(config: GatewayConfig) -> DepthBackend:
         )
         return HttpDepthBackend(url=url, timeout_ms=timeout_ms, model_id=model_id)
     return MockDepthBackend(model_id=model_id or "mock-depth")
+
+
+def get_slam_backend(config: GatewayConfig) -> SlamBackend:
+    name = _backend_name(os.getenv("BYES_SLAM_BACKEND", config.inference_slam_backend))
+    model_id = str(os.getenv("BYES_SLAM_MODEL_ID", config.inference_slam_model_id)).strip() or None
+    if name == "http":
+        url = os.getenv("BYES_SLAM_HTTP_URL", config.inference_slam_http_url)
+        timeout_ms = int(
+            os.getenv("BYES_SLAM_HTTP_TIMEOUT_MS", str(config.inference_slam_timeout_ms)) or config.inference_slam_timeout_ms
+        )
+        return HttpSlamBackend(url=url, timeout_ms=timeout_ms, model_id=model_id)
+    return MockSlamBackend(model_id=model_id or "mock-slam")

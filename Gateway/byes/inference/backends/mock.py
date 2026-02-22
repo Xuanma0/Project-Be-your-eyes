@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult, SlamResult
 
 
 def _now_ms() -> int:
@@ -143,5 +143,52 @@ class MockDepthBackend:
                 "gridCount": 1,
                 "valuesCount": len(values),
                 "backend": self.name,
+            },
+        )
+
+
+class MockSlamBackend:
+    name = "mock"
+
+    def __init__(self, model_id: str = "mock-slam") -> None:
+        self.model_id: str | None = str(model_id or "").strip() or "mock-slam"
+        self.endpoint: str | None = None
+
+    async def infer(
+        self,
+        image_bytes: bytes,
+        frame_seq: int | None,
+        ts_ms: int,
+        run_id: str | None = None,
+        targets: list[str] | None = None,
+        prompt: dict[str, Any] | None = None,
+    ) -> SlamResult:
+        started = _now_ms()
+        del image_bytes, ts_ms, run_id, targets, prompt
+        seq = int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1
+        tracking_state = "tracking"
+        if seq % 11 == 0:
+            tracking_state = "relocalized"
+        if seq % 13 == 0:
+            tracking_state = "lost"
+        tx = round(0.05 * float(seq - 1), 6)
+        pose = {
+            "t": [tx, 0.0, 0.0],
+            "q": [0.0, 0.0, 0.0, 1.0],
+            "frame": "world_to_cam",
+            "mapId": "mock-map",
+        }
+        latency = max(0, _now_ms() - started)
+        return SlamResult(
+            tracking_state=tracking_state,
+            pose=pose,
+            latency_ms=latency,
+            status="ok",
+            payload={
+                "schemaVersion": "byes.slam_pose.v1",
+                "trackingState": tracking_state,
+                "pose": pose,
+                "backend": self.name,
+                "warningsCount": 0,
             },
         )

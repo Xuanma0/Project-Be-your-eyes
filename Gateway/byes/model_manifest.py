@@ -276,6 +276,42 @@ def _planner_component() -> dict[str, Any]:
     )
 
 
+def _slam_component(config: GatewayConfig) -> dict[str, Any]:
+    enabled = bool(config.inference_enable_slam)
+    provider = str(config.inference_slam_backend or "mock").strip().lower() or "mock"
+    endpoint = config.inference_slam_http_url if provider == "http" else None
+    required: list[dict[str, Any]] = []
+    optional = [
+        _file_requirement(
+            "slam_model_path",
+            "BYES_SLAM_MODEL_PATH",
+            "Optional local SLAM model path for non-http providers.",
+        )
+    ]
+    warnings: list[str] = []
+    if enabled and provider == "http":
+        required.append(
+            _endpoint_requirement(
+                "slam_http_endpoint",
+                "BYES_SLAM_HTTP_URL|BYES_SERVICE_SLAM_ENDPOINT",
+                endpoint,
+                "SLAM HTTP backend endpoint.",
+            )
+        )
+    if enabled and provider == "mock":
+        warnings.append("slam enabled with mock provider (no real SLAM backend).")
+    return _component(
+        name="slam",
+        enabled=enabled,
+        provider=provider,
+        model_id=config.inference_slam_model_id,
+        endpoint=endpoint,
+        required=required,
+        optional=optional,
+        warnings=warnings,
+    )
+
+
 def _placeholder_component(name: str, *, enabled: bool = False) -> dict[str, Any]:
     warnings = ["placeholder component; no dedicated runtime service configured."]
     return _component(
@@ -296,9 +332,9 @@ def build_model_manifest(config: GatewayConfig) -> dict[str, Any]:
         _depth_component(config),
         _ocr_component(config),
         _risk_component(config),
+        _slam_component(config),
         _planner_component(),
         _placeholder_component("tts", enabled=_env_bool("BYES_ENABLE_TTS", False)),
-        _placeholder_component("slam", enabled=_env_bool("BYES_ENABLE_SLAM", False)),
     ]
 
     enabled_total = 0

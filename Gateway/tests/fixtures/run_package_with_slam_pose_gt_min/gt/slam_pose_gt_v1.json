@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "byes.slam_pose_gt.v1",
+  "runId": "fixture-slam-gt",
+  "frames": [
+    {
+      "frameSeq": 1,
+      "trackingState": "tracking",
+      "pose": {
+        "t": [0.0, 0.0, 0.0],
+        "q": [0.0, 0.0, 0.0, 1.0],
+        "frame": "world_to_cam",
+        "mapId": "map-a"
+      }
+    },
+    {
+      "frameSeq": 2,
+      "trackingState": "relocalized",
+      "pose": {
+        "t": [0.1, 0.0, 0.0],
+        "q": [0.0, 0.0, 0.0, 1.0],
+        "frame": "world_to_cam",
+        "mapId": "map-a"
+      }
+    }
+  ]
+}
+

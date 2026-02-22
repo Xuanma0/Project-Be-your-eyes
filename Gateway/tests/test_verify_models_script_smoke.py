@@ -50,3 +50,19 @@ def test_verify_models_script_smoke() -> None:
     )
     assert result_ocr_missing.returncode != 0
     assert "missingRequired=" in result_ocr_missing.stdout
+
+    env_slam = os.environ.copy()
+    env_slam["BYES_ENABLE_SLAM"] = "1"
+    env_slam["BYES_SLAM_BACKEND"] = "http"
+    env_slam["BYES_SLAM_HTTP_URL"] = ""
+    env_slam["BYES_SERVICE_SLAM_ENDPOINT"] = ""
+    result_slam_missing = subprocess.run(
+        [sys.executable, str(script), "--check", "--quiet"],
+        cwd=repo_root,
+        env=env_slam,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result_slam_missing.returncode != 0
+    assert "missingRequired=" in result_slam_missing.stdout

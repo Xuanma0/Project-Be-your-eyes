@@ -30,6 +30,7 @@ _SHA_LINE_RE = re.compile(r"^([a-fA-F0-9]{64})\s+\*?(.+)$")
 _OCR_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.ocr.v1.json"
 _SEG_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.seg.v1.json"
 _DEPTH_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.depth.v1.json"
+_SLAM_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.slam_pose.v1.json"
 _PLAN_CONTEXT_PACK_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "plan.context_pack.v1.json"
 _FRAME_E2E_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.e2e.v1.json"
 _FRAME_INPUT_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.input.v1.json"
@@ -250,6 +251,18 @@ def _load_depth_contract_schema() -> dict[str, Any] | None:
         return None
     try:
         payload = json.loads(_DEPTH_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _load_slam_contract_schema() -> dict[str, Any] | None:
+    if not _SLAM_SCHEMA_PATH.exists():
+        return None
+    try:
+        payload = json.loads(_SLAM_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     if not isinstance(payload, dict):
@@ -543,6 +556,52 @@ def _validate_depth_payload(
             grid_out_of_range += 1
 
     return payload_ok, grid_bad_size, grid_out_of_range, grid_present
+
+
+def _validate_slam_payload(
+    payload: dict[str, Any],
+    schema: dict[str, Any] | None,
+) -> tuple[bool, int]:
+    payload_ok = True
+    lost_count = 0
+
+    if schema is not None and jsonschema is not None:
+        try:
+            jsonschema.validate(payload, schema)
+        except Exception:
+            payload_ok = False
+
+    tracking_state = str(payload.get("trackingState", "")).strip().lower()
+    if tracking_state in {"lost", "unknown"}:
+        lost_count = 1
+    if tracking_state not in {"tracking", "lost", "relocalized", "initializing", "unknown"}:
+        payload_ok = False
+
+    pose = payload.get("pose")
+    if not isinstance(pose, dict):
+        return False, lost_count
+    t = pose.get("t")
+    q = pose.get("q")
+    if not isinstance(t, list) or len(t) != 3:
+        payload_ok = False
+    else:
+        try:
+            [float(value) for value in t]
+        except Exception:
+            payload_ok = False
+
+    if not isinstance(q, list) or len(q) != 4:
+        payload_ok = False
+    else:
+        try:
+            q_values = [float(value) for value in q]
+        except Exception:
+            payload_ok = False
+        else:
+            norm = math.sqrt(sum(value * value for value in q_values))
+            if norm <= 1e-9:
+                payload_ok = False
+    return payload_ok, lost_count
 
 
 def _validate_seg_mask(mask: Any) -> tuple[bool, int, int]:
@@ -985,6 +1044,12 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         depth_grid_present_count = 0
         depth_grid_bad_size_count = 0
         depth_grid_out_of_range_count = 0
+        slam_pose_events_present = 0
+        slam_pose_lines = 0
+        slam_pose_schema_ok = 0
+        slam_pose_normalized = 0
+        slam_pose_payload_schema_ok = 0
+        slam_lost_count = 0
         plan_request_events_present = 0
         plan_request_lines = 0
         plan_request_schema_ok = 0
@@ -1033,6 +1098,7 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         ocr_schema = _load_ocr_contract_schema()
         seg_schema = _load_seg_contract_schema()
         depth_schema = _load_depth_contract_schema()
+        slam_schema = _load_slam_contract_schema()
         plan_context_pack_schema = _load_plan_context_pack_schema()
         frame_e2e_schema = _load_frame_e2e_schema()
         frame_input_schema = _load_frame_input_schema()
@@ -1431,6 +1497,26 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                     depth_grid_out_of_range_count += int(grid_oor)
                                     if grid_present:
                                         depth_grid_present_count += 1
+                                if name == "slam.pose":
+                                    slam_pose_events_present = 1
+                                    slam_pose_lines += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    if (
+                                        str(obj.get("schemaVersion", "")).strip() == "byes.event.v1"
+                                        and str(obj.get("category", "")).strip().lower() == "tool"
+                                        and str(obj.get("phase", "")).strip().lower() == "result"
+                                        and str(obj.get("status", "")).strip().lower() == "ok"
+                                    ):
+                                        slam_pose_schema_ok += 1
+                                    else:
+                                        warnings.append("slam.pose envelope invalid")
+                                    slam_ok, slam_lost = _validate_slam_payload(payload, slam_schema)
+                                    if slam_ok:
+                                        slam_pose_payload_schema_ok += 1
+                                    else:
+                                        warnings.append("slam.pose payload invalid")
+                                    slam_lost_count += int(max(0, slam_lost))
                 except Exception as exc:  # noqa: BLE001
                     warnings.append(f"eventsV1 read failed: {exc}")
                 events_v1_norm = collect_normalized_ws_events(events_v1_path)
@@ -1455,6 +1541,13 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                         event
                         for event in (events_v1_norm.get("events", []) if isinstance(events_v1_norm.get("events"), list) else [])
                         if isinstance(event, dict) and str(event.get("name", "")).strip().lower() == "depth.estimate"
+                    ]
+                )
+                slam_pose_normalized = len(
+                    [
+                        event
+                        for event in (events_v1_norm.get("events", []) if isinstance(events_v1_norm.get("events"), list) else [])
+                        if isinstance(event, dict) and str(event.get("name", "")).strip().lower() == "slam.pose"
                     ]
                 )
                 seg_context_budget = {
@@ -1643,6 +1736,16 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "depthGridPresentCount": int(depth_grid_present_count),
             "depthGridBadSizeCount": int(depth_grid_bad_size_count),
             "depthGridOutOfRangeCount": int(depth_grid_out_of_range_count),
+            "slamPoseEventsPresent": int(slam_pose_events_present),
+            "slamPoseLines": int(slam_pose_lines),
+            "slamPoseSchemaOk": int(
+                slam_pose_lines > 0
+                and slam_pose_payload_schema_ok == slam_pose_lines
+                and slam_pose_schema_ok == slam_pose_lines
+            ),
+            "slamPosePayloadSchemaOk": int(slam_pose_lines > 0 and slam_pose_payload_schema_ok == slam_pose_lines),
+            "slamPoseNormalized": int(slam_pose_normalized),
+            "slamLostCount": int(slam_lost_count),
             "planRequestEventsPresent": int(plan_request_events_present),
             "planRequestLines": int(plan_request_lines),
             "planRequestSchemaOk": int(plan_request_lines > 0 and plan_request_schema_ok == plan_request_lines),
@@ -1757,6 +1860,12 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"depthGridPresentCount: {summary['depthGridPresentCount']}")
             print(f"depthGridBadSizeCount: {summary['depthGridBadSizeCount']}")
             print(f"depthGridOutOfRangeCount: {summary['depthGridOutOfRangeCount']}")
+            print(f"slamPoseEventsPresent: {summary['slamPoseEventsPresent']}")
+            print(f"slamPoseLines: {summary['slamPoseLines']}")
+            print(f"slamPoseSchemaOk: {summary['slamPoseSchemaOk']}")
+            print(f"slamPosePayloadSchemaOk: {summary['slamPosePayloadSchemaOk']}")
+            print(f"slamPoseNormalized: {summary['slamPoseNormalized']}")
+            print(f"slamLostCount: {summary['slamLostCount']}")
             print(f"planRequestEventsPresent: {summary['planRequestEventsPresent']}")
             print(f"planRequestLines: {summary['planRequestLines']}")
             print(f"planRequestSchemaOk: {summary['planRequestSchemaOk']}")

@@ -276,14 +276,17 @@ class GatewayConfig:
     inference_enable_risk: bool = True
     inference_enable_seg: bool = False
     inference_enable_depth: bool = False
+    inference_enable_slam: bool = False
     inference_ocr_backend: str = "mock"
     inference_risk_backend: str = "mock"
     inference_seg_backend: str = "mock"
     inference_depth_backend: str = "mock"
+    inference_slam_backend: str = "mock"
     inference_ocr_http_url: str = "http://127.0.0.1:9001/ocr"
     inference_risk_http_url: str = "http://127.0.0.1:9002/risk"
     inference_seg_http_url: str = "http://127.0.0.1:9003/seg"
     inference_depth_http_url: str = "http://127.0.0.1:9004/depth"
+    inference_slam_http_url: str = "http://127.0.0.1:9005/slam/pose"
     inference_seg_targets: tuple[str, ...] = ()
     inference_seg_prompt: dict[str, Any] | None = None
     inference_seg_prompt_max_chars: int = 256
@@ -295,10 +298,12 @@ class GatewayConfig:
     inference_risk_timeout_ms: int = 1200
     inference_seg_timeout_ms: int = 1200
     inference_depth_timeout_ms: int = 1200
+    inference_slam_timeout_ms: int = 1200
     inference_ocr_model_id: str = "mock-ocr"
     inference_risk_model_id: str = "mock-risk"
     inference_seg_model_id: str = "mock-seg"
     inference_depth_model_id: str = "mock-depth"
+    inference_slam_model_id: str = "mock-slam"
     inference_emit_ws_events_v1: bool = False
     inference_event_component: str = "gateway"
 
@@ -428,10 +433,12 @@ def load_config() -> GatewayConfig:
         inference_enable_risk=_env_bool("BYES_ENABLE_RISK", True),
         inference_enable_seg=_env_bool("BYES_ENABLE_SEG", False),
         inference_enable_depth=_env_bool("BYES_ENABLE_DEPTH", False),
+        inference_enable_slam=_env_bool("BYES_ENABLE_SLAM", False),
         inference_ocr_backend=os.getenv("BYES_OCR_BACKEND", os.getenv("BYES_SERVICE_OCR_PROVIDER", "mock")),
         inference_risk_backend=os.getenv("BYES_RISK_BACKEND", "mock"),
         inference_seg_backend=os.getenv("BYES_SEG_BACKEND", "mock"),
         inference_depth_backend=os.getenv("BYES_DEPTH_BACKEND", "mock"),
+        inference_slam_backend=os.getenv("BYES_SLAM_BACKEND", "mock"),
         inference_ocr_http_url=os.getenv(
             "BYES_OCR_HTTP_URL",
             os.getenv("BYES_SERVICE_OCR_ENDPOINT", "http://127.0.0.1:9001/ocr"),
@@ -439,6 +446,7 @@ def load_config() -> GatewayConfig:
         inference_risk_http_url=os.getenv("BYES_RISK_HTTP_URL", "http://127.0.0.1:9002/risk"),
         inference_seg_http_url=os.getenv("BYES_SEG_HTTP_URL", "http://127.0.0.1:9003/seg"),
         inference_depth_http_url=os.getenv("BYES_DEPTH_HTTP_URL", "http://127.0.0.1:9004/depth"),
+        inference_slam_http_url=os.getenv("BYES_SLAM_HTTP_URL", "http://127.0.0.1:9005/slam/pose"),
         inference_seg_targets=_env_string_list("BYES_SEG_TARGETS", "BYES_SEG_TARGETS_JSON"),
         inference_seg_prompt=_env_seg_prompt(),
         inference_seg_prompt_max_chars=_env_int("BYES_SEG_PROMPT_MAX_CHARS", 256),
@@ -456,10 +464,15 @@ def load_config() -> GatewayConfig:
         inference_risk_timeout_ms=_env_int("BYES_RISK_HTTP_TIMEOUT_MS", 1200),
         inference_seg_timeout_ms=_env_int("BYES_SEG_HTTP_TIMEOUT_MS", 1200),
         inference_depth_timeout_ms=_env_int("BYES_DEPTH_HTTP_TIMEOUT_MS", 1200),
+        inference_slam_timeout_ms=_env_int(
+            "BYES_SLAM_HTTP_TIMEOUT_MS",
+            _env_int("BYES_SERVICE_SLAM_TIMEOUT_MS", 1200),
+        ),
         inference_ocr_model_id=os.getenv("BYES_OCR_MODEL_ID", os.getenv("BYES_SERVICE_OCR_MODEL_ID", "mock-ocr")),
         inference_risk_model_id=os.getenv("BYES_RISK_MODEL_ID", "mock-risk"),
         inference_seg_model_id=os.getenv("BYES_SEG_MODEL_ID", "mock-seg"),
         inference_depth_model_id=os.getenv("BYES_DEPTH_MODEL_ID", "mock-depth"),
+        inference_slam_model_id=os.getenv("BYES_SLAM_MODEL_ID", os.getenv("BYES_SERVICE_SLAM_MODEL_ID", "mock-slam")),
         inference_emit_ws_events_v1=_env_bool("BYES_INFERENCE_EMIT_WS_V1", False),
         inference_event_component=os.getenv("BYES_INFERENCE_EVENT_COMPONENT", "gateway"),
     )

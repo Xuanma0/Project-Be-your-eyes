@@ -31,9 +31,9 @@ from byes.frame_tracker import FrameTracker
 from byes.fusion import FusionEngine
 from byes.governor import SloGovernor
 from byes.intent import IntentManager
-from byes.inference.event_emitters import emit_ocr_events, emit_risk_events, emit_seg_events, emit_depth_events
-from byes.inference.registry import get_ocr_backend, get_risk_backend, get_seg_backend, get_depth_backend
-from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult
+from byes.inference.event_emitters import emit_ocr_events, emit_risk_events, emit_seg_events, emit_depth_events, emit_slam_pose_events
+from byes.inference.registry import get_ocr_backend, get_risk_backend, get_seg_backend, get_depth_backend, get_slam_backend
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult, SlamResult
 from byes.inference.prompt_budget import normalize_prompt, pack_prompt
 from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events
 from byes.inference.plan_context_pack import (
@@ -496,6 +496,7 @@ class GatewayApp:
         self.risk_backend = get_risk_backend(self.config)
         self.seg_backend = get_seg_backend(self.config)
         self.depth_backend = get_depth_backend(self.config)
+        self.slam_backend = get_slam_backend(self.config)
         self._inference_events: list[dict[str, Any]] = []
         self._inference_events_limit = 2048
         self.scheduler = Scheduler(
@@ -537,6 +538,7 @@ class GatewayApp:
         self.risk_backend = get_risk_backend(self.config)
         self.seg_backend = get_seg_backend(self.config)
         self.depth_backend = get_depth_backend(self.config)
+        self.slam_backend = get_slam_backend(self.config)
         self._inference_events.clear()
         self._external_readiness = {}
         self.registry.clear()
@@ -880,6 +882,40 @@ class GatewayApp:
                 backend=depth_backend_name,
                 model=depth_model_id,
                 endpoint=depth_endpoint,
+            )
+
+        if self.config.inference_enable_slam:
+            slam_started_ms = _now_ms()
+            slam_backend_name = getattr(self.slam_backend, "name", None)
+            slam_model_id = getattr(self.slam_backend, "model_id", None)
+            slam_endpoint = getattr(self.slam_backend, "endpoint", None)
+            try:
+                slam_result = await self.slam_backend.infer(
+                    frame_bytes,
+                    seq,
+                    ts_ms,
+                    run_id=run_id,
+                    targets=None,
+                    prompt=None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                slam_result = SlamResult(
+                    status="error",
+                    error=exc.__class__.__name__,
+                    payload={"reason": exc.__class__.__name__},
+                    latency_ms=max(0, _now_ms() - slam_started_ms),
+                )
+            await emit_slam_pose_events(
+                slam_result,
+                frame_seq=event_frame_seq,
+                ts_ms=_now_ms(),
+                started_ts_ms=slam_started_ms,
+                sink=self._emit_inference_event,
+                run_id=run_id,
+                component=component,
+                backend=slam_backend_name,
+                model=slam_model_id,
+                endpoint=slam_endpoint,
             )
 
         if self.config.inference_enable_seg:
@@ -2684,6 +2720,9 @@ async def run_packages_list(
     max_depth_absrel: float | None = None,
     min_depth_coverage: float | None = None,
     max_depth_latency_p90: int | None = None,
+    min_slam_tracking_rate: float | None = None,
+    max_slam_lost_rate: float | None = None,
+    max_slam_latency_p90: int | None = None,
     min_seg_mask_f1_50: float | None = None,
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
@@ -2746,6 +2785,9 @@ async def run_packages_list(
         max_depth_absrel=max_depth_absrel,
         min_depth_coverage=min_depth_coverage,
         max_depth_latency_p90=max_depth_latency_p90,
+        min_slam_tracking_rate=min_slam_tracking_rate,
+        max_slam_lost_rate=max_slam_lost_rate,
+        max_slam_latency_p90=max_slam_latency_p90,
         min_seg_mask_f1_50=min_seg_mask_f1_50,
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
@@ -2809,6 +2851,9 @@ async def run_packages_list(
             "max_depth_absrel": max_depth_absrel,
             "min_depth_coverage": min_depth_coverage,
             "max_depth_latency_p90": max_depth_latency_p90,
+            "min_slam_tracking_rate": min_slam_tracking_rate,
+            "max_slam_lost_rate": max_slam_lost_rate,
+            "max_slam_latency_p90": max_slam_latency_p90,
             "min_seg_mask_f1_50": min_seg_mask_f1_50,
             "min_seg_mask_coverage": min_seg_mask_coverage,
             "max_seg_latency_p90": max_seg_latency_p90,
@@ -2876,6 +2921,9 @@ async def run_packages_export_json(
     max_depth_absrel: float | None = None,
     min_depth_coverage: float | None = None,
     max_depth_latency_p90: int | None = None,
+    min_slam_tracking_rate: float | None = None,
+    max_slam_lost_rate: float | None = None,
+    max_slam_latency_p90: int | None = None,
     min_seg_mask_f1_50: float | None = None,
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
@@ -2938,6 +2986,9 @@ async def run_packages_export_json(
         max_depth_absrel=max_depth_absrel,
         min_depth_coverage=min_depth_coverage,
         max_depth_latency_p90=max_depth_latency_p90,
+        min_slam_tracking_rate=min_slam_tracking_rate,
+        max_slam_lost_rate=max_slam_lost_rate,
+        max_slam_latency_p90=max_slam_latency_p90,
         min_seg_mask_f1_50=min_seg_mask_f1_50,
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
@@ -3007,6 +3058,9 @@ async def run_packages_export_csv(
     max_depth_absrel: float | None = None,
     min_depth_coverage: float | None = None,
     max_depth_latency_p90: int | None = None,
+    min_slam_tracking_rate: float | None = None,
+    max_slam_lost_rate: float | None = None,
+    max_slam_latency_p90: int | None = None,
     min_seg_mask_f1_50: float | None = None,
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
@@ -3069,6 +3123,9 @@ async def run_packages_export_csv(
         max_depth_absrel=max_depth_absrel,
         min_depth_coverage=min_depth_coverage,
         max_depth_latency_p90=max_depth_latency_p90,
+        min_slam_tracking_rate=min_slam_tracking_rate,
+        max_slam_lost_rate=max_slam_lost_rate,
+        max_slam_latency_p90=max_slam_latency_p90,
         min_seg_mask_f1_50=min_seg_mask_f1_50,
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
@@ -3145,6 +3202,9 @@ async def run_packages_export_csv(
         "depth_delta1",
         "depth_coverage",
         "depth_latency_p90",
+        "slam_tracking_rate",
+        "slam_lost_rate",
+        "slam_latency_p90",
         "frame_e2e_p90",
         "frame_e2e_max",
         "frame_seg_p90",
@@ -4573,6 +4633,7 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     ocr_quality = quality_payload.get("ocr", {}) if isinstance(quality_payload, dict) else {}
     seg_quality = quality_payload.get("seg", {}) if isinstance(quality_payload, dict) else {}
     depth_quality = quality_payload.get("depth", {}) if isinstance(quality_payload, dict) else {}
+    slam_quality = quality_payload.get("slam", {}) if isinstance(quality_payload, dict) else {}
     pov_payload = summary.get("pov", {})
     pov_payload = pov_payload if isinstance(pov_payload, dict) else {}
     pov_context = summary.get("povContext", {})
@@ -4617,6 +4678,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     depth_delta1: float | None = None
     depth_coverage: float | None = None
     depth_latency_p90: int | None = None
+    slam_tracking_rate: float | None = None
+    slam_lost_rate: float | None = None
+    slam_relocalized: int | None = None
+    slam_latency_p90: int | None = None
     seg_mask_f1_50: float | None = None
     seg_mask_coverage: float | None = None
     seg_mask_mean_iou: float | None = None
@@ -4958,6 +5023,23 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         raw_depth_p90 = _read_float(depth_latency, "p90")
         if raw_depth_p90 is not None:
             depth_latency_p90 = int(raw_depth_p90)
+    if isinstance(slam_quality, dict):
+        tracking_payload = slam_quality.get("tracking")
+        tracking_payload = tracking_payload if isinstance(tracking_payload, dict) else {}
+        raw_tracking_rate = _read_float(tracking_payload, "trackingRate")
+        if raw_tracking_rate is not None:
+            slam_tracking_rate = float(raw_tracking_rate)
+        raw_lost_rate = _read_float(tracking_payload, "lostRate")
+        if raw_lost_rate is not None:
+            slam_lost_rate = float(raw_lost_rate)
+        raw_relocalized = _read_float(tracking_payload, "relocalizedCount")
+        if raw_relocalized is not None:
+            slam_relocalized = int(raw_relocalized)
+        slam_latency = slam_quality.get("latencyMs")
+        slam_latency = slam_latency if isinstance(slam_latency, dict) else {}
+        raw_slam_p90 = _read_float(slam_latency, "p90")
+        if raw_slam_p90 is not None:
+            slam_latency_p90 = int(raw_slam_p90)
     seg_context_stats = seg_context_payload.get("stats")
     seg_context_stats = seg_context_stats if isinstance(seg_context_stats, dict) else {}
     seg_context_out = seg_context_stats.get("out")
@@ -5047,6 +5129,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "depth_delta1": depth_delta1,
         "depth_coverage": depth_coverage,
         "depth_latency_p90": depth_latency_p90,
+        "slam_tracking_rate": slam_tracking_rate,
+        "slam_lost_rate": slam_lost_rate,
+        "slam_relocalized": slam_relocalized,
+        "slam_latency_p90": slam_latency_p90,
         "seg_mask_f1_50": seg_mask_f1_50,
         "seg_mask_coverage": seg_mask_coverage,
         "seg_mask_mean_iou": seg_mask_mean_iou,
@@ -5140,6 +5226,9 @@ def _matches_run_filters(
     max_depth_absrel: float | None,
     min_depth_coverage: float | None,
     max_depth_latency_p90: int | None,
+    min_slam_tracking_rate: float | None,
+    max_slam_lost_rate: float | None,
+    max_slam_latency_p90: int | None,
     min_seg_mask_f1_50: float | None,
     min_seg_mask_coverage: float | None,
     max_seg_latency_p90: int | None,
@@ -5280,6 +5369,24 @@ def _matches_run_filters(
         if value is None:
             return False
         if int(value) > int(max_depth_latency_p90):
+            return False
+    if min_slam_tracking_rate is not None:
+        value = row.get("slam_tracking_rate")
+        if value is None:
+            return False
+        if float(value) < float(min_slam_tracking_rate):
+            return False
+    if max_slam_lost_rate is not None:
+        value = row.get("slam_lost_rate")
+        if value is None:
+            return False
+        if float(value) > float(max_slam_lost_rate):
+            return False
+    if max_slam_latency_p90 is not None:
+        value = row.get("slam_latency_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_slam_latency_p90):
             return False
     if min_seg_mask_f1_50 is not None:
         value = row.get("seg_mask_f1_50")
@@ -5525,6 +5632,10 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "depth_delta1",
         "depth_coverage",
         "depth_latency_p90",
+        "slam_tracking_rate",
+        "slam_lost_rate",
+        "slam_relocalized",
+        "slam_latency_p90",
         "frame_e2e_p90",
         "frame_e2e_max",
         "frame_seg_p90",
@@ -5611,6 +5722,9 @@ async def _query_run_package_rows(
     max_depth_absrel: float | None,
     min_depth_coverage: float | None,
     max_depth_latency_p90: int | None,
+    min_slam_tracking_rate: float | None,
+    max_slam_lost_rate: float | None,
+    max_slam_latency_p90: int | None,
     min_seg_mask_f1_50: float | None,
     min_seg_mask_coverage: float | None,
     max_seg_latency_p90: int | None,
@@ -5679,6 +5793,9 @@ async def _query_run_package_rows(
             max_depth_absrel=max_depth_absrel,
             min_depth_coverage=min_depth_coverage,
             max_depth_latency_p90=max_depth_latency_p90,
+            min_slam_tracking_rate=min_slam_tracking_rate,
+            max_slam_lost_rate=max_slam_lost_rate,
+            max_slam_latency_p90=max_slam_latency_p90,
             min_seg_mask_f1_50=min_seg_mask_f1_50,
             min_seg_mask_coverage=min_seg_mask_coverage,
             max_seg_latency_p90=max_seg_latency_p90,
@@ -5775,6 +5892,9 @@ async def runs_dashboard(
     max_depth_absrel: float | None = None,
     min_depth_coverage: float | None = None,
     max_depth_latency_p90: int | None = None,
+    min_slam_tracking_rate: float | None = None,
+    max_slam_lost_rate: float | None = None,
+    max_slam_latency_p90: int | None = None,
     min_seg_mask_f1_50: float | None = None,
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
@@ -5838,6 +5958,9 @@ async def runs_dashboard(
         max_depth_absrel=max_depth_absrel,
         min_depth_coverage=min_depth_coverage,
         max_depth_latency_p90=max_depth_latency_p90,
+        min_slam_tracking_rate=min_slam_tracking_rate,
+        max_slam_lost_rate=max_slam_lost_rate,
+        max_slam_latency_p90=max_slam_latency_p90,
         min_seg_mask_f1_50=min_seg_mask_f1_50,
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
@@ -5946,6 +6069,14 @@ async def runs_dashboard(
         depth_cov = "—" if depth_cov_raw is None else f"{float(depth_cov_raw):.4f}"
         depth_p90_raw = row.get("depth_latency_p90")
         depth_p90 = "—" if depth_p90_raw is None else str(int(depth_p90_raw))
+        slam_tracking_rate_raw = row.get("slam_tracking_rate")
+        slam_tracking_rate = "—" if slam_tracking_rate_raw is None else f"{float(slam_tracking_rate_raw):.4f}"
+        slam_lost_rate_raw = row.get("slam_lost_rate")
+        slam_lost_rate = "—" if slam_lost_rate_raw is None else f"{float(slam_lost_rate_raw):.4f}"
+        slam_relocalized_raw = row.get("slam_relocalized")
+        slam_relocalized = "—" if slam_relocalized_raw is None else str(int(slam_relocalized_raw))
+        slam_p90_raw = row.get("slam_latency_p90")
+        slam_p90 = "—" if slam_p90_raw is None else str(int(slam_p90_raw))
         seg_ctx_chars_raw = row.get("seg_ctx_chars")
         seg_ctx_chars = "—" if seg_ctx_chars_raw is None else str(int(seg_ctx_chars_raw))
         seg_ctx_segments_raw = row.get("seg_ctx_segments")
@@ -6028,6 +6159,10 @@ async def runs_dashboard(
             f"<td>{html.escape(depth_delta1)}</td>"
             f"<td>{html.escape(depth_cov)}</td>"
             f"<td>{html.escape(depth_p90)}</td>"
+            f"<td>{html.escape(slam_tracking_rate)}</td>"
+            f"<td>{html.escape(slam_lost_rate)}</td>"
+            f"<td>{html.escape(slam_relocalized)}</td>"
+            f"<td>{html.escape(slam_p90)}</td>"
             f"<td>{html.escape(seg_ctx_chars)}</td>"
             f"<td>{html.escape(seg_ctx_segments)}</td>"
             f"<td>{html.escape(seg_ctx_trunc)}</td>"
@@ -6060,7 +6195,7 @@ async def runs_dashboard(
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='80' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='84' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -6083,6 +6218,9 @@ async def runs_dashboard(
     max_depth_absrel_value = html.escape("" if max_depth_absrel is None else str(max_depth_absrel))
     min_depth_coverage_value = html.escape("" if min_depth_coverage is None else str(min_depth_coverage))
     max_depth_latency_p90_value = html.escape("" if max_depth_latency_p90 is None else str(max_depth_latency_p90))
+    min_slam_tracking_rate_value = html.escape("" if min_slam_tracking_rate is None else str(min_slam_tracking_rate))
+    max_slam_lost_rate_value = html.escape("" if max_slam_lost_rate is None else str(max_slam_lost_rate))
+    max_slam_latency_p90_value = html.escape("" if max_slam_latency_p90 is None else str(max_slam_latency_p90))
     min_seg_mask_f1_50_value = html.escape("" if min_seg_mask_f1_50 is None else str(min_seg_mask_f1_50))
     min_seg_mask_coverage_value = html.escape("" if min_seg_mask_coverage is None else str(min_seg_mask_coverage))
     max_seg_latency_p90_value = html.escape("" if max_seg_latency_p90 is None else str(max_seg_latency_p90))
@@ -6216,6 +6354,9 @@ async def runs_dashboard(
       <label>max_depth_absrel: <input type="number" step="0.0001" min="0" name="max_depth_absrel" value="{max_depth_absrel_value}" /></label>
       <label>min_depth_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_depth_coverage" value="{min_depth_coverage_value}" /></label>
       <label>max_depth_latency_p90: <input type="number" min="0" name="max_depth_latency_p90" value="{max_depth_latency_p90_value}" /></label>
+      <label>min_slam_tracking_rate: <input type="number" step="0.0001" min="0" max="1" name="min_slam_tracking_rate" value="{min_slam_tracking_rate_value}" /></label>
+      <label>max_slam_lost_rate: <input type="number" step="0.0001" min="0" max="1" name="max_slam_lost_rate" value="{max_slam_lost_rate_value}" /></label>
+      <label>max_slam_latency_p90: <input type="number" min="0" name="max_slam_latency_p90" value="{max_slam_latency_p90_value}" /></label>
       <label>min_seg_mask_f1_50: <input type="number" step="0.0001" min="0" max="1" name="min_seg_mask_f1_50" value="{min_seg_mask_f1_50_value}" /></label>
       <label>min_seg_mask_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_seg_mask_coverage" value="{min_seg_mask_coverage_value}" /></label>
       <label>max_seg_latency_p90: <input type="number" min="0" name="max_seg_latency_p90" value="{max_seg_latency_p90_value}" /></label>
@@ -6265,6 +6406,9 @@ async def runs_dashboard(
           <option value="depth_delta1" {"selected" if sort_value == "depth_delta1" else ""}>depth_delta1</option>
           <option value="depth_coverage" {"selected" if sort_value == "depth_coverage" else ""}>depth_coverage</option>
           <option value="depth_latency_p90" {"selected" if sort_value == "depth_latency_p90" else ""}>depth_latency_p90</option>
+          <option value="slam_tracking_rate" {"selected" if sort_value == "slam_tracking_rate" else ""}>slam_tracking_rate</option>
+          <option value="slam_lost_rate" {"selected" if sort_value == "slam_lost_rate" else ""}>slam_lost_rate</option>
+          <option value="slam_latency_p90" {"selected" if sort_value == "slam_latency_p90" else ""}>slam_latency_p90</option>
           <option value="seg_mask_f1_50" {"selected" if sort_value == "seg_mask_f1_50" else ""}>seg_mask_f1_50</option>
           <option value="seg_mask_coverage" {"selected" if sort_value == "seg_mask_coverage" else ""}>seg_mask_coverage</option>
           <option value="seg_mask_mean_iou" {"selected" if sort_value == "seg_mask_mean_iou" else ""}>seg_mask_mean_iou</option>
@@ -6343,6 +6487,10 @@ async def runs_dashboard(
           <th>Depth Delta1</th>
           <th>Depth Coverage</th>
           <th>Depth p90(ms)</th>
+          <th>SLAM Tracking</th>
+          <th>SLAM Lost</th>
+          <th>SLAM Relocalized</th>
+          <th>SLAM p90(ms)</th>
           <th>SegCtx Chars</th>
           <th>SegCtx Segments</th>
           <th>SegCtx DropSeg</th>

@@ -58,3 +58,19 @@ class DepthProvider(Protocol):
         targets: list[str] | None = None,
     ) -> dict[str, Any]:
         ...
+
+
+class SlamProvider(Protocol):
+    name: str
+    model: str
+    endpoint: str | None
+
+    def infer(
+        self,
+        image: Image.Image,
+        frame_seq: int | None,
+        run_id: str | None = None,
+        targets: list[str] | None = None,
+        prompt: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        ...

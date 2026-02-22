@@ -47,6 +47,10 @@ class RunSummary:
     depth_delta1: float | None
     depth_coverage: float | None
     depth_latency_p90: int | None
+    slam_tracking_rate: float | None
+    slam_lost_rate: float | None
+    slam_relocalized_count: int | None
+    slam_latency_p90: int | None
     confirm_timeouts: int
     confirm_missing_response: int
     event_schema_source: str
@@ -60,8 +64,10 @@ class RunSummary:
     top_findings: list[dict[str, Any]]
     ocr_backend: str | None = None
     risk_backend: str | None = None
+    slam_backend: str | None = None
     ocr_model: str | None = None
     risk_model: str | None = None
+    slam_model: str | None = None
     ocr_events_present: bool = False
     ocr_payload_schema_ok: bool = False
     ocr_lines: int = 0
@@ -74,6 +80,11 @@ class RunSummary:
     depth_payload_schema_ok: bool = False
     depth_lines: int = 0
     depth_schema_ok_lines: int = 0
+    slam_pose_events_present: bool = False
+    slam_pose_payload_schema_ok: bool = False
+    slam_pose_lines: int = 0
+    slam_pose_schema_ok_lines: int = 0
+    slam_lost_count: int = 0
     seg_prompt_events_present: bool = False
     seg_prompt_payload_schema_ok: bool = False
     seg_prompt_lines: int = 0
@@ -163,6 +174,12 @@ class RunSummary:
                 "coverage": self.depth_coverage,
                 "latencyP90": self.depth_latency_p90,
             },
+            "slam": {
+                "trackingRate": self.slam_tracking_rate,
+                "lostRate": self.slam_lost_rate,
+                "relocalizedCount": self.slam_relocalized_count,
+                "latencyP90": self.slam_latency_p90,
+            },
             "segF1At50": self.seg_f1_50,
             "segCoverage": self.seg_coverage,
             "segLatencyP90": self.seg_latency_p90,
@@ -206,6 +223,10 @@ class RunSummary:
                     "backend": self.risk_backend,
                     "model": self.risk_model,
                 },
+                "slam": {
+                    "backend": self.slam_backend,
+                    "model": self.slam_model,
+                },
             },
             "topFindings": self.top_findings,
             "segLint": {
@@ -221,6 +242,11 @@ class RunSummary:
                 "depthPayloadSchemaOk": self.depth_payload_schema_ok,
                 "depthLines": self.depth_lines,
                 "depthSchemaOkLines": self.depth_schema_ok_lines,
+                "slamPoseEventsPresent": self.slam_pose_events_present,
+                "slamPosePayloadSchemaOk": self.slam_pose_payload_schema_ok,
+                "slamPoseLines": self.slam_pose_lines,
+                "slamPoseSchemaOkLines": self.slam_pose_schema_ok_lines,
+                "slamLostCount": self.slam_lost_count,
                 "promptEventsPresent": self.seg_prompt_events_present,
                 "promptPayloadSchemaOk": self.seg_prompt_payload_schema_ok,
                 "segPromptLines": self.seg_prompt_lines,
@@ -514,6 +540,12 @@ def _extract_run_summary(
     depth = depth if isinstance(depth, dict) else {}
     depth_latency = depth.get("latencyMs")
     depth_latency = depth_latency if isinstance(depth_latency, dict) else {}
+    slam = quality.get("slam")
+    slam = slam if isinstance(slam, dict) else {}
+    slam_tracking = slam.get("tracking")
+    slam_tracking = slam_tracking if isinstance(slam_tracking, dict) else {}
+    slam_latency = slam.get("latencyMs")
+    slam_latency = slam_latency if isinstance(slam_latency, dict) else {}
     safety = quality.get("safetyBehavior")
     safety = safety if isinstance(safety, dict) else {}
     confirm = safety.get("confirm")
@@ -534,6 +566,8 @@ def _extract_run_summary(
     inference_ocr = inference_ocr if isinstance(inference_ocr, dict) else {}
     inference_risk = inference.get("risk")
     inference_risk = inference_risk if isinstance(inference_risk, dict) else {}
+    inference_slam = inference.get("slam")
+    inference_slam = inference_slam if isinstance(inference_slam, dict) else {}
     top_findings = quality.get("topFindings")
     if not isinstance(top_findings, list):
         top_findings = []
@@ -570,6 +604,10 @@ def _extract_run_summary(
         depth_delta1=_try_float(depth.get("delta1")),
         depth_coverage=_try_float(depth.get("coverage")),
         depth_latency_p90=_try_int(depth_latency.get("p90")),
+        slam_tracking_rate=_try_float(slam_tracking.get("trackingRate")),
+        slam_lost_rate=_try_float(slam_tracking.get("lostRate")),
+        slam_relocalized_count=_try_int(slam_tracking.get("relocalizedCount")),
+        slam_latency_p90=_try_int(slam_latency.get("p90")),
         confirm_timeouts=int(confirm.get("timeouts", 0) or 0),
         confirm_missing_response=int(confirm.get("missingResponseCount", 0) or 0),
         event_schema_source=str(event_schema.get("source", "")),
@@ -582,8 +620,10 @@ def _extract_run_summary(
         pov_decision_per_min=_try_float(pov_time.get("decisionPerMin")),
         ocr_backend=str(inference_ocr.get("backend", "")).strip() or None,
         risk_backend=str(inference_risk.get("backend", "")).strip() or None,
+        slam_backend=str(inference_slam.get("backend", "")).strip() or None,
         ocr_model=str(inference_ocr.get("model", "")).strip() or None,
         risk_model=str(inference_risk.get("model", "")).strip() or None,
+        slam_model=str(inference_slam.get("model", "")).strip() or None,
         top_findings=[item for item in top_findings if isinstance(item, dict)],
     )
 
@@ -621,7 +661,7 @@ def _render_markdown(result: dict[str, Any]) -> str:
         if not isinstance(run, dict):
             continue
         lines.append(
-            "- `{id}` score=`{score}` baseline=`{baseline}` delta=`{delta}` confirmTimeouts=`{ct}` criticalFn=`{cfn}` riskDelayMax=`{dmax}` riskLatencyP90=`{rlp90}` riskLatencyMax=`{rlmax}` segF1@0.5=`{seg_f1}` segCoverage=`{seg_cov}` segLatencyP90=`{seg_p90}` depthAbsRel=`{depth_absrel}` depthDelta1=`{depth_delta1}` depthCoverage=`{depth_cov}` depthLatencyP90=`{depth_p90}` segCtxPresent=`{seg_ctx_present}` segCtxSchemaOk=`{seg_ctx_schema_ok}` segCtxChars=`{seg_ctx_chars}` povPresent=`{pov_present}` povDecisions=`{pov_decisions}` schema=`{schema}`".format(
+            "- `{id}` score=`{score}` baseline=`{baseline}` delta=`{delta}` confirmTimeouts=`{ct}` criticalFn=`{cfn}` riskDelayMax=`{dmax}` riskLatencyP90=`{rlp90}` riskLatencyMax=`{rlmax}` segF1@0.5=`{seg_f1}` segCoverage=`{seg_cov}` segLatencyP90=`{seg_p90}` depthAbsRel=`{depth_absrel}` depthDelta1=`{depth_delta1}` depthCoverage=`{depth_cov}` depthLatencyP90=`{depth_p90}` slamTrackingRate=`{slam_track}` slamLostRate=`{slam_lost}` slamLatencyP90=`{slam_p90}` segCtxPresent=`{seg_ctx_present}` segCtxSchemaOk=`{seg_ctx_schema_ok}` segCtxChars=`{seg_ctx_chars}` povPresent=`{pov_present}` povDecisions=`{pov_decisions}` schema=`{schema}`".format(
                 id=run.get("id", ""),
                 score=run.get("qualityScore", None),
                 baseline=run.get("baselineScore", None),
@@ -638,6 +678,9 @@ def _render_markdown(result: dict[str, Any]) -> str:
                 depth_delta1=run.get("depth", {}).get("delta1", None),
                 depth_cov=run.get("depth", {}).get("coverage", None),
                 depth_p90=run.get("depth", {}).get("latencyP90", None),
+                slam_track=run.get("slam", {}).get("trackingRate", None),
+                slam_lost=run.get("slam", {}).get("lostRate", None),
+                slam_p90=run.get("slam", {}).get("latencyP90", None),
                 seg_ctx_present=run.get("segLint", {}).get("segContextPresent", False),
                 seg_ctx_schema_ok=run.get("segLint", {}).get("segContextSchemaOk", False),
                 seg_ctx_chars=run.get("segLint", {}).get("segContextChars", 0),
@@ -715,6 +758,8 @@ def run_suite(
     run_require_seg_payload_schema_ok: dict[str, bool] = {}
     run_require_depth_events_present: dict[str, bool] = {}
     run_require_depth_payload_schema_ok: dict[str, bool] = {}
+    run_require_slam_pose_events_present: dict[str, bool] = {}
+    run_require_slam_pose_payload_schema_ok: dict[str, bool] = {}
     run_require_seg_prompt_events_present: dict[str, bool] = {}
     run_require_seg_prompt_payload_schema_ok: dict[str, bool] = {}
     run_require_seg_prompt_budget_present: dict[str, bool] = {}
@@ -761,6 +806,11 @@ def run_suite(
         run_require_seg_payload_schema_ok[run_id] = _to_bool01(run_cfg.get("requireSegPayloadSchemaOk"), False)
         run_require_depth_events_present[run_id] = _to_bool01(run_cfg.get("requireDepthEventsPresent"), False)
         run_require_depth_payload_schema_ok[run_id] = _to_bool01(run_cfg.get("requireDepthPayloadSchemaOk"), False)
+        run_require_slam_pose_events_present[run_id] = _to_bool01(run_cfg.get("requireSlamPoseEventsPresent"), False)
+        run_require_slam_pose_payload_schema_ok[run_id] = _to_bool01(
+            run_cfg.get("requireSlamPosePayloadSchemaOk"),
+            False,
+        )
         run_require_seg_prompt_events_present[run_id] = _to_bool01(run_cfg.get("requireSegPromptEventsPresent"), False)
         run_require_seg_prompt_payload_schema_ok[run_id] = _to_bool01(run_cfg.get("requireSegPromptPayloadSchemaOk"), False)
         run_require_seg_prompt_budget_present[run_id] = _to_bool01(run_cfg.get("requireSegPromptBudgetPresent"), False)
@@ -846,6 +896,11 @@ def run_suite(
                     run_summary.depth_payload_schema_ok = bool(lint_summary.get("depthPayloadSchemaOk", 0))
                     run_summary.depth_lines = int(lint_summary.get("depthLines", 0) or 0)
                     run_summary.depth_schema_ok_lines = int(lint_summary.get("depthSchemaOk", 0) or 0)
+                    run_summary.slam_pose_events_present = bool(lint_summary.get("slamPoseEventsPresent", 0))
+                    run_summary.slam_pose_payload_schema_ok = bool(lint_summary.get("slamPosePayloadSchemaOk", 0))
+                    run_summary.slam_pose_lines = int(lint_summary.get("slamPoseLines", 0) or 0)
+                    run_summary.slam_pose_schema_ok_lines = int(lint_summary.get("slamPoseSchemaOk", 0) or 0)
+                    run_summary.slam_lost_count = int(lint_summary.get("slamLostCount", 0) or 0)
                     run_summary.seg_prompt_events_present = bool(lint_summary.get("segPromptEventsPresent", 0))
                     run_summary.seg_prompt_payload_schema_ok = bool(lint_summary.get("segPromptPayloadSchemaOk", 0))
                     run_summary.seg_prompt_lines = int(lint_summary.get("segPromptLines", 0) or 0)
@@ -960,6 +1015,10 @@ def run_suite(
             failures.append(f"{run.run_id}: depth events missing (depth.estimate)")
         if run_require_depth_payload_schema_ok.get(run.run_id, False) and not bool(run.depth_payload_schema_ok):
             failures.append(f"{run.run_id}: depth payload schema check failed")
+        if run_require_slam_pose_events_present.get(run.run_id, False) and not bool(run.slam_pose_events_present):
+            failures.append(f"{run.run_id}: slam pose events missing (slam.pose)")
+        if run_require_slam_pose_payload_schema_ok.get(run.run_id, False) and not bool(run.slam_pose_payload_schema_ok):
+            failures.append(f"{run.run_id}: slam pose payload schema check failed")
         if run_require_seg_prompt_events_present.get(run.run_id, False) and not bool(run.seg_prompt_events_present):
             failures.append(f"{run.run_id}: seg prompt events missing (seg.prompt)")
         if run_require_seg_prompt_payload_schema_ok.get(run.run_id, False) and not bool(run.seg_prompt_payload_schema_ok):
@@ -1086,8 +1145,10 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "confirmTimeouts={confirm_timeouts} critical_fn={critical_fn} riskDelayP90={risk_delay_p90} riskDelayMax={risk_delay_max} "
                 "riskLatencyP90={risk_latency_p90} riskLatencyMax={risk_latency_max} segF1@0.5={seg_f1} segCoverage={seg_cov} segLatencyP90={seg_p90} "
                 "depthAbsRel={depth_absrel} depthDelta1={depth_delta1} depthCoverage={depth_cov} depthLatencyP90={depth_p90} "
+                "slamTrackingRate={slam_tracking_rate} slamLostRate={slam_lost_rate} slamRelocalized={slam_relocalized} slamLatencyP90={slam_p90} "
                 "ocrEventsPresent={ocr_events_present} ocrPayloadSchemaOk={ocr_payload_schema_ok} "
                 "segEventsPresent={seg_events_present} segPayloadSchemaOk={seg_payload_schema_ok} depthEventsPresent={depth_events_present} depthPayloadSchemaOk={depth_payload_schema_ok} "
+                "slamPoseEventsPresent={slam_pose_events_present} slamPosePayloadSchemaOk={slam_pose_payload_schema_ok} "
                 "segPromptEventsPresent={seg_prompt_events_present} segPromptPayloadSchemaOk={seg_prompt_payload_schema_ok} "
                 "segPromptBudgetPresent={seg_prompt_budget_present} segPromptTruncationPresent={seg_prompt_truncation_present} "
                 "segPromptPackedTrueCount={seg_prompt_packed_true_count} "
@@ -1126,12 +1187,18 @@ def _print_summary(result: dict[str, Any]) -> None:
                     depth_delta1=row.get("depth", {}).get("delta1", None),
                     depth_cov=row.get("depth", {}).get("coverage", None),
                     depth_p90=row.get("depth", {}).get("latencyP90", None),
+                    slam_tracking_rate=row.get("slam", {}).get("trackingRate", None),
+                    slam_lost_rate=row.get("slam", {}).get("lostRate", None),
+                    slam_relocalized=row.get("slam", {}).get("relocalizedCount", None),
+                    slam_p90=row.get("slam", {}).get("latencyP90", None),
                     ocr_events_present=row.get("segLint", {}).get("ocrEventsPresent", False),
                     ocr_payload_schema_ok=row.get("segLint", {}).get("ocrPayloadSchemaOk", False),
                     seg_events_present=row.get("segLint", {}).get("eventsPresent", False),
                     seg_payload_schema_ok=row.get("segLint", {}).get("payloadSchemaOk", False),
                     depth_events_present=row.get("segLint", {}).get("depthEventsPresent", False),
                     depth_payload_schema_ok=row.get("segLint", {}).get("depthPayloadSchemaOk", False),
+                    slam_pose_events_present=row.get("segLint", {}).get("slamPoseEventsPresent", False),
+                    slam_pose_payload_schema_ok=row.get("segLint", {}).get("slamPosePayloadSchemaOk", False),
                     seg_prompt_events_present=row.get("segLint", {}).get("promptEventsPresent", False),
                     seg_prompt_payload_schema_ok=row.get("segLint", {}).get("promptPayloadSchemaOk", False),
                     seg_prompt_budget_present=row.get("segLint", {}).get("segPromptBudgetPresent", False),

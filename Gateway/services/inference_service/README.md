@@ -1,7 +1,7 @@
 # Inference Service Deployment Guide
 
 TL;DR:
-- `inference_service` provides pluggable `/ocr`, `/risk`, `/seg`, and `/depth` endpoints.
+- `inference_service` provides pluggable `/ocr`, `/risk`, `/seg`, `/depth`, and `/slam/pose` endpoints.
 - Keep CI lightweight: optional OCR/depth dependencies are split into extra requirements files.
 - For replay/report/regression usage, read `Gateway/README.md`.
 
@@ -34,6 +34,8 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
     - `frameSeq: int`
     - `targets: string[]` (reserved for future providers)
 
+- `POST /slam/pose` -> `{"schemaVersion":"byes.slam_pose.v1","runId":"...","frameSeq":1,"trackingState":"tracking|lost|relocalized|initializing","pose":{"t":[tx,ty,tz],"q":[qx,qy,qz,qw],"frame":"world_to_cam|cam_to_world"},"latencyMs":<int>,"backend":"...","model":"...","endpoint":"...","warningsCount":0}`
+
 ## Provider Matrix
 
 | Domain | Provider | Env Value | Optional Dependency |
@@ -49,6 +51,8 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
 | Seg | http | `BYES_SERVICE_SEG_PROVIDER=http` | none (calls external endpoint) |
 | Depth tool (`/depth`) | mock | `BYES_SERVICE_DEPTH_PROVIDER=mock` | none |
 | Depth tool (`/depth`) | http | `BYES_SERVICE_DEPTH_PROVIDER=http` | none (calls external endpoint) |
+| SLAM pose (`/slam/pose`) | mock | `BYES_SERVICE_SLAM_PROVIDER=mock` | none |
+| SLAM pose (`/slam/pose`) | http | `BYES_SERVICE_SLAM_PROVIDER=http` | none (calls external endpoint) |
 | Depth (for heuristic risk) | none/synth/midas/onnx | `BYES_SERVICE_DEPTH_PROVIDER=<...>` | midas/onnx are optional |
 
 ## Seg Provider (mock/http)
@@ -168,6 +172,42 @@ $env:BYES_SERVICE_DEPTH_MODEL_ID="reference-depth-v1"
 python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
 ```
 
+## SLAM Pose Provider (mock/http)
+
+- `mock` (default for `/slam/pose`): deterministic pose stream from `frameSeq`.
+- `http`: forwards request to external SLAM endpoint and normalizes output to `byes.slam_pose.v1`.
+- Response shape for Gateway metrics/events:
+  - `trackingState`: `tracking|lost|relocalized|initializing`
+  - `pose`: `{t:[tx,ty,tz], q:[qx,qy,qz,qw], frame?}`
+  - `latencyMs`, `model`, `backend`, `endpoint`, optional `warningsCount`.
+
+Required env for `http`:
+
+```powershell
+$env:BYES_SERVICE_SLAM_PROVIDER="http"
+$env:BYES_SERVICE_SLAM_ENDPOINT="http://127.0.0.1:19261/slam/pose"
+```
+
+Optional:
+
+```powershell
+$env:BYES_SERVICE_SLAM_MODEL_ID="reference-slam-v1"
+$env:BYES_SERVICE_SLAM_TIMEOUT_MS="1200"
+```
+
+Reference SLAM chain example:
+
+```powershell
+# start reference slam service first
+python -m uvicorn services.reference_slam_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19261
+
+# then start inference_service with slam provider=http
+$env:BYES_SERVICE_SLAM_PROVIDER="http"
+$env:BYES_SERVICE_SLAM_ENDPOINT="http://127.0.0.1:19261/slam/pose"
+$env:BYES_SERVICE_SLAM_MODEL_ID="reference-slam-v1"
+python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
+```
+
 ## Calibrated Risk Defaults (v4.28 -> v4.29)
 
 Current default thresholds:
@@ -227,6 +267,10 @@ Recommended default input size is `256` (can test `384`/`518` with sweep tools).
 | `BYES_SERVICE_DEPTH_MODEL_ID` | provider default | depth model metadata tag |
 | `BYES_SERVICE_DEPTH_ENDPOINT` | empty | depth endpoint URL (`http` provider for `/depth`) |
 | `BYES_SERVICE_DEPTH_TIMEOUT_MS` | `1200` | depth HTTP timeout ms (`/depth`) |
+| `BYES_SERVICE_SLAM_PROVIDER` | `mock` | SLAM provider selection (`mock|http`) |
+| `BYES_SERVICE_SLAM_MODEL_ID` | provider default | slam model metadata tag |
+| `BYES_SERVICE_SLAM_ENDPOINT` | empty | slam endpoint URL (`http` provider for `/slam/pose`) |
+| `BYES_SERVICE_SLAM_TIMEOUT_MS` | `1200` | slam HTTP timeout ms |
 | `BYES_SERVICE_DEPTH_ONNX_PATH` | empty | ONNX depth model path (`onnx` provider) |
 | `BYES_SERVICE_DEPTH_INPUT_SIZE` | `256` | ONNX depth input resolution |
 | `BYES_SERVICE_RISK_DEBUG` | `0` | include `debug` evidence in `/risk` |
