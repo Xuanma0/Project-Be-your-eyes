@@ -497,6 +497,35 @@ python scripts/replay_run_package.py --run-package artifacts/imports/ego4d_runpk
 
 Note: ImageNet DET test labels are withheld, so these imports are best for latency/robustness and pipeline checks, not GT precision scoring.
 
+## Dataset Benchmark Runner (v4.69)
+
+Batch run replay + report over many run packages and aggregate to `latest.json/latest.md/latest.csv`:
+
+```powershell
+python scripts/run_dataset_benchmark.py `
+  --root "<dir_with_runpackages>" `
+  --out "artifacts/benchmarks/v469_demo" `
+  --glob "**/manifest.json" `
+  --max 50 --shuffle 1 --seed 123 `
+  --replay 1 --reset 1 --apply-scenario-calls 0 `
+  --services "seg=reference,depth=reference,ocr=reference"
+```
+
+Report-only fast mode (no replay, good for CI/local smoke):
+
+```powershell
+python scripts/run_dataset_benchmark.py `
+  --root "<dir_with_runpackages>" `
+  --out "artifacts/benchmarks/v469_report_only" `
+  --replay 0 --max 20 --shuffle 0
+```
+
+Typical dataset roots:
+- Ego4D imports root: `<...>/Gateway/artifacts/imports/v468_ego4d_demo`
+- ImageNet imports root: `<...>/Gateway/artifacts/imports/v468_imagenet_demo`
+
+ImageNet DET test labels are withheld; default benchmark usage is latency/robustness and systems behavior, not GT precision scoring.
+
 Seg context pack (budgeted) from existing `seg.segment` events:
 
 ```powershell
