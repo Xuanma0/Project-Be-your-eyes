@@ -562,6 +562,19 @@ Matrix mode (`--matrix 1`) runs the same run-package batch across multiple profi
         "BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM": "da3",
         "BYES_DA3_MODE": "fixture"
       }
+    },
+    {
+      "name": "slam_offline_pyslam",
+      "services": {"seg": "reference", "depth": "reference", "ocr": "reference"},
+      "env": {},
+      "prehooks": [
+        {
+          "type": "pyslam_ingest",
+          "tumGlob": "pyslam/*.txt",
+          "alignMode": "auto",
+          "replaceExisting": true
+        }
+      ]
     }
   ]
 }
@@ -577,6 +590,10 @@ python scripts/run_dataset_benchmark.py `
   --matrix 1 `
   --profiles "<path/to/profiles.json>"
 ```
+
+PySLAM offline profile note:
+- put exported TUM trajectory files (for example `byes_traj_online.txt`, `byes_traj_final.txt`) under `<run_package>/pyslam/`
+- `slam_offline_pyslam` prehook calls `scripts/ingest_pyslam_tum.py` before `report_run.py`, so matrix mode can compare baseline vs offline SLAM ingest even with `--replay 0`
 
 Typical dataset roots:
 - Ego4D imports root: `<...>/Gateway/artifacts/imports/v468_ego4d_demo`

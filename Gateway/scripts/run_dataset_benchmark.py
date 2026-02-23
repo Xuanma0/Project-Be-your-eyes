@@ -42,6 +42,7 @@ class BenchmarkProfile:
     name: str
     services: dict[str, str]
     env: dict[str, str]
+    prehooks: list[dict[str, Any]]
 
 
 METRIC_FIELDS = [
@@ -57,6 +58,8 @@ METRIC_FIELDS = [
     "depth_absRel",
     "ocr_cer",
     "slam_tracking_rate",
+    "slam_coverage",
+    "slam_align_residual_p90",
     "plan_score",
     "plan_fallback_used",
 ]
@@ -138,6 +141,33 @@ def _sanitize_services(raw: dict[str, Any] | None) -> dict[str, str]:
     return out
 
 
+def _sanitize_prehooks(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        hook_type = str(item.get("type", "")).strip().lower()
+        if not hook_type:
+            continue
+        if hook_type != "pyslam_ingest":
+            out.append({"type": hook_type})
+            continue
+        tum_glob = str(item.get("tumGlob", "pyslam/*.txt")).strip() or "pyslam/*.txt"
+        align_mode = str(item.get("alignMode", "auto")).strip().lower() or "auto"
+        replace_existing = _parse_bool(item.get("replaceExisting", False))
+        out.append(
+            {
+                "type": "pyslam_ingest",
+                "tumGlob": tum_glob,
+                "alignMode": align_mode,
+                "replaceExisting": bool(replace_existing),
+            }
+        )
+    return out
+
+
 def _services_compact(services: dict[str, str]) -> str:
     if not services:
         return ""
@@ -175,7 +205,8 @@ def _load_profiles(path: Path) -> list[BenchmarkProfile]:
         env: dict[str, str] = {}
         if isinstance(env_raw, dict):
             env = {str(k): str(v) for k, v in env_raw.items()}
-        profiles.append(BenchmarkProfile(name=name, services=services, env=env))
+        prehooks = _sanitize_prehooks(item.get("prehooks"))
+        profiles.append(BenchmarkProfile(name=name, services=services, env=env, prehooks=prehooks))
     if not profiles:
         raise ValueError("profiles array is empty")
     return profiles
@@ -361,6 +392,8 @@ def _collect_summary_fields(*, run_package: Path, manifest: dict[str, Any], repo
         "depth_absRel": _to_float(depth.get("absRel")),
         "ocr_cer": _to_float(ocr.get("cer")),
         "slam_tracking_rate": _to_float(_nested_get(slam, ["tracking", "trackingRate"])),
+        "slam_coverage": _to_float(slam.get("coverage")),
+        "slam_align_residual_p90": _to_int(_nested_get(slam, ["alignment", "residualMs", "p90"])),
         "plan_score": _to_float(plan_quality.get("score")),
         "plan_fallback_used": bool(plan_quality.get("fallbackUsed")) if "fallbackUsed" in plan_quality else None,
     }
@@ -386,6 +419,8 @@ def _summary_to_csv_row(row: dict[str, Any]) -> dict[str, Any]:
         "depth_absRel": row.get("depth_absRel"),
         "ocr_cer": row.get("ocr_cer"),
         "slam_tracking_rate": row.get("slam_tracking_rate"),
+        "slam_coverage": row.get("slam_coverage"),
+        "slam_align_residual_p90": row.get("slam_align_residual_p90"),
         "plan_score": row.get("plan_score"),
         "plan_fallback_used": row.get("plan_fallback_used"),
         "status": row.get("status"),
@@ -414,6 +449,8 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "depth_absRel",
         "ocr_cer",
         "slam_tracking_rate",
+        "slam_coverage",
+        "slam_align_residual_p90",
         "plan_score",
         "plan_fallback_used",
         "status",
@@ -437,12 +474,12 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]], payload: dict[str, A
     lines.append(f"- failures: `{payload.get('failures', 0)}`")
     lines.append("")
     lines.append(
-        "| profile | runId | frames | qualityScore | critical_fn | riskP90 | e2eP90 | ttsP90 | arP90 | segF1 | depthAbsRel | ocrCER | slamTrack | status |"
+        "| profile | runId | frames | qualityScore | critical_fn | riskP90 | e2eP90 | ttsP90 | arP90 | segF1 | depthAbsRel | ocrCER | slamTrack | slamCoverage | slamAlignP90 | status |"
     )
-    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for row in rows:
         lines.append(
-            "| {profile} | {run_id} | {frames} | {quality} | {critical_fn} | {risk} | {e2e} | {tts} | {ar} | {seg} | {depth} | {ocr} | {slam} | {status} |".format(
+            "| {profile} | {run_id} | {frames} | {quality} | {critical_fn} | {risk} | {e2e} | {tts} | {ar} | {seg} | {depth} | {ocr} | {slam} | {slam_cov} | {slam_align} | {status} |".format(
                 profile=row.get("profile"),
                 run_id=row.get("runId"),
                 frames=row.get("framesCount"),
@@ -456,6 +493,8 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]], payload: dict[str, A
                 depth=row.get("depth_absRel"),
                 ocr=row.get("ocr_cer"),
                 slam=row.get("slam_tracking_rate"),
+                slam_cov=row.get("slam_coverage"),
+                slam_align=row.get("slam_align_residual_p90"),
                 status=row.get("status"),
             )
         )
@@ -720,6 +759,88 @@ def _run_replay(
     return code, out, latest
 
 
+def _run_pyslam_ingest_prehook(
+    *,
+    source_run_package: Path,
+    target_run_package: Path,
+    hook: dict[str, Any],
+    env: dict[str, str],
+) -> tuple[list[str], list[str], str | None]:
+    warnings: list[str] = []
+    errors: list[str] = []
+    tum_glob = str(hook.get("tumGlob", "pyslam/*.txt")).strip() or "pyslam/*.txt"
+    align_mode = str(hook.get("alignMode", "auto")).strip().lower() or "auto"
+    replace_existing = bool(hook.get("replaceExisting", False))
+
+    tum_files = sorted(path for path in source_run_package.glob(tum_glob) if path.is_file())
+    if not tum_files and source_run_package.resolve() != target_run_package.resolve():
+        tum_files = sorted(path for path in target_run_package.glob(tum_glob) if path.is_file())
+    if not tum_files:
+        warnings.append(f"pyslam_ingest: no trajectory matched tumGlob='{tum_glob}'")
+        return warnings, errors, None
+
+    cmd = [
+        sys.executable,
+        str(THIS_DIR / "ingest_pyslam_tum.py"),
+        "--run-package",
+        str(target_run_package),
+        "--traj-label",
+        "auto",
+        "--align-mode",
+        align_mode,
+        "--replace-existing",
+        "1" if replace_existing else "0",
+    ]
+    for tum_file in tum_files:
+        cmd.extend(["--tum", str(tum_file)])
+    code, out = _run_subprocess(cmd, cwd=REPO_ROOT, env=env)
+    if code != 0:
+        errors.append(f"pyslam_ingest failed (code={code})")
+    return warnings, errors, out
+
+
+def _apply_prehooks(
+    *,
+    source_run_package: Path,
+    target_run_package: Path,
+    prehooks: list[dict[str, Any]],
+    env: dict[str, str],
+) -> tuple[list[str], list[str], list[dict[str, Any]], list[str]]:
+    warnings: list[str] = []
+    errors: list[str] = []
+    applied: list[dict[str, Any]] = []
+    outputs: list[str] = []
+    for hook in prehooks:
+        if not isinstance(hook, dict):
+            continue
+        hook_type = str(hook.get("type", "")).strip().lower()
+        if not hook_type:
+            continue
+        hook_entry: dict[str, Any] = {"type": hook_type}
+        if hook_type == "pyslam_ingest":
+            hook_warnings, hook_errors, hook_out = _run_pyslam_ingest_prehook(
+                source_run_package=source_run_package,
+                target_run_package=target_run_package,
+                hook=hook,
+                env=env,
+            )
+            warnings.extend(hook_warnings)
+            errors.extend(hook_errors)
+            if hook_out:
+                outputs.append(hook_out)
+            hook_entry["tumGlob"] = str(hook.get("tumGlob", "pyslam/*.txt"))
+            hook_entry["alignMode"] = str(hook.get("alignMode", "auto"))
+            hook_entry["replaceExisting"] = bool(hook.get("replaceExisting", False))
+            hook_entry["warnings"] = hook_warnings
+            hook_entry["errors"] = hook_errors
+        else:
+            warning = f"unknown prehook type '{hook_type}', skipped"
+            warnings.append(warning)
+            hook_entry["warnings"] = [warning]
+        applied.append(hook_entry)
+    return warnings, errors, applied, outputs
+
+
 def run_dataset_benchmark(
     *,
     root: Path,
@@ -737,6 +858,7 @@ def run_dataset_benchmark(
     env_file: Path | None,
     profile_name: str = "default",
     env_overrides: dict[str, str] | None = None,
+    prehooks: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], int]:
     root = root.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -756,6 +878,7 @@ def run_dataset_benchmark(
     if env_overrides:
         base_env.update({str(k): str(v) for k, v in env_overrides.items()})
     services_compact = _services_compact(services)
+    active_prehooks = list(prehooks or [])
 
     runtimes: list[ServiceRuntime] = []
     failures = 0
@@ -780,6 +903,10 @@ def run_dataset_benchmark(
                 "error": None,
                 "replayStdout": None,
                 "reportStdout": None,
+                "prehookStdout": [],
+                "prehookWarnings": [],
+                "prehookErrors": [],
+                "prehooksApplied": [],
                 "targetRunPackage": str(package_dir),
             }
             try:
@@ -804,6 +931,20 @@ def run_dataset_benchmark(
                         if replay_dir is not None and replay_dir.exists():
                             target_run_package = replay_dir
                             run_row["targetRunPackage"] = str(replay_dir)
+
+                if active_prehooks:
+                    hook_warnings, hook_errors, hook_entries, hook_outputs = _apply_prehooks(
+                        source_run_package=package_dir,
+                        target_run_package=target_run_package,
+                        prehooks=active_prehooks,
+                        env=base_env,
+                    )
+                    run_row["prehooksApplied"] = hook_entries
+                    run_row["prehookWarnings"] = hook_warnings
+                    run_row["prehookErrors"] = hook_errors
+                    run_row["prehookStdout"] = hook_outputs
+                    if hook_errors:
+                        raise RuntimeError("; ".join(hook_errors))
 
                 run_slug = _slug_from_path(package_dir, root)
                 report_dir = out_dir / "reports"
@@ -837,6 +978,7 @@ def run_dataset_benchmark(
         "durationMs": max(0, _now_ms() - start_ms),
         "profile": profile_name,
         "services": services_compact,
+        "prehooks": active_prehooks,
         "root": str(root),
         "outDir": str(out_dir),
         "glob": glob_pattern,
@@ -946,8 +1088,8 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
     lines.append(f"- processed: `{payload.get('processed', 0)}`")
     lines.append(f"- failures: `{payload.get('failures', 0)}`")
     lines.append("")
-    lines.append("| profile | services | discovered | processed | failures | quality(mean) | riskP90(p90) | frameUserTtsP90(p90) |")
-    lines.append("|---|---|---:|---:|---:|---:|---:|---:|")
+    lines.append("| profile | services | discovered | processed | failures | quality(mean) | riskP90(p90) | frameUserTtsP90(p90) | slamCoverage(mean) | slamAlignP90(p90) |")
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|")
     profiles = payload.get("profiles")
     profiles = profiles if isinstance(profiles, list) else []
     for entry in profiles:
@@ -959,8 +1101,12 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
         risk = risk if isinstance(risk, dict) else {}
         tts = metrics.get("frame_user_e2e_tts_p90")
         tts = tts if isinstance(tts, dict) else {}
+        slam_cov = metrics.get("slam_coverage")
+        slam_cov = slam_cov if isinstance(slam_cov, dict) else {}
+        slam_align = metrics.get("slam_align_residual_p90")
+        slam_align = slam_align if isinstance(slam_align, dict) else {}
         lines.append(
-            "| {name} | {services} | {d} | {p} | {f} | {quality} | {risk} | {tts} |".format(
+            "| {name} | {services} | {d} | {p} | {f} | {quality} | {risk} | {tts} | {slam_cov} | {slam_align} |".format(
                 name=entry.get("name"),
                 services=entry.get("services"),
                 d=entry.get("discovered"),
@@ -969,6 +1115,8 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
                 quality=quality.get("mean"),
                 risk=risk.get("p90"),
                 tts=tts.get("p90"),
+                slam_cov=slam_cov.get("mean"),
+                slam_align=slam_align.get("p90"),
             )
         )
 
@@ -978,18 +1126,20 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
         lines.append("")
         lines.append("## Deltas vs baseline")
         lines.append("")
-        lines.append("| profile | delta_qualityScore | delta_riskLatencyP90 | delta_frame_user_e2e_tts_p90 |")
-        lines.append("|---|---:|---:|---:|")
+        lines.append("| profile | delta_qualityScore | delta_riskLatencyP90 | delta_frame_user_e2e_tts_p90 | delta_slam_coverage | delta_slam_align_residual_p90 |")
+        lines.append("|---|---:|---:|---:|---:|---:|")
         for name, value in deltas.items():
             block = value if isinstance(value, dict) else {}
             flat = block.get("deltaFlat")
             flat = flat if isinstance(flat, dict) else {}
             lines.append(
-                "| {name} | {dq} | {dr} | {dt} |".format(
+                "| {name} | {dq} | {dr} | {dt} | {ds} | {da} |".format(
                     name=name,
                     dq=flat.get("delta_qualityScore"),
                     dr=flat.get("delta_riskLatencyP90"),
                     dt=flat.get("delta_frame_user_e2e_tts_p90"),
+                    ds=flat.get("delta_slam_coverage"),
+                    da=flat.get("delta_slam_align_residual_p90"),
                 )
             )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1037,6 +1187,7 @@ def run_dataset_benchmark_matrix(
             env_file=env_file,
             profile_name=profile.name,
             env_overrides=profile.env,
+            prehooks=profile.prehooks,
         )
         profile_payloads.append(payload)
         rows = payload.get("rows")

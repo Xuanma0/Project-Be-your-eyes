@@ -121,6 +121,7 @@ def ingest_pyslam_tum(
     traj_label: str,
     tum_time_base: str,
     tum_time_unit: str,
+    replace_existing: bool,
     dry_run: bool,
 ) -> tuple[dict[str, Any], int]:
     warnings: list[str] = []
@@ -231,12 +232,21 @@ def ingest_pyslam_tum(
             "trajectories": per_traj_results,
         }
         ingest_summary_path = events_path.parent / "slam_ingest_summary.json"
+        removed_existing = 0
 
         if not dry_run:
             events_path.parent.mkdir(parents=True, exist_ok=True)
-            with events_path.open("a", encoding="utf-8") as fp:
-                for row in all_event_rows:
-                    fp.write(json.dumps(row, ensure_ascii=False) + "\n")
+            if replace_existing and events_path.exists():
+                kept_rows, removed_existing = _drop_existing_pyslam_pose_rows(events_path)
+                with events_path.open("w", encoding="utf-8") as fp:
+                    for row in kept_rows:
+                        fp.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    for row in all_event_rows:
+                        fp.write(json.dumps(row, ensure_ascii=False) + "\n")
+            else:
+                with events_path.open("a", encoding="utf-8") as fp:
+                    for row in all_event_rows:
+                        fp.write(json.dumps(row, ensure_ascii=False) + "\n")
             ingest_summary_path.write_text(json.dumps(ingest_summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             if handle.is_zip:
                 handle.commit()
@@ -260,6 +270,8 @@ def ingest_pyslam_tum(
             "trajectories": per_traj_results,
             "warnings": warnings,
             "written": 0 if dry_run else len(all_event_rows),
+            "replaceExisting": bool(replace_existing),
+            "removedExisting": int(removed_existing),
             "dryRun": bool(dry_run),
             "out_path": str(events_path),
             "ingestSummaryPath": str(ingest_summary_path),
@@ -814,6 +826,37 @@ def _round_float(value: float | None) -> float | None:
     return round(float(value), 6)
 
 
+def _drop_existing_pyslam_pose_rows(events_path: Path) -> tuple[list[dict[str, Any]], int]:
+    kept: list[dict[str, Any]] = []
+    removed = 0
+    for raw in events_path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(row, dict):
+            continue
+        if _is_pyslam_pose_event(row):
+            removed += 1
+            continue
+        kept.append(row)
+    return kept, removed
+
+
+def _is_pyslam_pose_event(row: dict[str, Any]) -> bool:
+    name = str(row.get("name", "")).strip().lower()
+    if name != "slam.pose":
+        return False
+    payload = row.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    model = str(payload.get("model", "")).strip().lower()
+    return model.startswith("pyslam-") or model == "pyslam"
+
+
 def _print_summary(summary: dict[str, Any]) -> None:
     print(f"source: {summary.get('source')}")
     print(f"run-package: {summary.get('runPackage')}")
@@ -827,6 +870,8 @@ def _print_summary(summary: dict[str, Any]) -> None:
     print(f"matched: {summary.get('matched')}")
     print(f"unmatched: {summary.get('unmatched')}")
     print(f"invalid_lines: {summary.get('invalid_lines')}")
+    print(f"replaceExisting: {summary.get('replaceExisting')}")
+    print(f"removedExisting: {summary.get('removedExisting')}")
     print(f"a: {summary.get('a')}")
     print(f"b: {summary.get('b')}")
     residual = summary.get("residualMs")
@@ -868,6 +913,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--align-mode", default="auto", choices=["auto", "index", "nearest", "fit_linear"])
     parser.add_argument("--run-id", default="", help="optional run id override for emitted events")
     parser.add_argument("--tolerance-ms", type=int, default=50, help="timestamp nearest-neighbor tolerance in ms")
+    parser.add_argument("--replace-existing", type=int, default=0, help="replace previous pyslam slam.pose events (1/0)")
     parser.add_argument("--dry-run", action="store_true", help="parse and match only, do not write files")
     args = parser.parse_args()
     if not args.tum and not str(args.tum_dir or "").strip():
@@ -889,6 +935,7 @@ def main() -> int:
         traj_label=str(args.traj_label or "auto"),
         tum_time_base=str(args.tum_time_base or "auto"),
         tum_time_unit=str(args.tum_time_unit or "auto"),
+        replace_existing=bool(int(args.replace_existing)),
         dry_run=bool(args.dry_run),
     )
     _print_summary(summary)
