@@ -55,7 +55,7 @@ def test_ingest_pyslam_tum_writes_slam_pose_events(tmp_path: Path) -> None:
         assert isinstance(payload, dict)
         assert payload.get("schemaVersion") == "byes.slam_pose.v1"
         assert payload.get("backend") == "offline"
-        assert payload.get("model") == "pyslam"
+        assert str(payload.get("model", "")).startswith("pyslam")
         pose = payload.get("pose")
         assert isinstance(pose, dict)
         assert isinstance(pose.get("t"), list) and len(pose.get("t")) == 3

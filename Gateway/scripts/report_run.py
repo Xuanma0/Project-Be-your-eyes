@@ -25,6 +25,7 @@ from byes.quality_metrics import (  # noqa: E402
     compute_seg_metrics,
     compute_depth_metrics,
     compute_slam_metrics,
+    load_slam_alignment_summary,
     compute_depth_risk_metrics,
     compute_ocr_metrics,
     compute_quality_score,
@@ -1100,13 +1101,15 @@ def generate_report_outputs(
         event_schema_stats["warningsCount"] = int(event_schema_stats.get("warningsCount", 0) or 0) + len(extra_event_warnings)
     gt_cfg = (run_package_summary or {}).get("groundTruth", {})
     base_safety_behavior = extract_safety_behavior_from_ws_events(event_source_path)
+    slam_ingest_summary_path = event_source_path.parent / "slam_ingest_summary.json"
+    slam_alignment = load_slam_alignment_summary(slam_ingest_summary_path)
     quality_payload: dict[str, Any] = {
         "hasGroundTruth": False,
         "safetyBehavior": base_safety_behavior,
         "eventSchema": event_schema_stats,
         "riskLatencyMs": risk_latency_stats,
         "depth": {"present": False},
-        "slam": {"present": False},
+        "slam": {"present": False, "alignment": slam_alignment},
     }
     if risk_timings_stats is not None:
         quality_payload["riskTimingsMs"] = risk_timings_stats
@@ -1192,6 +1195,7 @@ def generate_report_outputs(
                 pred_slam_event_frames,
                 slam_latencies,
                 frames_total,
+                alignment=slam_alignment,
             )
         critical_frames = _collect_critical_gt_frames(risk_gt) if risk_gt else None
         safety_behavior = extract_safety_behavior_from_ws_events(
@@ -1208,7 +1212,7 @@ def generate_report_outputs(
             "ocr": ocr_metrics,
             "depthRisk": risk_metrics,
             "depth": {"present": False},
-            "slam": {"present": False},
+            "slam": {"present": False, "alignment": slam_alignment},
             "safetyBehavior": safety_behavior,
             "eventSchema": event_schema_stats,
             "topFindings": top_findings,

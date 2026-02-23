@@ -1605,6 +1605,7 @@ def compute_slam_metrics(
     pred_event_frames: set[int],
     latencies: list[int],
     frames_total: int,
+    alignment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     frames_total_safe = max(0, int(frames_total))
     frames_with_gt = len([seq for seq, row in gt_map.items() if isinstance(row, dict)])
@@ -1643,6 +1644,9 @@ def compute_slam_metrics(
 
     latency_stats = summarize_latency(latencies)
     denom = max(1, frames_with_pred)
+    alignment_payload = alignment if isinstance(alignment, dict) else {"present": False}
+    if "present" not in alignment_payload:
+        alignment_payload = {"present": bool(alignment_payload), **alignment_payload}
     return {
         "present": bool(gt_map or pred_event_frames),
         "framesTotal": frames_total_safe,
@@ -1662,7 +1666,36 @@ def compute_slam_metrics(
             "p90": int(latency_stats.get("p90", 0) or 0),
             "max": int(latency_stats.get("max", 0) or 0),
         },
+        "alignment": alignment_payload,
     }
+
+
+def load_slam_alignment_summary(path: Path) -> dict[str, Any]:
+    if not path.exists() or not path.is_file():
+        return {"present": False}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {"present": False}
+    if not isinstance(payload, dict):
+        return {"present": False}
+
+    residual = payload.get("residualMs")
+    residual = residual if isinstance(residual, dict) else {}
+    out: dict[str, Any] = {
+        "present": True,
+        "mode": str(payload.get("alignModeUsed", "")).strip() or None,
+        "matched": _to_nonnegative_int(payload.get("matched")),
+        "unmatched": _to_nonnegative_int(payload.get("unmatched")),
+        "a": _to_float(payload.get("a")),
+        "b": _to_float(payload.get("b")),
+        "residualMs": {
+            "p50": _to_nonnegative_int(residual.get("p50")),
+            "p90": _to_nonnegative_int(residual.get("p90")),
+            "max": _to_nonnegative_int(residual.get("max")),
+        },
+    }
+    return out
 
 
 def compute_quality_score(
@@ -3580,6 +3613,15 @@ def _to_nonnegative_int(value: Any) -> int:
         return max(0, int(value))
     except Exception:
         return 0
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
 
 
 def _to_nonnegative_float(value: Any) -> float:

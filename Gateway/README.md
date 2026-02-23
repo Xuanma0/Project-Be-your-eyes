@@ -412,9 +412,9 @@ python scripts/run_regression_suite.py --suite regression/suites/contract_suite.
 ```
 
 Leaderboard fields:
-- columns: `slam_tracking_rate`, `slam_lost_rate`, `slam_relocalized`, `slam_latency_p90`
-- filters: `min_slam_tracking_rate`, `max_slam_lost_rate`, `max_slam_latency_p90`
-- sort: `sort=slam_tracking_rate|slam_lost_rate|slam_latency_p90`
+- columns: `slam_tracking_rate`, `slam_lost_rate`, `slam_relocalized`, `slam_latency_p90`, `slam_align_residual_p90`, `slam_align_mode`
+- filters: `min_slam_tracking_rate`, `max_slam_lost_rate`, `max_slam_latency_p90`, `max_slam_align_residual_p90`
+- sort: `sort=slam_tracking_rate|slam_lost_rate|slam_latency_p90|slam_align_residual_p90`
 
 Reference SLAM HTTP chain (Gateway -> inference_service -> reference_slam_service):
 
@@ -446,15 +446,19 @@ pySLAM offline trajectory ingest (TUM -> `slam.pose` events):
 # 2) ingest trajectory into run package events/events_v1.jsonl
 python scripts/ingest_pyslam_tum.py `
   --run-package tests/fixtures/run_package_with_slam_pose_gt_min `
-  --tum D:\pyslam\pyslam\results\byes_runpkg\byes_traj_final.txt
+  --tum D:\pyslam\pyslam\results\byes_runpkg\byes_traj_online.txt `
+  --tum D:\pyslam\pyslam\results\byes_runpkg\byes_traj_final.txt `
+  --align-mode auto --tum-time-base auto --tum-time-unit auto
 
 # 3) generate report with slam quality metrics and inferred inference.slam
 python scripts/report_run.py --run-package tests/fixtures/run_package_with_slam_pose_gt_min
 ```
 
 Notes:
-- `ingest_pyslam_tum.py` first tries timestamp nearest-neighbor matching (`frames_meta.jsonl` + `--tolerance-ms`), then falls back to frame-index mapping when needed.
-- Emitted events use `name="slam.pose"`, `backend="offline"`, `model="pyslam"`, payload schema `byes.slam_pose.v1`.
+- `ingest_pyslam_tum.py` supports multi-trajectory ingest (`--tum` repeat or `--tum-dir`) and auto-detects relative vs epoch timestamps.
+- Alignment mode `auto` prefers index mapping when frame counts are close; otherwise it uses `fit_linear` (with diagnostics `a`/`b` and residual p50/p90/max).
+- Ingest diagnostics are written to `events/slam_ingest_summary.json`; report exposes them under `quality.slam.alignment`.
+- Emitted events use `name="slam.pose"`, `backend="offline"`, and `model="pyslam-online"` / `model="pyslam-final"` where applicable.
 
 Seg prompt budget sweep (local tooling, not CI gate):
 
