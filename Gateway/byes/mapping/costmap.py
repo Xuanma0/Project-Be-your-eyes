@@ -17,8 +17,10 @@ DEFAULT_COSTMAP_CONTEXT_BUDGET = {
     "maxChars": 512,
     "mode": "topk_hotspots",
 }
+DEFAULT_COSTMAP_CONTEXT_SOURCE = "auto"
 
 _ALLOWED_CONTEXT_MODES = {"topk_hotspots"}
+_ALLOWED_CONTEXT_SOURCES = {"auto", "raw", "fused"}
 
 
 def build_local_costmap(
@@ -123,6 +125,7 @@ def build_costmap_context_pack(
     *,
     costmap_payload: dict[str, Any] | None,
     budget: dict[str, Any] | None = None,
+    source: str | None = None,
 ) -> dict[str, Any]:
     payload = costmap_payload if isinstance(costmap_payload, dict) else {}
     run_id = str(payload.get("runId", "")).strip() or "costmap-context"
@@ -182,8 +185,11 @@ def build_costmap_context_pack(
     chars_dropped = max(0, in_chars_total - out_chars_total)
     hotspots_dropped = max(0, len(hotspots) - hotspots_kept)
 
+    source_text = str(source or "").strip().lower()
+    if source_text not in _ALLOWED_CONTEXT_SOURCES:
+        source_text = "raw"
     summary = (
-        f"mode={mode}; hotspots={hotspots_kept}/{len(hotspots)}; "
+        f"source={source_text}; mode={mode}; hotspots={hotspots_kept}/{len(hotspots)}; "
         f"chars={out_chars_total}/{max_chars}; dropped={hotspots_dropped}"
     )
     return {
@@ -222,17 +228,33 @@ def find_latest_costmap_from_events(
     *,
     run_id: str | None = None,
     frame_seq: int | None = None,
+    source: str | None = "raw",
 ) -> dict[str, Any] | None:
     selected: tuple[int, int, dict[str, Any]] | None = None
     wanted_run = str(run_id or "").strip()
     wanted_frame = int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else None
+    source_mode = str(source or "raw").strip().lower()
+    if source_mode not in _ALLOWED_CONTEXT_SOURCES:
+        source_mode = "raw"
+    if source_mode == "raw":
+        event_names = {"map.costmap"}
+        allowed_schema = {"byes.costmap.v1"}
+    elif source_mode == "fused":
+        event_names = {"map.costmap_fused"}
+        allowed_schema = {"byes.costmap_fused.v1"}
+    else:
+        event_names = {"map.costmap_fused", "map.costmap"}
+        allowed_schema = {"byes.costmap_fused.v1", "byes.costmap.v1"}
+    prefer_fused = source_mode == "auto"
+    selected_kind = ""
     for index, row in enumerate(events or []):
         if not isinstance(row, dict):
             continue
         event = row.get("event") if isinstance(row.get("event"), dict) else row
         if not isinstance(event, dict):
             continue
-        if str(event.get("name", "")).strip().lower() != "map.costmap":
+        event_name = str(event.get("name", "")).strip().lower()
+        if event_name not in event_names:
             continue
         if str(event.get("phase", "")).strip().lower() != "result":
             continue
@@ -248,9 +270,24 @@ def find_latest_costmap_from_events(
         payload = event.get("payload")
         if not isinstance(payload, dict):
             continue
+        schema_version = str(payload.get("schemaVersion", "")).strip()
+        if schema_version not in allowed_schema:
+            continue
         marker = (ts, index, payload)
-        if selected is None or (ts, index) >= (selected[0], selected[1]):
+        if selected is None:
             selected = marker
+            selected_kind = event_name
+            continue
+        if prefer_fused:
+            if event_name == "map.costmap_fused" and selected_kind != "map.costmap_fused":
+                selected = marker
+                selected_kind = event_name
+                continue
+            if event_name != selected_kind:
+                continue
+        if (ts, index) >= (selected[0], selected[1]):
+            selected = marker
+            selected_kind = event_name
     if selected is None:
         return None
     return dict(selected[2])
@@ -520,4 +557,3 @@ def _token_approx(chars_total: int) -> int:
     if int(chars_total) <= 0:
         return 0
     return int(math.ceil(float(chars_total) / 4.0))
-

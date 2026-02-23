@@ -1,0 +1,231 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-be-your-eyes/contracts/byes.costmap_fused.v1.json",
+  "title": "BYES Costmap Fused Payload v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "frameSeq",
+    "frame",
+    "fuse",
+    "grid",
+    "stats"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "byes.costmap_fused.v1"
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "frameSeq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "frame": {
+      "type": "string",
+      "const": "local"
+    },
+    "fuse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "method",
+        "alpha",
+        "decay",
+        "windowFrames",
+        "shiftUsed"
+      ],
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "ema_shift_v1",
+            "ema_v1"
+          ]
+        },
+        "alpha": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "decay": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "windowFrames": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "shiftUsed": {
+          "type": "boolean"
+        },
+        "shiftCells": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "grid": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "format",
+        "size",
+        "resolutionM",
+        "dataB64"
+      ],
+      "properties": {
+        "format": {
+          "const": "grid_u8_cost_v1"
+        },
+        "size": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "resolutionM": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "origin": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            }
+          }
+        },
+        "dataB64": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "stats": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "occupiedCells",
+        "meanCost",
+        "maxCost",
+        "dynamicFilteredRate",
+        "stability",
+        "sources"
+      ],
+      "properties": {
+        "occupiedCells": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "meanCost": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "maxCost": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "dynamicFilteredRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "stability": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "iouPrev",
+            "flickerRatePrev",
+            "hotspotCount"
+          ],
+          "properties": {
+            "iouPrev": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "flickerRatePrev": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "hotspotCount": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "sources": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "depth",
+            "seg",
+            "slam"
+          ],
+          "properties": {
+            "depth": {
+              "type": "boolean"
+            },
+            "seg": {
+              "type": "boolean"
+            },
+            "slam": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "backend": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "endpoint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "warningsCount": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

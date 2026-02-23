@@ -83,6 +83,11 @@ class RunSummary:
     costmap_events_present: bool = False
     costmap_schema_ok: bool = False
     costmap_lines: int = 0
+    costmap_fused_events_present: bool = False
+    costmap_fused_schema_ok: bool = False
+    costmap_fused_lines: int = 0
+    costmap_fused_iou_p90: float = 0.0
+    costmap_fused_flicker_mean: float = 0.0
     costmap_context_present: bool = False
     costmap_context_schema_ok: bool = False
     costmap_context_lines: int = 0
@@ -265,6 +270,11 @@ class RunSummary:
                 "costmapEventsPresent": self.costmap_events_present,
                 "costmapSchemaOk": self.costmap_schema_ok,
                 "costmapLines": self.costmap_lines,
+                "costmapFusedEventsPresent": self.costmap_fused_events_present,
+                "costmapFusedSchemaOk": self.costmap_fused_schema_ok,
+                "costmapFusedLines": self.costmap_fused_lines,
+                "costmapFusedIouP90": self.costmap_fused_iou_p90,
+                "costmapFusedFlickerMean": self.costmap_fused_flicker_mean,
                 "costmapContextPresent": self.costmap_context_present,
                 "costmapContextSchemaOk": self.costmap_context_schema_ok,
                 "costmapContextLines": self.costmap_context_lines,
@@ -804,6 +814,8 @@ def run_suite(
     run_require_depth_payload_schema_ok: dict[str, bool] = {}
     run_require_costmap_events_present: dict[str, bool] = {}
     run_require_costmap_schema_ok: dict[str, bool] = {}
+    run_require_costmap_fused_events_present: dict[str, bool] = {}
+    run_require_costmap_fused_schema_ok: dict[str, bool] = {}
     run_require_costmap_context_present: dict[str, bool] = {}
     run_require_costmap_context_schema_ok: dict[str, bool] = {}
     run_require_slam_pose_events_present: dict[str, bool] = {}
@@ -860,6 +872,14 @@ def run_suite(
         run_require_depth_payload_schema_ok[run_id] = _to_bool01(run_cfg.get("requireDepthPayloadSchemaOk"), False)
         run_require_costmap_events_present[run_id] = _to_bool01(run_cfg.get("requireCostmapEventsPresent"), False)
         run_require_costmap_schema_ok[run_id] = _to_bool01(run_cfg.get("requireCostmapSchemaOk"), False)
+        run_require_costmap_fused_events_present[run_id] = _to_bool01(
+            run_cfg.get("requireCostmapFusedEventsPresent"),
+            False,
+        )
+        run_require_costmap_fused_schema_ok[run_id] = _to_bool01(
+            run_cfg.get("requireCostmapFusedSchemaOk"),
+            False,
+        )
         run_require_costmap_context_present[run_id] = _to_bool01(
             run_cfg.get("requireCostmapContextPresent"),
             False,
@@ -974,6 +994,13 @@ def run_suite(
                     run_summary.costmap_events_present = bool(lint_summary.get("costmapEventsPresent", 0))
                     run_summary.costmap_schema_ok = bool(lint_summary.get("costmapSchemaOk", 0))
                     run_summary.costmap_lines = int(lint_summary.get("costmapLines", 0) or 0)
+                    run_summary.costmap_fused_events_present = bool(lint_summary.get("costmapFusedEventsPresent", 0))
+                    run_summary.costmap_fused_schema_ok = bool(lint_summary.get("costmapFusedSchemaOk", 0))
+                    run_summary.costmap_fused_lines = int(lint_summary.get("costmapFusedLines", 0) or 0)
+                    run_summary.costmap_fused_iou_p90 = float(lint_summary.get("costmapFusedIouP90", 0.0) or 0.0)
+                    run_summary.costmap_fused_flicker_mean = float(
+                        lint_summary.get("costmapFusedFlickerMean", 0.0) or 0.0
+                    )
                     run_summary.costmap_context_present = bool(lint_summary.get("costmapContextPresent", 0))
                     run_summary.costmap_context_schema_ok = bool(lint_summary.get("costmapContextSchemaOk", 0))
                     run_summary.costmap_context_lines = int(lint_summary.get("costmapContextLines", 0) or 0)
@@ -1120,6 +1147,10 @@ def run_suite(
             failures.append(f"{run.run_id}: costmap events missing (map.costmap)")
         if run_require_costmap_schema_ok.get(run.run_id, False) and not bool(run.costmap_schema_ok):
             failures.append(f"{run.run_id}: costmap payload schema check failed")
+        if run_require_costmap_fused_events_present.get(run.run_id, False) and not bool(run.costmap_fused_events_present):
+            failures.append(f"{run.run_id}: costmap fused events missing (map.costmap_fused)")
+        if run_require_costmap_fused_schema_ok.get(run.run_id, False) and not bool(run.costmap_fused_schema_ok):
+            failures.append(f"{run.run_id}: costmap fused payload schema check failed")
         if run_require_costmap_context_present.get(run.run_id, False) and not bool(run.costmap_context_present):
             failures.append(f"{run.run_id}: costmap context events missing (map.costmap_context)")
         if run_require_costmap_context_schema_ok.get(run.run_id, False) and not bool(run.costmap_context_schema_ok):
@@ -1266,6 +1297,8 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "ocrEventsPresent={ocr_events_present} ocrPayloadSchemaOk={ocr_payload_schema_ok} "
                 "segEventsPresent={seg_events_present} segPayloadSchemaOk={seg_payload_schema_ok} depthEventsPresent={depth_events_present} depthPayloadSchemaOk={depth_payload_schema_ok} "
                 "costmapEventsPresent={costmap_events_present} costmapSchemaOk={costmap_schema_ok} "
+                "costmapFusedEventsPresent={costmap_fused_events_present} costmapFusedSchemaOk={costmap_fused_schema_ok} "
+                "costmapFusedIouP90={costmap_fused_iou_p90} costmapFusedFlickerMean={costmap_fused_flicker_mean} "
                 "costmapContextPresent={costmap_context_present} costmapContextSchemaOk={costmap_context_schema_ok} "
                 "slamPoseEventsPresent={slam_pose_events_present} slamPosePayloadSchemaOk={slam_pose_payload_schema_ok} "
                 "segPromptEventsPresent={seg_prompt_events_present} segPromptPayloadSchemaOk={seg_prompt_payload_schema_ok} "
@@ -1324,6 +1357,10 @@ def _print_summary(result: dict[str, Any]) -> None:
                     depth_payload_schema_ok=row.get("segLint", {}).get("depthPayloadSchemaOk", False),
                     costmap_events_present=row.get("segLint", {}).get("costmapEventsPresent", False),
                     costmap_schema_ok=row.get("segLint", {}).get("costmapSchemaOk", False),
+                    costmap_fused_events_present=row.get("segLint", {}).get("costmapFusedEventsPresent", False),
+                    costmap_fused_schema_ok=row.get("segLint", {}).get("costmapFusedSchemaOk", False),
+                    costmap_fused_iou_p90=row.get("segLint", {}).get("costmapFusedIouP90", 0.0),
+                    costmap_fused_flicker_mean=row.get("segLint", {}).get("costmapFusedFlickerMean", 0.0),
                     costmap_context_present=row.get("segLint", {}).get("costmapContextPresent", False),
                     costmap_context_schema_ok=row.get("segLint", {}).get("costmapContextSchemaOk", False),
                     slam_pose_events_present=row.get("segLint", {}).get("slamPoseEventsPresent", False),

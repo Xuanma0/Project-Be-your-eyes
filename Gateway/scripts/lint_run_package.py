@@ -33,6 +33,7 @@ _SEG_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.seg.v1.json"
 _DEPTH_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.depth.v1.json"
 _SLAM_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.slam_pose.v1.json"
 _COSTMAP_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.costmap.v1.json"
+_COSTMAP_FUSED_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.costmap_fused.v1.json"
 _COSTMAP_CONTEXT_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "costmap.context.v1.json"
 _SLAM_CONTEXT_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "slam.context.v1.json"
 _PLAN_CONTEXT_PACK_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "plan.context_pack.v1.json"
@@ -279,6 +280,18 @@ def _load_costmap_schema() -> dict[str, Any] | None:
         return None
     try:
         payload = json.loads(_COSTMAP_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _load_costmap_fused_schema() -> dict[str, Any] | None:
+    if not _COSTMAP_FUSED_SCHEMA_PATH.exists():
+        return None
+    try:
+        payload = json.loads(_COSTMAP_FUSED_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     if not isinstance(payload, dict):
@@ -869,6 +882,56 @@ def _costmap_payload_schema_ok(
     return bool(schema_ok), float(dynamic_filtered_rate)
 
 
+def _costmap_fused_payload_schema_ok(
+    payload: dict[str, Any],
+    schema: dict[str, Any] | None,
+) -> tuple[bool, float, float, float]:
+    if not isinstance(payload, dict):
+        return False, 0.0, 0.0, 0.0
+    schema_ok = True
+    if schema is not None and jsonschema is not None:
+        try:
+            jsonschema.validate(payload, schema)
+        except Exception:
+            schema_ok = False
+    if str(payload.get("schemaVersion", "")).strip() != "byes.costmap_fused.v1":
+        return False, 0.0, 0.0, 0.0
+    stats = payload.get("stats")
+    stats = stats if isinstance(stats, dict) else {}
+    stability = stats.get("stability")
+    stability = stability if isinstance(stability, dict) else {}
+    try:
+        dynamic_filtered_rate = float(stats.get("dynamicFilteredRate", 0.0))
+    except Exception:
+        return False, 0.0, 0.0, 0.0
+    if not (0.0 <= dynamic_filtered_rate <= 1.0):
+        return False, 0.0, 0.0, 0.0
+
+    iou_prev_raw = stability.get("iouPrev")
+    if iou_prev_raw is None:
+        iou_prev = 0.0
+    else:
+        try:
+            iou_prev = float(iou_prev_raw)
+        except Exception:
+            return False, 0.0, 0.0, 0.0
+        if not (0.0 <= iou_prev <= 1.0):
+            return False, 0.0, 0.0, 0.0
+
+    flicker_prev_raw = stability.get("flickerRatePrev")
+    if flicker_prev_raw is None:
+        flicker_prev = 0.0
+    else:
+        try:
+            flicker_prev = float(flicker_prev_raw)
+        except Exception:
+            return False, 0.0, 0.0, 0.0
+        if not (0.0 <= flicker_prev <= 1.0):
+            return False, 0.0, 0.0, 0.0
+
+    return bool(schema_ok), float(dynamic_filtered_rate), float(iou_prev), float(flicker_prev)
+
+
 def _costmap_context_schema_ok(
     payload: dict[str, Any],
     schema: dict[str, Any] | None,
@@ -1312,6 +1375,11 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         costmap_schema_ok = 0
         costmap_dynamic_filtered_rates: list[float] = []
         costmap_latency_values: list[float] = []
+        costmap_fused_events_present = 0
+        costmap_fused_lines = 0
+        costmap_fused_schema_ok = 0
+        costmap_fused_iou_prev_values: list[float] = []
+        costmap_fused_flicker_prev_values: list[float] = []
         costmap_context_present = 0
         costmap_context_lines = 0
         costmap_context_schema_ok = 0
@@ -1380,6 +1448,7 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         depth_schema = _load_depth_contract_schema()
         slam_schema = _load_slam_contract_schema()
         costmap_schema = _load_costmap_schema()
+        costmap_fused_schema = _load_costmap_fused_schema()
         costmap_context_schema = _load_costmap_context_schema()
         slam_context_schema = _load_slam_context_schema()
         plan_context_pack_schema = _load_plan_context_pack_schema()
@@ -1634,6 +1703,22 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                         costmap_dynamic_filtered_rates.append(float(dynamic_rate))
                                     else:
                                         warnings.append("map.costmap payload missing required fields")
+                                if name == "map.costmap_fused":
+                                    costmap_fused_events_present = 1
+                                    costmap_fused_lines += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    schema_ok, dynamic_rate, iou_prev, flicker_prev = _costmap_fused_payload_schema_ok(
+                                        payload,
+                                        costmap_fused_schema,
+                                    )
+                                    if schema_ok:
+                                        costmap_fused_schema_ok += 1
+                                        costmap_dynamic_filtered_rates.append(float(dynamic_rate))
+                                        costmap_fused_iou_prev_values.append(float(iou_prev))
+                                        costmap_fused_flicker_prev_values.append(float(flicker_prev))
+                                    else:
+                                        warnings.append("map.costmap_fused payload missing required fields")
                                 if name == "map.costmap_context":
                                     costmap_context_present = 1
                                     costmap_context_lines += 1
@@ -2117,6 +2202,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "costmapEventsPresent": int(costmap_events_present),
             "costmapLines": int(costmap_lines),
             "costmapSchemaOk": int(costmap_lines > 0 and costmap_schema_ok == costmap_lines),
+            "costmapFusedEventsPresent": int(costmap_fused_events_present),
+            "costmapFusedLines": int(costmap_fused_lines),
+            "costmapFusedSchemaOk": int(costmap_fused_lines > 0 and costmap_fused_schema_ok == costmap_fused_lines),
+            "costmapFusedCount": int(costmap_fused_lines),
             "costmapContextPresent": int(costmap_context_present),
             "costmapContextLines": int(costmap_context_lines),
             "costmapContextSchemaOk": int(
@@ -2124,6 +2213,8 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             ),
             "costmapLatencyP90": round(float(_percentile_float(costmap_latency_values, 90)), 6),
             "costmapDynamicFilteredRateMean": round(float(_mean_float(costmap_dynamic_filtered_rates)), 6),
+            "costmapFusedIouP90": round(float(_percentile_float(costmap_fused_iou_prev_values, 90)), 6),
+            "costmapFusedFlickerMean": round(float(_mean_float(costmap_fused_flicker_prev_values)), 6),
             "costmapCtxCharsP90": round(float(_percentile_float(costmap_context_chars, 90)), 6),
             "slamPoseEventsPresent": int(slam_pose_events_present),
             "slamPoseLines": int(slam_pose_lines),
@@ -2271,11 +2362,17 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"costmapEventsPresent: {summary['costmapEventsPresent']}")
             print(f"costmapLines: {summary['costmapLines']}")
             print(f"costmapSchemaOk: {summary['costmapSchemaOk']}")
+            print(f"costmapFusedEventsPresent: {summary['costmapFusedEventsPresent']}")
+            print(f"costmapFusedLines: {summary['costmapFusedLines']}")
+            print(f"costmapFusedSchemaOk: {summary['costmapFusedSchemaOk']}")
+            print(f"costmapFusedCount: {summary['costmapFusedCount']}")
             print(f"costmapContextPresent: {summary['costmapContextPresent']}")
             print(f"costmapContextLines: {summary['costmapContextLines']}")
             print(f"costmapContextSchemaOk: {summary['costmapContextSchemaOk']}")
             print(f"costmapLatencyP90: {summary['costmapLatencyP90']}")
             print(f"costmapDynamicFilteredRateMean: {summary['costmapDynamicFilteredRateMean']}")
+            print(f"costmapFusedIouP90: {summary['costmapFusedIouP90']}")
+            print(f"costmapFusedFlickerMean: {summary['costmapFusedFlickerMean']}")
             print(f"costmapCtxCharsP90: {summary['costmapCtxCharsP90']}")
             print(f"slamPoseEventsPresent: {summary['slamPoseEventsPresent']}")
             print(f"slamPoseLines: {summary['slamPoseLines']}")

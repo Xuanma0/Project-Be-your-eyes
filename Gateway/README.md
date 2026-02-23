@@ -585,6 +585,20 @@ Matrix mode (`--matrix 1`) runs the same run-package batch across multiple profi
       }
     },
     {
+      "name": "costmap_fused_local",
+      "services": {"seg": "reference", "depth": "reference", "ocr": "reference"},
+      "env": {
+        "BYES_ENABLE_DEPTH": "1",
+        "BYES_ENABLE_SEG": "1",
+        "BYES_ENABLE_COSTMAP": "1",
+        "BYES_ENABLE_COSTMAP_FUSED": "1",
+        "BYES_COSTMAP_FUSED_ALPHA": "0.6",
+        "BYES_COSTMAP_FUSED_DECAY": "0.95",
+        "BYES_COSTMAP_FUSED_SHIFT": "1",
+        "BYES_PLANNER_PROMPT_VERSION": "v4"
+      }
+    },
+    {
       "name": "slam_offline_pyslam_run",
       "services": {"seg": "reference", "depth": "reference", "ocr": "reference"},
       "env": {},
@@ -700,6 +714,20 @@ Notes:
 - Costmap is a lightweight local 2D grid built from depth (+ optional seg dynamic filtering + slam source flag), not TSDF/ESDF.
 - Gateway emits `map.costmap` and `map.costmap_context` so planner prompt v4 can consume a bounded `[COSTMAP] ...` fragment.
 - `/api/run_packages` supports costmap sort/filter fields such as `costmap_latency_p90`, `costmap_density_mean`, `min_costmap_coverage`, `max_costmap_latency_p90`.
+
+Costmap fused mode (v4.78) for temporal stability (EMA + optional SLAM shift):
+
+```powershell
+$env:BYES_ENABLE_COSTMAP=\"1\"
+$env:BYES_ENABLE_COSTMAP_FUSED=\"1\"
+$env:BYES_COSTMAP_FUSED_ALPHA=\"0.6\"
+$env:BYES_COSTMAP_FUSED_DECAY=\"0.95\"
+$env:BYES_COSTMAP_FUSED_SHIFT=\"1\"
+```
+
+Notes:
+- Gateway emits `map.costmap_fused` and aggregates stability metrics (`iouPrev/flickerRatePrev`) in `report["quality"]["costmapFused"]`.
+- Benchmark matrix summaries now include fused columns: `costmapFusedCoverage(mean)`, `costmapFusedIouP90(p90)`, `costmapFusedFlickerMean(mean)`.
 
 Plan context pack (risk+pov+seg, budgeted):
 

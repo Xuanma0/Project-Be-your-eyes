@@ -70,6 +70,15 @@
       "requireCostmapContextSchemaOk": true
     },
     {
+      "id": "fixture_with_costmap_fused_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_costmap_fused_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireCostmapFusedEventsPresent": true,
+      "requireCostmapFusedSchemaOk": true
+    },
+    {
       "id": "fixture_with_slam_pose_gt_contract",
       "runPackage": "Gateway/tests/fixtures/run_package_with_slam_pose_gt_min",
       "requireCriticalFnZero": false,

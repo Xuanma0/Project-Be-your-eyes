@@ -37,6 +37,7 @@ from byes.quality_metrics import (  # noqa: E402
     extract_plan_context_summary_from_events_v1,
     extract_plan_context_pack_summary_from_events_v1,
     extract_costmap_context_summary_from_events_v1,
+    extract_costmap_fused_metrics_from_events_v1,
     extract_costmap_metrics_from_events_v1,
     extract_slam_context_summary_from_events_v1,
     extract_models_summary_from_events_v1,
@@ -1126,6 +1127,10 @@ def generate_report_outputs(
         event_rows,
         frames_total_declared=frames_total_hint,
     )
+    costmap_fused_metrics = extract_costmap_fused_metrics_from_events_v1(
+        event_rows,
+        frames_total_declared=frames_total_hint,
+    )
     quality_payload: dict[str, Any] = {
         "hasGroundTruth": False,
         "safetyBehavior": base_safety_behavior,
@@ -1133,6 +1138,7 @@ def generate_report_outputs(
         "riskLatencyMs": risk_latency_stats,
         "depth": {"present": False},
         "costmap": costmap_metrics,
+        "costmapFused": costmap_fused_metrics,
         "slam": {"present": False, "alignment": slam_alignment},
         "slamError": {"present": False},
     }

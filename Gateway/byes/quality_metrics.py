@@ -3358,6 +3358,130 @@ def extract_costmap_metrics_from_events_v1(
     }
 
 
+def extract_costmap_fused_metrics_from_events_v1(
+    events: Iterable[dict[str, Any]],
+    *,
+    frames_total_declared: int | None = None,
+) -> dict[str, Any]:
+    frame_keys: set[tuple[str, int]] = set()
+    latencies: list[int] = []
+    dynamic_rates: list[float] = []
+    density_values: list[float] = []
+    iou_prev_values: list[float] = []
+    flicker_prev_values: list[float] = []
+    hotspot_values: list[int] = []
+    shift_used_count = 0
+    event_count = 0
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "map.costmap_fused":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        if str(payload.get("schemaVersion", "")).strip() != "byes.costmap_fused.v1":
+            continue
+
+        event_count += 1
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        frame_seq = _parse_int(payload.get("frameSeq"))
+        if frame_seq is None:
+            frame_seq = _parse_int(event.get("frameSeq"))
+        if frame_seq is not None and frame_seq > 0:
+            frame_keys.add((run_id, int(frame_seq)))
+
+        latency = _parse_int(event.get("latencyMs"))
+        if latency is not None:
+            latencies.append(max(0, int(latency)))
+
+        stats = payload.get("stats")
+        stats = stats if isinstance(stats, dict) else {}
+        dynamic_rates.append(_to_unit_float(stats.get("dynamicFilteredRate")))
+        occupied = max(0, _to_nonnegative_int(stats.get("occupiedCells")))
+
+        grid = payload.get("grid")
+        grid = grid if isinstance(grid, dict) else {}
+        size = grid.get("size")
+        size = size if isinstance(size, list) else []
+        grid_h = max(0, _to_nonnegative_int(size[0])) if len(size) > 0 else 0
+        grid_w = max(0, _to_nonnegative_int(size[1])) if len(size) > 1 else 0
+        grid_cells = int(max(1, int(grid_h) * int(grid_w)))
+        density_values.append(float(occupied) / float(grid_cells))
+
+        stability = stats.get("stability")
+        stability = stability if isinstance(stability, dict) else {}
+        iou_prev = stability.get("iouPrev")
+        if iou_prev is not None:
+            iou_prev_values.append(_to_unit_float(iou_prev))
+        flicker_prev = stability.get("flickerRatePrev")
+        if flicker_prev is not None:
+            flicker_prev_values.append(_to_unit_float(flicker_prev))
+        hotspot_values.append(max(0, _to_nonnegative_int(stability.get("hotspotCount"))))
+
+        fuse = payload.get("fuse")
+        fuse = fuse if isinstance(fuse, dict) else {}
+        if bool(fuse.get("shiftUsed")):
+            shift_used_count += 1
+
+    if event_count <= 0:
+        return {
+            "present": False,
+            "framesTotal": int(max(0, int(frames_total_declared or 0))) if frames_total_declared is not None else 0,
+            "framesWithFused": 0,
+            "coverage": 0.0 if frames_total_declared is not None else None,
+            "latencyMs": summarize_latency([]),
+            "dynamicFilteredRate": {"mean": 0.0, "p90": 0.0},
+            "densityMean": {"mean": 0.0, "p90": 0.0},
+            "stability": {
+                "iouPrevMean": 0.0,
+                "iouPrevP90": 0.0,
+                "flickerRatePrevMean": 0.0,
+                "flickerRatePrevP90": 0.0,
+                "hotspotCountMean": 0.0,
+                "hotspotCountP90": 0.0,
+            },
+            "shiftUsedRate": 0.0,
+        }
+
+    frames_with_fused = len(frame_keys) if frame_keys else int(event_count)
+    frames_total = int(max(frames_with_fused, int(frames_total_declared or 0))) if frames_total_declared is not None else int(
+        frames_with_fused
+    )
+    coverage = _safe_ratio(frames_with_fused, frames_total) if frames_total > 0 else None
+    return {
+        "present": True,
+        "framesTotal": int(frames_total),
+        "framesWithFused": int(frames_with_fused),
+        "coverage": round(coverage, 6) if coverage is not None else None,
+        "latencyMs": summarize_latency(latencies),
+        "dynamicFilteredRate": {
+            "mean": round(_mean_float(dynamic_rates), 6),
+            "p90": round(_percentile_float(dynamic_rates, 90), 6),
+        },
+        "densityMean": {
+            "mean": round(_mean_float(density_values), 6),
+            "p90": round(_percentile_float(density_values, 90), 6),
+        },
+        "stability": {
+            "iouPrevMean": round(_mean_float(iou_prev_values), 6),
+            "iouPrevP90": round(_percentile_float(iou_prev_values, 90), 6),
+            "flickerRatePrevMean": round(_mean_float(flicker_prev_values), 6),
+            "flickerRatePrevP90": round(_percentile_float(flicker_prev_values, 90), 6),
+            "hotspotCountMean": round(_mean_float([float(v) for v in hotspot_values]), 6),
+            "hotspotCountP90": round(_percentile_float([float(v) for v in hotspot_values], 90), 6),
+        },
+        "shiftUsedRate": round(_safe_ratio(shift_used_count, event_count), 6),
+    }
+
+
 def extract_costmap_context_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
     event_count = 0
     chars_values: list[int] = []

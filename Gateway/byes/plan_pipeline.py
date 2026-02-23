@@ -10,7 +10,12 @@ from byes.pov_context import build_context_pack, finalize_context_pack_text, ren
 from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events
 from byes.inference.slam_context import DEFAULT_SLAM_CONTEXT_BUDGET, build_slam_context_pack
 from byes.inference.plan_context_pack import build_plan_context_pack
-from byes.mapping.costmap import DEFAULT_COSTMAP_CONTEXT_BUDGET, build_costmap_context_pack, find_latest_costmap_from_events
+from byes.mapping.costmap import (
+    DEFAULT_COSTMAP_CONTEXT_BUDGET,
+    DEFAULT_COSTMAP_CONTEXT_SOURCE,
+    build_costmap_context_pack,
+    find_latest_costmap_from_events,
+)
 from byes.planner_backends.base import PlannerBackend
 from byes.planner_registry import get_planner_backend
 from byes.safety_kernel import apply_guardrails, classify_risk_level
@@ -266,6 +271,7 @@ def generate_action_plan(
     plan_context_pack_budget: dict[str, Any] | None = None,
     slam_context_budget: dict[str, Any] | None = None,
     costmap_context_budget: dict[str, Any] | None = None,
+    costmap_context_source: str | None = None,
     backend: PlannerBackend | None = None,
 ) -> dict[str, Any]:
     context_pack = build_context_pack(pov_ir, budget=budget, mode=mode)
@@ -321,13 +327,32 @@ def generate_action_plan(
         mode_raw = str(costmap_context_budget.get("mode", "")).strip()
         if mode_raw:
             costmap_context_budget_payload["mode"] = mode_raw
+    source_raw = str(
+        costmap_context_source
+        or os.getenv("BYES_COSTMAP_CONTEXT_SOURCE", DEFAULT_COSTMAP_CONTEXT_SOURCE)
+        or DEFAULT_COSTMAP_CONTEXT_SOURCE
+    ).strip().lower()
+    if source_raw not in {"auto", "raw", "fused"}:
+        source_raw = DEFAULT_COSTMAP_CONTEXT_SOURCE
     latest_costmap_payload = find_latest_costmap_from_events(
         events_rows,
         run_id=run_id,
         frame_seq=frame_seq if isinstance(frame_seq, int) and frame_seq > 0 else None,
+        source=source_raw,
     )
+    selected_source = source_raw
+    if isinstance(latest_costmap_payload, dict):
+        schema_version = str(latest_costmap_payload.get("schemaVersion", "")).strip()
+        if schema_version == "byes.costmap_fused.v1":
+            selected_source = "fused"
+        elif schema_version == "byes.costmap.v1":
+            selected_source = "raw"
     costmap_context_payload = (
-        build_costmap_context_pack(costmap_payload=latest_costmap_payload, budget=costmap_context_budget_payload)
+        build_costmap_context_pack(
+            costmap_payload=latest_costmap_payload,
+            budget=costmap_context_budget_payload,
+            source=selected_source,
+        )
         if isinstance(latest_costmap_payload, dict)
         else None
     )

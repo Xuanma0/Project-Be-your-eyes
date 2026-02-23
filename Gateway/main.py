@@ -45,8 +45,13 @@ from byes.inference.plan_context_pack import (
 from byes.mapping.costmap import (
     DEFAULT_COSTMAP_CONFIG,
     DEFAULT_COSTMAP_CONTEXT_BUDGET,
+    DEFAULT_COSTMAP_CONTEXT_SOURCE,
     build_costmap_context_pack,
     build_local_costmap,
+)
+from byes.mapping.costmap_fuser import (
+    DEFAULT_COSTMAP_FUSED_CONFIG,
+    CostmapFuser,
 )
 from byes.metrics import GatewayMetrics
 from byes.observability import Observability
@@ -213,6 +218,16 @@ def _runtime_contract_defaults() -> dict[str, Any]:
             "defaultBudget": {
                 "maxChars": int(DEFAULT_COSTMAP_CONTEXT_BUDGET["maxChars"]),
                 "mode": str(DEFAULT_COSTMAP_CONTEXT_BUDGET["mode"]),
+                "source": str(DEFAULT_COSTMAP_CONTEXT_SOURCE),
+            }
+        },
+        "costmapFused": {
+            "defaultFuse": {
+                "alpha": float(DEFAULT_COSTMAP_FUSED_CONFIG["alpha"]),
+                "decay": float(DEFAULT_COSTMAP_FUSED_CONFIG["decay"]),
+                "windowFrames": int(DEFAULT_COSTMAP_FUSED_CONFIG["windowFrames"]),
+                "shiftEnabled": bool(DEFAULT_COSTMAP_FUSED_CONFIG["shiftEnabled"]),
+                "occupiedThresh": int(DEFAULT_COSTMAP_FUSED_CONFIG["occupiedThresh"]),
             }
         },
         "segPrompt": {
@@ -521,6 +536,7 @@ class GatewayApp:
         self.seg_backend = get_seg_backend(self.config)
         self.depth_backend = get_depth_backend(self.config)
         self.slam_backend = get_slam_backend(self.config)
+        self.costmap_fuser = CostmapFuser()
         self._inference_events: list[dict[str, Any]] = []
         self._inference_events_limit = 2048
         self.scheduler = Scheduler(
@@ -564,6 +580,7 @@ class GatewayApp:
         self.depth_backend = get_depth_backend(self.config)
         self.slam_backend = get_slam_backend(self.config)
         self._inference_events.clear()
+        self.costmap_fuser.reset()
         self._external_readiness = {}
         self.registry.clear()
         startup_unavailable_tools: list[str] = []
@@ -827,6 +844,7 @@ class GatewayApp:
         depth_backend_for_costmap = None
         depth_model_for_costmap = None
         depth_endpoint_for_costmap = None
+        costmap_fused_payload: dict[str, Any] | None = None
         if self.config.inference_enable_ocr:
             ocr_started_ms = _now_ms()
             try:
@@ -1079,13 +1097,67 @@ class GatewayApp:
                     "payload": costmap_payload,
                 }
             )
+            fused_latency_ms = 0
+            if self.config.inference_enable_costmap_fused:
+                fused_started_ms = _now_ms()
+                costmap_fused_payload = self.costmap_fuser.update(
+                    run_id=run_id or "costmap-live",
+                    frame_seq=event_frame_seq,
+                    raw_costmap_payload=costmap_payload,
+                    slam_payload=slam_payload_for_costmap,
+                    config={
+                        "alpha": float(self.config.inference_costmap_fused_alpha),
+                        "decay": float(self.config.inference_costmap_fused_decay),
+                        "windowFrames": int(self.config.inference_costmap_fused_window),
+                        "shiftEnabled": bool(self.config.inference_costmap_fused_shift),
+                        "occupiedThresh": int(self.config.inference_costmap_occupied_thresh),
+                    },
+                    backend="local",
+                    model="local-costmap-fused-v1",
+                    endpoint=None,
+                )
+                fused_latency_ms = max(0, _now_ms() - fused_started_ms)
+                await self._emit_inference_event(
+                    {
+                        "schemaVersion": "byes.event.v1",
+                        "tsMs": _now_ms(),
+                        "runId": run_id,
+                        "frameSeq": event_frame_seq,
+                        "component": component,
+                        "category": "map",
+                        "name": "map.costmap_fused",
+                        "phase": "result",
+                        "status": "ok",
+                        "latencyMs": int(fused_latency_ms),
+                        "payload": costmap_fused_payload,
+                    }
+                )
+
+            context_source = str(
+                self.config.inference_costmap_context_source or DEFAULT_COSTMAP_CONTEXT_SOURCE
+            ).strip().lower()
+            if context_source not in {"auto", "raw", "fused"}:
+                context_source = DEFAULT_COSTMAP_CONTEXT_SOURCE
+            selected_source = "raw"
+            selected_costmap_payload = costmap_payload
+            selected_latency_ms = costmap_latency_ms
+            if context_source == "fused" and isinstance(costmap_fused_payload, dict):
+                selected_source = "fused"
+                selected_costmap_payload = costmap_fused_payload
+                selected_latency_ms = fused_latency_ms
+            elif context_source == "auto" and isinstance(costmap_fused_payload, dict):
+                selected_source = "fused"
+                selected_costmap_payload = costmap_fused_payload
+                selected_latency_ms = fused_latency_ms
+
             costmap_context_payload = build_costmap_context_pack(
-                costmap_payload=costmap_payload,
+                costmap_payload=selected_costmap_payload,
                 budget={
                     "maxChars": int(self.config.inference_costmap_context_max_chars),
                     "mode": str(self.config.inference_costmap_context_mode or DEFAULT_COSTMAP_CONTEXT_BUDGET["mode"]).strip()
                     or str(DEFAULT_COSTMAP_CONTEXT_BUDGET["mode"]),
                 },
+                source=selected_source,
             )
             await self._emit_inference_event(
                 {
@@ -1098,7 +1170,7 @@ class GatewayApp:
                     "name": "map.costmap_context",
                     "phase": "result",
                     "status": "ok",
-                    "latencyMs": int(costmap_latency_ms),
+                    "latencyMs": int(selected_latency_ms),
                     "payload": costmap_context_payload,
                 }
             )
@@ -1160,6 +1232,7 @@ class GatewayApp:
         self.fusion.reset_runtime()
         self.scheduler.reset_runtime()
         self._inference_events.clear()
+        self.costmap_fuser.reset()
         with _FRAME_E2E_STATE_LOCK:
             _FRAME_E2E_STATE.clear()
         with _FRAME_USER_E2E_STATE_LOCK:
@@ -2546,6 +2619,10 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
             planner_pov_ir=inline_pov_ir if isinstance(inline_pov_ir, dict) else None,
             plan_context_pack_budget=context_pack_override_payload,
             slam_context_budget=slam_context_override_payload,
+            costmap_context_source=str(
+                gateway.config.inference_costmap_context_source or DEFAULT_COSTMAP_CONTEXT_SOURCE
+            ).strip().lower()
+            or DEFAULT_COSTMAP_CONTEXT_SOURCE,
         )
         plan_payload = bundle.get("plan")
         if not isinstance(plan_payload, dict):
@@ -2937,6 +3014,10 @@ async def run_packages_list(
     min_costmap_coverage: float | None = None,
     max_costmap_latency_p90: int | None = None,
     max_costmap_dynamic_filter_rate_mean: float | None = None,
+    min_costmap_fused_coverage: float | None = None,
+    max_costmap_fused_latency_p90: int | None = None,
+    min_costmap_fused_iou_p90: float | None = None,
+    max_costmap_fused_flicker_rate_mean: float | None = None,
     min_slam_tracking_rate: float | None = None,
     max_slam_lost_rate: float | None = None,
     max_slam_latency_p90: int | None = None,
@@ -3014,6 +3095,10 @@ async def run_packages_list(
         min_costmap_coverage=min_costmap_coverage,
         max_costmap_latency_p90=max_costmap_latency_p90,
         max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+        min_costmap_fused_coverage=min_costmap_fused_coverage,
+        max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
+        min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
+        max_costmap_fused_flicker_rate_mean=max_costmap_fused_flicker_rate_mean,
         min_slam_tracking_rate=min_slam_tracking_rate,
         max_slam_lost_rate=max_slam_lost_rate,
         max_slam_latency_p90=max_slam_latency_p90,
@@ -3092,6 +3177,10 @@ async def run_packages_list(
             "min_costmap_coverage": min_costmap_coverage,
             "max_costmap_latency_p90": max_costmap_latency_p90,
             "max_costmap_dynamic_filter_rate_mean": max_costmap_dynamic_filter_rate_mean,
+            "min_costmap_fused_coverage": min_costmap_fused_coverage,
+            "max_costmap_fused_latency_p90": max_costmap_fused_latency_p90,
+            "min_costmap_fused_iou_p90": min_costmap_fused_iou_p90,
+            "max_costmap_fused_flicker_rate_mean": max_costmap_fused_flicker_rate_mean,
             "min_slam_tracking_rate": min_slam_tracking_rate,
             "max_slam_lost_rate": max_slam_lost_rate,
             "max_slam_latency_p90": max_slam_latency_p90,
@@ -3174,6 +3263,10 @@ async def run_packages_export_json(
     min_costmap_coverage: float | None = None,
     max_costmap_latency_p90: int | None = None,
     max_costmap_dynamic_filter_rate_mean: float | None = None,
+    min_costmap_fused_coverage: float | None = None,
+    max_costmap_fused_latency_p90: int | None = None,
+    min_costmap_fused_iou_p90: float | None = None,
+    max_costmap_fused_flicker_rate_mean: float | None = None,
     min_slam_tracking_rate: float | None = None,
     max_slam_lost_rate: float | None = None,
     max_slam_latency_p90: int | None = None,
@@ -3251,6 +3344,10 @@ async def run_packages_export_json(
             min_costmap_coverage=min_costmap_coverage,
             max_costmap_latency_p90=max_costmap_latency_p90,
             max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+            min_costmap_fused_coverage=min_costmap_fused_coverage,
+            max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
+            min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
+            max_costmap_fused_flicker_rate_mean=max_costmap_fused_flicker_rate_mean,
             min_slam_tracking_rate=min_slam_tracking_rate,
         max_slam_lost_rate=max_slam_lost_rate,
         max_slam_latency_p90=max_slam_latency_p90,
@@ -3335,6 +3432,10 @@ async def run_packages_export_csv(
     min_costmap_coverage: float | None = None,
     max_costmap_latency_p90: int | None = None,
     max_costmap_dynamic_filter_rate_mean: float | None = None,
+    min_costmap_fused_coverage: float | None = None,
+    max_costmap_fused_latency_p90: int | None = None,
+    min_costmap_fused_iou_p90: float | None = None,
+    max_costmap_fused_flicker_rate_mean: float | None = None,
     min_slam_tracking_rate: float | None = None,
     max_slam_lost_rate: float | None = None,
     max_slam_latency_p90: int | None = None,
@@ -3412,6 +3513,10 @@ async def run_packages_export_csv(
         min_costmap_coverage=min_costmap_coverage,
         max_costmap_latency_p90=max_costmap_latency_p90,
         max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+        min_costmap_fused_coverage=min_costmap_fused_coverage,
+        max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
+        min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
+        max_costmap_fused_flicker_rate_mean=max_costmap_fused_flicker_rate_mean,
         min_slam_tracking_rate=min_slam_tracking_rate,
         max_slam_lost_rate=max_slam_lost_rate,
         max_slam_latency_p90=max_slam_latency_p90,
@@ -3504,6 +3609,11 @@ async def run_packages_export_csv(
         "costmap_latency_p90",
         "costmap_density_mean",
         "costmap_dynamic_filter_rate_mean",
+        "costmap_fused_coverage",
+        "costmap_fused_latency_p90",
+        "costmap_fused_iou_p90",
+        "costmap_fused_flicker_rate_mean",
+        "costmap_fused_shift_used_rate",
         "slam_tracking_rate",
         "slam_lost_rate",
         "slam_latency_p90",
@@ -4999,6 +5109,7 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     depth_quality = quality_payload.get("depth", {}) if isinstance(quality_payload, dict) else {}
     slam_quality = quality_payload.get("slam", {}) if isinstance(quality_payload, dict) else {}
     costmap_quality = quality_payload.get("costmap", {}) if isinstance(quality_payload, dict) else {}
+    costmap_fused_quality = quality_payload.get("costmapFused", {}) if isinstance(quality_payload, dict) else {}
     slam_error_payload = quality_payload.get("slamError", {}) if isinstance(quality_payload, dict) else {}
     pov_payload = summary.get("pov", {})
     pov_payload = pov_payload if isinstance(pov_payload, dict) else {}
@@ -5050,6 +5161,11 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     costmap_latency_p90: int | None = None
     costmap_density_mean: float | None = None
     costmap_dynamic_filter_rate_mean: float | None = None
+    costmap_fused_coverage: float | None = None
+    costmap_fused_latency_p90: int | None = None
+    costmap_fused_iou_p90: float | None = None
+    costmap_fused_flicker_rate_mean: float | None = None
+    costmap_fused_shift_used_rate: float | None = None
     slam_tracking_rate: float | None = None
     slam_lost_rate: float | None = None
     slam_relocalized: int | None = None
@@ -5465,6 +5581,28 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         raw_dynamic_mean = _read_float(dynamic_filter, "mean")
         if raw_dynamic_mean is not None:
             costmap_dynamic_filter_rate_mean = float(raw_dynamic_mean)
+    if isinstance(costmap_fused_quality, dict):
+        raw_costmap_fused_cov = _read_float(costmap_fused_quality, "coverage")
+        if raw_costmap_fused_cov is not None:
+            costmap_fused_coverage = float(raw_costmap_fused_cov)
+        costmap_fused_latency = costmap_fused_quality.get("latencyMs")
+        costmap_fused_latency = costmap_fused_latency if isinstance(costmap_fused_latency, dict) else {}
+        raw_costmap_fused_latency_p90 = _read_float(costmap_fused_latency, "p90")
+        if raw_costmap_fused_latency_p90 is not None:
+            costmap_fused_latency_p90 = int(raw_costmap_fused_latency_p90)
+        fused_stability = costmap_fused_quality.get("stability")
+        fused_stability = fused_stability if isinstance(fused_stability, dict) else {}
+        raw_iou_p90 = _read_float(fused_stability, "iouPrevP90")
+        if raw_iou_p90 is None:
+            raw_iou_p90 = _read_float(fused_stability, "iouPrevMean")
+        if raw_iou_p90 is not None:
+            costmap_fused_iou_p90 = float(raw_iou_p90)
+        raw_flicker_mean = _read_float(fused_stability, "flickerRatePrevMean")
+        if raw_flicker_mean is not None:
+            costmap_fused_flicker_rate_mean = float(raw_flicker_mean)
+        raw_shift_used_rate = _read_float(costmap_fused_quality, "shiftUsedRate")
+        if raw_shift_used_rate is not None:
+            costmap_fused_shift_used_rate = float(raw_shift_used_rate)
     if isinstance(slam_quality, dict):
         tracking_payload = slam_quality.get("tracking")
         tracking_payload = tracking_payload if isinstance(tracking_payload, dict) else {}
@@ -5592,6 +5730,11 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "costmap_latency_p90": costmap_latency_p90,
         "costmap_density_mean": costmap_density_mean,
         "costmap_dynamic_filter_rate_mean": costmap_dynamic_filter_rate_mean,
+        "costmap_fused_coverage": costmap_fused_coverage,
+        "costmap_fused_latency_p90": costmap_fused_latency_p90,
+        "costmap_fused_iou_p90": costmap_fused_iou_p90,
+        "costmap_fused_flicker_rate_mean": costmap_fused_flicker_rate_mean,
+        "costmap_fused_shift_used_rate": costmap_fused_shift_used_rate,
         "slam_tracking_rate": slam_tracking_rate,
         "slam_lost_rate": slam_lost_rate,
         "slam_relocalized": slam_relocalized,
@@ -5705,6 +5848,10 @@ def _matches_run_filters(
     min_costmap_coverage: float | None = None,
     max_costmap_latency_p90: int | None = None,
     max_costmap_dynamic_filter_rate_mean: float | None = None,
+    min_costmap_fused_coverage: float | None = None,
+    max_costmap_fused_latency_p90: int | None = None,
+    min_costmap_fused_iou_p90: float | None = None,
+    max_costmap_fused_flicker_rate_mean: float | None = None,
     min_slam_tracking_rate: float | None,
     max_slam_lost_rate: float | None,
     max_slam_latency_p90: int | None,
@@ -5875,6 +6022,30 @@ def _matches_run_filters(
         if value is None:
             return False
         if float(value) > float(max_costmap_dynamic_filter_rate_mean):
+            return False
+    if min_costmap_fused_coverage is not None:
+        value = row.get("costmap_fused_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_costmap_fused_coverage):
+            return False
+    if max_costmap_fused_latency_p90 is not None:
+        value = row.get("costmap_fused_latency_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_costmap_fused_latency_p90):
+            return False
+    if min_costmap_fused_iou_p90 is not None:
+        value = row.get("costmap_fused_iou_p90")
+        if value is None:
+            return False
+        if float(value) < float(min_costmap_fused_iou_p90):
+            return False
+    if max_costmap_fused_flicker_rate_mean is not None:
+        value = row.get("costmap_fused_flicker_rate_mean")
+        if value is None:
+            return False
+        if float(value) > float(max_costmap_fused_flicker_rate_mean):
             return False
     if min_slam_tracking_rate is not None:
         value = row.get("slam_tracking_rate")
@@ -6197,6 +6368,15 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "depth_delta1",
         "depth_coverage",
         "depth_latency_p90",
+        "costmap_coverage",
+        "costmap_latency_p90",
+        "costmap_density_mean",
+        "costmap_dynamic_filter_rate_mean",
+        "costmap_fused_coverage",
+        "costmap_fused_latency_p90",
+        "costmap_fused_iou_p90",
+        "costmap_fused_flicker_rate_mean",
+        "costmap_fused_shift_used_rate",
         "slam_tracking_rate",
         "slam_lost_rate",
         "slam_relocalized",
@@ -6299,6 +6479,10 @@ async def _query_run_package_rows(
     min_costmap_coverage: float | None,
     max_costmap_latency_p90: int | None,
     max_costmap_dynamic_filter_rate_mean: float | None,
+    min_costmap_fused_coverage: float | None,
+    max_costmap_fused_latency_p90: int | None,
+    min_costmap_fused_iou_p90: float | None,
+    max_costmap_fused_flicker_rate_mean: float | None,
     min_slam_tracking_rate: float | None,
     max_slam_lost_rate: float | None,
     max_slam_latency_p90: int | None,
@@ -6382,6 +6566,10 @@ async def _query_run_package_rows(
             min_costmap_coverage=min_costmap_coverage,
             max_costmap_latency_p90=max_costmap_latency_p90,
             max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+            min_costmap_fused_coverage=min_costmap_fused_coverage,
+            max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
+            min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
+            max_costmap_fused_flicker_rate_mean=max_costmap_fused_flicker_rate_mean,
             min_slam_tracking_rate=min_slam_tracking_rate,
             max_slam_lost_rate=max_slam_lost_rate,
             max_slam_latency_p90=max_slam_latency_p90,
@@ -6493,6 +6681,10 @@ async def runs_dashboard(
     min_costmap_coverage: float | None = None,
     max_costmap_latency_p90: int | None = None,
     max_costmap_dynamic_filter_rate_mean: float | None = None,
+    min_costmap_fused_coverage: float | None = None,
+    max_costmap_fused_latency_p90: int | None = None,
+    min_costmap_fused_iou_p90: float | None = None,
+    max_costmap_fused_flicker_rate_mean: float | None = None,
     min_slam_tracking_rate: float | None = None,
     max_slam_lost_rate: float | None = None,
     max_slam_latency_p90: int | None = None,
@@ -6571,6 +6763,10 @@ async def runs_dashboard(
         min_costmap_coverage=min_costmap_coverage,
         max_costmap_latency_p90=max_costmap_latency_p90,
         max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+        min_costmap_fused_coverage=min_costmap_fused_coverage,
+        max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
+        min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
+        max_costmap_fused_flicker_rate_mean=max_costmap_fused_flicker_rate_mean,
         min_slam_tracking_rate=min_slam_tracking_rate,
         max_slam_lost_rate=max_slam_lost_rate,
         max_slam_latency_p90=max_slam_latency_p90,
@@ -6699,6 +6895,16 @@ async def runs_dashboard(
         costmap_density = "—" if costmap_density_raw is None else f"{float(costmap_density_raw):.4f}"
         costmap_dynamic_raw = row.get("costmap_dynamic_filter_rate_mean")
         costmap_dynamic = "—" if costmap_dynamic_raw is None else f"{float(costmap_dynamic_raw):.4f}"
+        costmap_fused_cov_raw = row.get("costmap_fused_coverage")
+        costmap_fused_cov = "—" if costmap_fused_cov_raw is None else f"{float(costmap_fused_cov_raw):.4f}"
+        costmap_fused_latency_raw = row.get("costmap_fused_latency_p90")
+        costmap_fused_latency = "—" if costmap_fused_latency_raw is None else str(int(costmap_fused_latency_raw))
+        costmap_fused_iou_raw = row.get("costmap_fused_iou_p90")
+        costmap_fused_iou = "—" if costmap_fused_iou_raw is None else f"{float(costmap_fused_iou_raw):.4f}"
+        costmap_fused_flicker_raw = row.get("costmap_fused_flicker_rate_mean")
+        costmap_fused_flicker = "—" if costmap_fused_flicker_raw is None else f"{float(costmap_fused_flicker_raw):.4f}"
+        costmap_fused_shift_raw = row.get("costmap_fused_shift_used_rate")
+        costmap_fused_shift = "—" if costmap_fused_shift_raw is None else f"{float(costmap_fused_shift_raw):.4f}"
         slam_tracking_rate_raw = row.get("slam_tracking_rate")
         slam_tracking_rate = "—" if slam_tracking_rate_raw is None else f"{float(slam_tracking_rate_raw):.4f}"
         slam_lost_rate_raw = row.get("slam_lost_rate")
@@ -6805,6 +7011,11 @@ async def runs_dashboard(
             f"<td>{html.escape(costmap_p90)}</td>"
             f"<td>{html.escape(costmap_density)}</td>"
             f"<td>{html.escape(costmap_dynamic)}</td>"
+            f"<td>{html.escape(costmap_fused_cov)}</td>"
+            f"<td>{html.escape(costmap_fused_latency)}</td>"
+            f"<td>{html.escape(costmap_fused_iou)}</td>"
+            f"<td>{html.escape(costmap_fused_flicker)}</td>"
+            f"<td>{html.escape(costmap_fused_shift)}</td>"
             f"<td>{html.escape(slam_tracking_rate)}</td>"
             f"<td>{html.escape(slam_lost_rate)}</td>"
             f"<td>{html.escape(slam_relocalized)}</td>"
@@ -6847,7 +7058,7 @@ async def runs_dashboard(
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='94' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='99' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -6874,6 +7085,18 @@ async def runs_dashboard(
     max_costmap_latency_p90_value = html.escape("" if max_costmap_latency_p90 is None else str(max_costmap_latency_p90))
     max_costmap_dynamic_filter_rate_mean_value = html.escape(
         "" if max_costmap_dynamic_filter_rate_mean is None else str(max_costmap_dynamic_filter_rate_mean)
+    )
+    min_costmap_fused_coverage_value = html.escape(
+        "" if min_costmap_fused_coverage is None else str(min_costmap_fused_coverage)
+    )
+    max_costmap_fused_latency_p90_value = html.escape(
+        "" if max_costmap_fused_latency_p90 is None else str(max_costmap_fused_latency_p90)
+    )
+    min_costmap_fused_iou_p90_value = html.escape(
+        "" if min_costmap_fused_iou_p90 is None else str(min_costmap_fused_iou_p90)
+    )
+    max_costmap_fused_flicker_rate_mean_value = html.escape(
+        "" if max_costmap_fused_flicker_rate_mean is None else str(max_costmap_fused_flicker_rate_mean)
     )
     min_slam_tracking_rate_value = html.escape("" if min_slam_tracking_rate is None else str(min_slam_tracking_rate))
     max_slam_lost_rate_value = html.escape("" if max_slam_lost_rate is None else str(max_slam_lost_rate))
@@ -7020,6 +7243,10 @@ async def runs_dashboard(
       <label>min_costmap_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_coverage" value="{min_costmap_coverage_value}" /></label>
       <label>max_costmap_latency_p90: <input type="number" min="0" name="max_costmap_latency_p90" value="{max_costmap_latency_p90_value}" /></label>
       <label>max_costmap_dynamic_filter_rate_mean: <input type="number" step="0.0001" min="0" max="1" name="max_costmap_dynamic_filter_rate_mean" value="{max_costmap_dynamic_filter_rate_mean_value}" /></label>
+      <label>min_costmap_fused_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_fused_coverage" value="{min_costmap_fused_coverage_value}" /></label>
+      <label>max_costmap_fused_latency_p90: <input type="number" min="0" name="max_costmap_fused_latency_p90" value="{max_costmap_fused_latency_p90_value}" /></label>
+      <label>min_costmap_fused_iou_p90: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_fused_iou_p90" value="{min_costmap_fused_iou_p90_value}" /></label>
+      <label>max_costmap_fused_flicker_rate_mean: <input type="number" step="0.0001" min="0" max="1" name="max_costmap_fused_flicker_rate_mean" value="{max_costmap_fused_flicker_rate_mean_value}" /></label>
       <label>min_slam_tracking_rate: <input type="number" step="0.0001" min="0" max="1" name="min_slam_tracking_rate" value="{min_slam_tracking_rate_value}" /></label>
       <label>max_slam_lost_rate: <input type="number" step="0.0001" min="0" max="1" name="max_slam_lost_rate" value="{max_slam_lost_rate_value}" /></label>
       <label>max_slam_latency_p90: <input type="number" min="0" name="max_slam_latency_p90" value="{max_slam_latency_p90_value}" /></label>
@@ -7086,6 +7313,10 @@ async def runs_dashboard(
           <option value="costmap_latency_p90" {"selected" if sort_value == "costmap_latency_p90" else ""}>costmap_latency_p90</option>
           <option value="costmap_density_mean" {"selected" if sort_value == "costmap_density_mean" else ""}>costmap_density_mean</option>
           <option value="costmap_dynamic_filter_rate_mean" {"selected" if sort_value == "costmap_dynamic_filter_rate_mean" else ""}>costmap_dynamic_filter_rate_mean</option>
+          <option value="costmap_fused_coverage" {"selected" if sort_value == "costmap_fused_coverage" else ""}>costmap_fused_coverage</option>
+          <option value="costmap_fused_latency_p90" {"selected" if sort_value == "costmap_fused_latency_p90" else ""}>costmap_fused_latency_p90</option>
+          <option value="costmap_fused_iou_p90" {"selected" if sort_value == "costmap_fused_iou_p90" else ""}>costmap_fused_iou_p90</option>
+          <option value="costmap_fused_flicker_rate_mean" {"selected" if sort_value == "costmap_fused_flicker_rate_mean" else ""}>costmap_fused_flicker_rate_mean</option>
           <option value="slam_tracking_rate" {"selected" if sort_value == "slam_tracking_rate" else ""}>slam_tracking_rate</option>
           <option value="slam_lost_rate" {"selected" if sort_value == "slam_lost_rate" else ""}>slam_lost_rate</option>
           <option value="slam_latency_p90" {"selected" if sort_value == "slam_latency_p90" else ""}>slam_latency_p90</option>
@@ -7131,8 +7362,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&min_costmap_fused_coverage={min_costmap_fused_coverage_value}&max_costmap_fused_latency_p90={max_costmap_fused_latency_p90_value}&min_costmap_fused_iou_p90={min_costmap_fused_iou_p90_value}&max_costmap_fused_flicker_rate_mean={max_costmap_fused_flicker_rate_mean_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&min_costmap_fused_coverage={min_costmap_fused_coverage_value}&max_costmap_fused_latency_p90={max_costmap_fused_latency_p90_value}&min_costmap_fused_iou_p90={min_costmap_fused_iou_p90_value}&max_costmap_fused_flicker_rate_mean={max_costmap_fused_flicker_rate_mean_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -7177,6 +7408,11 @@ async def runs_dashboard(
           <th>Costmap p90(ms)</th>
           <th>Costmap DensityMean</th>
           <th>Costmap DynamicFilterMean</th>
+          <th>Costmap Fused Coverage</th>
+          <th>Costmap Fused p90(ms)</th>
+          <th>Costmap Fused IoU p90</th>
+          <th>Costmap Fused Flicker Mean</th>
+          <th>Costmap Fused ShiftUsed Rate</th>
           <th>SLAM Tracking</th>
           <th>SLAM Lost</th>
           <th>SLAM Relocalized</th>

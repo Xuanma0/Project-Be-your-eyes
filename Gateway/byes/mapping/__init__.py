@@ -7,4 +7,7 @@ from .costmap import (  # noqa: F401
     build_local_costmap,
     find_latest_costmap_from_events,
 )
-
+from .costmap_fuser import (  # noqa: F401
+    DEFAULT_COSTMAP_FUSED_CONFIG,
+    CostmapFuser,
+)
