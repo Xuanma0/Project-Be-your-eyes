@@ -497,14 +497,14 @@ python scripts/replay_run_package.py --run-package artifacts/imports/ego4d_runpk
 
 Note: ImageNet DET test labels are withheld, so these imports are best for latency/robustness and pipeline checks, not GT precision scoring.
 
-## Dataset Benchmark Runner (v4.69)
+## Dataset Benchmark Runner (v4.70)
 
 Batch run replay + report over many run packages and aggregate to `latest.json/latest.md/latest.csv`:
 
 ```powershell
 python scripts/run_dataset_benchmark.py `
   --root "<dir_with_runpackages>" `
-  --out "artifacts/benchmarks/v469_demo" `
+  --out "artifacts/benchmarks/v470_demo" `
   --glob "**/manifest.json" `
   --max 50 --shuffle 1 --seed 123 `
   --replay 1 --reset 1 --apply-scenario-calls 0 `
@@ -516,15 +516,87 @@ Report-only fast mode (no replay, good for CI/local smoke):
 ```powershell
 python scripts/run_dataset_benchmark.py `
   --root "<dir_with_runpackages>" `
-  --out "artifacts/benchmarks/v469_report_only" `
+  --out "artifacts/benchmarks/v470_report_only" `
   --replay 0 --max 20 --shuffle 0
+```
+
+Matrix mode (`--matrix 1`) runs the same run-package batch across multiple profiles and writes:
+- `out/<profile>/latest.json|md|csv`
+- `out/latest.json|md|csv` (combined rows)
+- `out/summary.json|md` (cross-profile compare + deltas)
+
+`profiles.json` example:
+
+```json
+{
+  "profiles": [
+    {
+      "name": "baseline_reference",
+      "services": {"seg": "reference", "depth": "reference", "ocr": "reference"},
+      "env": {
+        "BYES_ENABLE_SEG": "1",
+        "BYES_ENABLE_DEPTH": "1",
+        "BYES_ENABLE_OCR": "1",
+        "BYES_SERVICE_SEG_HTTP_DOWNSTREAM": "reference",
+        "BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM": "reference"
+      }
+    },
+    {
+      "name": "sam3_fixture",
+      "services": {"seg": "sam3", "depth": "reference", "ocr": "reference"},
+      "env": {
+        "BYES_ENABLE_SEG": "1",
+        "BYES_SERVICE_SEG_HTTP_DOWNSTREAM": "sam3",
+        "BYES_SAM3_MODE": "fixture"
+      }
+    },
+    {
+      "name": "da3_fixture",
+      "services": {"seg": "reference", "depth": "da3", "ocr": "reference"},
+      "env": {
+        "BYES_ENABLE_DEPTH": "1",
+        "BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM": "da3",
+        "BYES_DA3_MODE": "fixture"
+      }
+    }
+  ]
+}
+```
+
+Run matrix benchmark:
+
+```powershell
+python scripts/run_dataset_benchmark.py `
+  --root "<dir_with_runpackages>" `
+  --out "artifacts/benchmarks/v470_matrix_demo" `
+  --replay 0 `
+  --matrix 1 `
+  --profiles "<path/to/profiles.json>"
 ```
 
 Typical dataset roots:
 - Ego4D imports root: `<...>/Gateway/artifacts/imports/v468_ego4d_demo`
 - ImageNet imports root: `<...>/Gateway/artifacts/imports/v468_imagenet_demo`
 
-ImageNet DET test labels are withheld; default benchmark usage is latency/robustness and systems behavior, not GT precision scoring.
+Example commands with the current local imports:
+
+```powershell
+python scripts/run_dataset_benchmark.py `
+  --root "D:\Unity\Project\Project-Be-your-eyes\Gateway\artifacts\imports\v468_ego4d_demo" `
+  --out "artifacts/benchmarks/v470_ego4d_matrix_demo" `
+  --replay 0 `
+  --matrix 1 `
+  --profiles "<path/to/profiles.json>"
+
+python scripts/run_dataset_benchmark.py `
+  --root "D:\Unity\Project\Project-Be-your-eyes\Gateway\artifacts\imports\v468_imagenet_demo" `
+  --out "artifacts/benchmarks/v470_imagenet_matrix_demo" `
+  --replay 0 `
+  --matrix 1 `
+  --profiles "<path/to/profiles.json>"
+```
+
+Ego4D v2 is a large-scale first-person benchmark and works well for system-level replay/latency evaluations. Do not add raw dataset files to this repository. ImageNet DET test labels are withheld; default benchmark usage is latency/robustness and systems behavior, not GT precision scoring.
 
 Seg context pack (budgeted) from existing `seg.segment` events:
 

@@ -5,7 +5,7 @@ import csv
 import json
 import os
 import random
-import shutil
+import statistics
 import subprocess
 import sys
 import time
@@ -35,6 +35,31 @@ class ServiceRuntime:
     spec: ServiceSpec
     process: subprocess.Popen[str] | None
     reused: bool
+
+
+@dataclass
+class BenchmarkProfile:
+    name: str
+    services: dict[str, str]
+    env: dict[str, str]
+
+
+METRIC_FIELDS = [
+    "qualityScore",
+    "critical_fn",
+    "confirm_timeouts",
+    "riskLatencyP90",
+    "frame_e2e_p90",
+    "frame_user_e2e_tts_p90",
+    "frame_user_e2e_ar_p90",
+    "seg_f1_50",
+    "seg_mask_f1_50",
+    "depth_absRel",
+    "ocr_cer",
+    "slam_tracking_rate",
+    "plan_score",
+    "plan_fallback_used",
+]
 
 
 def _now_ms() -> int:
@@ -100,6 +125,95 @@ def _parse_services(raw: str) -> dict[str, str]:
         if name in {"seg", "depth", "ocr"} and val in {"reference", "sam3", "da3"}:
             out[name] = val
     return out
+
+
+def _sanitize_services(raw: dict[str, Any] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key in ("seg", "depth", "ocr"):
+        value = str(raw.get(key, "")).strip().lower()
+        if value in {"reference", "sam3", "da3"}:
+            out[key] = value
+    return out
+
+
+def _services_compact(services: dict[str, str]) -> str:
+    if not services:
+        return ""
+    parts: list[str] = []
+    for key in ("seg", "depth", "ocr"):
+        if key in services:
+            parts.append(f"{key}={services[key]}")
+    return ",".join(parts)
+
+
+def _load_profiles(path: Path) -> list[BenchmarkProfile]:
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(f"profiles file not found: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise ValueError("profiles file must be a JSON object with key: profiles")
+    profiles_raw = payload.get("profiles")
+    if not isinstance(profiles_raw, list):
+        raise ValueError("profiles file missing array: profiles")
+
+    profiles: list[BenchmarkProfile] = []
+    seen_names: set[str] = set()
+    for idx, item in enumerate(profiles_raw, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"profiles[{idx}] must be an object")
+        name = str(item.get("name", "")).strip()
+        if not name:
+            raise ValueError(f"profiles[{idx}] missing non-empty name")
+        if name in seen_names:
+            raise ValueError(f"duplicate profile name: {name}")
+        seen_names.add(name)
+
+        services = _sanitize_services(item.get("services"))
+        env_raw = item.get("env")
+        env: dict[str, str] = {}
+        if isinstance(env_raw, dict):
+            env = {str(k): str(v) for k, v in env_raw.items()}
+        profiles.append(BenchmarkProfile(name=name, services=services, env=env))
+    if not profiles:
+        raise ValueError("profiles array is empty")
+    return profiles
+
+
+def _quantile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    idx = int(max(0, min(len(ordered) - 1, round((len(ordered) - 1) * q))))
+    return float(ordered[idx])
+
+
+def _to_metric_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _metric_stats(rows: list[dict[str, Any]], field: str) -> dict[str, Any]:
+    values: list[float] = []
+    for row in rows:
+        v = _to_metric_number(row.get(field))
+        if v is not None:
+            values.append(v)
+    if not values:
+        return {"count": 0, "mean": None, "median": None, "p90": None}
+    return {
+        "count": len(values),
+        "mean": float(statistics.fmean(values)),
+        "median": float(statistics.median(values)),
+        "p90": _quantile(values, 0.90),
+    }
 
 
 def _load_env_file(path: Path | None) -> dict[str, str]:
@@ -254,6 +368,8 @@ def _collect_summary_fields(*, run_package: Path, manifest: dict[str, Any], repo
 
 def _summary_to_csv_row(row: dict[str, Any]) -> dict[str, Any]:
     out = {
+        "profile": row.get("profile"),
+        "services": row.get("services"),
         "runPackage": row.get("runPackage"),
         "targetRunPackage": row.get("targetRunPackage"),
         "runId": row.get("runId"),
@@ -280,6 +396,8 @@ def _summary_to_csv_row(row: dict[str, Any]) -> dict[str, Any]:
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     fieldnames = [
+        "profile",
+        "services",
         "runPackage",
         "targetRunPackage",
         "runId",
@@ -318,11 +436,14 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]], payload: dict[str, A
     lines.append(f"- replay: `{payload.get('replay', False)}`")
     lines.append(f"- failures: `{payload.get('failures', 0)}`")
     lines.append("")
-    lines.append("| runId | frames | qualityScore | critical_fn | riskP90 | e2eP90 | ttsP90 | arP90 | segF1 | depthAbsRel | ocrCER | slamTrack | status |")
-    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
+    lines.append(
+        "| profile | runId | frames | qualityScore | critical_fn | riskP90 | e2eP90 | ttsP90 | arP90 | segF1 | depthAbsRel | ocrCER | slamTrack | status |"
+    )
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for row in rows:
         lines.append(
-            "| {run_id} | {frames} | {quality} | {critical_fn} | {risk} | {e2e} | {tts} | {ar} | {seg} | {depth} | {ocr} | {slam} | {status} |".format(
+            "| {profile} | {run_id} | {frames} | {quality} | {critical_fn} | {risk} | {e2e} | {tts} | {ar} | {seg} | {depth} | {ocr} | {slam} | {status} |".format(
+                profile=row.get("profile"),
                 run_id=row.get("runId"),
                 frames=row.get("framesCount"),
                 quality=row.get("qualityScore"),
@@ -339,6 +460,16 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]], payload: dict[str, A
             )
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_latest_bundle(*, out_dir: Path, payload: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    latest_json = out_dir / "latest.json"
+    latest_csv = out_dir / "latest.csv"
+    latest_md = out_dir / "latest.md"
+    latest_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _write_csv(latest_csv, rows)
+    _write_markdown(latest_md, rows, payload)
 
 
 def _http_ready(url: str, timeout_s: float = 2.0) -> bool:
@@ -604,6 +735,8 @@ def run_dataset_benchmark(
     ports: dict[str, int],
     services: dict[str, str],
     env_file: Path | None,
+    profile_name: str = "default",
+    env_overrides: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], int]:
     root = root.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -620,6 +753,9 @@ def run_dataset_benchmark(
     base_env = dict(os.environ)
     base_env["PYTHONUNBUFFERED"] = "1"
     base_env.update(_load_env_file(env_file))
+    if env_overrides:
+        base_env.update({str(k): str(v) for k, v in env_overrides.items()})
+    services_compact = _services_compact(services)
 
     runtimes: list[ServiceRuntime] = []
     failures = 0
@@ -637,6 +773,8 @@ def run_dataset_benchmark(
             manifest = _manifest_for_run_package(package_dir)
             run_row: dict[str, Any] = {
                 "index": idx,
+                "profile": profile_name,
+                "services": services_compact,
                 "runPackage": str(package_dir),
                 "status": "ok",
                 "error": None,
@@ -697,6 +835,8 @@ def run_dataset_benchmark(
         "schemaVersion": "byes.dataset_benchmark.v1",
         "generatedAtMs": _now_ms(),
         "durationMs": max(0, _now_ms() - start_ms),
+        "profile": profile_name,
+        "services": services_compact,
         "root": str(root),
         "outDir": str(out_dir),
         "glob": glob_pattern,
@@ -707,15 +847,234 @@ def run_dataset_benchmark(
         "rows": rows,
     }
 
-    latest_json = out_dir / "latest.json"
-    latest_csv = out_dir / "latest.csv"
-    latest_md = out_dir / "latest.md"
-    latest_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    _write_csv(latest_csv, rows)
-    _write_markdown(latest_md, rows, payload)
+    _write_latest_bundle(out_dir=out_dir, payload=payload, rows=rows)
 
     exit_code = 1 if (fail_on_drop and failures > 0) else 0
     return payload, exit_code
+
+
+def _summarize_profile_metrics(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    ok_rows = [row for row in rows if str(row.get("status", "")).strip().lower() != "error"]
+    return {field: _metric_stats(ok_rows, field) for field in METRIC_FIELDS}
+
+
+def _build_matrix_summary_payload(
+    *,
+    root: Path,
+    out_dir: Path,
+    replay: bool,
+    profile_payloads: list[dict[str, Any]],
+    generated_at_ms: int,
+) -> dict[str, Any]:
+    profile_summaries: list[dict[str, Any]] = []
+    combined_rows: list[dict[str, Any]] = []
+    for payload in profile_payloads:
+        rows = payload.get("rows")
+        rows = rows if isinstance(rows, list) else []
+        combined_rows.extend(rows)
+        profile_summaries.append(
+            {
+                "name": str(payload.get("profile", "")),
+                "services": str(payload.get("services", "")),
+                "outDir": str(payload.get("outDir", "")),
+                "latestJson": str(Path(str(payload.get("outDir", ""))) / "latest.json"),
+                "discovered": int(payload.get("discovered", 0) or 0),
+                "processed": int(payload.get("processed", 0) or 0),
+                "failures": int(payload.get("failures", 0) or 0),
+                "metrics": _summarize_profile_metrics(rows),
+            }
+        )
+
+    baseline_name = "baseline_reference"
+    if not any(entry.get("name") == baseline_name for entry in profile_summaries):
+        baseline_name = str(profile_summaries[0].get("name")) if profile_summaries else ""
+    baseline_entry = next((entry for entry in profile_summaries if entry.get("name") == baseline_name), {})
+
+    deltas: dict[str, Any] = {}
+    baseline_metrics = baseline_entry.get("metrics")
+    baseline_metrics = baseline_metrics if isinstance(baseline_metrics, dict) else {}
+    for entry in profile_summaries:
+        name = str(entry.get("name", ""))
+        if not name or name == baseline_name:
+            continue
+        entry_metrics = entry.get("metrics")
+        entry_metrics = entry_metrics if isinstance(entry_metrics, dict) else {}
+        metric_deltas: dict[str, Any] = {}
+        delta_flat: dict[str, Any] = {}
+        for field in METRIC_FIELDS:
+            base_stat = baseline_metrics.get(field)
+            cur_stat = entry_metrics.get(field)
+            base_stat = base_stat if isinstance(base_stat, dict) else {}
+            cur_stat = cur_stat if isinstance(cur_stat, dict) else {}
+            delta_stats: dict[str, Any] = {}
+            for key in ("mean", "median", "p90"):
+                base_val = _to_metric_number(base_stat.get(key))
+                cur_val = _to_metric_number(cur_stat.get(key))
+                delta_stats[key] = (cur_val - base_val) if (base_val is not None and cur_val is not None) else None
+            metric_deltas[field] = delta_stats
+            # keep a compact delta map for quick consumption.
+            delta_flat[f"delta_{field}"] = delta_stats.get("p90")
+            if delta_flat[f"delta_{field}"] is None:
+                delta_flat[f"delta_{field}"] = delta_stats.get("mean")
+        deltas[name] = {"metrics": metric_deltas, "deltaFlat": delta_flat}
+
+    payload: dict[str, Any] = {
+        "schemaVersion": "byes.dataset_benchmark.matrix.v1",
+        "generatedAtMs": int(generated_at_ms),
+        "root": str(root),
+        "outDir": str(out_dir),
+        "replay": bool(replay),
+        "baselineProfile": baseline_name,
+        "profiles": profile_summaries,
+        "deltas": deltas,
+        "discovered": sum(int(entry.get("discovered", 0) or 0) for entry in profile_summaries),
+        "processed": sum(int(entry.get("processed", 0) or 0) for entry in profile_summaries),
+        "failures": sum(int(entry.get("failures", 0) or 0) for entry in profile_summaries),
+        "rows": combined_rows,
+    }
+    return payload
+
+
+def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
+    lines: list[str] = []
+    lines.append("# Dataset Benchmark Matrix Summary")
+    lines.append("")
+    lines.append(f"- root: `{payload.get('root', '')}`")
+    lines.append(f"- replay: `{payload.get('replay', False)}`")
+    lines.append(f"- baselineProfile: `{payload.get('baselineProfile', '')}`")
+    lines.append(f"- discovered: `{payload.get('discovered', 0)}`")
+    lines.append(f"- processed: `{payload.get('processed', 0)}`")
+    lines.append(f"- failures: `{payload.get('failures', 0)}`")
+    lines.append("")
+    lines.append("| profile | services | discovered | processed | failures | quality(mean) | riskP90(p90) | frameUserTtsP90(p90) |")
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|")
+    profiles = payload.get("profiles")
+    profiles = profiles if isinstance(profiles, list) else []
+    for entry in profiles:
+        metrics = entry.get("metrics")
+        metrics = metrics if isinstance(metrics, dict) else {}
+        quality = metrics.get("qualityScore")
+        quality = quality if isinstance(quality, dict) else {}
+        risk = metrics.get("riskLatencyP90")
+        risk = risk if isinstance(risk, dict) else {}
+        tts = metrics.get("frame_user_e2e_tts_p90")
+        tts = tts if isinstance(tts, dict) else {}
+        lines.append(
+            "| {name} | {services} | {d} | {p} | {f} | {quality} | {risk} | {tts} |".format(
+                name=entry.get("name"),
+                services=entry.get("services"),
+                d=entry.get("discovered"),
+                p=entry.get("processed"),
+                f=entry.get("failures"),
+                quality=quality.get("mean"),
+                risk=risk.get("p90"),
+                tts=tts.get("p90"),
+            )
+        )
+
+    deltas = payload.get("deltas")
+    deltas = deltas if isinstance(deltas, dict) else {}
+    if deltas:
+        lines.append("")
+        lines.append("## Deltas vs baseline")
+        lines.append("")
+        lines.append("| profile | delta_qualityScore | delta_riskLatencyP90 | delta_frame_user_e2e_tts_p90 |")
+        lines.append("|---|---:|---:|---:|")
+        for name, value in deltas.items():
+            block = value if isinstance(value, dict) else {}
+            flat = block.get("deltaFlat")
+            flat = flat if isinstance(flat, dict) else {}
+            lines.append(
+                "| {name} | {dq} | {dr} | {dt} |".format(
+                    name=name,
+                    dq=flat.get("delta_qualityScore"),
+                    dr=flat.get("delta_riskLatencyP90"),
+                    dt=flat.get("delta_frame_user_e2e_tts_p90"),
+                )
+            )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def run_dataset_benchmark_matrix(
+    *,
+    root: Path,
+    out_dir: Path,
+    glob_pattern: str,
+    max_items: int,
+    shuffle_items: bool,
+    seed: int,
+    replay: bool,
+    reset: bool,
+    apply_scenario_calls: bool,
+    fail_on_drop: bool,
+    ports: dict[str, int],
+    base_services: dict[str, str],
+    env_file: Path | None,
+    profiles: list[BenchmarkProfile],
+) -> tuple[dict[str, Any], int]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    profile_payloads: list[dict[str, Any]] = []
+    combined_rows: list[dict[str, Any]] = []
+    any_failure = False
+    start_ms = _now_ms()
+    for profile in profiles:
+        effective_services = dict(base_services)
+        effective_services.update(profile.services)
+        profile_out = out_dir / profile.name
+        payload, profile_exit = run_dataset_benchmark(
+            root=root,
+            out_dir=profile_out,
+            glob_pattern=glob_pattern,
+            max_items=max_items,
+            shuffle_items=shuffle_items,
+            seed=seed,
+            replay=replay,
+            reset=reset,
+            apply_scenario_calls=apply_scenario_calls,
+            fail_on_drop=fail_on_drop,
+            ports=ports,
+            services=effective_services,
+            env_file=env_file,
+            profile_name=profile.name,
+            env_overrides=profile.env,
+        )
+        profile_payloads.append(payload)
+        rows = payload.get("rows")
+        if isinstance(rows, list):
+            combined_rows.extend(rows)
+        if profile_exit != 0:
+            any_failure = True
+
+    summary_payload = _build_matrix_summary_payload(
+        root=root,
+        out_dir=out_dir,
+        replay=replay,
+        profile_payloads=profile_payloads,
+        generated_at_ms=_now_ms(),
+    )
+    summary_payload["durationMs"] = max(0, _now_ms() - start_ms)
+
+    combined_payload = {
+        "schemaVersion": "byes.dataset_benchmark.v1",
+        "matrix": True,
+        "generatedAtMs": summary_payload.get("generatedAtMs"),
+        "durationMs": summary_payload.get("durationMs"),
+        "root": str(root),
+        "outDir": str(out_dir),
+        "glob": glob_pattern,
+        "replay": bool(replay),
+        "profiles": [p.name for p in profiles],
+        "discovered": int(summary_payload.get("discovered", 0) or 0),
+        "processed": int(summary_payload.get("processed", 0) or 0),
+        "failures": int(summary_payload.get("failures", 0) or 0),
+        "rows": combined_rows,
+    }
+    _write_latest_bundle(out_dir=out_dir, payload=combined_payload, rows=combined_rows)
+    (out_dir / "summary.json").write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _write_matrix_summary_markdown(out_dir / "summary.md", summary_payload)
+
+    exit_code = 1 if (fail_on_drop and any_failure) else 0
+    return summary_payload, exit_code
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -723,7 +1082,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--root", required=True, help="Root directory containing run packages")
     parser.add_argument(
         "--out",
-        default=str(GATEWAY_ROOT / "artifacts" / "benchmarks" / f"v469_{_utc_compact()}"),
+        default=str(GATEWAY_ROOT / "artifacts" / "benchmarks" / f"v470_{_utc_compact()}"),
         help="Output directory (latest.json/latest.md/latest.csv)",
     )
     parser.add_argument("--glob", default="**/manifest.json", help="Glob pattern to discover manifests under --root")
@@ -745,27 +1104,87 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Service backend map for replay mode (e.g. seg=reference,depth=reference,ocr=reference)",
     )
     parser.add_argument("--env-file", default="", help="Optional .env file with key=value overrides")
+    parser.add_argument("--profiles", default="", help="Path to profiles.json for matrix runs")
+    parser.add_argument("--profile", default="", help="Optional profile name filter for matrix mode")
+    parser.add_argument("--matrix", type=int, default=0, help="Run all profiles in matrix mode (1/0)")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
+    root = Path(args.root).resolve()
+    out_dir = Path(args.out).resolve()
+    glob_pattern = str(args.glob or "**/manifest.json")
+    max_items = int(args.max)
+    shuffle_items = _parse_bool(args.shuffle)
+    seed = int(args.seed)
+    replay = _parse_bool(args.replay)
+    reset = _parse_bool(args.reset)
+    apply_scenario_calls = _parse_bool(args.apply_scenario_calls)
+    fail_on_drop = _parse_bool(args.fail_on_drop)
+    ports = _parse_ports(args.ports)
+    services = _parse_services(args.services)
+    env_file = Path(args.env_file).resolve() if str(args.env_file or "").strip() else None
+    matrix_mode = _parse_bool(args.matrix)
+
+    if matrix_mode:
+        profiles_path_raw = str(args.profiles or "").strip()
+        if not profiles_path_raw:
+            raise SystemExit("--matrix=1 requires --profiles <path>")
+        profiles = _load_profiles(Path(profiles_path_raw).resolve())
+        profile_filter = str(args.profile or "").strip()
+        if profile_filter:
+            profiles = [p for p in profiles if p.name == profile_filter]
+            if not profiles:
+                raise SystemExit(f"profile not found in profiles file: {profile_filter}")
+        payload, exit_code = run_dataset_benchmark_matrix(
+            root=root,
+            out_dir=out_dir,
+            glob_pattern=glob_pattern,
+            max_items=max_items,
+            shuffle_items=shuffle_items,
+            seed=seed,
+            replay=replay,
+            reset=reset,
+            apply_scenario_calls=apply_scenario_calls,
+            fail_on_drop=fail_on_drop,
+            ports=ports,
+            base_services=services,
+            env_file=env_file,
+            profiles=profiles,
+        )
+        summaries = payload.get("profiles")
+        summaries = summaries if isinstance(summaries, list) else []
+        for profile_summary in summaries:
+            if not isinstance(profile_summary, dict):
+                continue
+            print(
+                "[benchmark][profile={name}] discovered={d} processed={p} failures={f} replay={r}".format(
+                    name=profile_summary.get("name"),
+                    d=profile_summary.get("discovered", 0),
+                    p=profile_summary.get("processed", 0),
+                    f=profile_summary.get("failures", 0),
+                    r=payload.get("replay", False),
+                )
+            )
+        print(f"[out] {out_dir / 'summary.json'}")
+        return int(exit_code)
 
     payload, exit_code = run_dataset_benchmark(
-        root=Path(args.root).resolve(),
-        out_dir=Path(args.out).resolve(),
-        glob_pattern=str(args.glob or "**/manifest.json"),
-        max_items=int(args.max),
-        shuffle_items=_parse_bool(args.shuffle),
-        seed=int(args.seed),
-        replay=_parse_bool(args.replay),
-        reset=_parse_bool(args.reset),
-        apply_scenario_calls=_parse_bool(args.apply_scenario_calls),
-        fail_on_drop=_parse_bool(args.fail_on_drop),
-        ports=_parse_ports(args.ports),
-        services=_parse_services(args.services),
-        env_file=Path(args.env_file).resolve() if str(args.env_file or "").strip() else None,
+        root=root,
+        out_dir=out_dir,
+        glob_pattern=glob_pattern,
+        max_items=max_items,
+        shuffle_items=shuffle_items,
+        seed=seed,
+        replay=replay,
+        reset=reset,
+        apply_scenario_calls=apply_scenario_calls,
+        fail_on_drop=fail_on_drop,
+        ports=ports,
+        services=services,
+        env_file=env_file,
     )
     print(
         "[benchmark] discovered={d} processed={p} failures={f} replay={r}".format(
@@ -775,7 +1194,7 @@ def main(argv: list[str] | None = None) -> int:
             r=payload.get("replay", False),
         )
     )
-    print(f"[out] {Path(args.out).resolve() / 'latest.json'}")
+    print(f"[out] {out_dir / 'latest.json'}")
     return int(exit_code)
 
 
