@@ -1,12 +1,18 @@
 {
   "schemaVersion": "byes.contract.lock.v1",
-  "generatedAtMs": 1771840183107,
+  "generatedAtMs": 1771848636664,
   "versions": {
     "byes.action_plan.v1": {
       "version": "byes.action_plan.v1",
       "path": "Gateway/contracts/byes.action_plan.v1.json",
       "sha256": "5e328f86d74fcd4875a1021dae53349de413ea89ca2328462a29c828ab4bd99c",
       "updatedAtMs": 1771052835631
+    },
+    "byes.costmap.v1": {
+      "version": "byes.costmap.v1",
+      "path": "Gateway/contracts/byes.costmap.v1.json",
+      "sha256": "4e7e6af0414e6169990dac95a5f0a62037a523c638c728a27b5696125715a762",
+      "updatedAtMs": 1771844178510
     },
     "byes.depth.v1": {
       "version": "byes.depth.v1",
@@ -35,8 +41,8 @@
     "byes.plan_request.v1": {
       "version": "byes.plan_request.v1",
       "path": "Gateway/contracts/byes.plan_request.v1.json",
-      "sha256": "534654aa1b5fd30d569727248002d5ed7acb99c9a30ce2962bde25b27a7cfb31",
-      "updatedAtMs": 1771838852828
+      "sha256": "857d24b53212928ec8f5153397bb20df3e8cda710309bc5528eaa40f2049ce14",
+      "updatedAtMs": 1771844340941
     },
     "byes.seg.v1": {
       "version": "byes.seg.v1",
@@ -55,6 +61,12 @@
       "path": "Gateway/contracts/byes.slam_pose.v1.json",
       "sha256": "bd4907dbfab29acefbdace0e479184775a461c085549d99a52f82cfe4450f2f9",
       "updatedAtMs": 1771717198088
+    },
+    "costmap.context.v1": {
+      "version": "costmap.context.v1",
+      "path": "Gateway/contracts/costmap.context.v1.json",
+      "sha256": "b1d19ff582de1d4a2dc20f40aa77f06e2bb5631ebf2a525063b5637e5e37de17",
+      "updatedAtMs": 1771844194496
     },
     "frame.ack.v1": {
       "version": "frame.ack.v1",
@@ -77,8 +89,8 @@
     "plan.context_alignment.v1": {
       "version": "plan.context_alignment.v1",
       "path": "Gateway/contracts/plan.context_alignment.v1.json",
-      "sha256": "9ff29853e1c0c6e53ae9bb9ca703eed90cf27a48f3e26239a31469027e09dbbd",
-      "updatedAtMs": 1771838861694
+      "sha256": "d09caabcc17a61724642291a4f191b348fb6c03cd5a7848fc160c276afcc4877",
+      "updatedAtMs": 1771844351870
     },
     "plan.context_pack.v1": {
       "version": "plan.context_pack.v1",

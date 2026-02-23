@@ -574,6 +574,17 @@ Matrix mode (`--matrix 1`) runs the same run-package batch across multiple profi
       }
     },
     {
+      "name": "costmap_local",
+      "services": {"seg": "reference", "depth": "reference", "ocr": "reference"},
+      "env": {
+        "BYES_ENABLE_DEPTH": "1",
+        "BYES_ENABLE_SEG": "1",
+        "BYES_ENABLE_COSTMAP": "1",
+        "BYES_COSTMAP_DYNAMIC_LABELS": "person,car",
+        "BYES_PLANNER_PROMPT_VERSION": "v4"
+      }
+    },
+    {
       "name": "slam_offline_pyslam_run",
       "services": {"seg": "reference", "depth": "reference", "ocr": "reference"},
       "env": {},
@@ -676,6 +687,19 @@ curl "http://127.0.0.1:8000/api/slam/context?runId=<run_id>&frameSeq=120&maxChar
 Notes:
 - `slam.context.v1` compresses recent `slam.pose` (plus optional ATE/RPE + alignment diagnostics) into a bounded text fragment.
 - This follows the same route as the planning stack: filter/fuse/compress context first, then feed VLM/Planner prompts.
+
+Local costmap (v4.77) for planner consumption:
+
+```powershell
+$env:BYES_ENABLE_COSTMAP=\"1\"
+$env:BYES_COSTMAP_DYNAMIC_LABELS=\"person,car\"
+$env:BYES_PLANNER_PROMPT_VERSION=\"v4\"
+```
+
+Notes:
+- Costmap is a lightweight local 2D grid built from depth (+ optional seg dynamic filtering + slam source flag), not TSDF/ESDF.
+- Gateway emits `map.costmap` and `map.costmap_context` so planner prompt v4 can consume a bounded `[COSTMAP] ...` fragment.
+- `/api/run_packages` supports costmap sort/filter fields such as `costmap_latency_p90`, `costmap_density_mean`, `min_costmap_coverage`, `max_costmap_latency_p90`.
 
 Plan context pack (risk+pov+seg, budgeted):
 

@@ -3069,11 +3069,14 @@ def extract_plan_request_summary_from_events_v1(events: Iterable[dict[str, Any]]
     seg_included_count = 0
     pov_included_count = 0
     slam_included_count = 0
+    costmap_included_count = 0
     fallback_used_count = 0
     seg_chars_values: list[int] = []
     pov_chars_values: list[int] = []
     slam_chars_values: list[int] = []
+    costmap_chars_values: list[int] = []
     seg_trunc_segments_dropped_total = 0
+    costmap_trunc_hotspots_dropped_total = 0
     for row in events:
         if not isinstance(row, dict):
             continue
@@ -3096,19 +3099,25 @@ def extract_plan_request_summary_from_events_v1(events: Iterable[dict[str, Any]]
             pov_included_count += 1
         if bool(payload.get("slamIncluded")):
             slam_included_count += 1
+        if bool(payload.get("costmapIncluded")):
+            costmap_included_count += 1
         if isinstance(payload.get("fallbackUsed"), bool) and bool(payload.get("fallbackUsed")):
             fallback_used_count += 1
         seg_chars = _to_nonnegative_int(payload.get("segChars"))
         pov_chars = _to_nonnegative_int(payload.get("povChars"))
         slam_chars = _to_nonnegative_int(payload.get("slamChars"))
+        costmap_chars = _to_nonnegative_int(payload.get("costmapChars"))
         seg_chars_values.append(seg_chars)
         pov_chars_values.append(pov_chars)
         slam_chars_values.append(slam_chars)
+        costmap_chars_values.append(costmap_chars)
         seg_trunc_segments_dropped_total += _to_nonnegative_int(payload.get("segTruncSegmentsDropped"))
+        costmap_trunc_hotspots_dropped_total += _to_nonnegative_int(payload.get("costmapTruncHotspotsDropped"))
 
     seg_stats = summarize_latency(seg_chars_values)
     pov_stats = summarize_latency(pov_chars_values)
     slam_stats = summarize_latency(slam_chars_values)
+    costmap_stats = summarize_latency(costmap_chars_values)
     present = event_count > 0
     return {
         "present": present,
@@ -3116,6 +3125,7 @@ def extract_plan_request_summary_from_events_v1(events: Iterable[dict[str, Any]]
         "segIncludedCount": int(seg_included_count),
         "povIncludedCount": int(pov_included_count),
         "slamIncludedCount": int(slam_included_count),
+        "costmapIncludedCount": int(costmap_included_count),
         "segCharsTotal": int(sum(seg_chars_values)),
         "segCharsP90": int(seg_stats.get("p90", 0) or 0),
         "segTruncSegmentsDroppedTotal": int(seg_trunc_segments_dropped_total),
@@ -3123,6 +3133,9 @@ def extract_plan_request_summary_from_events_v1(events: Iterable[dict[str, Any]]
         "povCharsP90": int(pov_stats.get("p90", 0) or 0),
         "slamCharsTotal": int(sum(slam_chars_values)),
         "slamCharsP90": int(slam_stats.get("p90", 0) or 0),
+        "costmapCharsTotal": int(sum(costmap_chars_values)),
+        "costmapCharsP90": int(costmap_stats.get("p90", 0) or 0),
+        "costmapTruncHotspotsDroppedTotal": int(costmap_trunc_hotspots_dropped_total),
         "fallbackUsedCount": int(fallback_used_count),
     }
 
@@ -3162,10 +3175,13 @@ def extract_plan_context_summary_from_events_v1(events: Iterable[dict[str, Any]]
     seg_hit_count = 0
     pov_hit_count = 0
     slam_hit_count = 0
+    costmap_hit_count = 0
     slam_used_count = 0
+    costmap_used_count = 0
     seg_coverages: list[float] = []
     pov_coverages: list[float] = []
     slam_coverages: list[float] = []
+    costmap_coverages: list[float] = []
 
     for row in events:
         if not isinstance(row, dict):
@@ -3187,6 +3203,8 @@ def extract_plan_context_summary_from_events_v1(events: Iterable[dict[str, Any]]
         pov = pov if isinstance(pov, dict) else {}
         slam = payload.get("slam")
         slam = slam if isinstance(slam, dict) else {}
+        costmap = payload.get("costmap")
+        costmap = costmap if isinstance(costmap, dict) else {}
         context_detail = payload.get("contextUsedDetail")
         context_detail = context_detail if isinstance(context_detail, dict) else {}
 
@@ -3199,13 +3217,20 @@ def extract_plan_context_summary_from_events_v1(events: Iterable[dict[str, Any]]
             pov_hit_count += 1
         if bool(slam.get("hit")):
             slam_hit_count += 1
+        if bool(costmap.get("hit")):
+            costmap_hit_count += 1
         if bool(context_detail.get("slam")):
             slam_used_count += 1
         elif bool(slam.get("present")) and bool(slam.get("hit")):
             slam_used_count += 1
+        if bool(context_detail.get("costmap")):
+            costmap_used_count += 1
+        elif bool(costmap.get("present")) and bool(costmap.get("hit")):
+            costmap_used_count += 1
         seg_coverages.append(_to_unit_float(seg.get("coverage")))
         pov_coverages.append(_to_unit_float(pov.get("coverage")))
         slam_coverages.append(_to_unit_float(slam.get("coverage")))
+        costmap_coverages.append(_to_unit_float(costmap.get("coverage")))
 
     if event_count <= 0:
         return {
@@ -3215,6 +3240,7 @@ def extract_plan_context_summary_from_events_v1(events: Iterable[dict[str, Any]]
             "seg": {"hitRate": 0.0, "coverageMean": 0.0, "coverageP90": 0.0},
             "pov": {"hitRate": 0.0, "coverageMean": 0.0, "coverageP90": 0.0},
             "slam": {"hitRate": 0.0, "coverageMean": 0.0, "coverageP90": 0.0, "contextUsedRate": 0.0},
+            "costmap": {"hitRate": 0.0, "coverageMean": 0.0, "coverageP90": 0.0, "contextUsedRate": 0.0},
         }
 
     return {
@@ -3236,6 +3262,180 @@ def extract_plan_context_summary_from_events_v1(events: Iterable[dict[str, Any]]
             "coverageMean": round(_mean_float(slam_coverages), 6),
             "coverageP90": round(_percentile_float(slam_coverages, 90), 6),
             "contextUsedRate": round(_safe_ratio(slam_used_count, event_count), 6),
+        },
+        "costmap": {
+            "hitRate": round(_safe_ratio(costmap_hit_count, event_count), 6),
+            "coverageMean": round(_mean_float(costmap_coverages), 6),
+            "coverageP90": round(_percentile_float(costmap_coverages, 90), 6),
+            "contextUsedRate": round(_safe_ratio(costmap_used_count, event_count), 6),
+        },
+    }
+
+
+def extract_costmap_metrics_from_events_v1(
+    events: Iterable[dict[str, Any]],
+    *,
+    frames_total_declared: int | None = None,
+) -> dict[str, Any]:
+    frame_keys: set[tuple[str, int]] = set()
+    latencies: list[int] = []
+    dynamic_rates: list[float] = []
+    density_values: list[float] = []
+    event_count = 0
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "map.costmap":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        if str(payload.get("schemaVersion", "")).strip() != "byes.costmap.v1":
+            continue
+
+        event_count += 1
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        frame_seq = _parse_int(payload.get("frameSeq"))
+        if frame_seq is None:
+            frame_seq = _parse_int(event.get("frameSeq"))
+        if frame_seq is not None and frame_seq > 0:
+            frame_keys.add((run_id, int(frame_seq)))
+
+        latency = _parse_int(event.get("latencyMs"))
+        if latency is not None:
+            latencies.append(max(0, int(latency)))
+
+        stats = payload.get("stats")
+        stats = stats if isinstance(stats, dict) else {}
+        dynamic_rates.append(_to_unit_float(stats.get("dynamicFilteredRate")))
+        occupied = max(0, _to_nonnegative_int(stats.get("occupiedCells")))
+        grid = payload.get("grid")
+        grid = grid if isinstance(grid, dict) else {}
+        size = grid.get("size")
+        size = size if isinstance(size, list) else []
+        grid_h = max(0, _to_nonnegative_int(size[0])) if len(size) > 0 else 0
+        grid_w = max(0, _to_nonnegative_int(size[1])) if len(size) > 1 else 0
+        grid_cells = int(max(1, int(grid_h) * int(grid_w)))
+        density_values.append(float(occupied) / float(grid_cells))
+
+    if event_count <= 0:
+        return {
+            "present": False,
+            "framesTotal": int(max(0, int(frames_total_declared or 0))) if frames_total_declared is not None else 0,
+            "framesWithCostmap": 0,
+            "coverage": 0.0 if frames_total_declared is not None else None,
+            "latencyMs": summarize_latency([]),
+            "dynamicFilteredRate": {"mean": 0.0, "p90": 0.0},
+            "densityMean": {"mean": 0.0, "p90": 0.0},
+        }
+
+    frames_with_costmap = len(frame_keys) if frame_keys else int(event_count)
+    frames_total = int(max(frames_with_costmap, int(frames_total_declared or 0))) if frames_total_declared is not None else int(
+        frames_with_costmap
+    )
+    coverage = _safe_ratio(frames_with_costmap, frames_total) if frames_total > 0 else None
+    return {
+        "present": True,
+        "framesTotal": int(frames_total),
+        "framesWithCostmap": int(frames_with_costmap),
+        "coverage": round(coverage, 6) if coverage is not None else None,
+        "latencyMs": summarize_latency(latencies),
+        "dynamicFilteredRate": {
+            "mean": round(_mean_float(dynamic_rates), 6),
+            "p90": round(_percentile_float(dynamic_rates, 90), 6),
+        },
+        "densityMean": {
+            "mean": round(_mean_float(density_values), 6),
+            "p90": round(_percentile_float(density_values, 90), 6),
+        },
+    }
+
+
+def extract_costmap_context_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    event_count = 0
+    chars_values: list[int] = []
+    token_values: list[int] = []
+    hotspots_values: list[int] = []
+    chars_dropped_total = 0
+    hotspots_dropped_total = 0
+    mode_counter: Counter[str] = Counter()
+    budget_chars_counter: Counter[int] = Counter()
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "map.costmap_context":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        if str(payload.get("schemaVersion", "")).strip() != "costmap.context.v1":
+            continue
+
+        stats = payload.get("stats")
+        stats = stats if isinstance(stats, dict) else {}
+        out_stats = stats.get("out")
+        out_stats = out_stats if isinstance(out_stats, dict) else {}
+        truncation = stats.get("truncation")
+        truncation = truncation if isinstance(truncation, dict) else {}
+        budget = payload.get("budget")
+        budget = budget if isinstance(budget, dict) else {}
+
+        event_count += 1
+        chars_values.append(_to_nonnegative_int(out_stats.get("charsTotal")))
+        token_values.append(_to_nonnegative_int(out_stats.get("tokenApprox")))
+        hotspots_values.append(_to_nonnegative_int(out_stats.get("hotspots")))
+        chars_dropped_total += _to_nonnegative_int(truncation.get("charsDropped"))
+        hotspots_dropped_total += _to_nonnegative_int(truncation.get("hotspotsDropped"))
+
+        mode_text = str(budget.get("mode", "")).strip()
+        if mode_text:
+            mode_counter[mode_text] += 1
+        budget_chars = _to_nonnegative_int(budget.get("maxChars"))
+        if budget_chars > 0:
+            budget_chars_counter[budget_chars] += 1
+
+    if event_count <= 0:
+        return {
+            "present": False,
+            "events": 0,
+            "budgetDefault": {"maxChars": 0, "mode": None},
+            "out": {"charsTotalP90": 0, "tokenApproxP90": 0, "hotspotsP90": 0},
+            "truncation": {"hotspotsDroppedTotal": 0, "charsDroppedTotal": 0, "truncationRate": 0.0},
+        }
+
+    chars_stats = summarize_latency(chars_values)
+    token_stats = summarize_latency(token_values)
+    hotspots_stats = summarize_latency(hotspots_values)
+    top_mode = mode_counter.most_common(1)[0][0] if mode_counter else None
+    top_budget_chars = budget_chars_counter.most_common(1)[0][0] if budget_chars_counter else 0
+    truncation_rate = _safe_ratio(chars_dropped_total, max(1, sum(chars_values) + chars_dropped_total))
+    return {
+        "present": True,
+        "events": int(event_count),
+        "budgetDefault": {"maxChars": int(top_budget_chars), "mode": top_mode},
+        "out": {
+            "charsTotalP90": int(chars_stats.get("p90", 0) or 0),
+            "tokenApproxP90": int(token_stats.get("p90", 0) or 0),
+            "hotspotsP90": int(hotspots_stats.get("p90", 0) or 0),
+        },
+        "truncation": {
+            "hotspotsDroppedTotal": int(hotspots_dropped_total),
+            "charsDroppedTotal": int(chars_dropped_total),
+            "truncationRate": round(max(0.0, min(1.0, truncation_rate)), 6),
         },
     }
 

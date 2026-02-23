@@ -42,6 +42,12 @@ from byes.inference.plan_context_pack import (
     build_plan_context_pack,
     resolve_plan_context_pack_budget_from_env,
 )
+from byes.mapping.costmap import (
+    DEFAULT_COSTMAP_CONFIG,
+    DEFAULT_COSTMAP_CONTEXT_BUDGET,
+    build_costmap_context_pack,
+    build_local_costmap,
+)
 from byes.metrics import GatewayMetrics
 from byes.observability import Observability
 from byes.planner import PolicyPlannerV0, PolicyPlannerV1
@@ -191,15 +197,22 @@ def _runtime_contract_defaults() -> dict[str, Any]:
             "plannerDefaults": planner_defaults,
         },
         "planRequest": {
-            "defaultPromptVersion": "v3",
+            "defaultPromptVersion": "v4",
             "includeSegContext": True,
             "includePovContext": True,
             "includeSlamContext": True,
+            "includeCostmapContext": True,
         },
         "planContextPack": {
             "defaultBudget": {
                 "maxChars": int(plan_context_pack_budget.get("maxChars", DEFAULT_PLAN_CONTEXT_PACK_BUDGET["maxChars"])),
                 "mode": str(plan_context_pack_budget.get("mode", DEFAULT_PLAN_CONTEXT_PACK_BUDGET["mode"])),
+            }
+        },
+        "costmapContext": {
+            "defaultBudget": {
+                "maxChars": int(DEFAULT_COSTMAP_CONTEXT_BUDGET["maxChars"]),
+                "mode": str(DEFAULT_COSTMAP_CONTEXT_BUDGET["mode"]),
             }
         },
         "segPrompt": {
@@ -808,6 +821,12 @@ class GatewayApp:
         run_id = self._extract_run_id(meta)
         component = str(self.config.inference_event_component or "gateway")
         event_frame_seq = self._resolve_event_frame_seq(seq, meta)
+        depth_payload_for_costmap: dict[str, Any] | None = None
+        seg_payload_for_costmap: dict[str, Any] | None = None
+        slam_payload_for_costmap: dict[str, Any] | None = None
+        depth_backend_for_costmap = None
+        depth_model_for_costmap = None
+        depth_endpoint_for_costmap = None
         if self.config.inference_enable_ocr:
             ocr_started_ms = _now_ms()
             try:
@@ -894,6 +913,13 @@ class GatewayApp:
                 model=depth_model_id,
                 endpoint=depth_endpoint,
             )
+            depth_payload_for_costmap = depth_result.payload if isinstance(depth_result.payload, dict) else {}
+            if isinstance(depth_result.grid, dict):
+                depth_payload_for_costmap = dict(depth_payload_for_costmap)
+                depth_payload_for_costmap["grid"] = dict(depth_result.grid)
+            depth_backend_for_costmap = depth_backend_name
+            depth_model_for_costmap = depth_model_id
+            depth_endpoint_for_costmap = depth_endpoint
 
         if self.config.inference_enable_slam:
             slam_started_ms = _now_ms()
@@ -928,6 +954,17 @@ class GatewayApp:
                 model=slam_model_id,
                 endpoint=slam_endpoint,
             )
+            slam_payload_for_costmap = slam_result.payload if isinstance(slam_result.payload, dict) else {}
+            if isinstance(slam_result.pose, dict):
+                slam_payload_for_costmap = dict(slam_payload_for_costmap)
+                pose_obj = slam_payload_for_costmap.get("pose")
+                pose_obj = pose_obj if isinstance(pose_obj, dict) else {}
+                if "t" not in pose_obj and isinstance(slam_result.pose.get("t"), list):
+                    pose_obj["t"] = list(slam_result.pose.get("t") or [])
+                if "q" not in pose_obj and isinstance(slam_result.pose.get("q"), list):
+                    pose_obj["q"] = list(slam_result.pose.get("q") or [])
+                slam_payload_for_costmap["pose"] = pose_obj
+                slam_payload_for_costmap.setdefault("trackingState", slam_result.tracking_state)
 
         if self.config.inference_enable_seg:
             seg_started_ms = _now_ms()
@@ -1001,6 +1038,69 @@ class GatewayApp:
                 backend=seg_backend_name,
                 model=seg_model_id,
                 endpoint=seg_endpoint,
+            )
+            seg_payload_for_costmap = seg_result.payload if isinstance(seg_result.payload, dict) else {}
+            if isinstance(seg_result.segments, list):
+                seg_payload_for_costmap = dict(seg_payload_for_costmap)
+                seg_payload_for_costmap["segments"] = [row for row in seg_result.segments if isinstance(row, dict)]
+
+        if self.config.inference_enable_costmap:
+            costmap_started_ms = _now_ms()
+            costmap_payload = build_local_costmap(
+                run_id=run_id or "costmap-live",
+                frame_seq=event_frame_seq,
+                depth_payload=depth_payload_for_costmap,
+                seg_payload=seg_payload_for_costmap,
+                slam_payload=slam_payload_for_costmap,
+                config={
+                    "gridH": int(self.config.inference_costmap_grid_h),
+                    "gridW": int(self.config.inference_costmap_grid_w),
+                    "resolutionM": float(self.config.inference_costmap_resolution_m),
+                    "depthThreshM": float(self.config.inference_costmap_depth_thresh_m),
+                    "dynamicLabels": list(self.config.inference_costmap_dynamic_labels),
+                },
+                backend="local",
+                model="local-costmap-v1",
+                endpoint=None,
+            )
+            costmap_latency_ms = max(0, _now_ms() - costmap_started_ms)
+            await self._emit_inference_event(
+                {
+                    "schemaVersion": "byes.event.v1",
+                    "tsMs": _now_ms(),
+                    "runId": run_id,
+                    "frameSeq": event_frame_seq,
+                    "component": component,
+                    "category": "map",
+                    "name": "map.costmap",
+                    "phase": "result",
+                    "status": "ok",
+                    "latencyMs": int(costmap_latency_ms),
+                    "payload": costmap_payload,
+                }
+            )
+            costmap_context_payload = build_costmap_context_pack(
+                costmap_payload=costmap_payload,
+                budget={
+                    "maxChars": int(self.config.inference_costmap_context_max_chars),
+                    "mode": str(self.config.inference_costmap_context_mode or DEFAULT_COSTMAP_CONTEXT_BUDGET["mode"]).strip()
+                    or str(DEFAULT_COSTMAP_CONTEXT_BUDGET["mode"]),
+                },
+            )
+            await self._emit_inference_event(
+                {
+                    "schemaVersion": "byes.event.v1",
+                    "tsMs": _now_ms(),
+                    "runId": run_id,
+                    "frameSeq": event_frame_seq,
+                    "component": component,
+                    "category": "map",
+                    "name": "map.costmap_context",
+                    "phase": "result",
+                    "status": "ok",
+                    "latencyMs": int(costmap_latency_ms),
+                    "payload": costmap_context_payload,
+                }
             )
 
     async def submit_frame(
@@ -2834,6 +2934,9 @@ async def run_packages_list(
     max_depth_absrel: float | None = None,
     min_depth_coverage: float | None = None,
     max_depth_latency_p90: int | None = None,
+    min_costmap_coverage: float | None = None,
+    max_costmap_latency_p90: int | None = None,
+    max_costmap_dynamic_filter_rate_mean: float | None = None,
     min_slam_tracking_rate: float | None = None,
     max_slam_lost_rate: float | None = None,
     max_slam_latency_p90: int | None = None,
@@ -2861,6 +2964,7 @@ async def run_packages_list(
     min_plan_slam_ctx_coverage: float | None = None,
     require_plan_ctx_used: str = "any",
     require_plan_slam_ctx_used: str = "any",
+    require_plan_costmap_ctx_used: str = "any",
     max_plan_ctx_trunc_rate: float | None = None,
     min_plan_ctx_chars_p90: int | None = None,
     require_slam_ctx_present: str = "any",
@@ -2907,6 +3011,9 @@ async def run_packages_list(
         max_depth_absrel=max_depth_absrel,
         min_depth_coverage=min_depth_coverage,
         max_depth_latency_p90=max_depth_latency_p90,
+        min_costmap_coverage=min_costmap_coverage,
+        max_costmap_latency_p90=max_costmap_latency_p90,
+        max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
         min_slam_tracking_rate=min_slam_tracking_rate,
         max_slam_lost_rate=max_slam_lost_rate,
         max_slam_latency_p90=max_slam_latency_p90,
@@ -2934,6 +3041,7 @@ async def run_packages_list(
         min_plan_slam_ctx_coverage=min_plan_slam_ctx_coverage,
         require_plan_ctx_used=require_plan_ctx_used,
         require_plan_slam_ctx_used=require_plan_slam_ctx_used,
+        require_plan_costmap_ctx_used=require_plan_costmap_ctx_used,
         max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
         min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
         require_slam_ctx_present=require_slam_ctx_present,
@@ -2981,6 +3089,9 @@ async def run_packages_list(
             "max_depth_absrel": max_depth_absrel,
             "min_depth_coverage": min_depth_coverage,
             "max_depth_latency_p90": max_depth_latency_p90,
+            "min_costmap_coverage": min_costmap_coverage,
+            "max_costmap_latency_p90": max_costmap_latency_p90,
+            "max_costmap_dynamic_filter_rate_mean": max_costmap_dynamic_filter_rate_mean,
             "min_slam_tracking_rate": min_slam_tracking_rate,
             "max_slam_lost_rate": max_slam_lost_rate,
             "max_slam_latency_p90": max_slam_latency_p90,
@@ -3008,6 +3119,7 @@ async def run_packages_list(
             "min_plan_slam_ctx_coverage": min_plan_slam_ctx_coverage,
             "require_plan_ctx_used": require_plan_ctx_used,
             "require_plan_slam_ctx_used": require_plan_slam_ctx_used,
+            "require_plan_costmap_ctx_used": require_plan_costmap_ctx_used,
             "max_plan_ctx_trunc_rate": max_plan_ctx_trunc_rate,
             "min_plan_ctx_chars_p90": min_plan_ctx_chars_p90,
             "require_slam_ctx_present": require_slam_ctx_present,
@@ -3059,6 +3171,9 @@ async def run_packages_export_json(
     max_depth_absrel: float | None = None,
     min_depth_coverage: float | None = None,
     max_depth_latency_p90: int | None = None,
+    min_costmap_coverage: float | None = None,
+    max_costmap_latency_p90: int | None = None,
+    max_costmap_dynamic_filter_rate_mean: float | None = None,
     min_slam_tracking_rate: float | None = None,
     max_slam_lost_rate: float | None = None,
     max_slam_latency_p90: int | None = None,
@@ -3103,6 +3218,7 @@ async def run_packages_export_json(
     max_plan_latency_p90: int | None = None,
     max_plan_overcautious_rate: float | None = None,
     max_plan_guardrail_override_rate: float | None = None,
+    require_plan_costmap_ctx_used: str = "any",
     max_plan_guardrails: int | None = None,
     min_plan_score: float | None = None,
     plan_risk_level: str | None = None,
@@ -3128,11 +3244,14 @@ async def run_packages_export_json(
         max_ocr_latency_p90=max_ocr_latency_p90,
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
-        min_depth_delta1=min_depth_delta1,
-        max_depth_absrel=max_depth_absrel,
-        min_depth_coverage=min_depth_coverage,
-        max_depth_latency_p90=max_depth_latency_p90,
-        min_slam_tracking_rate=min_slam_tracking_rate,
+            min_depth_delta1=min_depth_delta1,
+            max_depth_absrel=max_depth_absrel,
+            min_depth_coverage=min_depth_coverage,
+            max_depth_latency_p90=max_depth_latency_p90,
+            min_costmap_coverage=min_costmap_coverage,
+            max_costmap_latency_p90=max_costmap_latency_p90,
+            max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+            min_slam_tracking_rate=min_slam_tracking_rate,
         max_slam_lost_rate=max_slam_lost_rate,
         max_slam_latency_p90=max_slam_latency_p90,
         max_slam_align_residual_p90=max_slam_align_residual_p90,
@@ -3159,6 +3278,7 @@ async def run_packages_export_json(
         min_plan_slam_ctx_coverage=min_plan_slam_ctx_coverage,
         require_plan_ctx_used=require_plan_ctx_used,
         require_plan_slam_ctx_used=require_plan_slam_ctx_used,
+        require_plan_costmap_ctx_used=require_plan_costmap_ctx_used,
         max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
         min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
         require_slam_ctx_present=require_slam_ctx_present,
@@ -3212,6 +3332,9 @@ async def run_packages_export_csv(
     max_depth_absrel: float | None = None,
     min_depth_coverage: float | None = None,
     max_depth_latency_p90: int | None = None,
+    min_costmap_coverage: float | None = None,
+    max_costmap_latency_p90: int | None = None,
+    max_costmap_dynamic_filter_rate_mean: float | None = None,
     min_slam_tracking_rate: float | None = None,
     max_slam_lost_rate: float | None = None,
     max_slam_latency_p90: int | None = None,
@@ -3256,6 +3379,7 @@ async def run_packages_export_csv(
     max_plan_latency_p90: int | None = None,
     max_plan_overcautious_rate: float | None = None,
     max_plan_guardrail_override_rate: float | None = None,
+    require_plan_costmap_ctx_used: str = "any",
     max_plan_guardrails: int | None = None,
     min_plan_score: float | None = None,
     plan_risk_level: str | None = None,
@@ -3285,6 +3409,9 @@ async def run_packages_export_csv(
         max_depth_absrel=max_depth_absrel,
         min_depth_coverage=min_depth_coverage,
         max_depth_latency_p90=max_depth_latency_p90,
+        min_costmap_coverage=min_costmap_coverage,
+        max_costmap_latency_p90=max_costmap_latency_p90,
+        max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
         min_slam_tracking_rate=min_slam_tracking_rate,
         max_slam_lost_rate=max_slam_lost_rate,
         max_slam_latency_p90=max_slam_latency_p90,
@@ -3329,6 +3456,7 @@ async def run_packages_export_csv(
         max_plan_latency_p90=max_plan_latency_p90,
         max_plan_overcautious_rate=max_plan_overcautious_rate,
         max_plan_guardrail_override_rate=max_plan_guardrail_override_rate,
+        require_plan_costmap_ctx_used=require_plan_costmap_ctx_used,
         max_plan_guardrails=max_plan_guardrails,
         min_plan_score=min_plan_score,
         plan_risk_level=plan_risk_level,
@@ -3372,6 +3500,10 @@ async def run_packages_export_csv(
         "depth_delta1",
         "depth_coverage",
         "depth_latency_p90",
+        "costmap_coverage",
+        "costmap_latency_p90",
+        "costmap_density_mean",
+        "costmap_dynamic_filter_rate_mean",
         "slam_tracking_rate",
         "slam_lost_rate",
         "slam_latency_p90",
@@ -3414,6 +3546,8 @@ async def run_packages_export_csv(
         "plan_slam_ctx_coverage",
         "plan_slam_ctx_hit_rate",
         "plan_slam_ctx_used_rate",
+        "plan_costmap_ctx_coverage_p90",
+        "plan_costmap_ctx_used_rate",
         "plan_ctx_chars_p90",
         "plan_ctx_trunc_rate",
         "plan_ctx_seg_chars_p90",
@@ -4275,6 +4409,8 @@ def _build_plan_request_event_payload(plan_request: dict[str, Any] | None, plann
     pov = pov if isinstance(pov, dict) else {}
     slam = contexts.get("slam")
     slam = slam if isinstance(slam, dict) else {}
+    costmap = contexts.get("costmap")
+    costmap = costmap if isinstance(costmap, dict) else {}
     seg_trunc = seg.get("truncation")
     seg_trunc = seg_trunc if isinstance(seg_trunc, dict) else {}
     meta = request_payload.get("meta")
@@ -4282,9 +4418,13 @@ def _build_plan_request_event_payload(plan_request: dict[str, Any] | None, plann
     seg_chars = int(seg.get("chars", 0) or 0)
     pov_chars = int(pov.get("chars", 0) or 0)
     slam_chars = int(slam.get("chars", meta.get("slamChars", 0)) or 0)
+    costmap_chars = int(costmap.get("chars", meta.get("costmapChars", 0)) or 0)
     slam_included_raw = slam.get("present")
     if not isinstance(slam_included_raw, bool):
         slam_included_raw = meta.get("slamIncluded")
+    costmap_included_raw = costmap.get("present")
+    if not isinstance(costmap_included_raw, bool):
+        costmap_included_raw = meta.get("costmapIncluded")
     return {
         "schemaVersion": "byes.plan_request.v1",
         "provider": planner.get("plannerProvider") or planner.get("provider") or meta.get("provider"),
@@ -4292,9 +4432,13 @@ def _build_plan_request_event_payload(plan_request: dict[str, Any] | None, plann
         "segIncluded": bool(seg.get("included")),
         "povIncluded": bool(pov.get("included")),
         "slamIncluded": bool(slam_included_raw) if isinstance(slam_included_raw, bool) else bool(slam.get("promptFragment")),
+        "costmapIncluded": bool(costmap_included_raw)
+        if isinstance(costmap_included_raw, bool)
+        else bool(costmap.get("promptFragment")),
         "segChars": int(max(0, seg_chars)),
         "povChars": int(max(0, pov_chars)),
         "slamChars": int(max(0, slam_chars)),
+        "costmapChars": int(max(0, costmap_chars)),
         "segTruncSegmentsDropped": int(max(0, int(seg_trunc.get("segmentsDropped", 0) or 0))),
         "segTruncCharsDropped": int(max(0, int(seg_trunc.get("charsDropped", 0) or 0))),
         "fallbackUsed": bool(planner.get("fallbackUsed")) if isinstance(planner.get("fallbackUsed"), bool) else None,
@@ -4333,12 +4477,16 @@ def _build_plan_context_alignment_event_payload(
     pov = pov if isinstance(pov, dict) else {}
     slam = payload.get("slam")
     slam = slam if isinstance(slam, dict) else {}
+    costmap = payload.get("costmap")
+    costmap = costmap if isinstance(costmap, dict) else {}
     detail = payload.get("contextUsedDetail")
     detail = detail if isinstance(detail, dict) else {}
     matched_raw = seg.get("matched")
     matched = [str(item) for item in matched_raw[:5]] if isinstance(matched_raw, list) else []
     slam_matched_raw = slam.get("matched")
     slam_matched = [str(item) for item in slam_matched_raw[:5]] if isinstance(slam_matched_raw, list) else []
+    costmap_matched_raw = costmap.get("matched")
+    costmap_matched = [str(item) for item in costmap_matched_raw[:5]] if isinstance(costmap_matched_raw, list) else []
     return {
         "schemaVersion": "plan.context_alignment.v1",
         "seg": {
@@ -4362,11 +4510,19 @@ def _build_plan_context_alignment_event_payload(
             "planTextChars": _nn_int(slam.get("planTextChars")),
             "matched": slam_matched,
         },
+        "costmap": {
+            "present": bool(costmap.get("present")),
+            "hit": bool(costmap.get("hit")),
+            "coverage": _unit_float(costmap.get("coverage")),
+            "planTextChars": _nn_int(costmap.get("planTextChars")),
+            "matched": costmap_matched,
+        },
         "contextUsed": bool(payload.get("contextUsed")),
         "contextUsedDetail": {
             "seg": bool(detail.get("seg")),
             "pov": bool(detail.get("pov")),
             "slam": bool(detail.get("slam")),
+            "costmap": bool(detail.get("costmap")),
         },
     }
 
@@ -4842,6 +4998,7 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     seg_quality = quality_payload.get("seg", {}) if isinstance(quality_payload, dict) else {}
     depth_quality = quality_payload.get("depth", {}) if isinstance(quality_payload, dict) else {}
     slam_quality = quality_payload.get("slam", {}) if isinstance(quality_payload, dict) else {}
+    costmap_quality = quality_payload.get("costmap", {}) if isinstance(quality_payload, dict) else {}
     slam_error_payload = quality_payload.get("slamError", {}) if isinstance(quality_payload, dict) else {}
     pov_payload = summary.get("pov", {})
     pov_payload = pov_payload if isinstance(pov_payload, dict) else {}
@@ -4889,6 +5046,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     depth_delta1: float | None = None
     depth_coverage: float | None = None
     depth_latency_p90: int | None = None
+    costmap_coverage: float | None = None
+    costmap_latency_p90: int | None = None
+    costmap_density_mean: float | None = None
+    costmap_dynamic_filter_rate_mean: float | None = None
     slam_tracking_rate: float | None = None
     slam_lost_rate: float | None = None
     slam_relocalized: int | None = None
@@ -4950,6 +5111,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     plan_slam_ctx_coverage: float | None = None
     plan_slam_ctx_hit_rate: float | None = None
     plan_slam_ctx_used_rate: float | None = None
+    plan_costmap_ctx_coverage_p90: float | None = None
+    plan_costmap_ctx_used_rate: float | None = None
     plan_ctx_chars_p90: int | None = None
     plan_ctx_trunc_rate: float | None = None
     plan_ctx_seg_chars_p90: int | None = None
@@ -5089,6 +5252,16 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         slam_used_raw = _read_float(slam_ctx_payload, "contextUsedRate")
         if slam_used_raw is not None:
             plan_slam_ctx_used_rate = float(slam_used_raw)
+        costmap_ctx_payload = plan_context_payload.get("costmap")
+        costmap_ctx_payload = costmap_ctx_payload if isinstance(costmap_ctx_payload, dict) else {}
+        costmap_cov_raw = _read_float(costmap_ctx_payload, "coverageP90")
+        if costmap_cov_raw is None:
+            costmap_cov_raw = _read_float(costmap_ctx_payload, "coverageMean")
+        if costmap_cov_raw is not None:
+            plan_costmap_ctx_coverage_p90 = float(costmap_cov_raw)
+        costmap_used_raw = _read_float(costmap_ctx_payload, "contextUsedRate")
+        if costmap_used_raw is not None:
+            plan_costmap_ctx_used_rate = float(costmap_used_raw)
     if isinstance(plan_context_pack_payload, dict) and bool(plan_context_pack_payload.get("present")):
         out_payload = plan_context_pack_payload.get("out")
         out_payload = out_payload if isinstance(out_payload, dict) else {}
@@ -5273,6 +5446,25 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         raw_depth_p90 = _read_float(depth_latency, "p90")
         if raw_depth_p90 is not None:
             depth_latency_p90 = int(raw_depth_p90)
+    if isinstance(costmap_quality, dict):
+        raw_costmap_cov = _read_float(costmap_quality, "coverage")
+        if raw_costmap_cov is not None:
+            costmap_coverage = float(raw_costmap_cov)
+        costmap_latency = costmap_quality.get("latencyMs")
+        costmap_latency = costmap_latency if isinstance(costmap_latency, dict) else {}
+        raw_costmap_latency_p90 = _read_float(costmap_latency, "p90")
+        if raw_costmap_latency_p90 is not None:
+            costmap_latency_p90 = int(raw_costmap_latency_p90)
+        costmap_density = costmap_quality.get("densityMean")
+        costmap_density = costmap_density if isinstance(costmap_density, dict) else {}
+        raw_density_mean = _read_float(costmap_density, "mean")
+        if raw_density_mean is not None:
+            costmap_density_mean = float(raw_density_mean)
+        dynamic_filter = costmap_quality.get("dynamicFilteredRate")
+        dynamic_filter = dynamic_filter if isinstance(dynamic_filter, dict) else {}
+        raw_dynamic_mean = _read_float(dynamic_filter, "mean")
+        if raw_dynamic_mean is not None:
+            costmap_dynamic_filter_rate_mean = float(raw_dynamic_mean)
     if isinstance(slam_quality, dict):
         tracking_payload = slam_quality.get("tracking")
         tracking_payload = tracking_payload if isinstance(tracking_payload, dict) else {}
@@ -5396,6 +5588,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "depth_delta1": depth_delta1,
         "depth_coverage": depth_coverage,
         "depth_latency_p90": depth_latency_p90,
+        "costmap_coverage": costmap_coverage,
+        "costmap_latency_p90": costmap_latency_p90,
+        "costmap_density_mean": costmap_density_mean,
+        "costmap_dynamic_filter_rate_mean": costmap_dynamic_filter_rate_mean,
         "slam_tracking_rate": slam_tracking_rate,
         "slam_lost_rate": slam_lost_rate,
         "slam_relocalized": slam_relocalized,
@@ -5450,6 +5646,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "plan_slam_ctx_coverage": plan_slam_ctx_coverage,
         "plan_slam_ctx_hit_rate": plan_slam_ctx_hit_rate,
         "plan_slam_ctx_used_rate": plan_slam_ctx_used_rate,
+        "plan_costmap_ctx_coverage_p90": plan_costmap_ctx_coverage_p90,
+        "plan_costmap_ctx_used_rate": plan_costmap_ctx_used_rate,
         "plan_ctx_chars_p90": plan_ctx_chars_p90,
         "plan_ctx_trunc_rate": plan_ctx_trunc_rate,
         "plan_ctx_seg_chars_p90": plan_ctx_seg_chars_p90,
@@ -5504,6 +5702,9 @@ def _matches_run_filters(
     max_depth_absrel: float | None,
     min_depth_coverage: float | None,
     max_depth_latency_p90: int | None,
+    min_costmap_coverage: float | None = None,
+    max_costmap_latency_p90: int | None = None,
+    max_costmap_dynamic_filter_rate_mean: float | None = None,
     min_slam_tracking_rate: float | None,
     max_slam_lost_rate: float | None,
     max_slam_latency_p90: int | None,
@@ -5531,6 +5732,7 @@ def _matches_run_filters(
     min_plan_slam_ctx_coverage: float | None,
     require_plan_ctx_used: str | None,
     require_plan_slam_ctx_used: str | None,
+    require_plan_costmap_ctx_used: str | None = None,
     max_plan_ctx_trunc_rate: float | None,
     min_plan_ctx_chars_p90: int | None,
     require_slam_ctx_present: str | None,
@@ -5655,6 +5857,24 @@ def _matches_run_filters(
         if value is None:
             return False
         if int(value) > int(max_depth_latency_p90):
+            return False
+    if min_costmap_coverage is not None:
+        value = row.get("costmap_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_costmap_coverage):
+            return False
+    if max_costmap_latency_p90 is not None:
+        value = row.get("costmap_latency_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_costmap_latency_p90):
+            return False
+    if max_costmap_dynamic_filter_rate_mean is not None:
+        value = row.get("costmap_dynamic_filter_rate_mean")
+        if value is None:
+            return False
+        if float(value) > float(max_costmap_dynamic_filter_rate_mean):
             return False
     if min_slam_tracking_rate is not None:
         value = row.get("slam_tracking_rate")
@@ -5817,6 +6037,14 @@ def _matches_run_filters(
     if require_plan_slam_ctx_used:
         normalized = require_plan_slam_ctx_used.strip().lower()
         used_rate = row.get("plan_slam_ctx_used_rate")
+        present = bool(float(used_rate)) if isinstance(used_rate, (int, float)) else False
+        if normalized in {"true", "1", "yes"} and not present:
+            return False
+        if normalized in {"false", "0", "no"} and present:
+            return False
+    if require_plan_costmap_ctx_used:
+        normalized = require_plan_costmap_ctx_used.strip().lower()
+        used_rate = row.get("plan_costmap_ctx_used_rate")
         present = bool(float(used_rate)) if isinstance(used_rate, (int, float)) else False
         if normalized in {"true", "1", "yes"} and not present:
             return False
@@ -5998,6 +6226,8 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "plan_pov_ctx_coverage",
         "plan_slam_ctx_coverage",
         "plan_slam_ctx_used_rate",
+        "plan_costmap_ctx_coverage_p90",
+        "plan_costmap_ctx_used_rate",
         "plan_ctx_used_rate",
         "plan_ctx_chars_p90",
         "plan_ctx_trunc_rate",
@@ -6066,6 +6296,9 @@ async def _query_run_package_rows(
     max_depth_absrel: float | None,
     min_depth_coverage: float | None,
     max_depth_latency_p90: int | None,
+    min_costmap_coverage: float | None,
+    max_costmap_latency_p90: int | None,
+    max_costmap_dynamic_filter_rate_mean: float | None,
     min_slam_tracking_rate: float | None,
     max_slam_lost_rate: float | None,
     max_slam_latency_p90: int | None,
@@ -6093,6 +6326,7 @@ async def _query_run_package_rows(
     min_plan_slam_ctx_coverage: float | None,
     require_plan_ctx_used: str | None,
     require_plan_slam_ctx_used: str | None,
+    require_plan_costmap_ctx_used: str | None,
     max_plan_ctx_trunc_rate: float | None,
     min_plan_ctx_chars_p90: int | None,
     require_slam_ctx_present: str | None,
@@ -6145,6 +6379,9 @@ async def _query_run_package_rows(
             max_depth_absrel=max_depth_absrel,
             min_depth_coverage=min_depth_coverage,
             max_depth_latency_p90=max_depth_latency_p90,
+            min_costmap_coverage=min_costmap_coverage,
+            max_costmap_latency_p90=max_costmap_latency_p90,
+            max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
             min_slam_tracking_rate=min_slam_tracking_rate,
             max_slam_lost_rate=max_slam_lost_rate,
             max_slam_latency_p90=max_slam_latency_p90,
@@ -6172,6 +6409,7 @@ async def _query_run_package_rows(
             min_plan_slam_ctx_coverage=min_plan_slam_ctx_coverage,
             require_plan_ctx_used=require_plan_ctx_used,
             require_plan_slam_ctx_used=require_plan_slam_ctx_used,
+            require_plan_costmap_ctx_used=require_plan_costmap_ctx_used,
             max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
             min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
             require_slam_ctx_present=require_slam_ctx_present,
@@ -6252,6 +6490,9 @@ async def runs_dashboard(
     max_depth_absrel: float | None = None,
     min_depth_coverage: float | None = None,
     max_depth_latency_p90: int | None = None,
+    min_costmap_coverage: float | None = None,
+    max_costmap_latency_p90: int | None = None,
+    max_costmap_dynamic_filter_rate_mean: float | None = None,
     min_slam_tracking_rate: float | None = None,
     max_slam_lost_rate: float | None = None,
     max_slam_latency_p90: int | None = None,
@@ -6296,6 +6537,7 @@ async def runs_dashboard(
     max_plan_latency_p90: int | None = None,
     max_plan_overcautious_rate: float | None = None,
     max_plan_guardrail_override_rate: float | None = None,
+    require_plan_costmap_ctx_used: str = "any",
     max_plan_guardrails: int | None = None,
     min_plan_score: float | None = None,
     plan_risk_level: str | None = None,
@@ -6326,6 +6568,9 @@ async def runs_dashboard(
         max_depth_absrel=max_depth_absrel,
         min_depth_coverage=min_depth_coverage,
         max_depth_latency_p90=max_depth_latency_p90,
+        min_costmap_coverage=min_costmap_coverage,
+        max_costmap_latency_p90=max_costmap_latency_p90,
+        max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
         min_slam_tracking_rate=min_slam_tracking_rate,
         max_slam_lost_rate=max_slam_lost_rate,
         max_slam_latency_p90=max_slam_latency_p90,
@@ -6370,6 +6615,7 @@ async def runs_dashboard(
         max_plan_latency_p90=max_plan_latency_p90,
         max_plan_overcautious_rate=max_plan_overcautious_rate,
         max_plan_guardrail_override_rate=max_plan_guardrail_override_rate,
+        require_plan_costmap_ctx_used=require_plan_costmap_ctx_used,
         max_plan_guardrails=max_plan_guardrails,
         min_plan_score=min_plan_score,
         plan_risk_level=plan_risk_level,
@@ -6445,6 +6691,14 @@ async def runs_dashboard(
         depth_cov = "—" if depth_cov_raw is None else f"{float(depth_cov_raw):.4f}"
         depth_p90_raw = row.get("depth_latency_p90")
         depth_p90 = "—" if depth_p90_raw is None else str(int(depth_p90_raw))
+        costmap_cov_raw = row.get("costmap_coverage")
+        costmap_cov = "—" if costmap_cov_raw is None else f"{float(costmap_cov_raw):.4f}"
+        costmap_p90_raw = row.get("costmap_latency_p90")
+        costmap_p90 = "—" if costmap_p90_raw is None else str(int(costmap_p90_raw))
+        costmap_density_raw = row.get("costmap_density_mean")
+        costmap_density = "—" if costmap_density_raw is None else f"{float(costmap_density_raw):.4f}"
+        costmap_dynamic_raw = row.get("costmap_dynamic_filter_rate_mean")
+        costmap_dynamic = "—" if costmap_dynamic_raw is None else f"{float(costmap_dynamic_raw):.4f}"
         slam_tracking_rate_raw = row.get("slam_tracking_rate")
         slam_tracking_rate = "—" if slam_tracking_rate_raw is None else f"{float(slam_tracking_rate_raw):.4f}"
         slam_lost_rate_raw = row.get("slam_lost_rate")
@@ -6506,6 +6760,10 @@ async def runs_dashboard(
         overcautious_rate = "—" if overcautious_raw is None else f"{float(overcautious_raw):.4f}"
         guardrail_override_raw = row.get("plan_guardrail_override_rate")
         guardrail_override_rate = "—" if guardrail_override_raw is None else f"{float(guardrail_override_raw):.4f}"
+        plan_costmap_used_rate_raw = row.get("plan_costmap_ctx_used_rate")
+        plan_costmap_used_rate = "—" if plan_costmap_used_rate_raw is None else f"{float(plan_costmap_used_rate_raw):.4f}"
+        plan_costmap_coverage_raw = row.get("plan_costmap_ctx_coverage_p90")
+        plan_costmap_coverage = "—" if plan_costmap_coverage_raw is None else f"{float(plan_costmap_coverage_raw):.4f}"
         rows_html += (
             "<tr>"
             f"<td><input type='checkbox' data-run-id='{run_val}' /></td>"
@@ -6543,6 +6801,10 @@ async def runs_dashboard(
             f"<td>{html.escape(depth_delta1)}</td>"
             f"<td>{html.escape(depth_cov)}</td>"
             f"<td>{html.escape(depth_p90)}</td>"
+            f"<td>{html.escape(costmap_cov)}</td>"
+            f"<td>{html.escape(costmap_p90)}</td>"
+            f"<td>{html.escape(costmap_density)}</td>"
+            f"<td>{html.escape(costmap_dynamic)}</td>"
             f"<td>{html.escape(slam_tracking_rate)}</td>"
             f"<td>{html.escape(slam_lost_rate)}</td>"
             f"<td>{html.escape(slam_relocalized)}</td>"
@@ -6580,10 +6842,12 @@ async def runs_dashboard(
             f"<td>{html.escape(confirm_requests)}</td>"
             f"<td>{html.escape(overcautious_rate)}</td>"
             f"<td>{html.escape(guardrail_override_rate)}</td>"
+            f"<td>{html.escape(plan_costmap_coverage)}</td>"
+            f"<td>{html.escape(plan_costmap_used_rate)}</td>"
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='88' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='94' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -6606,6 +6870,11 @@ async def runs_dashboard(
     max_depth_absrel_value = html.escape("" if max_depth_absrel is None else str(max_depth_absrel))
     min_depth_coverage_value = html.escape("" if min_depth_coverage is None else str(min_depth_coverage))
     max_depth_latency_p90_value = html.escape("" if max_depth_latency_p90 is None else str(max_depth_latency_p90))
+    min_costmap_coverage_value = html.escape("" if min_costmap_coverage is None else str(min_costmap_coverage))
+    max_costmap_latency_p90_value = html.escape("" if max_costmap_latency_p90 is None else str(max_costmap_latency_p90))
+    max_costmap_dynamic_filter_rate_mean_value = html.escape(
+        "" if max_costmap_dynamic_filter_rate_mean is None else str(max_costmap_dynamic_filter_rate_mean)
+    )
     min_slam_tracking_rate_value = html.escape("" if min_slam_tracking_rate is None else str(min_slam_tracking_rate))
     max_slam_lost_rate_value = html.escape("" if max_slam_lost_rate is None else str(max_slam_lost_rate))
     max_slam_latency_p90_value = html.escape("" if max_slam_latency_p90 is None else str(max_slam_latency_p90))
@@ -6661,6 +6930,7 @@ async def runs_dashboard(
     max_plan_guardrail_override_rate_value = html.escape(
         "" if max_plan_guardrail_override_rate is None else str(max_plan_guardrail_override_rate)
     )
+    require_plan_costmap_ctx_used_value = html.escape(require_plan_costmap_ctx_used or "any")
     max_plan_guardrails_value = html.escape("" if max_plan_guardrails is None else str(max_plan_guardrails))
     min_plan_score_value = html.escape("" if min_plan_score is None else str(min_plan_score))
     plan_risk_level_value = html.escape(plan_risk_level or "")
@@ -6747,6 +7017,9 @@ async def runs_dashboard(
       <label>max_depth_absrel: <input type="number" step="0.0001" min="0" name="max_depth_absrel" value="{max_depth_absrel_value}" /></label>
       <label>min_depth_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_depth_coverage" value="{min_depth_coverage_value}" /></label>
       <label>max_depth_latency_p90: <input type="number" min="0" name="max_depth_latency_p90" value="{max_depth_latency_p90_value}" /></label>
+      <label>min_costmap_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_coverage" value="{min_costmap_coverage_value}" /></label>
+      <label>max_costmap_latency_p90: <input type="number" min="0" name="max_costmap_latency_p90" value="{max_costmap_latency_p90_value}" /></label>
+      <label>max_costmap_dynamic_filter_rate_mean: <input type="number" step="0.0001" min="0" max="1" name="max_costmap_dynamic_filter_rate_mean" value="{max_costmap_dynamic_filter_rate_mean_value}" /></label>
       <label>min_slam_tracking_rate: <input type="number" step="0.0001" min="0" max="1" name="min_slam_tracking_rate" value="{min_slam_tracking_rate_value}" /></label>
       <label>max_slam_lost_rate: <input type="number" step="0.0001" min="0" max="1" name="max_slam_lost_rate" value="{max_slam_lost_rate_value}" /></label>
       <label>max_slam_latency_p90: <input type="number" min="0" name="max_slam_latency_p90" value="{max_slam_latency_p90_value}" /></label>
@@ -6767,6 +7040,13 @@ async def runs_dashboard(
       <label>max_plan_latency_p90: <input type="number" min="0" name="max_plan_latency_p90" value="{max_plan_latency_p90_value}" /></label>
       <label>max_plan_overcautious_rate: <input type="number" step="0.0001" min="0" max="1" name="max_plan_overcautious_rate" value="{max_plan_overcautious_rate_value}" /></label>
       <label>max_plan_guardrail_override_rate: <input type="number" step="0.0001" min="0" max="1" name="max_plan_guardrail_override_rate" value="{max_plan_guardrail_override_rate_value}" /></label>
+      <label>require_plan_costmap_ctx_used:
+        <select name="require_plan_costmap_ctx_used">
+          <option value="any" {"selected" if require_plan_costmap_ctx_used_value == "any" else ""}>any</option>
+          <option value="true" {"selected" if require_plan_costmap_ctx_used_value == "true" else ""}>true</option>
+          <option value="false" {"selected" if require_plan_costmap_ctx_used_value == "false" else ""}>false</option>
+        </select>
+      </label>
       <label>min_plan_score: <input type="number" step="0.01" min="0" max="100" name="min_plan_score" value="{min_plan_score_value}" /></label>
       <label>plan_risk_level:
         <select name="plan_risk_level">
@@ -6802,6 +7082,10 @@ async def runs_dashboard(
           <option value="depth_delta1" {"selected" if sort_value == "depth_delta1" else ""}>depth_delta1</option>
           <option value="depth_coverage" {"selected" if sort_value == "depth_coverage" else ""}>depth_coverage</option>
           <option value="depth_latency_p90" {"selected" if sort_value == "depth_latency_p90" else ""}>depth_latency_p90</option>
+          <option value="costmap_coverage" {"selected" if sort_value == "costmap_coverage" else ""}>costmap_coverage</option>
+          <option value="costmap_latency_p90" {"selected" if sort_value == "costmap_latency_p90" else ""}>costmap_latency_p90</option>
+          <option value="costmap_density_mean" {"selected" if sort_value == "costmap_density_mean" else ""}>costmap_density_mean</option>
+          <option value="costmap_dynamic_filter_rate_mean" {"selected" if sort_value == "costmap_dynamic_filter_rate_mean" else ""}>costmap_dynamic_filter_rate_mean</option>
           <option value="slam_tracking_rate" {"selected" if sort_value == "slam_tracking_rate" else ""}>slam_tracking_rate</option>
           <option value="slam_lost_rate" {"selected" if sort_value == "slam_lost_rate" else ""}>slam_lost_rate</option>
           <option value="slam_latency_p90" {"selected" if sort_value == "slam_latency_p90" else ""}>slam_latency_p90</option>
@@ -6831,6 +7115,8 @@ async def runs_dashboard(
           <option value="plan_guardrails" {"selected" if sort_value == "plan_guardrails" else ""}>plan_guardrails</option>
           <option value="plan_latency_p90" {"selected" if sort_value == "plan_latency_p90" else ""}>plan_latency_p90</option>
           <option value="confirm_timeouts" {"selected" if sort_value == "confirm_timeouts" else ""}>confirm_timeouts</option>
+          <option value="plan_costmap_ctx_coverage_p90" {"selected" if sort_value == "plan_costmap_ctx_coverage_p90" else ""}>plan_costmap_ctx_coverage_p90</option>
+          <option value="plan_costmap_ctx_used_rate" {"selected" if sort_value == "plan_costmap_ctx_used_rate" else ""}>plan_costmap_ctx_used_rate</option>
           <option value="plan_score" {"selected" if sort_value == "plan_score" else ""}>plan_score</option>
           <option value="e2e_count" {"selected" if sort_value == "e2e_count" else ""}>e2e_count</option>
           <option value="ttfa_count" {"selected" if sort_value == "ttfa_count" else ""}>ttfa_count</option>
@@ -6845,8 +7131,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -6887,6 +7173,10 @@ async def runs_dashboard(
           <th>Depth Delta1</th>
           <th>Depth Coverage</th>
           <th>Depth p90(ms)</th>
+          <th>Costmap Coverage</th>
+          <th>Costmap p90(ms)</th>
+          <th>Costmap DensityMean</th>
+          <th>Costmap DynamicFilterMean</th>
           <th>SLAM Tracking</th>
           <th>SLAM Lost</th>
           <th>SLAM Relocalized</th>
@@ -6924,6 +7214,8 @@ async def runs_dashboard(
           <th>Confirm Req</th>
           <th>Overcautious</th>
           <th>Guardrail Override</th>
+          <th>Plan Costmap Ctx Coverage</th>
+          <th>Plan Costmap Ctx Used</th>
         </tr>
       </thead>
       <tbody id="runs">{rows_html}</tbody>

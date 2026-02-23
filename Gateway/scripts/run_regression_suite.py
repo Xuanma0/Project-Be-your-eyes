@@ -80,6 +80,14 @@ class RunSummary:
     depth_payload_schema_ok: bool = False
     depth_lines: int = 0
     depth_schema_ok_lines: int = 0
+    costmap_events_present: bool = False
+    costmap_schema_ok: bool = False
+    costmap_lines: int = 0
+    costmap_context_present: bool = False
+    costmap_context_schema_ok: bool = False
+    costmap_context_lines: int = 0
+    costmap_latency_p90: float = 0.0
+    costmap_dynamic_filtered_rate_mean: float = 0.0
     slam_pose_events_present: bool = False
     slam_pose_payload_schema_ok: bool = False
     slam_pose_lines: int = 0
@@ -117,6 +125,10 @@ class RunSummary:
     plan_context_slam_schema_ok: bool = False
     plan_slam_coverage_p90: float = 0.0
     plan_slam_used_true_count: int = 0
+    plan_context_costmap_present: bool = False
+    plan_context_costmap_schema_ok: bool = False
+    plan_costmap_coverage_p90: float = 0.0
+    plan_costmap_used_true_count: int = 0
     plan_context_pack_events_present: bool = False
     plan_context_pack_schema_ok: bool = False
     plan_context_pack_lines: int = 0
@@ -250,6 +262,14 @@ class RunSummary:
                 "depthPayloadSchemaOk": self.depth_payload_schema_ok,
                 "depthLines": self.depth_lines,
                 "depthSchemaOkLines": self.depth_schema_ok_lines,
+                "costmapEventsPresent": self.costmap_events_present,
+                "costmapSchemaOk": self.costmap_schema_ok,
+                "costmapLines": self.costmap_lines,
+                "costmapContextPresent": self.costmap_context_present,
+                "costmapContextSchemaOk": self.costmap_context_schema_ok,
+                "costmapContextLines": self.costmap_context_lines,
+                "costmapLatencyP90": self.costmap_latency_p90,
+                "costmapDynamicFilteredRateMean": self.costmap_dynamic_filtered_rate_mean,
                 "slamPoseEventsPresent": self.slam_pose_events_present,
                 "slamPosePayloadSchemaOk": self.slam_pose_payload_schema_ok,
                 "slamPoseLines": self.slam_pose_lines,
@@ -287,6 +307,10 @@ class RunSummary:
                 "planContextSlamSchemaOk": self.plan_context_slam_schema_ok,
                 "planSlamCoverageP90": self.plan_slam_coverage_p90,
                 "planSlamUsedTrueCount": self.plan_slam_used_true_count,
+                "planContextCostmapPresent": self.plan_context_costmap_present,
+                "planContextCostmapSchemaOk": self.plan_context_costmap_schema_ok,
+                "planCostmapCoverageP90": self.plan_costmap_coverage_p90,
+                "planCostmapUsedTrueCount": self.plan_costmap_used_true_count,
                 "planContextPackEventsPresent": self.plan_context_pack_events_present,
                 "planContextPackSchemaOk": self.plan_context_pack_schema_ok,
                 "planContextPackLines": self.plan_context_pack_lines,
@@ -778,6 +802,10 @@ def run_suite(
     run_require_seg_payload_schema_ok: dict[str, bool] = {}
     run_require_depth_events_present: dict[str, bool] = {}
     run_require_depth_payload_schema_ok: dict[str, bool] = {}
+    run_require_costmap_events_present: dict[str, bool] = {}
+    run_require_costmap_schema_ok: dict[str, bool] = {}
+    run_require_costmap_context_present: dict[str, bool] = {}
+    run_require_costmap_context_schema_ok: dict[str, bool] = {}
     run_require_slam_pose_events_present: dict[str, bool] = {}
     run_require_slam_pose_payload_schema_ok: dict[str, bool] = {}
     run_require_seg_prompt_events_present: dict[str, bool] = {}
@@ -830,6 +858,16 @@ def run_suite(
         run_require_seg_payload_schema_ok[run_id] = _to_bool01(run_cfg.get("requireSegPayloadSchemaOk"), False)
         run_require_depth_events_present[run_id] = _to_bool01(run_cfg.get("requireDepthEventsPresent"), False)
         run_require_depth_payload_schema_ok[run_id] = _to_bool01(run_cfg.get("requireDepthPayloadSchemaOk"), False)
+        run_require_costmap_events_present[run_id] = _to_bool01(run_cfg.get("requireCostmapEventsPresent"), False)
+        run_require_costmap_schema_ok[run_id] = _to_bool01(run_cfg.get("requireCostmapSchemaOk"), False)
+        run_require_costmap_context_present[run_id] = _to_bool01(
+            run_cfg.get("requireCostmapContextPresent"),
+            False,
+        )
+        run_require_costmap_context_schema_ok[run_id] = _to_bool01(
+            run_cfg.get("requireCostmapContextSchemaOk"),
+            False,
+        )
         run_require_slam_pose_events_present[run_id] = _to_bool01(run_cfg.get("requireSlamPoseEventsPresent"), False)
         run_require_slam_pose_payload_schema_ok[run_id] = _to_bool01(
             run_cfg.get("requireSlamPosePayloadSchemaOk"),
@@ -933,6 +971,16 @@ def run_suite(
                     run_summary.depth_payload_schema_ok = bool(lint_summary.get("depthPayloadSchemaOk", 0))
                     run_summary.depth_lines = int(lint_summary.get("depthLines", 0) or 0)
                     run_summary.depth_schema_ok_lines = int(lint_summary.get("depthSchemaOk", 0) or 0)
+                    run_summary.costmap_events_present = bool(lint_summary.get("costmapEventsPresent", 0))
+                    run_summary.costmap_schema_ok = bool(lint_summary.get("costmapSchemaOk", 0))
+                    run_summary.costmap_lines = int(lint_summary.get("costmapLines", 0) or 0)
+                    run_summary.costmap_context_present = bool(lint_summary.get("costmapContextPresent", 0))
+                    run_summary.costmap_context_schema_ok = bool(lint_summary.get("costmapContextSchemaOk", 0))
+                    run_summary.costmap_context_lines = int(lint_summary.get("costmapContextLines", 0) or 0)
+                    run_summary.costmap_latency_p90 = float(lint_summary.get("costmapLatencyP90", 0.0) or 0.0)
+                    run_summary.costmap_dynamic_filtered_rate_mean = float(
+                        lint_summary.get("costmapDynamicFilteredRateMean", 0.0) or 0.0
+                    )
                     run_summary.slam_pose_events_present = bool(lint_summary.get("slamPoseEventsPresent", 0))
                     run_summary.slam_pose_payload_schema_ok = bool(lint_summary.get("slamPosePayloadSchemaOk", 0))
                     run_summary.slam_pose_lines = int(lint_summary.get("slamPoseLines", 0) or 0)
@@ -972,6 +1020,14 @@ def run_suite(
                     run_summary.plan_context_slam_schema_ok = bool(lint_summary.get("planContextSlamSchemaOk", 0))
                     run_summary.plan_slam_coverage_p90 = float(lint_summary.get("planSlamCoverageP90", 0.0) or 0.0)
                     run_summary.plan_slam_used_true_count = int(lint_summary.get("planSlamUsedTrueCount", 0) or 0)
+                    run_summary.plan_context_costmap_present = bool(lint_summary.get("planContextCostmapPresent", 0))
+                    run_summary.plan_context_costmap_schema_ok = bool(lint_summary.get("planContextCostmapSchemaOk", 0))
+                    run_summary.plan_costmap_coverage_p90 = float(
+                        lint_summary.get("planCostmapCoverageP90", 0.0) or 0.0
+                    )
+                    run_summary.plan_costmap_used_true_count = int(
+                        lint_summary.get("planCostmapUsedTrueCount", 0) or 0
+                    )
                     run_summary.plan_context_pack_events_present = bool(lint_summary.get("planContextPackPresent", 0))
                     run_summary.plan_context_pack_schema_ok = bool(lint_summary.get("planContextPackSchemaOk", 0))
                     run_summary.plan_context_pack_lines = int(lint_summary.get("planContextPackLines", 0) or 0)
@@ -1060,6 +1116,14 @@ def run_suite(
             failures.append(f"{run.run_id}: depth events missing (depth.estimate)")
         if run_require_depth_payload_schema_ok.get(run.run_id, False) and not bool(run.depth_payload_schema_ok):
             failures.append(f"{run.run_id}: depth payload schema check failed")
+        if run_require_costmap_events_present.get(run.run_id, False) and not bool(run.costmap_events_present):
+            failures.append(f"{run.run_id}: costmap events missing (map.costmap)")
+        if run_require_costmap_schema_ok.get(run.run_id, False) and not bool(run.costmap_schema_ok):
+            failures.append(f"{run.run_id}: costmap payload schema check failed")
+        if run_require_costmap_context_present.get(run.run_id, False) and not bool(run.costmap_context_present):
+            failures.append(f"{run.run_id}: costmap context events missing (map.costmap_context)")
+        if run_require_costmap_context_schema_ok.get(run.run_id, False) and not bool(run.costmap_context_schema_ok):
+            failures.append(f"{run.run_id}: costmap context payload schema check failed")
         if run_require_slam_pose_events_present.get(run.run_id, False) and not bool(run.slam_pose_events_present):
             failures.append(f"{run.run_id}: slam pose events missing (slam.pose)")
         if run_require_slam_pose_payload_schema_ok.get(run.run_id, False) and not bool(run.slam_pose_payload_schema_ok):
@@ -1201,6 +1265,8 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "slamTrackingRate={slam_tracking_rate} slamLostRate={slam_lost_rate} slamRelocalized={slam_relocalized} slamLatencyP90={slam_p90} "
                 "ocrEventsPresent={ocr_events_present} ocrPayloadSchemaOk={ocr_payload_schema_ok} "
                 "segEventsPresent={seg_events_present} segPayloadSchemaOk={seg_payload_schema_ok} depthEventsPresent={depth_events_present} depthPayloadSchemaOk={depth_payload_schema_ok} "
+                "costmapEventsPresent={costmap_events_present} costmapSchemaOk={costmap_schema_ok} "
+                "costmapContextPresent={costmap_context_present} costmapContextSchemaOk={costmap_context_schema_ok} "
                 "slamPoseEventsPresent={slam_pose_events_present} slamPosePayloadSchemaOk={slam_pose_payload_schema_ok} "
                 "segPromptEventsPresent={seg_prompt_events_present} segPromptPayloadSchemaOk={seg_prompt_payload_schema_ok} "
                 "segPromptBudgetPresent={seg_prompt_budget_present} segPromptTruncationPresent={seg_prompt_truncation_present} "
@@ -1215,6 +1281,8 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "planCtxUsedTrueCount={plan_ctx_used_true_count} planSegCoverageP90={plan_seg_coverage_p90} planPovCoverageP90={plan_pov_coverage_p90} "
                 "planContextSlamPresent={plan_context_slam_present} planContextSlamSchemaOk={plan_context_slam_schema_ok} "
                 "planSlamCoverageP90={plan_slam_coverage_p90} planSlamUsedTrueCount={plan_slam_used_true_count} "
+                "planContextCostmapPresent={plan_context_costmap_present} planContextCostmapSchemaOk={plan_context_costmap_schema_ok} "
+                "planCostmapCoverageP90={plan_costmap_coverage_p90} planCostmapUsedTrueCount={plan_costmap_used_true_count} "
                 "planContextPackPresent={plan_context_pack_present} planContextPackSchemaOk={plan_context_pack_schema_ok} "
                 "planCtxTruncRate={plan_ctx_trunc_rate} planCtxCharsP90={plan_ctx_chars_p90} "
                 "frameE2eEventsPresent={frame_e2e_events_present} frameE2eSchemaOk={frame_e2e_schema_ok} "
@@ -1254,6 +1322,10 @@ def _print_summary(result: dict[str, Any]) -> None:
                     seg_payload_schema_ok=row.get("segLint", {}).get("payloadSchemaOk", False),
                     depth_events_present=row.get("segLint", {}).get("depthEventsPresent", False),
                     depth_payload_schema_ok=row.get("segLint", {}).get("depthPayloadSchemaOk", False),
+                    costmap_events_present=row.get("segLint", {}).get("costmapEventsPresent", False),
+                    costmap_schema_ok=row.get("segLint", {}).get("costmapSchemaOk", False),
+                    costmap_context_present=row.get("segLint", {}).get("costmapContextPresent", False),
+                    costmap_context_schema_ok=row.get("segLint", {}).get("costmapContextSchemaOk", False),
                     slam_pose_events_present=row.get("segLint", {}).get("slamPoseEventsPresent", False),
                     slam_pose_payload_schema_ok=row.get("segLint", {}).get("slamPosePayloadSchemaOk", False),
                     seg_prompt_events_present=row.get("segLint", {}).get("promptEventsPresent", False),
@@ -1282,6 +1354,10 @@ def _print_summary(result: dict[str, Any]) -> None:
                     plan_context_slam_schema_ok=row.get("segLint", {}).get("planContextSlamSchemaOk", False),
                     plan_slam_coverage_p90=row.get("segLint", {}).get("planSlamCoverageP90", 0.0),
                     plan_slam_used_true_count=row.get("segLint", {}).get("planSlamUsedTrueCount", 0),
+                    plan_context_costmap_present=row.get("segLint", {}).get("planContextCostmapPresent", False),
+                    plan_context_costmap_schema_ok=row.get("segLint", {}).get("planContextCostmapSchemaOk", False),
+                    plan_costmap_coverage_p90=row.get("segLint", {}).get("planCostmapCoverageP90", 0.0),
+                    plan_costmap_used_true_count=row.get("segLint", {}).get("planCostmapUsedTrueCount", 0),
                     plan_context_pack_present=row.get("segLint", {}).get("planContextPackEventsPresent", False),
                     plan_context_pack_schema_ok=row.get("segLint", {}).get("planContextPackSchemaOk", False),
                     plan_ctx_trunc_rate=row.get("segLint", {}).get("planCtxTruncRate", 0.0),

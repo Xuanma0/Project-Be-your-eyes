@@ -62,6 +62,9 @@ METRIC_FIELDS = [
     "slam_align_residual_p90",
     "slam_ate_rmse",
     "slam_rpe_trans_rmse",
+    "costmap_coverage",
+    "costmap_latency_p90",
+    "plan_costmap_ctx_used_rate",
     "plan_score",
     "plan_fallback_used",
 ]
@@ -380,6 +383,8 @@ def _collect_summary_fields(*, run_package: Path, manifest: dict[str, Any], repo
     ocr = ocr if isinstance(ocr, dict) else {}
     slam = quality.get("slam")
     slam = slam if isinstance(slam, dict) else {}
+    costmap = quality.get("costmap")
+    costmap = costmap if isinstance(costmap, dict) else {}
     slam_error = quality.get("slamError")
     slam_error = slam_error if isinstance(slam_error, dict) else {}
     plan_quality = report.get("planQuality")
@@ -396,6 +401,10 @@ def _collect_summary_fields(*, run_package: Path, manifest: dict[str, Any], repo
     frame_e2e_total = frame_e2e_total if isinstance(frame_e2e_total, dict) else {}
     frame_user = report.get("frameUserE2E")
     frame_user = frame_user if isinstance(frame_user, dict) else {}
+    plan_context = report.get("planContext")
+    plan_context = plan_context if isinstance(plan_context, dict) else {}
+    plan_context_costmap = plan_context.get("costmap")
+    plan_context_costmap = plan_context_costmap if isinstance(plan_context_costmap, dict) else {}
     tts_bucket = frame_user.get("tts")
     tts_bucket = tts_bucket if isinstance(tts_bucket, dict) else {}
     by_kind = frame_user.get("byKind")
@@ -437,6 +446,9 @@ def _collect_summary_fields(*, run_package: Path, manifest: dict[str, Any], repo
         "slam_align_residual_p90": _to_int(_nested_get(slam, ["alignment", "residualMs", "p90"])),
         "slam_ate_rmse": _to_float(slam_error.get("ate_rmse_m")),
         "slam_rpe_trans_rmse": _to_float(slam_error.get("rpe_trans_rmse_m")),
+        "costmap_coverage": _to_float(costmap.get("coverage")),
+        "costmap_latency_p90": _to_int(_nested_get(costmap, ["latencyMs", "p90"])),
+        "plan_costmap_ctx_used_rate": _to_float(plan_context_costmap.get("contextUsedRate")),
         "plan_score": _to_float(plan_quality.get("score")),
         "plan_fallback_used": bool(plan_quality.get("fallbackUsed")) if "fallbackUsed" in plan_quality else None,
     }
@@ -466,6 +478,9 @@ def _summary_to_csv_row(row: dict[str, Any]) -> dict[str, Any]:
         "slam_align_residual_p90": row.get("slam_align_residual_p90"),
         "slam_ate_rmse": row.get("slam_ate_rmse"),
         "slam_rpe_trans_rmse": row.get("slam_rpe_trans_rmse"),
+        "costmap_coverage": row.get("costmap_coverage"),
+        "costmap_latency_p90": row.get("costmap_latency_p90"),
+        "plan_costmap_ctx_used_rate": row.get("plan_costmap_ctx_used_rate"),
         "plan_score": row.get("plan_score"),
         "plan_fallback_used": row.get("plan_fallback_used"),
         "status": row.get("status"),
@@ -498,6 +513,9 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "slam_align_residual_p90",
         "slam_ate_rmse",
         "slam_rpe_trans_rmse",
+        "costmap_coverage",
+        "costmap_latency_p90",
+        "plan_costmap_ctx_used_rate",
         "plan_score",
         "plan_fallback_used",
         "status",
@@ -521,12 +539,12 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]], payload: dict[str, A
     lines.append(f"- failures: `{payload.get('failures', 0)}`")
     lines.append("")
     lines.append(
-        "| profile | runId | frames | qualityScore | critical_fn | riskP90 | e2eP90 | ttsP90 | arP90 | segF1 | depthAbsRel | ocrCER | slamTrack | slamCoverage | slamAlignP90 | slamATE | slamRPE | status |"
+        "| profile | runId | frames | qualityScore | critical_fn | riskP90 | e2eP90 | ttsP90 | arP90 | segF1 | depthAbsRel | ocrCER | slamTrack | slamCoverage | slamAlignP90 | slamATE | slamRPE | costmapCoverage | costmapP90 | planCostmapUsed | status |"
     )
     lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for row in rows:
         lines.append(
-            "| {profile} | {run_id} | {frames} | {quality} | {critical_fn} | {risk} | {e2e} | {tts} | {ar} | {seg} | {depth} | {ocr} | {slam} | {slam_cov} | {slam_align} | {slam_ate} | {slam_rpe} | {status} |".format(
+            "| {profile} | {run_id} | {frames} | {quality} | {critical_fn} | {risk} | {e2e} | {tts} | {ar} | {seg} | {depth} | {ocr} | {slam} | {slam_cov} | {slam_align} | {slam_ate} | {slam_rpe} | {costmap_cov} | {costmap_p90} | {plan_costmap_used} | {status} |".format(
                 profile=row.get("profile"),
                 run_id=row.get("runId"),
                 frames=row.get("framesCount"),
@@ -544,6 +562,9 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]], payload: dict[str, A
                 slam_align=row.get("slam_align_residual_p90"),
                 slam_ate=row.get("slam_ate_rmse"),
                 slam_rpe=row.get("slam_rpe_trans_rmse"),
+                costmap_cov=row.get("costmap_coverage"),
+                costmap_p90=row.get("costmap_latency_p90"),
+                plan_costmap_used=row.get("plan_costmap_ctx_used_rate"),
                 status=row.get("status"),
             )
         )
@@ -1212,8 +1233,8 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
     lines.append(f"- processed: `{payload.get('processed', 0)}`")
     lines.append(f"- failures: `{payload.get('failures', 0)}`")
     lines.append("")
-    lines.append("| profile | services | discovered | processed | failures | quality(mean) | riskP90(p90) | frameUserTtsP90(p90) | slamCoverage(mean) | slamAlignP90(p90) | slamATE(mean) | slamRPE(mean) |")
-    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("| profile | services | discovered | processed | failures | quality(mean) | riskP90(p90) | frameUserTtsP90(p90) | slamCoverage(mean) | slamAlignP90(p90) | slamATE(mean) | slamRPE(mean) | costmapCoverage(mean) | costmapLatencyP90(p90) | planCostmapUsedRate(mean) |")
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     profiles = payload.get("profiles")
     profiles = profiles if isinstance(profiles, list) else []
     for entry in profiles:
@@ -1233,8 +1254,14 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
         slam_ate = slam_ate if isinstance(slam_ate, dict) else {}
         slam_rpe = metrics.get("slam_rpe_trans_rmse")
         slam_rpe = slam_rpe if isinstance(slam_rpe, dict) else {}
+        costmap_cov = metrics.get("costmap_coverage")
+        costmap_cov = costmap_cov if isinstance(costmap_cov, dict) else {}
+        costmap_p90 = metrics.get("costmap_latency_p90")
+        costmap_p90 = costmap_p90 if isinstance(costmap_p90, dict) else {}
+        plan_costmap_used = metrics.get("plan_costmap_ctx_used_rate")
+        plan_costmap_used = plan_costmap_used if isinstance(plan_costmap_used, dict) else {}
         lines.append(
-            "| {name} | {services} | {d} | {p} | {f} | {quality} | {risk} | {tts} | {slam_cov} | {slam_align} | {slam_ate} | {slam_rpe} |".format(
+            "| {name} | {services} | {d} | {p} | {f} | {quality} | {risk} | {tts} | {slam_cov} | {slam_align} | {slam_ate} | {slam_rpe} | {costmap_cov} | {costmap_p90} | {plan_costmap_used} |".format(
                 name=entry.get("name"),
                 services=entry.get("services"),
                 d=entry.get("discovered"),
@@ -1247,6 +1274,9 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
                 slam_align=slam_align.get("p90"),
                 slam_ate=slam_ate.get("mean"),
                 slam_rpe=slam_rpe.get("mean"),
+                costmap_cov=costmap_cov.get("mean"),
+                costmap_p90=costmap_p90.get("p90"),
+                plan_costmap_used=plan_costmap_used.get("mean"),
             )
         )
 
@@ -1256,14 +1286,14 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
         lines.append("")
         lines.append("## Deltas vs baseline")
         lines.append("")
-        lines.append("| profile | delta_qualityScore | delta_riskLatencyP90 | delta_frame_user_e2e_tts_p90 | delta_slam_coverage | delta_slam_align_residual_p90 | delta_slam_ate_rmse | delta_slam_rpe_trans_rmse |")
-        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+        lines.append("| profile | delta_qualityScore | delta_riskLatencyP90 | delta_frame_user_e2e_tts_p90 | delta_slam_coverage | delta_slam_align_residual_p90 | delta_slam_ate_rmse | delta_slam_rpe_trans_rmse | delta_costmap_coverage | delta_costmap_latency_p90 | delta_plan_costmap_ctx_used_rate |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         for name, value in deltas.items():
             block = value if isinstance(value, dict) else {}
             flat = block.get("deltaFlat")
             flat = flat if isinstance(flat, dict) else {}
             lines.append(
-                "| {name} | {dq} | {dr} | {dt} | {ds} | {da} | {dsa} | {dsr} |".format(
+                "| {name} | {dq} | {dr} | {dt} | {ds} | {da} | {dsa} | {dsr} | {dcc} | {dcl} | {dpcu} |".format(
                     name=name,
                     dq=flat.get("delta_qualityScore"),
                     dr=flat.get("delta_riskLatencyP90"),
@@ -1272,6 +1302,9 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
                     da=flat.get("delta_slam_align_residual_p90"),
                     dsa=flat.get("delta_slam_ate_rmse"),
                     dsr=flat.get("delta_slam_rpe_trans_rmse"),
+                    dcc=flat.get("delta_costmap_coverage"),
+                    dcl=flat.get("delta_costmap_latency_p90"),
+                    dpcu=flat.get("delta_plan_costmap_ctx_used_rate"),
                 )
             )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

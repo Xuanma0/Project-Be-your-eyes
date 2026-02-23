@@ -277,6 +277,7 @@ class GatewayConfig:
     inference_enable_seg: bool = False
     inference_enable_depth: bool = False
     inference_enable_slam: bool = False
+    inference_enable_costmap: bool = False
     inference_ocr_backend: str = "mock"
     inference_risk_backend: str = "mock"
     inference_seg_backend: str = "mock"
@@ -304,6 +305,13 @@ class GatewayConfig:
     inference_seg_model_id: str = "mock-seg"
     inference_depth_model_id: str = "mock-depth"
     inference_slam_model_id: str = "mock-slam"
+    inference_costmap_grid_h: int = 32
+    inference_costmap_grid_w: int = 32
+    inference_costmap_resolution_m: float = 0.1
+    inference_costmap_depth_thresh_m: float = 1.0
+    inference_costmap_dynamic_labels: tuple[str, ...] = ("person", "car")
+    inference_costmap_context_max_chars: int = 512
+    inference_costmap_context_mode: str = "topk_hotspots"
     inference_emit_ws_events_v1: bool = False
     inference_event_component: str = "gateway"
 
@@ -434,6 +442,7 @@ def load_config() -> GatewayConfig:
         inference_enable_seg=_env_bool("BYES_ENABLE_SEG", False),
         inference_enable_depth=_env_bool("BYES_ENABLE_DEPTH", False),
         inference_enable_slam=_env_bool("BYES_ENABLE_SLAM", False),
+        inference_enable_costmap=_env_bool("BYES_ENABLE_COSTMAP", False),
         inference_ocr_backend=os.getenv("BYES_OCR_BACKEND", os.getenv("BYES_SERVICE_OCR_PROVIDER", "mock")),
         inference_risk_backend=os.getenv("BYES_RISK_BACKEND", "mock"),
         inference_seg_backend=os.getenv("BYES_SEG_BACKEND", "mock"),
@@ -473,6 +482,19 @@ def load_config() -> GatewayConfig:
         inference_seg_model_id=os.getenv("BYES_SEG_MODEL_ID", "mock-seg"),
         inference_depth_model_id=os.getenv("BYES_DEPTH_MODEL_ID", "mock-depth"),
         inference_slam_model_id=os.getenv("BYES_SLAM_MODEL_ID", os.getenv("BYES_SERVICE_SLAM_MODEL_ID", "mock-slam")),
+        inference_costmap_grid_h=_env_int("BYES_COSTMAP_GRID_H", 32),
+        inference_costmap_grid_w=_env_int("BYES_COSTMAP_GRID_W", 32),
+        inference_costmap_resolution_m=_env_float("BYES_COSTMAP_RES_M", 0.1),
+        inference_costmap_depth_thresh_m=_env_float("BYES_COSTMAP_DEPTH_THRESH_M", 1.0),
+        inference_costmap_dynamic_labels=(
+            _env_string_list("BYES_COSTMAP_DYNAMIC_LABELS", "BYES_COSTMAP_DYNAMIC_LABELS_JSON")
+            or ("person", "car")
+        ),
+        inference_costmap_context_max_chars=_env_int("BYES_COSTMAP_CONTEXT_MAX_CHARS", 512),
+        inference_costmap_context_mode=(
+            str(os.getenv("BYES_COSTMAP_CONTEXT_MODE", "topk_hotspots")).strip()
+            or "topk_hotspots"
+        ),
         inference_emit_ws_events_v1=_env_bool("BYES_INFERENCE_EMIT_WS_V1", False),
         inference_event_component=os.getenv("BYES_INFERENCE_EVENT_COMPONENT", "gateway"),
     )

@@ -118,6 +118,40 @@
         }
       }
     },
+    "costmap": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "present",
+        "hit",
+        "coverage",
+        "planTextChars",
+        "matched"
+      ],
+      "properties": {
+        "present": {
+          "type": "boolean"
+        },
+        "hit": {
+          "type": "boolean"
+        },
+        "coverage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "planTextChars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "matched": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "contextUsed": {
       "type": "boolean"
     },
@@ -137,6 +171,9 @@
           "type": "boolean"
         },
         "slam": {
+          "type": "boolean"
+        },
+        "costmap": {
           "type": "boolean"
         }
       }

@@ -186,6 +186,30 @@
               ]
             }
           }
+        },
+        "costmap": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "present",
+            "chars",
+            "promptFragment"
+          ],
+          "properties": {
+            "present": {
+              "type": "boolean"
+            },
+            "chars": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "promptFragment": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
         }
       }
     },
@@ -213,6 +237,13 @@
           "type": "boolean"
         },
         "slamChars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "costmapIncluded": {
+          "type": "boolean"
+        },
+        "costmapChars": {
           "type": "integer",
           "minimum": 0
         }

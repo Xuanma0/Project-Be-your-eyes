@@ -10,6 +10,7 @@ from byes.pov_context import build_context_pack, finalize_context_pack_text, ren
 from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events
 from byes.inference.slam_context import DEFAULT_SLAM_CONTEXT_BUDGET, build_slam_context_pack
 from byes.inference.plan_context_pack import build_plan_context_pack
+from byes.mapping.costmap import DEFAULT_COSTMAP_CONTEXT_BUDGET, build_costmap_context_pack, find_latest_costmap_from_events
 from byes.planner_backends.base import PlannerBackend
 from byes.planner_registry import get_planner_backend
 from byes.safety_kernel import apply_guardrails, classify_risk_level
@@ -125,6 +126,7 @@ def build_planner_request(
     pov_ir_inline: dict[str, Any] | None = None,
     seg_context: dict[str, Any] | None = None,
     slam_context: dict[str, Any] | None = None,
+    costmap_context: dict[str, Any] | None = None,
     plan_context_pack: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_constraints = {
@@ -158,11 +160,15 @@ def build_planner_request(
     slam_text = slam_payload.get("text")
     slam_text = slam_text if isinstance(slam_text, dict) else {}
     slam_prompt_fragment = str(slam_text.get("promptFragment", "")).strip()
+    costmap_payload = costmap_context if isinstance(costmap_context, dict) else {}
+    costmap_text = costmap_payload.get("text")
+    costmap_text = costmap_text if isinstance(costmap_text, dict) else {}
+    costmap_prompt_fragment = str(costmap_text.get("promptFragment", "")).strip()
 
     provider_value = str(planner_provider or "").strip().lower()
     if provider_value not in {"mock", "http", "reference", "llm", "pov"}:
         provider_value = "mock"
-    prompt_version = str(os.getenv("BYES_PLANNER_PROMPT_VERSION", "v3")).strip() or "v3"
+    prompt_version = str(os.getenv("BYES_PLANNER_PROMPT_VERSION", "v4")).strip() or "v4"
 
     payload = {
         "schemaVersion": "byes.plan_request.v1",
@@ -200,6 +206,11 @@ def build_planner_request(
                 "chars": len(slam_prompt_fragment),
                 "promptFragment": slam_prompt_fragment or None,
             },
+            "costmap": {
+                "present": bool(costmap_prompt_fragment),
+                "chars": len(costmap_prompt_fragment),
+                "promptFragment": costmap_prompt_fragment or None,
+            },
         },
         "meta": {
             "provider": provider_value,
@@ -207,6 +218,8 @@ def build_planner_request(
             "createdAtMs": _now_ms(),
             "slamIncluded": bool(slam_prompt_fragment),
             "slamChars": int(len(slam_prompt_fragment)),
+            "costmapIncluded": bool(costmap_prompt_fragment),
+            "costmapChars": int(len(costmap_prompt_fragment)),
         },
     }
 
@@ -227,6 +240,8 @@ def build_planner_request(
         payload["segContext"] = seg_context
     if isinstance(slam_context, dict):
         payload["slamContext"] = slam_context
+    if isinstance(costmap_context, dict):
+        payload["costmapContext"] = costmap_context
     if isinstance(plan_context_pack, dict):
         payload["planContextPack"] = plan_context_pack
     allow_path = str(os.getenv("BYES_PLANNER_ALLOW_RUN_PACKAGE_PATH", "0")).strip().lower() in {"1", "true", "yes", "on"}
@@ -250,6 +265,7 @@ def generate_action_plan(
     planner_pov_ir: dict[str, Any] | None = None,
     plan_context_pack_budget: dict[str, Any] | None = None,
     slam_context_budget: dict[str, Any] | None = None,
+    costmap_context_budget: dict[str, Any] | None = None,
     backend: PlannerBackend | None = None,
 ) -> dict[str, Any]:
     context_pack = build_context_pack(pov_ir, budget=budget, mode=mode)
@@ -293,6 +309,35 @@ def generate_action_plan(
     slam_context_fragment = str(slam_context_text.get("promptFragment", "")).strip()
     slam_context = slam_context_payload if slam_context_fragment else None
 
+    costmap_context_budget_payload = {
+        "maxChars": int(DEFAULT_COSTMAP_CONTEXT_BUDGET["maxChars"]),
+        "mode": str(DEFAULT_COSTMAP_CONTEXT_BUDGET["mode"]),
+    }
+    if isinstance(costmap_context_budget, dict):
+        if _as_int(costmap_context_budget.get("maxChars")) is not None:
+            costmap_context_budget_payload["maxChars"] = int(
+                max(0, int(costmap_context_budget.get("maxChars", 0) or 0))
+            )
+        mode_raw = str(costmap_context_budget.get("mode", "")).strip()
+        if mode_raw:
+            costmap_context_budget_payload["mode"] = mode_raw
+    latest_costmap_payload = find_latest_costmap_from_events(
+        events_rows,
+        run_id=run_id,
+        frame_seq=frame_seq if isinstance(frame_seq, int) and frame_seq > 0 else None,
+    )
+    costmap_context_payload = (
+        build_costmap_context_pack(costmap_payload=latest_costmap_payload, budget=costmap_context_budget_payload)
+        if isinstance(latest_costmap_payload, dict)
+        else None
+    )
+    costmap_context_text = (
+        costmap_context_payload.get("text") if isinstance(costmap_context_payload, dict) else {}
+    )
+    costmap_context_text = costmap_context_text if isinstance(costmap_context_text, dict) else {}
+    costmap_context_fragment = str(costmap_context_text.get("promptFragment", "")).strip()
+    costmap_context = costmap_context_payload if costmap_context_fragment else None
+
     plan_context_pack = build_plan_context_pack(
         run_id=run_id,
         seg_context=seg_context,
@@ -313,6 +358,7 @@ def generate_action_plan(
         pov_ir_inline=planner_pov_ir,
         seg_context=seg_context,
         slam_context=slam_context,
+        costmap_context=costmap_context,
         plan_context_pack=plan_context_pack,
     )
     draft_plan = planner_backend.generate_plan(planner_request)
@@ -364,6 +410,7 @@ def generate_action_plan(
         "contextPack": context_pack,
         "segContext": seg_context,
         "slamContext": slam_context,
+        "costmapContext": costmap_context,
         "planContextPack": plan_context_pack,
         "planRequest": planner_request,
         "riskSummary": risk_summary,
@@ -412,6 +459,17 @@ def summarize_plan_for_report(bundle: dict[str, Any]) -> dict[str, Any]:
     slam_context_trunc = slam_context_trunc if isinstance(slam_context_trunc, dict) else {}
     slam_context_included = bool(slam_context_fragment)
     slam_context_trunc_dropped = _as_int(slam_context_trunc.get("posesDropped")) or 0
+    costmap_context = bundle.get("costmapContext")
+    costmap_context = costmap_context if isinstance(costmap_context, dict) else {}
+    costmap_context_text = costmap_context.get("text")
+    costmap_context_text = costmap_context_text if isinstance(costmap_context_text, dict) else {}
+    costmap_context_fragment = str(costmap_context_text.get("promptFragment", "")).strip()
+    costmap_context_stats = costmap_context.get("stats")
+    costmap_context_stats = costmap_context_stats if isinstance(costmap_context_stats, dict) else {}
+    costmap_context_trunc = costmap_context_stats.get("truncation")
+    costmap_context_trunc = costmap_context_trunc if isinstance(costmap_context_trunc, dict) else {}
+    costmap_context_included = bool(costmap_context_fragment)
+    costmap_context_trunc_dropped = _as_int(costmap_context_trunc.get("hotspotsDropped")) or 0
     action_details: list[dict[str, Any]] = []
     for item in actions:
         payload = item.get("payload")
@@ -460,6 +518,9 @@ def summarize_plan_for_report(bundle: dict[str, Any]) -> dict[str, Any]:
         "slamContextIncluded": bool(slam_context_included),
         "slamContextChars": len(slam_context_fragment) if slam_context_included else 0,
         "slamContextTruncPosesDropped": int(max(0, slam_context_trunc_dropped)),
+        "costmapContextIncluded": bool(costmap_context_included),
+        "costmapContextChars": len(costmap_context_fragment) if costmap_context_included else 0,
+        "costmapContextTruncHotspotsDropped": int(max(0, costmap_context_trunc_dropped)),
     }
 
 

@@ -36,6 +36,8 @@ from byes.quality_metrics import (  # noqa: E402
     extract_plan_rule_summary_from_events_v1,
     extract_plan_context_summary_from_events_v1,
     extract_plan_context_pack_summary_from_events_v1,
+    extract_costmap_context_summary_from_events_v1,
+    extract_costmap_metrics_from_events_v1,
     extract_slam_context_summary_from_events_v1,
     extract_models_summary_from_events_v1,
     extract_frame_e2e_summary_from_events_v1,
@@ -1037,6 +1039,7 @@ def generate_report_outputs(
     summary["planRules"] = extract_plan_rule_summary_from_events_v1(event_rows)
     summary["planContext"] = extract_plan_context_summary_from_events_v1(event_rows)
     summary["planContextPack"] = extract_plan_context_pack_summary_from_events_v1(event_rows)
+    summary["costmapContext"] = extract_costmap_context_summary_from_events_v1(event_rows)
     summary["slamContext"] = extract_slam_context_summary_from_events_v1(event_rows)
     frames_total_declared: int | None = None
     if isinstance(run_package_summary, dict):
@@ -1108,27 +1111,35 @@ def generate_report_outputs(
     base_safety_behavior = extract_safety_behavior_from_ws_events(event_source_path)
     slam_ingest_summary_path = event_source_path.parent / "slam_ingest_summary.json"
     slam_alignment = load_slam_alignment_summary(slam_ingest_summary_path)
+    try:
+        frames_total_hint = int(round(float(summary.get("frame_received", 0) or 0)))
+    except Exception:
+        frames_total_hint = 0
+    if frames_total_hint <= 0 and isinstance(run_package_summary, dict):
+        try:
+            frames_total_hint = int(run_package_summary.get("frameCountSent", 0) or 0)
+        except Exception:
+            frames_total_hint = 0
+    if frames_total_hint <= 0:
+        frames_total_hint = None
+    costmap_metrics = extract_costmap_metrics_from_events_v1(
+        event_rows,
+        frames_total_declared=frames_total_hint,
+    )
     quality_payload: dict[str, Any] = {
         "hasGroundTruth": False,
         "safetyBehavior": base_safety_behavior,
         "eventSchema": event_schema_stats,
         "riskLatencyMs": risk_latency_stats,
         "depth": {"present": False},
+        "costmap": costmap_metrics,
         "slam": {"present": False, "alignment": slam_alignment},
         "slamError": {"present": False},
     }
     if risk_timings_stats is not None:
         quality_payload["riskTimingsMs"] = risk_timings_stats
     if isinstance(gt_cfg, dict) and bool(gt_cfg.get("hasGroundTruth")):
-        try:
-            frames_total = int(round(float(summary.get("frame_received", 0) or 0)))
-        except Exception:
-            frames_total = 0
-        if frames_total <= 0 and isinstance(run_package_summary, dict):
-            try:
-                frames_total = int(run_package_summary.get("frameCountSent", 0) or 0)
-            except Exception:
-                frames_total = 0
+        frames_total = int(frames_total_hint or 0)
 
         ocr_path_raw = str(gt_cfg.get("ocrPath", "")).strip()
         risk_path_raw = str(gt_cfg.get("riskPath", "")).strip()

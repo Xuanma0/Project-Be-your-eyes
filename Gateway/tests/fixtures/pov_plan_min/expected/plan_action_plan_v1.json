@@ -69,7 +69,8 @@
     "contextUsedDetail": {
       "seg": false,
       "pov": false,
-      "slam": false
+      "slam": false,
+      "costmap": false
     },
     "safety": {
       "guardrailsApplied": []

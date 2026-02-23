@@ -59,6 +59,17 @@
       "requireDepthPayloadSchemaOk": true
     },
     {
+      "id": "fixture_with_costmap_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_costmap_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireCostmapEventsPresent": true,
+      "requireCostmapSchemaOk": true,
+      "requireCostmapContextPresent": true,
+      "requireCostmapContextSchemaOk": true
+    },
+    {
       "id": "fixture_with_slam_pose_gt_contract",
       "runPackage": "Gateway/tests/fixtures/run_package_with_slam_pose_gt_min",
       "requireCriticalFnZero": false,

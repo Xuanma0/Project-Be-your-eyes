@@ -32,6 +32,8 @@ _OCR_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.ocr.v1.json"
 _SEG_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.seg.v1.json"
 _DEPTH_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.depth.v1.json"
 _SLAM_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.slam_pose.v1.json"
+_COSTMAP_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.costmap.v1.json"
+_COSTMAP_CONTEXT_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "costmap.context.v1.json"
 _SLAM_CONTEXT_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "slam.context.v1.json"
 _PLAN_CONTEXT_PACK_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "plan.context_pack.v1.json"
 _FRAME_E2E_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.e2e.v1.json"
@@ -265,6 +267,30 @@ def _load_slam_contract_schema() -> dict[str, Any] | None:
         return None
     try:
         payload = json.loads(_SLAM_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _load_costmap_schema() -> dict[str, Any] | None:
+    if not _COSTMAP_SCHEMA_PATH.exists():
+        return None
+    try:
+        payload = json.loads(_COSTMAP_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _load_costmap_context_schema() -> dict[str, Any] | None:
+    if not _COSTMAP_CONTEXT_SCHEMA_PATH.exists():
+        return None
+    try:
+        payload = json.loads(_COSTMAP_CONTEXT_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     if not isinstance(payload, dict):
@@ -692,11 +718,13 @@ def _seg_context_schema_ok(payload: dict[str, Any]) -> bool:
     return True
 
 
-def _plan_context_alignment_schema_ok(payload: dict[str, Any]) -> tuple[bool, float, float, float, bool, bool, bool]:
+def _plan_context_alignment_schema_ok(
+    payload: dict[str, Any],
+) -> tuple[bool, float, float, float, float, bool, bool, bool, bool]:
     if not isinstance(payload, dict):
-        return False, 0.0, 0.0, 0.0, False, False, False
+        return False, 0.0, 0.0, 0.0, 0.0, False, False, False, False
     if str(payload.get("schemaVersion", "")).strip() != "plan.context_alignment.v1":
-        return False, 0.0, 0.0, 0.0, False, False, False
+        return False, 0.0, 0.0, 0.0, 0.0, False, False, False, False
 
     seg = payload.get("seg")
     seg = seg if isinstance(seg, dict) else {}
@@ -704,77 +732,168 @@ def _plan_context_alignment_schema_ok(payload: dict[str, Any]) -> tuple[bool, fl
     pov = pov if isinstance(pov, dict) else {}
     slam = payload.get("slam")
     slam = slam if isinstance(slam, dict) else {}
+    costmap = payload.get("costmap")
+    costmap = costmap if isinstance(costmap, dict) else {}
     context_used = bool(payload.get("contextUsed"))
     detail = payload.get("contextUsedDetail")
     detail = detail if isinstance(detail, dict) else {}
 
     for key in ("present", "hit"):
         if not isinstance(seg.get(key), bool):
-            return False, 0.0, 0.0, 0.0, context_used, False, False
+            return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
         if not isinstance(pov.get(key), bool):
-            return False, 0.0, 0.0, 0.0, context_used, False, False
+            return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
 
     for key in ("labelCount",):
         try:
             if int(seg.get(key, -1)) < 0:
-                return False, 0.0, 0.0, 0.0, context_used, False, False
+                return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
         except Exception:
-            return False, 0.0, 0.0, 0.0, context_used, False, False
+            return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
     for key in ("tokenCount", "hitCount"):
         try:
             if int(pov.get(key, -1)) < 0:
-                return False, 0.0, 0.0, 0.0, context_used, False, False
+                return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
         except Exception:
-            return False, 0.0, 0.0, 0.0, context_used, False, False
+            return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
 
     try:
         seg_coverage = float(seg.get("coverage", 0.0))
         pov_coverage = float(pov.get("coverage", 0.0))
     except Exception:
-        return False, 0.0, 0.0, 0.0, context_used, False, False
+        return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
     if not (0.0 <= seg_coverage <= 1.0):
-        return False, 0.0, 0.0, 0.0, context_used, False, False
+        return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
     if not (0.0 <= pov_coverage <= 1.0):
-        return False, 0.0, 0.0, 0.0, context_used, False, False
+        return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
 
     matched = seg.get("matched")
     if not isinstance(matched, list):
-        return False, 0.0, 0.0, 0.0, context_used, False, False
+        return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
     for item in matched:
         if not isinstance(item, str):
-            return False, 0.0, 0.0, 0.0, context_used, False, False
+            return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
 
     slam_present = False
     slam_used = False
     slam_coverage = 0.0
+    costmap_present = False
+    costmap_used = False
+    costmap_coverage = 0.0
     if "slam" in payload:
         for key in ("present", "hit"):
             if not isinstance(slam.get(key), bool):
-                return False, 0.0, 0.0, 0.0, context_used, False, False
+                return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
         try:
             slam_coverage = float(slam.get("coverage", 0.0))
             if not (0.0 <= slam_coverage <= 1.0):
-                return False, 0.0, 0.0, 0.0, context_used, False, False
+                return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
             if int(slam.get("planTextChars", -1)) < 0:
-                return False, 0.0, 0.0, 0.0, context_used, False, False
+                return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
         except Exception:
-            return False, 0.0, 0.0, 0.0, context_used, False, False
+            return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
         slam_matched = slam.get("matched")
         if not isinstance(slam_matched, list):
-            return False, 0.0, 0.0, 0.0, context_used, False, False
+            return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
         for item in slam_matched:
             if not isinstance(item, str):
-                return False, 0.0, 0.0, 0.0, context_used, False, False
+                return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
         slam_present = bool(slam.get("present"))
         if detail:
             for key in ("seg", "pov", "slam"):
                 if not isinstance(detail.get(key), bool):
-                    return False, 0.0, 0.0, 0.0, context_used, False, False
+                    return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
             slam_used = bool(detail.get("slam"))
         else:
             slam_used = bool(slam_present and slam.get("hit"))
 
-    return True, float(seg_coverage), float(pov_coverage), float(slam_coverage), context_used, slam_present, slam_used
+    if "costmap" in payload:
+        for key in ("present", "hit"):
+            if not isinstance(costmap.get(key), bool):
+                return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
+        try:
+            costmap_coverage = float(costmap.get("coverage", 0.0))
+            if not (0.0 <= costmap_coverage <= 1.0):
+                return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
+            if int(costmap.get("planTextChars", -1)) < 0:
+                return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
+        except Exception:
+            return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
+        costmap_matched = costmap.get("matched")
+        if not isinstance(costmap_matched, list):
+            return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
+        for item in costmap_matched:
+            if not isinstance(item, str):
+                return False, 0.0, 0.0, 0.0, 0.0, context_used, False, False, False
+        costmap_present = bool(costmap.get("present"))
+        if detail and isinstance(detail.get("costmap"), bool):
+            costmap_used = bool(detail.get("costmap"))
+        else:
+            costmap_used = bool(costmap_present and costmap.get("hit"))
+
+    return (
+        True,
+        float(seg_coverage),
+        float(pov_coverage),
+        float(slam_coverage),
+        float(costmap_coverage),
+        context_used,
+        slam_present,
+        slam_used,
+        costmap_used,
+    )
+
+
+def _costmap_payload_schema_ok(
+    payload: dict[str, Any],
+    schema: dict[str, Any] | None,
+) -> tuple[bool, float]:
+    if not isinstance(payload, dict):
+        return False, 0.0
+    schema_ok = True
+    if schema is not None and jsonschema is not None:
+        try:
+            jsonschema.validate(payload, schema)
+        except Exception:
+            schema_ok = False
+    if str(payload.get("schemaVersion", "")).strip() != "byes.costmap.v1":
+        return False, 0.0
+    stats = payload.get("stats")
+    stats = stats if isinstance(stats, dict) else {}
+    try:
+        dynamic_filtered_rate = float(stats.get("dynamicFilteredRate", 0.0))
+    except Exception:
+        return False, 0.0
+    if not (0.0 <= dynamic_filtered_rate <= 1.0):
+        return False, 0.0
+    return bool(schema_ok), float(dynamic_filtered_rate)
+
+
+def _costmap_context_schema_ok(
+    payload: dict[str, Any],
+    schema: dict[str, Any] | None,
+) -> tuple[bool, int]:
+    if not isinstance(payload, dict):
+        return False, 0
+    schema_ok = True
+    if schema is not None and jsonschema is not None:
+        try:
+            jsonschema.validate(payload, schema)
+        except Exception:
+            schema_ok = False
+    if str(payload.get("schemaVersion", "")).strip() != "costmap.context.v1":
+        return False, 0
+    stats = payload.get("stats")
+    stats = stats if isinstance(stats, dict) else {}
+    out_stats = stats.get("out")
+    out_stats = out_stats if isinstance(out_stats, dict) else {}
+    try:
+        chars_total = int(out_stats.get("charsTotal", -1))
+    except Exception:
+        return False, 0
+    if chars_total < 0:
+        return False, 0
+    return bool(schema_ok), int(chars_total)
 
 
 def _plan_context_pack_schema_ok(
@@ -999,6 +1118,12 @@ def _percentile_float(values: list[float], p: int) -> float:
     return float(ordered[idx])
 
 
+def _mean_float(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(float(item) for item in values) / float(len(values)))
+
+
 def _normalize_frame_ack_kind_bucket(value: Any) -> str:
     raw = str(value or "").strip().lower()
     if raw == "tts":
@@ -1182,6 +1307,15 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         depth_grid_present_count = 0
         depth_grid_bad_size_count = 0
         depth_grid_out_of_range_count = 0
+        costmap_events_present = 0
+        costmap_lines = 0
+        costmap_schema_ok = 0
+        costmap_dynamic_filtered_rates: list[float] = []
+        costmap_latency_values: list[float] = []
+        costmap_context_present = 0
+        costmap_context_lines = 0
+        costmap_context_schema_ok = 0
+        costmap_context_chars: list[float] = []
         slam_pose_events_present = 0
         slam_pose_lines = 0
         slam_pose_schema_ok = 0
@@ -1203,6 +1337,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         plan_context_slam_schema_ok = 0
         plan_slam_used_true_count = 0
         plan_slam_coverages: list[float] = []
+        plan_context_costmap_present = 0
+        plan_context_costmap_schema_ok = 0
+        plan_costmap_used_true_count = 0
+        plan_costmap_coverages: list[float] = []
         plan_context_pack_present = 0
         plan_context_pack_lines = 0
         plan_context_pack_schema_ok = 0
@@ -1241,6 +1379,8 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         seg_schema = _load_seg_contract_schema()
         depth_schema = _load_depth_contract_schema()
         slam_schema = _load_slam_contract_schema()
+        costmap_schema = _load_costmap_schema()
+        costmap_context_schema = _load_costmap_context_schema()
         slam_context_schema = _load_slam_context_schema()
         plan_context_pack_schema = _load_plan_context_pack_schema()
         frame_e2e_schema = _load_frame_e2e_schema()
@@ -1451,15 +1591,18 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                         seg_cov,
                                         pov_cov,
                                         slam_cov,
+                                        costmap_cov,
                                         ctx_used,
                                         slam_present,
                                         slam_used,
+                                        costmap_used,
                                     ) = _plan_context_alignment_schema_ok(payload)
                                     if schema_ok:
                                         plan_context_schema_ok += 1
                                         plan_seg_coverages.append(float(seg_cov))
                                         plan_pov_coverages.append(float(pov_cov))
                                         plan_slam_coverages.append(float(slam_cov))
+                                        plan_costmap_coverages.append(float(costmap_cov))
                                         if ctx_used:
                                             plan_ctx_used_true_count += 1
                                         if slam_present:
@@ -1467,8 +1610,41 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                             plan_context_slam_schema_ok += 1
                                         if slam_used:
                                             plan_slam_used_true_count += 1
+                                        if "costmap" in payload:
+                                            plan_context_costmap_present += 1
+                                            plan_context_costmap_schema_ok += 1
+                                        if costmap_used:
+                                            plan_costmap_used_true_count += 1
                                     else:
                                         warnings.append("plan.context_alignment payload missing required fields")
+                                if name == "map.costmap":
+                                    costmap_events_present = 1
+                                    costmap_lines += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    try:
+                                        latency_raw = obj.get("latencyMs")
+                                        if latency_raw is not None:
+                                            costmap_latency_values.append(float(max(0, int(latency_raw))))
+                                    except Exception:
+                                        pass
+                                    schema_ok, dynamic_rate = _costmap_payload_schema_ok(payload, costmap_schema)
+                                    if schema_ok:
+                                        costmap_schema_ok += 1
+                                        costmap_dynamic_filtered_rates.append(float(dynamic_rate))
+                                    else:
+                                        warnings.append("map.costmap payload missing required fields")
+                                if name == "map.costmap_context":
+                                    costmap_context_present = 1
+                                    costmap_context_lines += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    schema_ok, chars_total = _costmap_context_schema_ok(payload, costmap_context_schema)
+                                    if schema_ok:
+                                        costmap_context_schema_ok += 1
+                                        costmap_context_chars.append(float(chars_total))
+                                    else:
+                                        warnings.append("map.costmap_context payload missing required fields")
                                 if name == "plan.context_pack":
                                     plan_context_pack_present = 1
                                     plan_context_pack_lines += 1
@@ -1938,6 +2114,17 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "depthGridPresentCount": int(depth_grid_present_count),
             "depthGridBadSizeCount": int(depth_grid_bad_size_count),
             "depthGridOutOfRangeCount": int(depth_grid_out_of_range_count),
+            "costmapEventsPresent": int(costmap_events_present),
+            "costmapLines": int(costmap_lines),
+            "costmapSchemaOk": int(costmap_lines > 0 and costmap_schema_ok == costmap_lines),
+            "costmapContextPresent": int(costmap_context_present),
+            "costmapContextLines": int(costmap_context_lines),
+            "costmapContextSchemaOk": int(
+                costmap_context_lines > 0 and costmap_context_schema_ok == costmap_context_lines
+            ),
+            "costmapLatencyP90": round(float(_percentile_float(costmap_latency_values, 90)), 6),
+            "costmapDynamicFilteredRateMean": round(float(_mean_float(costmap_dynamic_filtered_rates)), 6),
+            "costmapCtxCharsP90": round(float(_percentile_float(costmap_context_chars, 90)), 6),
             "slamPoseEventsPresent": int(slam_pose_events_present),
             "slamPoseLines": int(slam_pose_lines),
             "slamPoseSchemaOk": int(
@@ -1968,6 +2155,12 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             ),
             "planSlamCoverageP90": round(float(_percentile_float(plan_slam_coverages, 90)), 6),
             "planSlamUsedTrueCount": int(plan_slam_used_true_count),
+            "planContextCostmapPresent": int(plan_context_costmap_present > 0),
+            "planContextCostmapSchemaOk": int(
+                plan_context_costmap_present > 0 and plan_context_costmap_schema_ok == plan_context_costmap_present
+            ),
+            "planCostmapCoverageP90": round(float(_percentile_float(plan_costmap_coverages, 90)), 6),
+            "planCostmapUsedTrueCount": int(plan_costmap_used_true_count),
             "planContextPackPresent": int(plan_context_pack_present),
             "planContextPackLines": int(plan_context_pack_lines),
             "planContextPackSchemaOk": int(
@@ -2075,6 +2268,15 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"depthGridPresentCount: {summary['depthGridPresentCount']}")
             print(f"depthGridBadSizeCount: {summary['depthGridBadSizeCount']}")
             print(f"depthGridOutOfRangeCount: {summary['depthGridOutOfRangeCount']}")
+            print(f"costmapEventsPresent: {summary['costmapEventsPresent']}")
+            print(f"costmapLines: {summary['costmapLines']}")
+            print(f"costmapSchemaOk: {summary['costmapSchemaOk']}")
+            print(f"costmapContextPresent: {summary['costmapContextPresent']}")
+            print(f"costmapContextLines: {summary['costmapContextLines']}")
+            print(f"costmapContextSchemaOk: {summary['costmapContextSchemaOk']}")
+            print(f"costmapLatencyP90: {summary['costmapLatencyP90']}")
+            print(f"costmapDynamicFilteredRateMean: {summary['costmapDynamicFilteredRateMean']}")
+            print(f"costmapCtxCharsP90: {summary['costmapCtxCharsP90']}")
             print(f"slamPoseEventsPresent: {summary['slamPoseEventsPresent']}")
             print(f"slamPoseLines: {summary['slamPoseLines']}")
             print(f"slamPoseSchemaOk: {summary['slamPoseSchemaOk']}")
@@ -2099,6 +2301,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"planContextSlamSchemaOk: {summary['planContextSlamSchemaOk']}")
             print(f"planSlamCoverageP90: {summary['planSlamCoverageP90']}")
             print(f"planSlamUsedTrueCount: {summary['planSlamUsedTrueCount']}")
+            print(f"planContextCostmapPresent: {summary['planContextCostmapPresent']}")
+            print(f"planContextCostmapSchemaOk: {summary['planContextCostmapSchemaOk']}")
+            print(f"planCostmapCoverageP90: {summary['planCostmapCoverageP90']}")
+            print(f"planCostmapUsedTrueCount: {summary['planCostmapUsedTrueCount']}")
             print(f"planContextPackPresent: {summary['planContextPackPresent']}")
             print(f"planContextPackLines: {summary['planContextPackLines']}")
             print(f"planContextPackSchemaOk: {summary['planContextPackSchemaOk']}")

@@ -57,6 +57,8 @@ _SLAM_STATE_RE = re.compile(r"state\s*=\s*(tracking|lost|relocalized|unknown)")
 _MAX_SEG_MATCHED = 5
 _MAX_POV_HITS = 20
 _MAX_SLAM_MATCHED = 5
+_MAX_COSTMAP_MATCHED = 5
+_COSTMAP_KEYWORDS = {"left", "right", "center", "near", "mid", "far", "obstacle", "hotspot", "stop"}
 
 
 def compute_plan_context_alignment(
@@ -74,14 +76,18 @@ def compute_plan_context_alignment(
     pov_ctx = pov_ctx if isinstance(pov_ctx, dict) else {}
     slam_ctx = contexts.get("slam")
     slam_ctx = slam_ctx if isinstance(slam_ctx, dict) else {}
+    costmap_ctx = contexts.get("costmap")
+    costmap_ctx = costmap_ctx if isinstance(costmap_ctx, dict) else {}
 
     seg_fragment = str(seg_ctx.get("promptFragment", "")).strip()
     pov_fragment = str(pov_ctx.get("promptFragment", "")).strip()
     slam_fragment = str(slam_ctx.get("promptFragment", "")).strip()
+    costmap_fragment = str(costmap_ctx.get("promptFragment", "")).strip()
 
     seg_present = bool(seg_ctx.get("included")) and bool(seg_fragment)
     pov_present = bool(pov_ctx.get("included")) and bool(pov_fragment)
     slam_present = bool(slam_ctx.get("present")) and bool(slam_fragment)
+    costmap_present = bool(costmap_ctx.get("present")) and bool(costmap_fragment)
 
     plan_text = _collect_plan_text(plan_payload)
     if not plan_text:
@@ -113,6 +119,11 @@ def compute_plan_context_alignment(
     slam_hit = bool(slam_matched)
     slam_coverage = 1.0 if slam_hit else 0.0
 
+    costmap_tokens = _extract_costmap_keywords(costmap_fragment) if costmap_present else set()
+    costmap_matched = sorted(token for token in costmap_tokens if token in plan_tokens)[:_MAX_COSTMAP_MATCHED]
+    costmap_hit = bool(costmap_matched)
+    costmap_coverage = _safe_ratio(len(costmap_matched), len(costmap_tokens))
+
     meta_payload = plan_payload.get("meta")
     meta_payload = meta_payload if isinstance(meta_payload, dict) else {}
     context_used_detail = meta_payload.get("contextUsedDetail")
@@ -124,10 +135,16 @@ def compute_plan_context_alignment(
         if isinstance(planner_detail, dict):
             context_used_detail = planner_detail
     slam_used_override = context_used_detail.get("slam")
+    costmap_used_override = context_used_detail.get("costmap")
     seg_used = bool(seg_hit)
     pov_used = bool(pov_hit)
     slam_used = bool(slam_used_override) if isinstance(slam_used_override, bool) else bool(slam_present and slam_hit)
-    context_used = bool(seg_used or pov_used or slam_used)
+    costmap_used = (
+        bool(costmap_used_override)
+        if isinstance(costmap_used_override, bool)
+        else bool(costmap_present and costmap_hit)
+    )
+    context_used = bool(seg_used or pov_used or slam_used or costmap_used)
 
     return {
         "schemaVersion": "plan.context_alignment.v1",
@@ -153,11 +170,19 @@ def compute_plan_context_alignment(
             "planTextChars": int(len(plan_text)),
             "matched": slam_matched,
         },
+        "costmap": {
+            "present": bool(costmap_present),
+            "hit": bool(costmap_hit),
+            "coverage": float(round(costmap_coverage, 6)),
+            "planTextChars": int(len(plan_text)),
+            "matched": costmap_matched,
+        },
         "contextUsed": context_used,
         "contextUsedDetail": {
             "seg": seg_used,
             "pov": pov_used,
             "slam": slam_used,
+            "costmap": costmap_used,
         },
     }
 
@@ -264,6 +289,13 @@ def _extract_slam_keywords(fragment: str) -> set[str]:
         if token in lower_fragment:
             keywords.add(token)
     return keywords
+
+
+def _extract_costmap_keywords(fragment: str) -> set[str]:
+    if not fragment:
+        return set()
+    tokens = _extract_tokens(fragment, min_len=3, stopwords=set())
+    return {token for token in tokens if token in _COSTMAP_KEYWORDS}
 
 
 def _safe_ratio(num: int, den: int) -> float:

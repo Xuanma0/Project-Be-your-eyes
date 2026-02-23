@@ -59,17 +59,27 @@ def _render_prompts(req: dict[str, Any], prompt_version: str) -> tuple[str, str]
     slam_context_text = slam_context.get("text")
     slam_context_text = slam_context_text if isinstance(slam_context_text, dict) else {}
     slam_context_fragment = str(slam_context_text.get("promptFragment", "")).strip()
+    costmap_context = req.get("costmapContext")
+    costmap_context = costmap_context if isinstance(costmap_context, dict) else {}
+    costmap_context_text = costmap_context.get("text")
+    costmap_context_text = costmap_context_text if isinstance(costmap_context_text, dict) else {}
+    costmap_context_fragment = str(costmap_context_text.get("promptFragment", "")).strip()
     prompt_version_normalized = str(prompt_version).strip().lower()
-    if prompt_version_normalized in {"v2", "v3"} and seg_context_fragment and seg_context_fragment not in prompt_text:
+    if prompt_version_normalized in {"v2", "v3", "v4"} and seg_context_fragment and seg_context_fragment not in prompt_text:
         if prompt_text:
             prompt_text = f"{prompt_text}\n\n{seg_context_fragment}"
         else:
             prompt_text = seg_context_fragment
-    if prompt_version_normalized == "v3" and slam_context_fragment and slam_context_fragment not in prompt_text:
+    if prompt_version_normalized in {"v3", "v4"} and slam_context_fragment and slam_context_fragment not in prompt_text:
         if prompt_text:
             prompt_text = f"{prompt_text}\n\n{slam_context_fragment}"
         else:
             prompt_text = slam_context_fragment
+    if prompt_version_normalized == "v4" and costmap_context_fragment and costmap_context_fragment not in prompt_text:
+        if prompt_text:
+            prompt_text = f"{prompt_text}\n\n{costmap_context_fragment}"
+        else:
+            prompt_text = costmap_context_fragment
 
     risk_summary = req.get("riskSummary")
     risk_summary = risk_summary if isinstance(risk_summary, dict) else {}
@@ -108,9 +118,12 @@ def _normalize_plan_request(req_payload: dict[str, Any]) -> tuple[dict[str, Any]
     seg_ctx = seg_ctx if isinstance(seg_ctx, dict) else {}
     slam_ctx = contexts.get("slam")
     slam_ctx = slam_ctx if isinstance(slam_ctx, dict) else {}
+    costmap_ctx = contexts.get("costmap")
+    costmap_ctx = costmap_ctx if isinstance(costmap_ctx, dict) else {}
     pov_fragment = str(pov_ctx.get("promptFragment", "")).strip()
     seg_fragment = str(seg_ctx.get("promptFragment", "")).strip()
     slam_fragment = str(slam_ctx.get("promptFragment", "")).strip()
+    costmap_fragment = str(costmap_ctx.get("promptFragment", "")).strip()
     risk = req_payload.get("risk")
     risk = risk if isinstance(risk, dict) else {}
     risk_level = str(risk.get("riskLevel", "")).strip().lower() or "low"
@@ -131,16 +144,21 @@ def _normalize_plan_request(req_payload: dict[str, Any]) -> tuple[dict[str, Any]
     meta_payload = meta_payload if isinstance(meta_payload, dict) else {}
     prompt_version_raw = str(meta_payload.get("promptVersion", "")).strip().lower()
     context_prompt = pov_fragment
-    if prompt_version_raw in {"v2", "v3"} and seg_fragment:
+    if prompt_version_raw in {"v2", "v3", "v4"} and seg_fragment:
         if context_prompt:
             context_prompt = f"{context_prompt}\n\n{seg_fragment}"
         else:
             context_prompt = seg_fragment
-    if prompt_version_raw == "v3" and slam_fragment:
+    if prompt_version_raw in {"v3", "v4"} and slam_fragment:
         if context_prompt:
             context_prompt = f"{context_prompt}\n\n{slam_fragment}"
         else:
             context_prompt = slam_fragment
+    if prompt_version_raw == "v4" and costmap_fragment:
+        if context_prompt:
+            context_prompt = f"{context_prompt}\n\n{costmap_fragment}"
+        else:
+            context_prompt = costmap_fragment
     normalized = {
         "schemaVersion": "byes.planner_request.v1",
         "runId": run_id,
@@ -161,7 +179,7 @@ def _normalize_plan_request(req_payload: dict[str, Any]) -> tuple[dict[str, Any]
         },
         "constraints": constraints,
     }
-    for key in ("provider", "povIr", "segContext", "runPackagePath"):
+    for key in ("provider", "povIr", "segContext", "slamContext", "costmapContext", "runPackagePath"):
         if key in req_payload:
             normalized[key] = req_payload.get(key)
     if seg_fragment:
@@ -173,6 +191,11 @@ def _normalize_plan_request(req_payload: dict[str, Any]) -> tuple[dict[str, Any]
         normalized["slamContext"] = {
             "text": {"promptFragment": slam_fragment},
             "stats": {"out": {"charsTotal": int(max(0, int(slam_ctx.get("chars", 0) or 0)))}},
+        }
+    if costmap_fragment:
+        normalized["costmapContext"] = {
+            "text": {"promptFragment": costmap_fragment},
+            "stats": {"out": {"charsTotal": int(max(0, int(costmap_ctx.get("chars", 0) or 0)))}},
         }
     provider = str(meta_payload.get("provider", req_payload.get("provider", ""))).strip().lower() or None
     prompt_version = str(meta_payload.get("promptVersion", "")).strip() or None
@@ -215,6 +238,22 @@ def _extract_slam_fragment(plan_request_raw: dict[str, Any], normalized_req: dic
     slam_text = slam_context.get("text")
     slam_text = slam_text if isinstance(slam_text, dict) else {}
     fragment = str(slam_text.get("promptFragment", "")).strip()
+    return fragment, bool(fragment)
+
+
+def _extract_costmap_fragment(plan_request_raw: dict[str, Any], normalized_req: dict[str, Any]) -> tuple[str, bool]:
+    contexts = plan_request_raw.get("contexts")
+    contexts = contexts if isinstance(contexts, dict) else {}
+    costmap_ctx = contexts.get("costmap")
+    costmap_ctx = costmap_ctx if isinstance(costmap_ctx, dict) else {}
+    fragment = str(costmap_ctx.get("promptFragment", "")).strip()
+    if fragment:
+        return fragment, True
+    costmap_context = normalized_req.get("costmapContext")
+    costmap_context = costmap_context if isinstance(costmap_context, dict) else {}
+    costmap_text = costmap_context.get("text")
+    costmap_text = costmap_text if isinstance(costmap_text, dict) else {}
+    fragment = str(costmap_text.get("promptFragment", "")).strip()
     return fragment, bool(fragment)
 
 
@@ -562,7 +601,7 @@ def plan() -> Any:
     provider = provider_from_body if provider_from_body in {"reference", "llm", "pov"} else str(
         os.getenv("BYES_PLANNER_PROVIDER", "reference")
     ).strip().lower() or "reference"
-    prompt_version = str(req_meta.get("promptVersion") or os.getenv("BYES_PLANNER_PROMPT_VERSION", "v3")).strip() or "v3"
+    prompt_version = str(req_meta.get("promptVersion") or os.getenv("BYES_PLANNER_PROMPT_VERSION", "v4")).strip() or "v4"
     timeout_ms = int(os.getenv("BYES_PLANNER_LLM_TIMEOUT_MS", "2500") or "2500")
     constraints = normalized_req.get("constraints")
     constraints = constraints if isinstance(constraints, dict) else {}
@@ -679,6 +718,7 @@ def plan() -> Any:
         risk_level = str(candidate_plan.get("riskLevel", "")).strip().lower()
     seg_fragment, seg_context_used = _extract_seg_fragment(req_payload, normalized_req)
     _slam_fragment, slam_context_present = _extract_slam_fragment(req_payload, normalized_req)
+    _costmap_fragment, costmap_context_present = _extract_costmap_fragment(req_payload, normalized_req)
     raw_contexts = req_payload.get("contexts")
     raw_contexts = raw_contexts if isinstance(raw_contexts, dict) else {}
     raw_pov_ctx = raw_contexts.get("pov")
@@ -710,12 +750,15 @@ def plan() -> Any:
     final_planner = final_meta.get("planner")
     final_planner = final_planner if isinstance(final_planner, dict) else {}
     slam_context_used = bool(slam_context_present)
+    costmap_context_used = bool(costmap_context_present)
     if provider == "llm" and bool(fallback_used):
         slam_context_used = False
+        costmap_context_used = False
     final_planner["contextUsedDetail"] = {
         "seg": bool(seg_context_used),
         "pov": bool(pov_context_present),
         "slam": bool(slam_context_used),
+        "costmap": bool(costmap_context_used),
     }
     final_planner["ruleVersion"] = str(rule_payload.get("ruleVersion", "v1"))
     final_planner["ruleApplied"] = bool(rule_payload.get("applied"))
