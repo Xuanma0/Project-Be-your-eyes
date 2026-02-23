@@ -1,0 +1,15 @@
+﻿{
+  "runId": "fixture-plan-context-slam-min",
+  "scenarioTag": "fixture_with_plan_context_slam_min",
+  "startMs": 1712002000000,
+  "endMs": 1712002001500,
+  "wsJsonl": "events/events_v1.jsonl",
+  "eventsV1Jsonl": "events/events_v1.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "framesDir": "frames",
+  "framesMetaJsonl": "frames_meta.jsonl",
+  "frameCountSent": 2,
+  "eventCountAccepted": 5,
+  "errors": []
+}

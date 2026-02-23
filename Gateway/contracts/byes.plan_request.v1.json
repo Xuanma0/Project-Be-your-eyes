@@ -162,6 +162,30 @@
               }
             }
           }
+        },
+        "slam": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "present",
+            "chars",
+            "promptFragment"
+          ],
+          "properties": {
+            "present": {
+              "type": "boolean"
+            },
+            "chars": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "promptFragment": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
         }
       }
     },
@@ -184,6 +208,13 @@
             "integer",
             "null"
           ]
+        },
+        "slamIncluded": {
+          "type": "boolean"
+        },
+        "slamChars": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     }

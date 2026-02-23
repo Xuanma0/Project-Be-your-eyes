@@ -113,6 +113,10 @@ class RunSummary:
     plan_ctx_used_true_count: int = 0
     plan_seg_coverage_p90: float = 0.0
     plan_pov_coverage_p90: float = 0.0
+    plan_context_slam_present: bool = False
+    plan_context_slam_schema_ok: bool = False
+    plan_slam_coverage_p90: float = 0.0
+    plan_slam_used_true_count: int = 0
     plan_context_pack_events_present: bool = False
     plan_context_pack_schema_ok: bool = False
     plan_context_pack_lines: int = 0
@@ -279,6 +283,10 @@ class RunSummary:
                 "planCtxUsedTrueCount": self.plan_ctx_used_true_count,
                 "planSegCoverageP90": self.plan_seg_coverage_p90,
                 "planPovCoverageP90": self.plan_pov_coverage_p90,
+                "planContextSlamPresent": self.plan_context_slam_present,
+                "planContextSlamSchemaOk": self.plan_context_slam_schema_ok,
+                "planSlamCoverageP90": self.plan_slam_coverage_p90,
+                "planSlamUsedTrueCount": self.plan_slam_used_true_count,
                 "planContextPackEventsPresent": self.plan_context_pack_events_present,
                 "planContextPackSchemaOk": self.plan_context_pack_schema_ok,
                 "planContextPackLines": self.plan_context_pack_lines,
@@ -785,6 +793,8 @@ def run_suite(
     run_require_plan_request_schema_ok: dict[str, bool] = {}
     run_require_plan_context_events_present: dict[str, bool] = {}
     run_require_plan_context_schema_ok: dict[str, bool] = {}
+    run_require_plan_context_slam_present: dict[str, bool] = {}
+    run_require_plan_context_slam_schema_ok: dict[str, bool] = {}
     run_require_plan_context_pack_events_present: dict[str, bool] = {}
     run_require_plan_context_pack_schema_ok: dict[str, bool] = {}
     run_require_frame_e2e_events_present: dict[str, bool] = {}
@@ -844,6 +854,14 @@ def run_suite(
         run_require_plan_request_schema_ok[run_id] = _to_bool01(run_cfg.get("requirePlanRequestSchemaOk"), False)
         run_require_plan_context_events_present[run_id] = _to_bool01(run_cfg.get("requirePlanContextEventsPresent"), False)
         run_require_plan_context_schema_ok[run_id] = _to_bool01(run_cfg.get("requirePlanContextSchemaOk"), False)
+        run_require_plan_context_slam_present[run_id] = _to_bool01(
+            run_cfg.get("requirePlanContextSlamPresent"),
+            False,
+        )
+        run_require_plan_context_slam_schema_ok[run_id] = _to_bool01(
+            run_cfg.get("requirePlanContextSlamSchemaOk"),
+            False,
+        )
         run_require_plan_context_pack_events_present[run_id] = _to_bool01(
             run_cfg.get("requirePlanContextPackEventsPresent"),
             False,
@@ -950,6 +968,10 @@ def run_suite(
                     run_summary.plan_ctx_used_true_count = int(lint_summary.get("planCtxUsedTrueCount", 0) or 0)
                     run_summary.plan_seg_coverage_p90 = float(lint_summary.get("planSegCoverageP90", 0.0) or 0.0)
                     run_summary.plan_pov_coverage_p90 = float(lint_summary.get("planPovCoverageP90", 0.0) or 0.0)
+                    run_summary.plan_context_slam_present = bool(lint_summary.get("planContextSlamPresent", 0))
+                    run_summary.plan_context_slam_schema_ok = bool(lint_summary.get("planContextSlamSchemaOk", 0))
+                    run_summary.plan_slam_coverage_p90 = float(lint_summary.get("planSlamCoverageP90", 0.0) or 0.0)
+                    run_summary.plan_slam_used_true_count = int(lint_summary.get("planSlamUsedTrueCount", 0) or 0)
                     run_summary.plan_context_pack_events_present = bool(lint_summary.get("planContextPackPresent", 0))
                     run_summary.plan_context_pack_schema_ok = bool(lint_summary.get("planContextPackSchemaOk", 0))
                     run_summary.plan_context_pack_lines = int(lint_summary.get("planContextPackLines", 0) or 0)
@@ -1068,6 +1090,10 @@ def run_suite(
             failures.append(f"{run.run_id}: plan.context_alignment events missing")
         if run_require_plan_context_schema_ok.get(run.run_id, False) and not bool(run.plan_context_schema_ok):
             failures.append(f"{run.run_id}: plan.context_alignment payload schema check failed")
+        if run_require_plan_context_slam_present.get(run.run_id, False) and not bool(run.plan_context_slam_present):
+            failures.append(f"{run.run_id}: plan.context_alignment slam fields missing")
+        if run_require_plan_context_slam_schema_ok.get(run.run_id, False) and not bool(run.plan_context_slam_schema_ok):
+            failures.append(f"{run.run_id}: plan.context_alignment slam payload schema check failed")
         if run_require_plan_context_pack_events_present.get(run.run_id, False) and not bool(
             run.plan_context_pack_events_present
         ):
@@ -1187,6 +1213,8 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "planRequestSegIncludedCount={plan_request_seg_included_count} planRequestSegCharsTotal={plan_request_seg_chars_total} "
                 "planContextEventsPresent={plan_context_events_present} planContextSchemaOk={plan_context_schema_ok} "
                 "planCtxUsedTrueCount={plan_ctx_used_true_count} planSegCoverageP90={plan_seg_coverage_p90} planPovCoverageP90={plan_pov_coverage_p90} "
+                "planContextSlamPresent={plan_context_slam_present} planContextSlamSchemaOk={plan_context_slam_schema_ok} "
+                "planSlamCoverageP90={plan_slam_coverage_p90} planSlamUsedTrueCount={plan_slam_used_true_count} "
                 "planContextPackPresent={plan_context_pack_present} planContextPackSchemaOk={plan_context_pack_schema_ok} "
                 "planCtxTruncRate={plan_ctx_trunc_rate} planCtxCharsP90={plan_ctx_chars_p90} "
                 "frameE2eEventsPresent={frame_e2e_events_present} frameE2eSchemaOk={frame_e2e_schema_ok} "
@@ -1250,6 +1278,10 @@ def _print_summary(result: dict[str, Any]) -> None:
                     plan_ctx_used_true_count=row.get("segLint", {}).get("planCtxUsedTrueCount", 0),
                     plan_seg_coverage_p90=row.get("segLint", {}).get("planSegCoverageP90", 0.0),
                     plan_pov_coverage_p90=row.get("segLint", {}).get("planPovCoverageP90", 0.0),
+                    plan_context_slam_present=row.get("segLint", {}).get("planContextSlamPresent", False),
+                    plan_context_slam_schema_ok=row.get("segLint", {}).get("planContextSlamSchemaOk", False),
+                    plan_slam_coverage_p90=row.get("segLint", {}).get("planSlamCoverageP90", 0.0),
+                    plan_slam_used_true_count=row.get("segLint", {}).get("planSlamUsedTrueCount", 0),
                     plan_context_pack_present=row.get("segLint", {}).get("planContextPackEventsPresent", False),
                     plan_context_pack_schema_ok=row.get("segLint", {}).get("planContextPackSchemaOk", False),
                     plan_ctx_trunc_rate=row.get("segLint", {}).get("planCtxTruncRate", 0.0),

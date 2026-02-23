@@ -3068,9 +3068,11 @@ def extract_plan_request_summary_from_events_v1(events: Iterable[dict[str, Any]]
     event_count = 0
     seg_included_count = 0
     pov_included_count = 0
+    slam_included_count = 0
     fallback_used_count = 0
     seg_chars_values: list[int] = []
     pov_chars_values: list[int] = []
+    slam_chars_values: list[int] = []
     seg_trunc_segments_dropped_total = 0
     for row in events:
         if not isinstance(row, dict):
@@ -3092,27 +3094,35 @@ def extract_plan_request_summary_from_events_v1(events: Iterable[dict[str, Any]]
             seg_included_count += 1
         if bool(payload.get("povIncluded")):
             pov_included_count += 1
+        if bool(payload.get("slamIncluded")):
+            slam_included_count += 1
         if isinstance(payload.get("fallbackUsed"), bool) and bool(payload.get("fallbackUsed")):
             fallback_used_count += 1
         seg_chars = _to_nonnegative_int(payload.get("segChars"))
         pov_chars = _to_nonnegative_int(payload.get("povChars"))
+        slam_chars = _to_nonnegative_int(payload.get("slamChars"))
         seg_chars_values.append(seg_chars)
         pov_chars_values.append(pov_chars)
+        slam_chars_values.append(slam_chars)
         seg_trunc_segments_dropped_total += _to_nonnegative_int(payload.get("segTruncSegmentsDropped"))
 
     seg_stats = summarize_latency(seg_chars_values)
     pov_stats = summarize_latency(pov_chars_values)
+    slam_stats = summarize_latency(slam_chars_values)
     present = event_count > 0
     return {
         "present": present,
         "events": int(event_count),
         "segIncludedCount": int(seg_included_count),
         "povIncludedCount": int(pov_included_count),
+        "slamIncludedCount": int(slam_included_count),
         "segCharsTotal": int(sum(seg_chars_values)),
         "segCharsP90": int(seg_stats.get("p90", 0) or 0),
         "segTruncSegmentsDroppedTotal": int(seg_trunc_segments_dropped_total),
         "povCharsTotal": int(sum(pov_chars_values)),
         "povCharsP90": int(pov_stats.get("p90", 0) or 0),
+        "slamCharsTotal": int(sum(slam_chars_values)),
+        "slamCharsP90": int(slam_stats.get("p90", 0) or 0),
         "fallbackUsedCount": int(fallback_used_count),
     }
 
@@ -3151,8 +3161,11 @@ def extract_plan_context_summary_from_events_v1(events: Iterable[dict[str, Any]]
     context_used_count = 0
     seg_hit_count = 0
     pov_hit_count = 0
+    slam_hit_count = 0
+    slam_used_count = 0
     seg_coverages: list[float] = []
     pov_coverages: list[float] = []
+    slam_coverages: list[float] = []
 
     for row in events:
         if not isinstance(row, dict):
@@ -3172,6 +3185,10 @@ def extract_plan_context_summary_from_events_v1(events: Iterable[dict[str, Any]]
         seg = seg if isinstance(seg, dict) else {}
         pov = payload.get("pov")
         pov = pov if isinstance(pov, dict) else {}
+        slam = payload.get("slam")
+        slam = slam if isinstance(slam, dict) else {}
+        context_detail = payload.get("contextUsedDetail")
+        context_detail = context_detail if isinstance(context_detail, dict) else {}
 
         event_count += 1
         if bool(payload.get("contextUsed")):
@@ -3180,8 +3197,15 @@ def extract_plan_context_summary_from_events_v1(events: Iterable[dict[str, Any]]
             seg_hit_count += 1
         if bool(pov.get("hit")):
             pov_hit_count += 1
+        if bool(slam.get("hit")):
+            slam_hit_count += 1
+        if bool(context_detail.get("slam")):
+            slam_used_count += 1
+        elif bool(slam.get("present")) and bool(slam.get("hit")):
+            slam_used_count += 1
         seg_coverages.append(_to_unit_float(seg.get("coverage")))
         pov_coverages.append(_to_unit_float(pov.get("coverage")))
+        slam_coverages.append(_to_unit_float(slam.get("coverage")))
 
     if event_count <= 0:
         return {
@@ -3190,6 +3214,7 @@ def extract_plan_context_summary_from_events_v1(events: Iterable[dict[str, Any]]
             "contextUsedRate": 0.0,
             "seg": {"hitRate": 0.0, "coverageMean": 0.0, "coverageP90": 0.0},
             "pov": {"hitRate": 0.0, "coverageMean": 0.0, "coverageP90": 0.0},
+            "slam": {"hitRate": 0.0, "coverageMean": 0.0, "coverageP90": 0.0, "contextUsedRate": 0.0},
         }
 
     return {
@@ -3205,6 +3230,12 @@ def extract_plan_context_summary_from_events_v1(events: Iterable[dict[str, Any]]
             "hitRate": round(_safe_ratio(pov_hit_count, event_count), 6),
             "coverageMean": round(_mean_float(pov_coverages), 6),
             "coverageP90": round(_percentile_float(pov_coverages, 90), 6),
+        },
+        "slam": {
+            "hitRate": round(_safe_ratio(slam_hit_count, event_count), 6),
+            "coverageMean": round(_mean_float(slam_coverages), 6),
+            "coverageP90": round(_percentile_float(slam_coverages, 90), 6),
+            "contextUsedRate": round(_safe_ratio(slam_used_count, event_count), 6),
         },
     }
 

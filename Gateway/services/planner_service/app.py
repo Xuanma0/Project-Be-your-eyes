@@ -54,11 +54,22 @@ def _render_prompts(req: dict[str, Any], prompt_version: str) -> tuple[str, str]
     seg_context_text = seg_context.get("text")
     seg_context_text = seg_context_text if isinstance(seg_context_text, dict) else {}
     seg_context_fragment = str(seg_context_text.get("promptFragment", "")).strip()
-    if str(prompt_version).strip().lower() == "v2" and seg_context_fragment:
+    slam_context = req.get("slamContext")
+    slam_context = slam_context if isinstance(slam_context, dict) else {}
+    slam_context_text = slam_context.get("text")
+    slam_context_text = slam_context_text if isinstance(slam_context_text, dict) else {}
+    slam_context_fragment = str(slam_context_text.get("promptFragment", "")).strip()
+    prompt_version_normalized = str(prompt_version).strip().lower()
+    if prompt_version_normalized in {"v2", "v3"} and seg_context_fragment and seg_context_fragment not in prompt_text:
         if prompt_text:
             prompt_text = f"{prompt_text}\n\n{seg_context_fragment}"
         else:
             prompt_text = seg_context_fragment
+    if prompt_version_normalized == "v3" and slam_context_fragment and slam_context_fragment not in prompt_text:
+        if prompt_text:
+            prompt_text = f"{prompt_text}\n\n{slam_context_fragment}"
+        else:
+            prompt_text = slam_context_fragment
 
     risk_summary = req.get("riskSummary")
     risk_summary = risk_summary if isinstance(risk_summary, dict) else {}
@@ -95,8 +106,11 @@ def _normalize_plan_request(req_payload: dict[str, Any]) -> tuple[dict[str, Any]
     pov_ctx = pov_ctx if isinstance(pov_ctx, dict) else {}
     seg_ctx = contexts.get("seg")
     seg_ctx = seg_ctx if isinstance(seg_ctx, dict) else {}
+    slam_ctx = contexts.get("slam")
+    slam_ctx = slam_ctx if isinstance(slam_ctx, dict) else {}
     pov_fragment = str(pov_ctx.get("promptFragment", "")).strip()
     seg_fragment = str(seg_ctx.get("promptFragment", "")).strip()
+    slam_fragment = str(slam_ctx.get("promptFragment", "")).strip()
     risk = req_payload.get("risk")
     risk = risk if isinstance(risk, dict) else {}
     risk_level = str(risk.get("riskLevel", "")).strip().lower() or "low"
@@ -115,12 +129,18 @@ def _normalize_plan_request(req_payload: dict[str, Any]) -> tuple[dict[str, Any]
     context_mode = str(context_budget.get("mode", "decisions_plus_highlights")).strip() or "decisions_plus_highlights"
     meta_payload = req_payload.get("meta")
     meta_payload = meta_payload if isinstance(meta_payload, dict) else {}
+    prompt_version_raw = str(meta_payload.get("promptVersion", "")).strip().lower()
     context_prompt = pov_fragment
-    if str(meta_payload.get("promptVersion", "")).strip().lower() == "v2" and seg_fragment:
+    if prompt_version_raw in {"v2", "v3"} and seg_fragment:
         if context_prompt:
             context_prompt = f"{context_prompt}\n\n{seg_fragment}"
         else:
             context_prompt = seg_fragment
+    if prompt_version_raw == "v3" and slam_fragment:
+        if context_prompt:
+            context_prompt = f"{context_prompt}\n\n{slam_fragment}"
+        else:
+            context_prompt = slam_fragment
     normalized = {
         "schemaVersion": "byes.planner_request.v1",
         "runId": run_id,
@@ -149,6 +169,11 @@ def _normalize_plan_request(req_payload: dict[str, Any]) -> tuple[dict[str, Any]
             "text": {"promptFragment": seg_fragment},
             "stats": {"out": {"segments": int(seg_ctx.get("tokenApprox", 0) or 0)}},
         }
+    if slam_fragment:
+        normalized["slamContext"] = {
+            "text": {"promptFragment": slam_fragment},
+            "stats": {"out": {"charsTotal": int(max(0, int(slam_ctx.get("chars", 0) or 0)))}},
+        }
     provider = str(meta_payload.get("provider", req_payload.get("provider", ""))).strip().lower() or None
     prompt_version = str(meta_payload.get("promptVersion", "")).strip() or None
     meta.update(
@@ -174,6 +199,22 @@ def _extract_seg_fragment(plan_request_raw: dict[str, Any], normalized_req: dict
     seg_text = seg_context.get("text")
     seg_text = seg_text if isinstance(seg_text, dict) else {}
     fragment = str(seg_text.get("promptFragment", "")).strip()
+    return fragment, bool(fragment)
+
+
+def _extract_slam_fragment(plan_request_raw: dict[str, Any], normalized_req: dict[str, Any]) -> tuple[str, bool]:
+    contexts = plan_request_raw.get("contexts")
+    contexts = contexts if isinstance(contexts, dict) else {}
+    slam_ctx = contexts.get("slam")
+    slam_ctx = slam_ctx if isinstance(slam_ctx, dict) else {}
+    fragment = str(slam_ctx.get("promptFragment", "")).strip()
+    if fragment:
+        return fragment, True
+    slam_context = normalized_req.get("slamContext")
+    slam_context = slam_context if isinstance(slam_context, dict) else {}
+    slam_text = slam_context.get("text")
+    slam_text = slam_text if isinstance(slam_text, dict) else {}
+    fragment = str(slam_text.get("promptFragment", "")).strip()
     return fragment, bool(fragment)
 
 
@@ -521,7 +562,7 @@ def plan() -> Any:
     provider = provider_from_body if provider_from_body in {"reference", "llm", "pov"} else str(
         os.getenv("BYES_PLANNER_PROVIDER", "reference")
     ).strip().lower() or "reference"
-    prompt_version = str(req_meta.get("promptVersion") or os.getenv("BYES_PLANNER_PROMPT_VERSION", "v2")).strip() or "v2"
+    prompt_version = str(req_meta.get("promptVersion") or os.getenv("BYES_PLANNER_PROMPT_VERSION", "v3")).strip() or "v3"
     timeout_ms = int(os.getenv("BYES_PLANNER_LLM_TIMEOUT_MS", "2500") or "2500")
     constraints = normalized_req.get("constraints")
     constraints = constraints if isinstance(constraints, dict) else {}
@@ -637,6 +678,13 @@ def plan() -> Any:
     if not risk_level:
         risk_level = str(candidate_plan.get("riskLevel", "")).strip().lower()
     seg_fragment, seg_context_used = _extract_seg_fragment(req_payload, normalized_req)
+    _slam_fragment, slam_context_present = _extract_slam_fragment(req_payload, normalized_req)
+    raw_contexts = req_payload.get("contexts")
+    raw_contexts = raw_contexts if isinstance(raw_contexts, dict) else {}
+    raw_pov_ctx = raw_contexts.get("pov")
+    raw_pov_ctx = raw_pov_ctx if isinstance(raw_pov_ctx, dict) else {}
+    pov_fragment = str(raw_pov_ctx.get("promptFragment", "")).strip()
+    pov_context_present = bool(raw_pov_ctx.get("included")) and bool(pov_fragment)
     hazard_hint, matched_keywords = _resolve_rule_hint(seg_fragment)
     candidate_plan, rule_payload = _apply_seg_hint_rules(
         candidate_plan,
@@ -661,12 +709,21 @@ def plan() -> Any:
     final_meta = final_meta if isinstance(final_meta, dict) else {}
     final_planner = final_meta.get("planner")
     final_planner = final_planner if isinstance(final_planner, dict) else {}
+    slam_context_used = bool(slam_context_present)
+    if provider == "llm" and bool(fallback_used):
+        slam_context_used = False
+    final_planner["contextUsedDetail"] = {
+        "seg": bool(seg_context_used),
+        "pov": bool(pov_context_present),
+        "slam": bool(slam_context_used),
+    }
     final_planner["ruleVersion"] = str(rule_payload.get("ruleVersion", "v1"))
     final_planner["ruleApplied"] = bool(rule_payload.get("applied"))
     final_planner["ruleHazardHint"] = rule_payload.get("hazardHint")
     final_planner["matchedKeywords"] = rule_payload.get("matchedKeywords", [])
     final_planner["segContextUsed"] = bool(rule_payload.get("segContextUsed"))
     final_meta["planner"] = final_planner
+    final_meta["contextUsedDetail"] = final_planner.get("contextUsedDetail")
     final["meta"] = final_meta
     return jsonify(final)
 

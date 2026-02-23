@@ -692,55 +692,89 @@ def _seg_context_schema_ok(payload: dict[str, Any]) -> bool:
     return True
 
 
-def _plan_context_alignment_schema_ok(payload: dict[str, Any]) -> tuple[bool, float, float, bool]:
+def _plan_context_alignment_schema_ok(payload: dict[str, Any]) -> tuple[bool, float, float, float, bool, bool, bool]:
     if not isinstance(payload, dict):
-        return False, 0.0, 0.0, False
+        return False, 0.0, 0.0, 0.0, False, False, False
     if str(payload.get("schemaVersion", "")).strip() != "plan.context_alignment.v1":
-        return False, 0.0, 0.0, False
+        return False, 0.0, 0.0, 0.0, False, False, False
 
     seg = payload.get("seg")
     seg = seg if isinstance(seg, dict) else {}
     pov = payload.get("pov")
     pov = pov if isinstance(pov, dict) else {}
+    slam = payload.get("slam")
+    slam = slam if isinstance(slam, dict) else {}
     context_used = bool(payload.get("contextUsed"))
+    detail = payload.get("contextUsedDetail")
+    detail = detail if isinstance(detail, dict) else {}
 
     for key in ("present", "hit"):
         if not isinstance(seg.get(key), bool):
-            return False, 0.0, 0.0, context_used
+            return False, 0.0, 0.0, 0.0, context_used, False, False
         if not isinstance(pov.get(key), bool):
-            return False, 0.0, 0.0, context_used
+            return False, 0.0, 0.0, 0.0, context_used, False, False
 
     for key in ("labelCount",):
         try:
             if int(seg.get(key, -1)) < 0:
-                return False, 0.0, 0.0, context_used
+                return False, 0.0, 0.0, 0.0, context_used, False, False
         except Exception:
-            return False, 0.0, 0.0, context_used
+            return False, 0.0, 0.0, 0.0, context_used, False, False
     for key in ("tokenCount", "hitCount"):
         try:
             if int(pov.get(key, -1)) < 0:
-                return False, 0.0, 0.0, context_used
+                return False, 0.0, 0.0, 0.0, context_used, False, False
         except Exception:
-            return False, 0.0, 0.0, context_used
+            return False, 0.0, 0.0, 0.0, context_used, False, False
 
     try:
         seg_coverage = float(seg.get("coverage", 0.0))
         pov_coverage = float(pov.get("coverage", 0.0))
     except Exception:
-        return False, 0.0, 0.0, context_used
+        return False, 0.0, 0.0, 0.0, context_used, False, False
     if not (0.0 <= seg_coverage <= 1.0):
-        return False, 0.0, 0.0, context_used
+        return False, 0.0, 0.0, 0.0, context_used, False, False
     if not (0.0 <= pov_coverage <= 1.0):
-        return False, 0.0, 0.0, context_used
+        return False, 0.0, 0.0, 0.0, context_used, False, False
 
     matched = seg.get("matched")
     if not isinstance(matched, list):
-        return False, 0.0, 0.0, context_used
+        return False, 0.0, 0.0, 0.0, context_used, False, False
     for item in matched:
         if not isinstance(item, str):
-            return False, 0.0, 0.0, context_used
+            return False, 0.0, 0.0, 0.0, context_used, False, False
 
-    return True, float(seg_coverage), float(pov_coverage), context_used
+    slam_present = False
+    slam_used = False
+    slam_coverage = 0.0
+    if "slam" in payload:
+        for key in ("present", "hit"):
+            if not isinstance(slam.get(key), bool):
+                return False, 0.0, 0.0, 0.0, context_used, False, False
+        try:
+            slam_coverage = float(slam.get("coverage", 0.0))
+            if not (0.0 <= slam_coverage <= 1.0):
+                return False, 0.0, 0.0, 0.0, context_used, False, False
+            if int(slam.get("planTextChars", -1)) < 0:
+                return False, 0.0, 0.0, 0.0, context_used, False, False
+        except Exception:
+            return False, 0.0, 0.0, 0.0, context_used, False, False
+        slam_matched = slam.get("matched")
+        if not isinstance(slam_matched, list):
+            return False, 0.0, 0.0, 0.0, context_used, False, False
+        for item in slam_matched:
+            if not isinstance(item, str):
+                return False, 0.0, 0.0, 0.0, context_used, False, False
+        slam_present = bool(slam.get("present"))
+        if detail:
+            for key in ("seg", "pov", "slam"):
+                if not isinstance(detail.get(key), bool):
+                    return False, 0.0, 0.0, 0.0, context_used, False, False
+            slam_used = bool(detail.get("slam"))
+        else:
+            slam_used = bool(slam_present and slam.get("hit"))
+
+    return True, float(seg_coverage), float(pov_coverage), float(slam_coverage), context_used, slam_present, slam_used
 
 
 def _plan_context_pack_schema_ok(
@@ -1165,6 +1199,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         plan_ctx_used_true_count = 0
         plan_seg_coverages: list[float] = []
         plan_pov_coverages: list[float] = []
+        plan_context_slam_present = 0
+        plan_context_slam_schema_ok = 0
+        plan_slam_used_true_count = 0
+        plan_slam_coverages: list[float] = []
         plan_context_pack_present = 0
         plan_context_pack_lines = 0
         plan_context_pack_schema_ok = 0
@@ -1408,13 +1446,27 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                     plan_context_lines += 1
                                     payload = obj.get("payload")
                                     payload = payload if isinstance(payload, dict) else {}
-                                    schema_ok, seg_cov, pov_cov, ctx_used = _plan_context_alignment_schema_ok(payload)
+                                    (
+                                        schema_ok,
+                                        seg_cov,
+                                        pov_cov,
+                                        slam_cov,
+                                        ctx_used,
+                                        slam_present,
+                                        slam_used,
+                                    ) = _plan_context_alignment_schema_ok(payload)
                                     if schema_ok:
                                         plan_context_schema_ok += 1
                                         plan_seg_coverages.append(float(seg_cov))
                                         plan_pov_coverages.append(float(pov_cov))
+                                        plan_slam_coverages.append(float(slam_cov))
                                         if ctx_used:
                                             plan_ctx_used_true_count += 1
+                                        if slam_present:
+                                            plan_context_slam_present += 1
+                                            plan_context_slam_schema_ok += 1
+                                        if slam_used:
+                                            plan_slam_used_true_count += 1
                                     else:
                                         warnings.append("plan.context_alignment payload missing required fields")
                                 if name == "plan.context_pack":
@@ -1910,6 +1962,12 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "planCtxUsedTrueCount": int(plan_ctx_used_true_count),
             "planSegCoverageP90": round(float(_percentile_float(plan_seg_coverages, 90)), 6),
             "planPovCoverageP90": round(float(_percentile_float(plan_pov_coverages, 90)), 6),
+            "planContextSlamPresent": int(plan_context_slam_present > 0),
+            "planContextSlamSchemaOk": int(
+                plan_context_slam_present > 0 and plan_context_slam_schema_ok == plan_context_slam_present
+            ),
+            "planSlamCoverageP90": round(float(_percentile_float(plan_slam_coverages, 90)), 6),
+            "planSlamUsedTrueCount": int(plan_slam_used_true_count),
             "planContextPackPresent": int(plan_context_pack_present),
             "planContextPackLines": int(plan_context_pack_lines),
             "planContextPackSchemaOk": int(
@@ -2037,6 +2095,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"planCtxUsedTrueCount: {summary['planCtxUsedTrueCount']}")
             print(f"planSegCoverageP90: {summary['planSegCoverageP90']}")
             print(f"planPovCoverageP90: {summary['planPovCoverageP90']}")
+            print(f"planContextSlamPresent: {summary['planContextSlamPresent']}")
+            print(f"planContextSlamSchemaOk: {summary['planContextSlamSchemaOk']}")
+            print(f"planSlamCoverageP90: {summary['planSlamCoverageP90']}")
+            print(f"planSlamUsedTrueCount: {summary['planSlamUsedTrueCount']}")
             print(f"planContextPackPresent: {summary['planContextPackPresent']}")
             print(f"planContextPackLines: {summary['planContextPackLines']}")
             print(f"planContextPackSchemaOk: {summary['planContextPackSchemaOk']}")

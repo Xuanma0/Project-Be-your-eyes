@@ -66,6 +66,11 @@
       "contextMaxChars": 0,
       "mode": "decisions_plus_highlights"
     },
+    "contextUsedDetail": {
+      "seg": false,
+      "pov": false,
+      "slam": false
+    },
     "safety": {
       "guardrailsApplied": []
     }

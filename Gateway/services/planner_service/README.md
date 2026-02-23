@@ -102,13 +102,34 @@ set BYES_PLANNER_ALLOW_RUN_PACKAGE_PATH=1
 `byes.plan_request.v1` supports structured contexts:
 - `contexts.pov.promptFragment`
 - `contexts.seg.promptFragment`
+- `contexts.slam.promptFragment`
 - `risk.riskLevel / hazardsCount`
 - `meta.promptVersion`
+
+Prompt version behavior:
+- `v2`: appends segmentation context (`contexts.seg`) when present.
+- `v3`: appends segmentation + SLAM context (`contexts.seg` + `contexts.slam`) in deterministic order.
 
 Explainable seg-hint rules (deterministic, v1):
 - keywords in `contexts.seg.promptFragment` trigger `stairs_or_dropoff` / `vehicle` / `pedestrian`
 - rule only adjusts action wording (speak/confirm), does not disable safety guardrail path in Gateway
 - planner metadata includes `ruleApplied`, `ruleHazardHint`, `matchedKeywords`, `ruleVersion`
+
+Minimal `v3` request example:
+
+```json
+{
+  "schemaVersion": "byes.plan_request.v1",
+  "runId": "demo-run",
+  "frameSeq": 12,
+  "contexts": {
+    "pov": {"included": true, "promptFragment": "POV summary", "chars": 11, "truncation": {"dropped": 0}},
+    "seg": {"included": true, "promptFragment": "[SEG] stairs(0.91)", "chars": 18, "truncation": {"segmentsDropped": 0, "charsDropped": 0}},
+    "slam": {"present": true, "chars": 74, "promptFragment": "[SLAM] state=tracking rate=0.94 lostStreak=0 alignP90=10ms"}
+  },
+  "meta": {"provider": "reference", "promptVersion": "v3"}
+}
+```
 
 On LLM failures (`timeout`, `http_error`, `invalid_json`, `schema_error`), the response still returns 200 with a reference plan and metadata:
 - `meta.planner.fallbackUsed=true`

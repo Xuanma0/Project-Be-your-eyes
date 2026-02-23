@@ -707,12 +707,12 @@ curl -X POST "http://127.0.0.1:8000/api/plan" `
   -d '{"runPackage":"Gateway/tests/fixtures/run_package_with_risk_gt_and_pov_min","frameSeq":2,"budget":{"maxChars":2000,"maxTokensApprox":256,"mode":"decisions_plus_highlights"},"constraints":{"allowConfirm":true,"allowHaptic":false,"maxActions":3}}'
 ```
 
-Per-request plan context pack override during plan generation (v4.56):
+Per-request plan context pack override during plan generation (v4.56+):
 
 ```powershell
 curl -X POST "http://127.0.0.1:8000/api/plan" `
   -H "Content-Type: application/json" `
-  -d '{"runPackage":"Gateway/tests/fixtures/run_package_with_risk_gt_and_pov_min","frameSeq":2,"budget":{"maxChars":2000,"maxTokensApprox":256,"mode":"decisions_plus_highlights"},"constraints":{"allowConfirm":true,"allowHaptic":false,"maxActions":3},"contextPackOverride":{"maxChars":512,"mode":"pov_plus_risk"}}'
+  -d '{"runPackage":"Gateway/tests/fixtures/run_package_with_risk_gt_and_pov_min","frameSeq":2,"budget":{"maxChars":2000,"maxTokensApprox":256,"mode":"decisions_plus_highlights"},"constraints":{"allowConfirm":true,"allowHaptic":false,"maxActions":3},"contextPackOverride":{"maxChars":512,"slamMaxChars":256,"mode":"pov_plus_risk"}}'
 ```
 
 SafetyKernel guardrails:
@@ -827,6 +827,7 @@ set BYES_PLANNER_PROMPT_VERSION=v1
 Prompt version notes:
 - `v1`: POV context only (existing behavior).
 - `v2`: includes `segContext.text.promptFragment` when available; if no seg context, behavior remains identical to `v1`.
+- `v3`: includes `segContext` + `slamContext` (`[SLAM]` fragment from `/api/slam/context`) when available.
 
 Traceability fields:
 - `events/events_v1.jsonl` (`plan.generate`): `plannerProvider`, `promptVersion`, `fallbackUsed`, `fallbackReason`, `jsonValid`
@@ -838,7 +839,25 @@ Traceability fields:
 
 Planner HTTP request contract (v4.53):
 - `Gateway/contracts/byes.plan_request.v1.json`
-- includes `risk + contexts.pov + contexts.seg + meta.promptVersion`
+- includes `risk + contexts.pov + contexts.seg + contexts.slam + meta.promptVersion`
+
+Minimal planner request snippet with SLAM context:
+
+```json
+{
+  "schemaVersion": "byes.plan_request.v1",
+  "runId": "demo-run",
+  "frameSeq": 12,
+  "contexts": {
+    "slam": {
+      "present": true,
+      "chars": 84,
+      "promptFragment": "[SLAM] state=tracking rate=0.94 lostStreak=0 alignP90=12ms ate=0.08 rpe=0.03"
+    }
+  },
+  "meta": {"provider": "reference", "promptVersion": "v3"}
+}
+```
 
 ## Planner Evaluation And Ablation
 

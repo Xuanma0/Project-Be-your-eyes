@@ -191,9 +191,10 @@ def _runtime_contract_defaults() -> dict[str, Any]:
             "plannerDefaults": planner_defaults,
         },
         "planRequest": {
-            "defaultPromptVersion": "v2",
+            "defaultPromptVersion": "v3",
             "includeSegContext": True,
             "includePovContext": True,
+            "includeSlamContext": True,
         },
         "planContextPack": {
             "defaultBudget": {
@@ -334,6 +335,7 @@ class PlanConstraintsRequest(BaseModel):
 
 class PlanContextPackOverrideRequest(BaseModel):
     maxChars: int | None = None
+    slamMaxChars: int | None = None
     mode: Literal[
         "seg_plus_pov_plus_risk",
         "seg_plus_pov",
@@ -345,10 +347,12 @@ class PlanContextPackOverrideRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_override(self) -> "PlanContextPackOverrideRequest":
-        if self.maxChars is None and self.mode is None:
-            raise ValueError("contextPackOverride requires maxChars or mode")
+        if self.maxChars is None and self.mode is None and self.slamMaxChars is None:
+            raise ValueError("contextPackOverride requires maxChars, slamMaxChars, or mode")
         if self.maxChars is not None and int(self.maxChars) < 0:
             raise ValueError("contextPackOverride.maxChars must be >= 0")
+        if self.slamMaxChars is not None and int(self.slamMaxChars) < 0:
+            raise ValueError("contextPackOverride.slamMaxChars must be >= 0")
         return self
 
 
@@ -2415,6 +2419,7 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
             "maxActions": int(request.constraints.maxActions),
         }
         context_pack_override_payload: dict[str, Any] | None = None
+        slam_context_override_payload: dict[str, Any] | None = None
         if isinstance(request.contextPackOverride, PlanContextPackOverrideRequest):
             override_payload: dict[str, Any] = {}
             if request.contextPackOverride.maxChars is not None:
@@ -2423,6 +2428,11 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
                 override_payload["mode"] = str(request.contextPackOverride.mode).strip()
             if override_payload:
                 context_pack_override_payload = override_payload
+            slam_override_payload: dict[str, Any] = {}
+            if request.contextPackOverride.slamMaxChars is not None:
+                slam_override_payload["maxChars"] = int(max(0, int(request.contextPackOverride.slamMaxChars)))
+            if slam_override_payload:
+                slam_context_override_payload = slam_override_payload
         bundle = generate_action_plan(
             pov_ir=pov_ir,
             run_id=run_id,
@@ -2435,6 +2445,7 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
             planner_provider=planner_provider,
             planner_pov_ir=inline_pov_ir if isinstance(inline_pov_ir, dict) else None,
             plan_context_pack_budget=context_pack_override_payload,
+            slam_context_budget=slam_context_override_payload,
         )
         plan_payload = bundle.get("plan")
         if not isinstance(plan_payload, dict):
@@ -2544,6 +2555,7 @@ async def generate_plan(request: PlanGenerateRequest, provider: str | None = Non
                     "fallbackUsed": planner.get("fallbackUsed"),
                     "fallbackReason": planner.get("fallbackReason"),
                     "jsonValid": planner.get("jsonValid"),
+                    "contextUsedDetail": planner.get("contextUsedDetail"),
                     "riskLevel": str(plan_payload.get("riskLevel", "low")),
                     "actionsCount": len(actions_payload),
                 },
@@ -2846,7 +2858,9 @@ async def run_packages_list(
     plan_req_fallback_used: str = "any",
     min_plan_seg_ctx_coverage: float | None = None,
     min_plan_pov_ctx_coverage: float | None = None,
+    min_plan_slam_ctx_coverage: float | None = None,
     require_plan_ctx_used: str = "any",
+    require_plan_slam_ctx_used: str = "any",
     max_plan_ctx_trunc_rate: float | None = None,
     min_plan_ctx_chars_p90: int | None = None,
     require_slam_ctx_present: str = "any",
@@ -2917,7 +2931,9 @@ async def run_packages_list(
         plan_req_fallback_used=plan_req_fallback_used,
         min_plan_seg_ctx_coverage=min_plan_seg_ctx_coverage,
         min_plan_pov_ctx_coverage=min_plan_pov_ctx_coverage,
+        min_plan_slam_ctx_coverage=min_plan_slam_ctx_coverage,
         require_plan_ctx_used=require_plan_ctx_used,
+        require_plan_slam_ctx_used=require_plan_slam_ctx_used,
         max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
         min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
         require_slam_ctx_present=require_slam_ctx_present,
@@ -2989,7 +3005,9 @@ async def run_packages_list(
             "plan_req_fallback_used": plan_req_fallback_used,
             "min_plan_seg_ctx_coverage": min_plan_seg_ctx_coverage,
             "min_plan_pov_ctx_coverage": min_plan_pov_ctx_coverage,
+            "min_plan_slam_ctx_coverage": min_plan_slam_ctx_coverage,
             "require_plan_ctx_used": require_plan_ctx_used,
+            "require_plan_slam_ctx_used": require_plan_slam_ctx_used,
             "max_plan_ctx_trunc_rate": max_plan_ctx_trunc_rate,
             "min_plan_ctx_chars_p90": min_plan_ctx_chars_p90,
             "require_slam_ctx_present": require_slam_ctx_present,
@@ -3065,7 +3083,9 @@ async def run_packages_export_json(
     plan_req_fallback_used: str = "any",
     min_plan_seg_ctx_coverage: float | None = None,
     min_plan_pov_ctx_coverage: float | None = None,
+    min_plan_slam_ctx_coverage: float | None = None,
     require_plan_ctx_used: str = "any",
+    require_plan_slam_ctx_used: str = "any",
     max_plan_ctx_trunc_rate: float | None = None,
     min_plan_ctx_chars_p90: int | None = None,
     require_slam_ctx_present: str = "any",
@@ -3136,7 +3156,9 @@ async def run_packages_export_json(
         plan_req_fallback_used=plan_req_fallback_used,
         min_plan_seg_ctx_coverage=min_plan_seg_ctx_coverage,
         min_plan_pov_ctx_coverage=min_plan_pov_ctx_coverage,
+        min_plan_slam_ctx_coverage=min_plan_slam_ctx_coverage,
         require_plan_ctx_used=require_plan_ctx_used,
+        require_plan_slam_ctx_used=require_plan_slam_ctx_used,
         max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
         min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
         require_slam_ctx_present=require_slam_ctx_present,
@@ -3214,7 +3236,9 @@ async def run_packages_export_csv(
     plan_req_fallback_used: str = "any",
     min_plan_seg_ctx_coverage: float | None = None,
     min_plan_pov_ctx_coverage: float | None = None,
+    min_plan_slam_ctx_coverage: float | None = None,
     require_plan_ctx_used: str = "any",
+    require_plan_slam_ctx_used: str = "any",
     max_plan_ctx_trunc_rate: float | None = None,
     min_plan_ctx_chars_p90: int | None = None,
     require_slam_ctx_present: str = "any",
@@ -3285,7 +3309,9 @@ async def run_packages_export_csv(
         plan_req_fallback_used=plan_req_fallback_used,
         min_plan_seg_ctx_coverage=min_plan_seg_ctx_coverage,
         min_plan_pov_ctx_coverage=min_plan_pov_ctx_coverage,
+        min_plan_slam_ctx_coverage=min_plan_slam_ctx_coverage,
         require_plan_ctx_used=require_plan_ctx_used,
+        require_plan_slam_ctx_used=require_plan_slam_ctx_used,
         max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
         min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
         require_slam_ctx_present=require_slam_ctx_present,
@@ -3385,6 +3411,9 @@ async def run_packages_export_csv(
         "plan_ctx_used_rate",
         "plan_seg_ctx_coverage",
         "plan_pov_ctx_coverage",
+        "plan_slam_ctx_coverage",
+        "plan_slam_ctx_hit_rate",
+        "plan_slam_ctx_used_rate",
         "plan_ctx_chars_p90",
         "plan_ctx_trunc_rate",
         "plan_ctx_seg_chars_p90",
@@ -4244,20 +4273,28 @@ def _build_plan_request_event_payload(plan_request: dict[str, Any] | None, plann
     seg = seg if isinstance(seg, dict) else {}
     pov = contexts.get("pov")
     pov = pov if isinstance(pov, dict) else {}
+    slam = contexts.get("slam")
+    slam = slam if isinstance(slam, dict) else {}
     seg_trunc = seg.get("truncation")
     seg_trunc = seg_trunc if isinstance(seg_trunc, dict) else {}
     meta = request_payload.get("meta")
     meta = meta if isinstance(meta, dict) else {}
     seg_chars = int(seg.get("chars", 0) or 0)
     pov_chars = int(pov.get("chars", 0) or 0)
+    slam_chars = int(slam.get("chars", meta.get("slamChars", 0)) or 0)
+    slam_included_raw = slam.get("present")
+    if not isinstance(slam_included_raw, bool):
+        slam_included_raw = meta.get("slamIncluded")
     return {
         "schemaVersion": "byes.plan_request.v1",
         "provider": planner.get("plannerProvider") or planner.get("provider") or meta.get("provider"),
         "promptVersion": planner.get("promptVersion") or meta.get("promptVersion"),
         "segIncluded": bool(seg.get("included")),
         "povIncluded": bool(pov.get("included")),
+        "slamIncluded": bool(slam_included_raw) if isinstance(slam_included_raw, bool) else bool(slam.get("promptFragment")),
         "segChars": int(max(0, seg_chars)),
         "povChars": int(max(0, pov_chars)),
+        "slamChars": int(max(0, slam_chars)),
         "segTruncSegmentsDropped": int(max(0, int(seg_trunc.get("segmentsDropped", 0) or 0))),
         "segTruncCharsDropped": int(max(0, int(seg_trunc.get("charsDropped", 0) or 0))),
         "fallbackUsed": bool(planner.get("fallbackUsed")) if isinstance(planner.get("fallbackUsed"), bool) else None,
@@ -4294,8 +4331,14 @@ def _build_plan_context_alignment_event_payload(
     seg = seg if isinstance(seg, dict) else {}
     pov = payload.get("pov")
     pov = pov if isinstance(pov, dict) else {}
+    slam = payload.get("slam")
+    slam = slam if isinstance(slam, dict) else {}
+    detail = payload.get("contextUsedDetail")
+    detail = detail if isinstance(detail, dict) else {}
     matched_raw = seg.get("matched")
     matched = [str(item) for item in matched_raw[:5]] if isinstance(matched_raw, list) else []
+    slam_matched_raw = slam.get("matched")
+    slam_matched = [str(item) for item in slam_matched_raw[:5]] if isinstance(slam_matched_raw, list) else []
     return {
         "schemaVersion": "plan.context_alignment.v1",
         "seg": {
@@ -4312,7 +4355,19 @@ def _build_plan_context_alignment_event_payload(
             "coverage": _unit_float(pov.get("coverage")),
             "hitCount": _nn_int(pov.get("hitCount")),
         },
+        "slam": {
+            "present": bool(slam.get("present")),
+            "hit": bool(slam.get("hit")),
+            "coverage": _unit_float(slam.get("coverage")),
+            "planTextChars": _nn_int(slam.get("planTextChars")),
+            "matched": slam_matched,
+        },
         "contextUsed": bool(payload.get("contextUsed")),
+        "contextUsedDetail": {
+            "seg": bool(detail.get("seg")),
+            "pov": bool(detail.get("pov")),
+            "slam": bool(detail.get("slam")),
+        },
     }
 
 
@@ -4408,6 +4463,7 @@ def _try_append_plan_events(
         "fallbackUsed": planner.get("fallbackUsed"),
         "fallbackReason": planner.get("fallbackReason"),
         "jsonValid": planner.get("jsonValid"),
+        "contextUsedDetail": planner.get("contextUsedDetail"),
         "riskLevel": str(risk_level or "low"),
         "actionsCount": int(max(0, actions_count)),
         "stopCount": int(max(0, stop_count)),
@@ -4891,6 +4947,9 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     plan_ctx_used_rate: float | None = None
     plan_seg_ctx_coverage: float | None = None
     plan_pov_ctx_coverage: float | None = None
+    plan_slam_ctx_coverage: float | None = None
+    plan_slam_ctx_hit_rate: float | None = None
+    plan_slam_ctx_used_rate: float | None = None
     plan_ctx_chars_p90: int | None = None
     plan_ctx_trunc_rate: float | None = None
     plan_ctx_seg_chars_p90: int | None = None
@@ -5019,6 +5078,17 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         pov_cov_raw = _read_float(pov_ctx_payload, "coverageMean")
         if pov_cov_raw is not None:
             plan_pov_ctx_coverage = float(pov_cov_raw)
+        slam_ctx_payload = plan_context_payload.get("slam")
+        slam_ctx_payload = slam_ctx_payload if isinstance(slam_ctx_payload, dict) else {}
+        slam_cov_raw = _read_float(slam_ctx_payload, "coverageMean")
+        if slam_cov_raw is not None:
+            plan_slam_ctx_coverage = float(slam_cov_raw)
+        slam_hit_raw = _read_float(slam_ctx_payload, "hitRate")
+        if slam_hit_raw is not None:
+            plan_slam_ctx_hit_rate = float(slam_hit_raw)
+        slam_used_raw = _read_float(slam_ctx_payload, "contextUsedRate")
+        if slam_used_raw is not None:
+            plan_slam_ctx_used_rate = float(slam_used_raw)
     if isinstance(plan_context_pack_payload, dict) and bool(plan_context_pack_payload.get("present")):
         out_payload = plan_context_pack_payload.get("out")
         out_payload = out_payload if isinstance(out_payload, dict) else {}
@@ -5377,6 +5447,9 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "plan_ctx_used_rate": plan_ctx_used_rate,
         "plan_seg_ctx_coverage": plan_seg_ctx_coverage,
         "plan_pov_ctx_coverage": plan_pov_ctx_coverage,
+        "plan_slam_ctx_coverage": plan_slam_ctx_coverage,
+        "plan_slam_ctx_hit_rate": plan_slam_ctx_hit_rate,
+        "plan_slam_ctx_used_rate": plan_slam_ctx_used_rate,
         "plan_ctx_chars_p90": plan_ctx_chars_p90,
         "plan_ctx_trunc_rate": plan_ctx_trunc_rate,
         "plan_ctx_seg_chars_p90": plan_ctx_seg_chars_p90,
@@ -5455,7 +5528,9 @@ def _matches_run_filters(
     plan_req_fallback_used: str | None,
     min_plan_seg_ctx_coverage: float | None,
     min_plan_pov_ctx_coverage: float | None,
+    min_plan_slam_ctx_coverage: float | None,
     require_plan_ctx_used: str | None,
+    require_plan_slam_ctx_used: str | None,
     max_plan_ctx_trunc_rate: float | None,
     min_plan_ctx_chars_p90: int | None,
     require_slam_ctx_present: str | None,
@@ -5726,9 +5801,23 @@ def _matches_run_filters(
             return False
         if float(value) < float(min_plan_pov_ctx_coverage):
             return False
+    if min_plan_slam_ctx_coverage is not None:
+        value = row.get("plan_slam_ctx_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_plan_slam_ctx_coverage):
+            return False
     if require_plan_ctx_used:
         normalized = require_plan_ctx_used.strip().lower()
         present = bool(row.get("plan_ctx_used"))
+        if normalized in {"true", "1", "yes"} and not present:
+            return False
+        if normalized in {"false", "0", "no"} and present:
+            return False
+    if require_plan_slam_ctx_used:
+        normalized = require_plan_slam_ctx_used.strip().lower()
+        used_rate = row.get("plan_slam_ctx_used_rate")
+        present = bool(float(used_rate)) if isinstance(used_rate, (int, float)) else False
         if normalized in {"true", "1", "yes"} and not present:
             return False
         if normalized in {"false", "0", "no"} and present:
@@ -5907,6 +5996,8 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "plan_rule_applied",
         "plan_seg_ctx_coverage",
         "plan_pov_ctx_coverage",
+        "plan_slam_ctx_coverage",
+        "plan_slam_ctx_used_rate",
         "plan_ctx_used_rate",
         "plan_ctx_chars_p90",
         "plan_ctx_trunc_rate",
@@ -5999,7 +6090,9 @@ async def _query_run_package_rows(
     plan_req_fallback_used: str | None,
     min_plan_seg_ctx_coverage: float | None,
     min_plan_pov_ctx_coverage: float | None,
+    min_plan_slam_ctx_coverage: float | None,
     require_plan_ctx_used: str | None,
+    require_plan_slam_ctx_used: str | None,
     max_plan_ctx_trunc_rate: float | None,
     min_plan_ctx_chars_p90: int | None,
     require_slam_ctx_present: str | None,
@@ -6076,7 +6169,9 @@ async def _query_run_package_rows(
             plan_req_fallback_used=plan_req_fallback_used,
             min_plan_seg_ctx_coverage=min_plan_seg_ctx_coverage,
             min_plan_pov_ctx_coverage=min_plan_pov_ctx_coverage,
+            min_plan_slam_ctx_coverage=min_plan_slam_ctx_coverage,
             require_plan_ctx_used=require_plan_ctx_used,
+            require_plan_slam_ctx_used=require_plan_slam_ctx_used,
             max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
             min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
             require_slam_ctx_present=require_slam_ctx_present,
@@ -6181,7 +6276,9 @@ async def runs_dashboard(
     plan_req_fallback_used: str = "any",
     min_plan_seg_ctx_coverage: float | None = None,
     min_plan_pov_ctx_coverage: float | None = None,
+    min_plan_slam_ctx_coverage: float | None = None,
     require_plan_ctx_used: str = "any",
+    require_plan_slam_ctx_used: str = "any",
     max_plan_ctx_trunc_rate: float | None = None,
     min_plan_ctx_chars_p90: int | None = None,
     require_slam_ctx_present: str = "any",
@@ -6253,7 +6350,9 @@ async def runs_dashboard(
         plan_req_fallback_used=plan_req_fallback_used,
         min_plan_seg_ctx_coverage=min_plan_seg_ctx_coverage,
         min_plan_pov_ctx_coverage=min_plan_pov_ctx_coverage,
+        min_plan_slam_ctx_coverage=min_plan_slam_ctx_coverage,
         require_plan_ctx_used=require_plan_ctx_used,
+        require_plan_slam_ctx_used=require_plan_slam_ctx_used,
         max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
         min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
         require_slam_ctx_present=require_slam_ctx_present,

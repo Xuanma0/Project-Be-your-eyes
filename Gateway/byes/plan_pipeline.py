@@ -8,6 +8,7 @@ from typing import Any
 
 from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text
 from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events
+from byes.inference.slam_context import DEFAULT_SLAM_CONTEXT_BUDGET, build_slam_context_pack
 from byes.inference.plan_context_pack import build_plan_context_pack
 from byes.planner_backends.base import PlannerBackend
 from byes.planner_registry import get_planner_backend
@@ -123,6 +124,7 @@ def build_planner_request(
     planner_provider: str | None = None,
     pov_ir_inline: dict[str, Any] | None = None,
     seg_context: dict[str, Any] | None = None,
+    slam_context: dict[str, Any] | None = None,
     plan_context_pack: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_constraints = {
@@ -152,11 +154,15 @@ def build_planner_request(
     seg_out = seg_out if isinstance(seg_out, dict) else {}
     seg_trunc = seg_stats.get("truncation")
     seg_trunc = seg_trunc if isinstance(seg_trunc, dict) else {}
+    slam_payload = slam_context if isinstance(slam_context, dict) else {}
+    slam_text = slam_payload.get("text")
+    slam_text = slam_text if isinstance(slam_text, dict) else {}
+    slam_prompt_fragment = str(slam_text.get("promptFragment", "")).strip()
 
     provider_value = str(planner_provider or "").strip().lower()
     if provider_value not in {"mock", "http", "reference", "llm", "pov"}:
         provider_value = "mock"
-    prompt_version = str(os.getenv("BYES_PLANNER_PROMPT_VERSION", "v2")).strip() or "v2"
+    prompt_version = str(os.getenv("BYES_PLANNER_PROMPT_VERSION", "v3")).strip() or "v3"
 
     payload = {
         "schemaVersion": "byes.plan_request.v1",
@@ -189,11 +195,18 @@ def build_planner_request(
                     "charsDropped": _as_int(seg_trunc.get("charsDropped")),
                 },
             },
+            "slam": {
+                "present": bool(slam_prompt_fragment),
+                "chars": len(slam_prompt_fragment),
+                "promptFragment": slam_prompt_fragment or None,
+            },
         },
         "meta": {
             "provider": provider_value,
             "promptVersion": prompt_version,
             "createdAtMs": _now_ms(),
+            "slamIncluded": bool(slam_prompt_fragment),
+            "slamChars": int(len(slam_prompt_fragment)),
         },
     }
 
@@ -212,6 +225,8 @@ def build_planner_request(
         payload["povIr"] = pov_ir_inline
     if isinstance(seg_context, dict):
         payload["segContext"] = seg_context
+    if isinstance(slam_context, dict):
+        payload["slamContext"] = slam_context
     if isinstance(plan_context_pack, dict):
         payload["planContextPack"] = plan_context_pack
     allow_path = str(os.getenv("BYES_PLANNER_ALLOW_RUN_PACKAGE_PATH", "0")).strip().lower() in {"1", "true", "yes", "on"}
@@ -234,6 +249,7 @@ def generate_action_plan(
     planner_provider: str | None = None,
     planner_pov_ir: dict[str, Any] | None = None,
     plan_context_pack_budget: dict[str, Any] | None = None,
+    slam_context_budget: dict[str, Any] | None = None,
     backend: PlannerBackend | None = None,
 ) -> dict[str, Any]:
     context_pack = build_context_pack(pov_ir, budget=budget, mode=mode)
@@ -255,6 +271,28 @@ def generate_action_plan(
     seg_context_out = seg_context_out if isinstance(seg_context_out, dict) else {}
     seg_context_segments = _as_int(seg_context_out.get("segments")) or 0
     seg_context = seg_context_payload if seg_context_segments > 0 else None
+
+    slam_context_budget_payload = {
+        "maxChars": int(DEFAULT_SLAM_CONTEXT_BUDGET["maxChars"]),
+        "mode": str(DEFAULT_SLAM_CONTEXT_BUDGET["mode"]),
+    }
+    if isinstance(slam_context_budget, dict):
+        if _as_int(slam_context_budget.get("maxChars")) is not None:
+            slam_context_budget_payload["maxChars"] = int(max(0, int(slam_context_budget.get("maxChars", 0) or 0)))
+        mode_raw = str(slam_context_budget.get("mode", "")).strip()
+        if mode_raw:
+            slam_context_budget_payload["mode"] = mode_raw
+    slam_context_payload = build_slam_context_pack(
+        run_id=run_id,
+        frame_seq=frame_seq,
+        events_v1=events_rows,
+        budget=slam_context_budget_payload,
+    )
+    slam_context_text = slam_context_payload.get("text")
+    slam_context_text = slam_context_text if isinstance(slam_context_text, dict) else {}
+    slam_context_fragment = str(slam_context_text.get("promptFragment", "")).strip()
+    slam_context = slam_context_payload if slam_context_fragment else None
+
     plan_context_pack = build_plan_context_pack(
         run_id=run_id,
         seg_context=seg_context,
@@ -274,6 +312,7 @@ def generate_action_plan(
         planner_provider=planner_provider,
         pov_ir_inline=planner_pov_ir,
         seg_context=seg_context,
+        slam_context=slam_context,
         plan_context_pack=plan_context_pack,
     )
     draft_plan = planner_backend.generate_plan(planner_request)
@@ -324,6 +363,7 @@ def generate_action_plan(
         "plan": guarded_plan,
         "contextPack": context_pack,
         "segContext": seg_context,
+        "slamContext": slam_context,
         "planContextPack": plan_context_pack,
         "planRequest": planner_request,
         "riskSummary": risk_summary,
@@ -361,6 +401,17 @@ def summarize_plan_for_report(bundle: dict[str, Any]) -> dict[str, Any]:
     seg_context_segments = _as_int(seg_context_out.get("segments")) or 0
     seg_context_trunc_dropped = _as_int(seg_context_trunc.get("segmentsDropped")) or 0
     seg_context_included = seg_context_segments > 0 and bool(seg_context_fragment.strip())
+    slam_context = bundle.get("slamContext")
+    slam_context = slam_context if isinstance(slam_context, dict) else {}
+    slam_context_text = slam_context.get("text")
+    slam_context_text = slam_context_text if isinstance(slam_context_text, dict) else {}
+    slam_context_fragment = str(slam_context_text.get("promptFragment", "")).strip()
+    slam_context_stats = slam_context.get("stats")
+    slam_context_stats = slam_context_stats if isinstance(slam_context_stats, dict) else {}
+    slam_context_trunc = slam_context_stats.get("truncation")
+    slam_context_trunc = slam_context_trunc if isinstance(slam_context_trunc, dict) else {}
+    slam_context_included = bool(slam_context_fragment)
+    slam_context_trunc_dropped = _as_int(slam_context_trunc.get("posesDropped")) or 0
     action_details: list[dict[str, Any]] = []
     for item in actions:
         payload = item.get("payload")
@@ -406,6 +457,9 @@ def summarize_plan_for_report(bundle: dict[str, Any]) -> dict[str, Any]:
         "segContextIncluded": bool(seg_context_included),
         "segContextChars": len(seg_context_fragment) if seg_context_included else 0,
         "segContextTruncSegmentsDropped": int(max(0, seg_context_trunc_dropped)),
+        "slamContextIncluded": bool(slam_context_included),
+        "slamContextChars": len(slam_context_fragment) if slam_context_included else 0,
+        "slamContextTruncPosesDropped": int(max(0, slam_context_trunc_dropped)),
     }
 
 
