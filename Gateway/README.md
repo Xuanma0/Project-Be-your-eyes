@@ -564,12 +564,14 @@ Matrix mode (`--matrix 1`) runs the same run-package batch across multiple profi
       }
     },
     {
-      "name": "slam_offline_pyslam",
+      "name": "slam_offline_pyslam_run",
       "services": {"seg": "reference", "depth": "reference", "ocr": "reference"},
       "env": {},
       "prehooks": [
         {
-          "type": "pyslam_ingest",
+          "type": "pyslam_run",
+          "mode": "fixture",
+          "thenIngest": true,
           "tumGlob": "pyslam/*.txt",
           "alignMode": "auto",
           "replaceExisting": true
@@ -592,8 +594,30 @@ python scripts/run_dataset_benchmark.py `
 ```
 
 PySLAM offline profile note:
-- put exported TUM trajectory files (for example `byes_traj_online.txt`, `byes_traj_final.txt`) under `<run_package>/pyslam/`
-- `slam_offline_pyslam` prehook calls `scripts/ingest_pyslam_tum.py` before `report_run.py`, so matrix mode can compare baseline vs offline SLAM ingest even with `--replay 0`
+- put fixture trajectories under `<run_package>/pyslam_fixture/` (or `<run_package>/gt/pyslam_fixture/`) for CI-safe runs
+- `slam_offline_pyslam_run` prehook calls `scripts/run_pyslam_on_run_package.py --mode fixture` then `scripts/ingest_pyslam_tum.py` before `report_run.py`, so matrix mode can compare baseline vs offline SLAM ingest even with `--replay 0`
+
+Fixture-only prehook smoke command:
+
+```powershell
+python scripts/run_dataset_benchmark.py `
+  --root "<dir_with_runpackages>" `
+  --out "artifacts/benchmarks/v473_fixture_pyslam_matrix_demo" `
+  --replay 0 `
+  --matrix 1 `
+  --profiles "<path/to/profiles.json>"
+```
+
+WSL mode (optional local, requires WSL2 + pySLAM install):
+
+```powershell
+python scripts/run_pyslam_on_run_package.py `
+  --run-package "<run_package_dir>" `
+  --mode wsl `
+  --wsl-distro Ubuntu `
+  --pyslam-root "<path_to_pyslam_repo>" `
+  --save-online 1 --save-final 1
+```
 
 Typical dataset roots:
 - Ego4D imports root: `<...>/Gateway/artifacts/imports/v468_ego4d_demo`

@@ -151,6 +151,32 @@ def _sanitize_prehooks(raw: Any) -> list[dict[str, Any]]:
         hook_type = str(item.get("type", "")).strip().lower()
         if not hook_type:
             continue
+        if hook_type == "pyslam_run":
+            mode = str(item.get("mode", "fixture")).strip().lower() or "fixture"
+            if mode not in {"fixture", "wsl"}:
+                mode = "fixture"
+            tum_glob = str(item.get("tumGlob", "pyslam/*.txt")).strip() or "pyslam/*.txt"
+            align_mode = str(item.get("alignMode", "auto")).strip().lower() or "auto"
+            then_ingest = _parse_bool(item.get("thenIngest", True))
+            replace_existing = _parse_bool(item.get("replaceExisting", True))
+            save_online = _parse_bool(item.get("saveOnline", True))
+            save_final = _parse_bool(item.get("saveFinal", True))
+            out.append(
+                {
+                    "type": "pyslam_run",
+                    "mode": mode,
+                    "thenIngest": bool(then_ingest),
+                    "tumGlob": tum_glob,
+                    "alignMode": align_mode,
+                    "replaceExisting": bool(replace_existing),
+                    "wslDistro": str(item.get("wslDistro", "Ubuntu")).strip() or "Ubuntu",
+                    "pyslamRoot": str(item.get("pyslamRoot", "")).strip(),
+                    "config": str(item.get("config", "")).strip(),
+                    "saveOnline": bool(save_online),
+                    "saveFinal": bool(save_final),
+                }
+            )
+            continue
         if hook_type != "pyslam_ingest":
             out.append({"type": hook_type})
             continue
@@ -176,6 +202,17 @@ def _services_compact(services: dict[str, str]) -> str:
         if key in services:
             parts.append(f"{key}={services[key]}")
     return ",".join(parts)
+
+
+def _services_with_prehooks(services: dict[str, str], prehooks: list[dict[str, Any]]) -> str:
+    base = _services_compact(services)
+    has_pyslam_run = any(
+        isinstance(hook, dict) and str(hook.get("type", "")).strip().lower() == "pyslam_run"
+        for hook in prehooks
+    )
+    if has_pyslam_run:
+        return f"{base}+pyslam_run" if base else "pyslam_run"
+    return base
 
 
 def _load_profiles(path: Path) -> list[BenchmarkProfile]:
@@ -799,6 +836,45 @@ def _run_pyslam_ingest_prehook(
     return warnings, errors, out
 
 
+def _run_pyslam_run_prehook(
+    *,
+    target_run_package: Path,
+    hook: dict[str, Any],
+    env: dict[str, str],
+) -> tuple[list[str], list[str], str | None]:
+    warnings: list[str] = []
+    errors: list[str] = []
+    mode = str(hook.get("mode", "fixture")).strip().lower() or "fixture"
+    wsl_distro = str(hook.get("wslDistro", "Ubuntu")).strip() or "Ubuntu"
+    pyslam_root = str(hook.get("pyslamRoot", "")).strip()
+    config = str(hook.get("config", "")).strip()
+    save_online = bool(hook.get("saveOnline", True))
+    save_final = bool(hook.get("saveFinal", True))
+
+    cmd = [
+        sys.executable,
+        str(THIS_DIR / "run_pyslam_on_run_package.py"),
+        "--run-package",
+        str(target_run_package),
+        "--mode",
+        mode,
+        "--wsl-distro",
+        wsl_distro,
+        "--save-online",
+        "1" if save_online else "0",
+        "--save-final",
+        "1" if save_final else "0",
+    ]
+    if pyslam_root:
+        cmd.extend(["--pyslam-root", pyslam_root])
+    if config:
+        cmd.extend(["--config", config])
+    code, out = _run_subprocess(cmd, cwd=REPO_ROOT, env=env)
+    if code != 0:
+        errors.append(f"pyslam_run failed (code={code})")
+    return warnings, errors, out
+
+
 def _apply_prehooks(
     *,
     source_run_package: Path,
@@ -833,6 +909,42 @@ def _apply_prehooks(
             hook_entry["replaceExisting"] = bool(hook.get("replaceExisting", False))
             hook_entry["warnings"] = hook_warnings
             hook_entry["errors"] = hook_errors
+        elif hook_type == "pyslam_run":
+            hook_warnings, hook_errors, hook_out = _run_pyslam_run_prehook(
+                target_run_package=target_run_package,
+                hook=hook,
+                env=env,
+            )
+            warnings.extend(hook_warnings)
+            errors.extend(hook_errors)
+            if hook_out:
+                outputs.append(hook_out)
+            hook_entry["mode"] = str(hook.get("mode", "fixture"))
+            hook_entry["thenIngest"] = bool(hook.get("thenIngest", True))
+            hook_entry["tumGlob"] = str(hook.get("tumGlob", "pyslam/*.txt"))
+            hook_entry["alignMode"] = str(hook.get("alignMode", "auto"))
+            hook_entry["replaceExisting"] = bool(hook.get("replaceExisting", True))
+            hook_entry["warnings"] = list(hook_warnings)
+            hook_entry["errors"] = list(hook_errors)
+            if not hook_errors and bool(hook.get("thenIngest", True)):
+                ingest_hook = {
+                    "type": "pyslam_ingest",
+                    "tumGlob": str(hook.get("tumGlob", "pyslam/*.txt")),
+                    "alignMode": str(hook.get("alignMode", "auto")),
+                    "replaceExisting": bool(hook.get("replaceExisting", True)),
+                }
+                ingest_warnings, ingest_errors, ingest_out = _run_pyslam_ingest_prehook(
+                    source_run_package=source_run_package,
+                    target_run_package=target_run_package,
+                    hook=ingest_hook,
+                    env=env,
+                )
+                warnings.extend(ingest_warnings)
+                errors.extend(ingest_errors)
+                hook_entry["warnings"].extend(ingest_warnings)
+                hook_entry["errors"].extend(ingest_errors)
+                if ingest_out:
+                    outputs.append(ingest_out)
         else:
             warning = f"unknown prehook type '{hook_type}', skipped"
             warnings.append(warning)
@@ -877,8 +989,8 @@ def run_dataset_benchmark(
     base_env.update(_load_env_file(env_file))
     if env_overrides:
         base_env.update({str(k): str(v) for k, v in env_overrides.items()})
-    services_compact = _services_compact(services)
     active_prehooks = list(prehooks or [])
+    services_compact = _services_with_prehooks(services, active_prehooks)
 
     runtimes: list[ServiceRuntime] = []
     failures = 0
