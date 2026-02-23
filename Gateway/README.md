@@ -466,6 +466,37 @@ Outputs:
 - `%TEMP%\byes_seg_prompt_budget\latest.json`
 - `%TEMP%\byes_seg_prompt_budget\latest.md`
 
+## Dataset Import -> RunPackage (v4.68)
+
+Import Ego4D video to a BYE run package:
+
+```powershell
+python scripts/import_ego4d_to_run_package.py `
+  --video-path "<path/to/video.mp4>" `
+  --out "artifacts/imports/ego4d_runpkg_demo" `
+  --fps 5 --start-sec 0 --duration-sec 30 --max-frames 300 --resize 640 --overwrite
+```
+
+Import ImageNet-style image folder to a BYE run package:
+
+```powershell
+python scripts/import_image_folder_to_run_package.py `
+  --image-dir "<path/to/image_folder>" `
+  --glob "*.JPEG" `
+  --sample 200 --shuffle 1 --seed 123 `
+  --out "artifacts/imports/imagenet_runpkg_demo" --overwrite
+```
+
+Generated run packages are compatible with existing tools:
+
+```powershell
+python scripts/lint_run_package.py --run-package artifacts/imports/ego4d_runpkg_demo --strict
+python scripts/report_run.py --run-package artifacts/imports/ego4d_runpkg_demo
+python scripts/replay_run_package.py --run-package artifacts/imports/ego4d_runpkg_demo --reset
+```
+
+Note: ImageNet DET test labels are withheld, so these imports are best for latency/robustness and pipeline checks, not GT precision scoring.
+
 Seg context pack (budgeted) from existing `seg.segment` events:
 
 ```powershell
