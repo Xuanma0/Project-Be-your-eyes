@@ -3301,6 +3301,108 @@ def extract_plan_context_pack_summary_from_events_v1(events: Iterable[dict[str, 
     }
 
 
+def extract_slam_context_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    event_count = 0
+    chars_values: list[int] = []
+    token_values: list[int] = []
+    chars_dropped_total = 0
+    poses_dropped_total = 0
+    tracking_rate_values: list[float] = []
+    lost_streak_values: list[int] = []
+    ate_values: list[float] = []
+    mode_counter: Counter[str] = Counter()
+    budget_chars_counter: Counter[int] = Counter()
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "slam.context":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        if str(payload.get("schemaVersion", "")).strip() != "slam.context.v1":
+            continue
+
+        stats = payload.get("stats")
+        stats = stats if isinstance(stats, dict) else {}
+        out_stats = stats.get("out")
+        out_stats = out_stats if isinstance(out_stats, dict) else {}
+        truncation = stats.get("truncation")
+        truncation = truncation if isinstance(truncation, dict) else {}
+        budget = payload.get("budget")
+        budget = budget if isinstance(budget, dict) else {}
+        health = payload.get("health")
+        health = health if isinstance(health, dict) else {}
+        quality = payload.get("quality")
+        quality = quality if isinstance(quality, dict) else {}
+
+        event_count += 1
+        chars_values.append(_to_nonnegative_int(out_stats.get("charsTotal")))
+        token_values.append(_to_nonnegative_int(out_stats.get("tokenApprox")))
+        chars_dropped_total += _to_nonnegative_int(truncation.get("charsDropped"))
+        poses_dropped_total += _to_nonnegative_int(truncation.get("posesDropped"))
+        tracking_rate_values.append(_to_unit_float(health.get("trackingRateWindow")))
+        lost_streak_values.append(_to_nonnegative_int(health.get("longestLostStreak")))
+
+        ate_value = _try_float(quality.get("ateRmseM"))
+        if ate_value is not None:
+            ate_values.append(max(0.0, float(ate_value)))
+
+        mode_text = str(budget.get("mode", "")).strip()
+        if mode_text:
+            mode_counter[mode_text] += 1
+        budget_chars = _to_nonnegative_int(budget.get("maxChars"))
+        if budget_chars > 0:
+            budget_chars_counter[budget_chars] += 1
+
+    if event_count <= 0:
+        return {
+            "present": False,
+            "events": 0,
+            "budgetDefault": {"maxChars": 0, "mode": None},
+            "out": {"charsTotalP90": 0, "tokenApproxP90": 0},
+            "truncation": {"posesDroppedTotal": 0, "charsDroppedTotal": 0, "truncationRate": 0.0},
+            "health": {"trackingRateMean": 0.0, "lostStreakMax": 0},
+            "quality": {"ateRmseMMean": None, "ateRmseMP90": None},
+        }
+
+    chars_stats = summarize_latency(chars_values)
+    token_stats = summarize_latency(token_values)
+    truncation_rate = _safe_ratio(chars_dropped_total, max(1, sum(chars_values) + chars_dropped_total))
+    top_mode = mode_counter.most_common(1)[0][0] if mode_counter else None
+    top_budget_chars = budget_chars_counter.most_common(1)[0][0] if budget_chars_counter else 0
+
+    return {
+        "present": True,
+        "events": int(event_count),
+        "budgetDefault": {"maxChars": int(top_budget_chars), "mode": top_mode},
+        "out": {
+            "charsTotalP90": int(chars_stats.get("p90", 0) or 0),
+            "tokenApproxP90": int(token_stats.get("p90", 0) or 0),
+        },
+        "truncation": {
+            "posesDroppedTotal": int(poses_dropped_total),
+            "charsDroppedTotal": int(chars_dropped_total),
+            "truncationRate": round(max(0.0, min(1.0, truncation_rate)), 6),
+        },
+        "health": {
+            "trackingRateMean": round(_mean_float(tracking_rate_values), 6),
+            "lostStreakMax": int(max(lost_streak_values) if lost_streak_values else 0),
+        },
+        "quality": {
+            "ateRmseMMean": round(_mean_float(ate_values), 6) if ate_values else None,
+            "ateRmseMP90": round(_percentile_float(ate_values, 90), 6) if ate_values else None,
+        },
+    }
+
+
 def extract_models_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
     latest_payload: dict[str, Any] | None = None
     latest_ts = -1

@@ -36,6 +36,7 @@ from byes.inference.registry import get_ocr_backend, get_risk_backend, get_seg_b
 from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult, SlamResult
 from byes.inference.prompt_budget import normalize_prompt, pack_prompt
 from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events
+from byes.inference.slam_context import DEFAULT_SLAM_CONTEXT_BUDGET, build_slam_context_pack
 from byes.inference.plan_context_pack import (
     DEFAULT_PLAN_CONTEXT_PACK_BUDGET,
     build_plan_context_pack,
@@ -161,6 +162,12 @@ def _runtime_contract_defaults() -> dict[str, Any]:
                 "maxChars": int(DEFAULT_SEG_CONTEXT_BUDGET["maxChars"]),
                 "maxSegments": int(DEFAULT_SEG_CONTEXT_BUDGET["maxSegments"]),
                 "mode": str(DEFAULT_SEG_CONTEXT_BUDGET["mode"]),
+            }
+        },
+        "slamContext": {
+            "defaultBudget": {
+                "maxChars": int(DEFAULT_SLAM_CONTEXT_BUDGET["maxChars"]),
+                "mode": str(DEFAULT_SLAM_CONTEXT_BUDGET["mode"]),
             }
         },
         "povContext": {
@@ -2053,6 +2060,101 @@ async def get_seg_context(
             shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
+@app.get("/api/slam/context")
+async def get_slam_context(
+    runId: str,
+    frameSeq: int | None = None,
+    maxChars: int = int(DEFAULT_SLAM_CONTEXT_BUDGET["maxChars"]),
+    mode: Literal["last_pose_and_health"] = str(DEFAULT_SLAM_CONTEXT_BUDGET["mode"]),
+) -> dict[str, Any]:
+    run_id = str(runId or "").strip()
+    if not run_id:
+        raise HTTPException(status_code=400, detail="runId is required")
+
+    budget = {
+        "maxChars": max(0, int(maxChars)),
+        "mode": str(mode or DEFAULT_SLAM_CONTEXT_BUDGET["mode"]).strip() or str(DEFAULT_SLAM_CONTEXT_BUDGET["mode"]),
+    }
+    requested_frame_seq = int(frameSeq) if frameSeq is not None else None
+
+    cleanup_dir: Path | None = None
+    events_rows: list[dict[str, Any]] = []
+    slam_error_payload: dict[str, Any] | None = None
+    alignment_payload: dict[str, Any] | None = None
+    try:
+        try:
+            run_package_dir, cleanup_dir, _can_write_events = await _resolve_context_run_package_dir_async(
+                run_package_raw=None,
+                run_id=run_id,
+            )
+            _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+            events_rows, _events_path = load_events_v1_rows(run_package_dir, manifest)
+
+            report_path = run_package_dir / "report.json"
+            if report_path.exists() and report_path.is_file():
+                try:
+                    report_payload = json.loads(report_path.read_text(encoding="utf-8-sig"))
+                except Exception:
+                    report_payload = None
+                if isinstance(report_payload, dict):
+                    quality_payload = report_payload.get("quality")
+                    quality_payload = quality_payload if isinstance(quality_payload, dict) else {}
+                    slam_error = quality_payload.get("slamError")
+                    if isinstance(slam_error, dict):
+                        slam_error_payload = slam_error
+                    slam_quality = quality_payload.get("slam")
+                    slam_quality = slam_quality if isinstance(slam_quality, dict) else {}
+                    slam_alignment = slam_quality.get("alignment")
+                    if isinstance(slam_alignment, dict):
+                        alignment_payload = slam_alignment
+        except HTTPException as ex:
+            if int(ex.status_code) != 404:
+                raise
+            events_rows = []
+
+        if not events_rows:
+            for row in gateway._inference_events:  # noqa: SLF001
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("runId", "")).strip() != run_id:
+                    continue
+                events_rows.append(dict(row))
+
+        if not events_rows:
+            raise HTTPException(status_code=404, detail=f"no SLAM events found for runId: {run_id}")
+
+        context_run_id = run_id
+        has_requested_run_id = False
+        fallback_run_id = ""
+        for row in events_rows:
+            if not isinstance(row, dict):
+                continue
+            event = row.get("event") if isinstance(row.get("event"), dict) else row
+            if not isinstance(event, dict):
+                continue
+            if str(event.get("name", "")).strip().lower() != "slam.pose":
+                continue
+            event_run_id = str(event.get("runId", "")).strip()
+            if event_run_id and not fallback_run_id:
+                fallback_run_id = event_run_id
+            if not event_run_id or event_run_id == run_id:
+                has_requested_run_id = True
+        if not has_requested_run_id and fallback_run_id:
+            context_run_id = fallback_run_id
+
+        return build_slam_context_pack(
+            run_id=context_run_id,
+            frame_seq=requested_frame_seq,
+            events_v1=events_rows,
+            budget=budget,
+            slam_error=slam_error_payload,
+            alignment=alignment_payload,
+        )
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
 @app.get("/api/plan/context")
 async def get_plan_context(
     runId: str,
@@ -2747,6 +2849,9 @@ async def run_packages_list(
     require_plan_ctx_used: str = "any",
     max_plan_ctx_trunc_rate: float | None = None,
     min_plan_ctx_chars_p90: int | None = None,
+    require_slam_ctx_present: str = "any",
+    max_slam_ctx_trunc_rate: float | None = None,
+    min_slam_tracking_rate_mean: float | None = None,
     min_seg_prompt_text_chars: int | None = None,
     max_seg_prompt_trunc_rate: float | None = None,
     max_seg_prompt_trunc_dropped: int | None = None,
@@ -2815,6 +2920,9 @@ async def run_packages_list(
         require_plan_ctx_used=require_plan_ctx_used,
         max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
         min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
+        require_slam_ctx_present=require_slam_ctx_present,
+        max_slam_ctx_trunc_rate=max_slam_ctx_trunc_rate,
+        min_slam_tracking_rate_mean=min_slam_tracking_rate_mean,
         min_seg_prompt_text_chars=min_seg_prompt_text_chars,
         max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
         max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
@@ -2884,6 +2992,9 @@ async def run_packages_list(
             "require_plan_ctx_used": require_plan_ctx_used,
             "max_plan_ctx_trunc_rate": max_plan_ctx_trunc_rate,
             "min_plan_ctx_chars_p90": min_plan_ctx_chars_p90,
+            "require_slam_ctx_present": require_slam_ctx_present,
+            "max_slam_ctx_trunc_rate": max_slam_ctx_trunc_rate,
+            "min_slam_tracking_rate_mean": min_slam_tracking_rate_mean,
             "min_seg_prompt_text_chars": min_seg_prompt_text_chars,
             "max_seg_prompt_trunc_rate": max_seg_prompt_trunc_rate,
             "max_seg_prompt_trunc_dropped": max_seg_prompt_trunc_dropped,
@@ -2957,6 +3068,9 @@ async def run_packages_export_json(
     require_plan_ctx_used: str = "any",
     max_plan_ctx_trunc_rate: float | None = None,
     min_plan_ctx_chars_p90: int | None = None,
+    require_slam_ctx_present: str = "any",
+    max_slam_ctx_trunc_rate: float | None = None,
+    min_slam_tracking_rate_mean: float | None = None,
     min_seg_prompt_text_chars: int | None = None,
     max_seg_prompt_trunc_rate: float | None = None,
     max_seg_prompt_trunc_dropped: int | None = None,
@@ -3025,6 +3139,9 @@ async def run_packages_export_json(
         require_plan_ctx_used=require_plan_ctx_used,
         max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
         min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
+        require_slam_ctx_present=require_slam_ctx_present,
+        max_slam_ctx_trunc_rate=max_slam_ctx_trunc_rate,
+        min_slam_tracking_rate_mean=min_slam_tracking_rate_mean,
         min_seg_prompt_text_chars=min_seg_prompt_text_chars,
         max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
         max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
@@ -3100,6 +3217,9 @@ async def run_packages_export_csv(
     require_plan_ctx_used: str = "any",
     max_plan_ctx_trunc_rate: float | None = None,
     min_plan_ctx_chars_p90: int | None = None,
+    require_slam_ctx_present: str = "any",
+    max_slam_ctx_trunc_rate: float | None = None,
+    min_slam_tracking_rate_mean: float | None = None,
     min_seg_prompt_text_chars: int | None = None,
     max_seg_prompt_trunc_rate: float | None = None,
     max_seg_prompt_trunc_dropped: int | None = None,
@@ -3168,6 +3288,9 @@ async def run_packages_export_csv(
         require_plan_ctx_used=require_plan_ctx_used,
         max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
         min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
+        require_slam_ctx_present=require_slam_ctx_present,
+        max_slam_ctx_trunc_rate=max_slam_ctx_trunc_rate,
+        min_slam_tracking_rate_mean=min_slam_tracking_rate_mean,
         min_seg_prompt_text_chars=min_seg_prompt_text_chars,
         max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
         max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
@@ -3267,6 +3390,10 @@ async def run_packages_export_csv(
         "plan_ctx_seg_chars_p90",
         "plan_ctx_pov_chars_p90",
         "plan_ctx_risk_chars_p90",
+        "slam_ctx_present",
+        "slam_ctx_chars_p90",
+        "slam_ctx_trunc_rate",
+        "slam_tracking_rate_mean",
         "seg_prompt_present",
         "seg_prompt_text_chars_total",
         "seg_prompt_chars_out",
@@ -4678,6 +4805,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     plan_context_payload = plan_context_payload if isinstance(plan_context_payload, dict) else {}
     plan_context_pack_payload = summary.get("planContextPack", {})
     plan_context_pack_payload = plan_context_pack_payload if isinstance(plan_context_pack_payload, dict) else {}
+    slam_context_payload = summary.get("slamContext", {})
+    slam_context_payload = slam_context_payload if isinstance(slam_context_payload, dict) else {}
     frame_e2e_payload = summary.get("frameE2E", {})
     frame_e2e_payload = frame_e2e_payload if isinstance(frame_e2e_payload, dict) else {}
     frame_user_e2e_payload = summary.get("frameUserE2E", {})
@@ -4767,6 +4896,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     plan_ctx_seg_chars_p90: int | None = None
     plan_ctx_pov_chars_p90: int | None = None
     plan_ctx_risk_chars_p90: int | None = None
+    slam_ctx_present = False
+    slam_ctx_chars_p90: int | None = None
+    slam_ctx_trunc_rate: float | None = None
+    slam_tracking_rate_mean: float | None = None
     frame_e2e_p90: int | None = None
     frame_e2e_max: int | None = None
     frame_seg_p90: int | None = None
@@ -4906,6 +5039,23 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         trunc_rate_raw = _read_float(trunc_payload, "truncationRate")
         if trunc_rate_raw is not None:
             plan_ctx_trunc_rate = float(trunc_rate_raw)
+    if isinstance(slam_context_payload, dict) and bool(slam_context_payload.get("present")):
+        slam_ctx_present = True
+        out_payload = slam_context_payload.get("out")
+        out_payload = out_payload if isinstance(out_payload, dict) else {}
+        trunc_payload = slam_context_payload.get("truncation")
+        trunc_payload = trunc_payload if isinstance(trunc_payload, dict) else {}
+        health_payload = slam_context_payload.get("health")
+        health_payload = health_payload if isinstance(health_payload, dict) else {}
+        slam_ctx_chars_raw = _read_float(out_payload, "charsTotalP90")
+        if slam_ctx_chars_raw is not None:
+            slam_ctx_chars_p90 = int(slam_ctx_chars_raw)
+        slam_ctx_trunc_raw = _read_float(trunc_payload, "truncationRate")
+        if slam_ctx_trunc_raw is not None:
+            slam_ctx_trunc_rate = float(slam_ctx_trunc_raw)
+        slam_tracking_rate_raw = _read_float(health_payload, "trackingRateMean")
+        if slam_tracking_rate_raw is not None:
+            slam_tracking_rate_mean = float(slam_tracking_rate_raw)
     if isinstance(frame_e2e_payload, dict) and bool(frame_e2e_payload.get("present")):
         frame_total = frame_e2e_payload.get("totalMs")
         frame_total = frame_total if isinstance(frame_total, dict) else {}
@@ -5232,6 +5382,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "plan_ctx_seg_chars_p90": plan_ctx_seg_chars_p90,
         "plan_ctx_pov_chars_p90": plan_ctx_pov_chars_p90,
         "plan_ctx_risk_chars_p90": plan_ctx_risk_chars_p90,
+        "slam_ctx_present": slam_ctx_present,
+        "slam_ctx_chars_p90": slam_ctx_chars_p90,
+        "slam_ctx_trunc_rate": slam_ctx_trunc_rate,
+        "slam_tracking_rate_mean": slam_tracking_rate_mean,
         "frame_e2e_p90": frame_e2e_p90,
         "frame_e2e_max": frame_e2e_max,
         "frame_seg_p90": frame_seg_p90,
@@ -5304,6 +5458,9 @@ def _matches_run_filters(
     require_plan_ctx_used: str | None,
     max_plan_ctx_trunc_rate: float | None,
     min_plan_ctx_chars_p90: int | None,
+    require_slam_ctx_present: str | None,
+    max_slam_ctx_trunc_rate: float | None,
+    min_slam_tracking_rate_mean: float | None,
     min_seg_prompt_text_chars: int | None,
     max_seg_prompt_trunc_rate: float | None,
     max_seg_prompt_trunc_dropped: int | None,
@@ -5588,6 +5745,25 @@ def _matches_run_filters(
             return False
         if int(value) < int(min_plan_ctx_chars_p90):
             return False
+    if require_slam_ctx_present:
+        normalized = require_slam_ctx_present.strip().lower()
+        present = bool(row.get("slam_ctx_present"))
+        if normalized in {"true", "1", "yes"} and not present:
+            return False
+        if normalized in {"false", "0", "no"} and present:
+            return False
+    if max_slam_ctx_trunc_rate is not None:
+        value = row.get("slam_ctx_trunc_rate")
+        if value is None:
+            return False
+        if float(value) > float(max_slam_ctx_trunc_rate):
+            return False
+    if min_slam_tracking_rate_mean is not None:
+        value = row.get("slam_tracking_rate_mean")
+        if value is None:
+            return False
+        if float(value) < float(min_slam_tracking_rate_mean):
+            return False
     if min_seg_prompt_text_chars is not None:
         value = row.get("seg_prompt_text_chars_total")
         if value is None:
@@ -5737,6 +5913,9 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "plan_ctx_seg_chars_p90",
         "plan_ctx_pov_chars_p90",
         "plan_ctx_risk_chars_p90",
+        "slam_ctx_chars_p90",
+        "slam_ctx_trunc_rate",
+        "slam_tracking_rate_mean",
         "pov_decisions",
         "pov_token_approx",
         "pov_decision_per_min",
@@ -5823,6 +6002,9 @@ async def _query_run_package_rows(
     require_plan_ctx_used: str | None,
     max_plan_ctx_trunc_rate: float | None,
     min_plan_ctx_chars_p90: int | None,
+    require_slam_ctx_present: str | None,
+    max_slam_ctx_trunc_rate: float | None,
+    min_slam_tracking_rate_mean: float | None,
     min_seg_prompt_text_chars: int | None,
     max_seg_prompt_trunc_rate: float | None,
     max_seg_prompt_trunc_dropped: int | None,
@@ -5897,6 +6079,9 @@ async def _query_run_package_rows(
             require_plan_ctx_used=require_plan_ctx_used,
             max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
             min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
+            require_slam_ctx_present=require_slam_ctx_present,
+            max_slam_ctx_trunc_rate=max_slam_ctx_trunc_rate,
+            min_slam_tracking_rate_mean=min_slam_tracking_rate_mean,
             min_seg_prompt_text_chars=min_seg_prompt_text_chars,
             max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
             max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
@@ -5999,6 +6184,9 @@ async def runs_dashboard(
     require_plan_ctx_used: str = "any",
     max_plan_ctx_trunc_rate: float | None = None,
     min_plan_ctx_chars_p90: int | None = None,
+    require_slam_ctx_present: str = "any",
+    max_slam_ctx_trunc_rate: float | None = None,
+    min_slam_tracking_rate_mean: float | None = None,
     min_seg_prompt_text_chars: int | None = None,
     max_seg_prompt_trunc_rate: float | None = None,
     max_seg_prompt_trunc_dropped: int | None = None,
@@ -6068,6 +6256,9 @@ async def runs_dashboard(
         require_plan_ctx_used=require_plan_ctx_used,
         max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
         min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
+        require_slam_ctx_present=require_slam_ctx_present,
+        max_slam_ctx_trunc_rate=max_slam_ctx_trunc_rate,
+        min_slam_tracking_rate_mean=min_slam_tracking_rate_mean,
         min_seg_prompt_text_chars=min_seg_prompt_text_chars,
         max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
         max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,

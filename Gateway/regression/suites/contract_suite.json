@@ -68,6 +68,17 @@
       "requireSlamPosePayloadSchemaOk": true
     },
     {
+      "id": "fixture_with_slam_context_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_slam_context_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireSlamPoseEventsPresent": true,
+      "requireSlamPosePayloadSchemaOk": true,
+      "requireSlamContextPresent": true,
+      "requireSlamContextSchemaOk": true
+    },
+    {
       "id": "fixture_with_seg_prompt_mask_contract",
       "runPackage": "Gateway/tests/fixtures/run_package_with_seg_prompt_and_mask_gt_min",
       "requireCriticalFnZero": false,

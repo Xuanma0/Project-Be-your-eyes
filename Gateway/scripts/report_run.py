@@ -36,6 +36,7 @@ from byes.quality_metrics import (  # noqa: E402
     extract_plan_rule_summary_from_events_v1,
     extract_plan_context_summary_from_events_v1,
     extract_plan_context_pack_summary_from_events_v1,
+    extract_slam_context_summary_from_events_v1,
     extract_models_summary_from_events_v1,
     extract_frame_e2e_summary_from_events_v1,
     extract_frame_user_e2e_summary_from_events_v1,
@@ -63,6 +64,7 @@ from byes.plan_quality import compute_plan_quality  # noqa: E402
 from byes.plan_eval import compute_plan_eval  # noqa: E402
 from byes.pov_plan_metrics import compute_pov_plan_metrics  # noqa: E402
 from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events  # noqa: E402
+from byes.inference.slam_context import DEFAULT_SLAM_CONTEXT_BUDGET, build_slam_context_pack  # noqa: E402
 
 _LABEL_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=\"((?:\\.|[^\"])*)\"")
 _DEFAULT_POV_CONTEXT_BUDGET = {"maxChars": 2000, "maxTokensApprox": 500}
@@ -1035,6 +1037,7 @@ def generate_report_outputs(
     summary["planRules"] = extract_plan_rule_summary_from_events_v1(event_rows)
     summary["planContext"] = extract_plan_context_summary_from_events_v1(event_rows)
     summary["planContextPack"] = extract_plan_context_pack_summary_from_events_v1(event_rows)
+    summary["slamContext"] = extract_slam_context_summary_from_events_v1(event_rows)
     frames_total_declared: int | None = None
     if isinstance(run_package_summary, dict):
         try:
@@ -1260,12 +1263,102 @@ def generate_report_outputs(
         quality_payload["topFindings"] = _build_quality_top_findings(None, None, base_safety_behavior)
     summary["quality"] = quality_payload
 
+    slam_context_summary = summary.get("slamContext")
+    slam_context_summary = slam_context_summary if isinstance(slam_context_summary, dict) else {}
+    if not bool(slam_context_summary.get("present")):
+        slam_quality_payload = quality_payload.get("slam")
+        slam_quality_payload = slam_quality_payload if isinstance(slam_quality_payload, dict) else {}
+        slam_alignment_payload = slam_quality_payload.get("alignment")
+        slam_alignment_payload = slam_alignment_payload if isinstance(slam_alignment_payload, dict) else {}
+        slam_error_payload = quality_payload.get("slamError")
+        slam_error_payload = slam_error_payload if isinstance(slam_error_payload, dict) else {}
+        latest_slam_frame_seq: int | None = None
+        for row in event_rows:
+            if not isinstance(row, dict):
+                continue
+            event = row.get("event") if isinstance(row.get("event"), dict) else row
+            if not isinstance(event, dict):
+                continue
+            if str(event.get("name", "")).strip().lower() != "slam.pose":
+                continue
+            seq_raw = event.get("frameSeq")
+            try:
+                seq = int(seq_raw)
+            except Exception:
+                continue
+            if seq <= 0:
+                continue
+            if latest_slam_frame_seq is None or seq > latest_slam_frame_seq:
+                latest_slam_frame_seq = seq
+        slam_context_pack = build_slam_context_pack(
+            run_id=_resolve_plan_run_id(run_package_summary, pov_ir_payload, event_rows),
+            frame_seq=latest_slam_frame_seq,
+            events_v1=event_rows,
+            budget={
+                "maxChars": int(DEFAULT_SLAM_CONTEXT_BUDGET["maxChars"]),
+                "mode": str(DEFAULT_SLAM_CONTEXT_BUDGET["mode"]),
+            },
+            slam_error=slam_error_payload,
+            alignment=slam_alignment_payload,
+        )
+        slam_stats = slam_context_pack.get("stats")
+        slam_stats = slam_stats if isinstance(slam_stats, dict) else {}
+        slam_in = slam_stats.get("in")
+        slam_in = slam_in if isinstance(slam_in, dict) else {}
+        slam_out = slam_stats.get("out")
+        slam_out = slam_out if isinstance(slam_out, dict) else {}
+        slam_truncation = slam_stats.get("truncation")
+        slam_truncation = slam_truncation if isinstance(slam_truncation, dict) else {}
+        slam_health = slam_context_pack.get("health")
+        slam_health = slam_health if isinstance(slam_health, dict) else {}
+        slam_quality = slam_context_pack.get("quality")
+        slam_quality = slam_quality if isinstance(slam_quality, dict) else {}
+        chars_total = int(slam_out.get("charsTotal", 0) or 0)
+        chars_dropped = int(slam_truncation.get("charsDropped", 0) or 0)
+        truncation_rate = 0.0
+        denom = max(1, chars_total + chars_dropped)
+        truncation_rate = float(chars_dropped) / float(denom)
+        summary["slamContext"] = {
+            "present": bool(int(slam_in.get("poses", 0) or 0) > 0 and chars_total > 0),
+            "events": 1 if int(slam_in.get("poses", 0) or 0) > 0 else 0,
+            "budgetDefault": {
+                "maxChars": int(DEFAULT_SLAM_CONTEXT_BUDGET["maxChars"]),
+                "mode": str(DEFAULT_SLAM_CONTEXT_BUDGET["mode"]),
+            },
+            "out": {
+                "charsTotalP90": chars_total,
+                "tokenApproxP90": int(slam_out.get("tokenApprox", 0) or 0),
+            },
+            "truncation": {
+                "posesDroppedTotal": int(slam_truncation.get("posesDropped", 0) or 0),
+                "charsDroppedTotal": chars_dropped,
+                "truncationRate": round(max(0.0, min(1.0, truncation_rate)), 6),
+            },
+            "health": {
+                "trackingRateMean": float(slam_health.get("trackingRateWindow", 0.0) or 0.0),
+                "lostStreakMax": int(slam_health.get("longestLostStreak", 0) or 0),
+            },
+            "quality": {
+                "ateRmseMMean": _try_float(slam_quality.get("ateRmseM")),
+                "ateRmseMP90": _try_float(slam_quality.get("ateRmseM")),
+            },
+        }
+
     json_path: Path | None = output_json
     if json_path is None:
         json_path = output.with_suffix(".json")
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return output, json_path, summary
+
+
+def _try_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
 
 
 def _merge_inference_summary(

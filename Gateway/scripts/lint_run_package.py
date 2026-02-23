@@ -24,6 +24,7 @@ except Exception:  # noqa: BLE001
 from byes.event_normalizer import collect_normalized_ws_events
 from byes.hazards.taxonomy_v1 import normalize_hazards
 from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events
+from byes.inference.slam_context import DEFAULT_SLAM_CONTEXT_BUDGET, build_slam_context_pack
 from byes.schemas.pov_ir_schema import validate_pov_ir
 
 _SHA_LINE_RE = re.compile(r"^([a-fA-F0-9]{64})\s+\*?(.+)$")
@@ -31,6 +32,7 @@ _OCR_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.ocr.v1.json"
 _SEG_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.seg.v1.json"
 _DEPTH_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.depth.v1.json"
 _SLAM_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.slam_pose.v1.json"
+_SLAM_CONTEXT_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "slam.context.v1.json"
 _PLAN_CONTEXT_PACK_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "plan.context_pack.v1.json"
 _FRAME_E2E_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.e2e.v1.json"
 _FRAME_INPUT_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.input.v1.json"
@@ -263,6 +265,18 @@ def _load_slam_contract_schema() -> dict[str, Any] | None:
         return None
     try:
         payload = json.loads(_SLAM_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _load_slam_context_schema() -> dict[str, Any] | None:
+    if not _SLAM_CONTEXT_SCHEMA_PATH.exists():
+        return None
+    try:
+        payload = json.loads(_SLAM_CONTEXT_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     if not isinstance(payload, dict):
@@ -775,6 +789,41 @@ def _plan_context_pack_schema_ok(
     return bool(schema_ok), max(0, chars_total), max(0, chars_dropped)
 
 
+def _slam_context_schema_ok(
+    payload: dict[str, Any],
+    schema: dict[str, Any] | None,
+) -> tuple[bool, int, float]:
+    if not isinstance(payload, dict):
+        return False, 0, 0.0
+    schema_ok = True
+    if schema is not None and jsonschema is not None:
+        try:
+            jsonschema.validate(payload, schema)
+        except Exception:
+            schema_ok = False
+    if str(payload.get("schemaVersion", "")).strip() != "slam.context.v1":
+        return False, 0, 0.0
+    stats = payload.get("stats")
+    stats = stats if isinstance(stats, dict) else {}
+    out_stats = stats.get("out")
+    out_stats = out_stats if isinstance(out_stats, dict) else {}
+    health = payload.get("health")
+    health = health if isinstance(health, dict) else {}
+    try:
+        chars_total = int(out_stats.get("charsTotal", -1))
+    except Exception:
+        return False, 0, 0.0
+    if chars_total < 0:
+        return False, 0, 0.0
+    try:
+        tracking_rate = float(health.get("trackingRateWindow", 0.0))
+    except Exception:
+        return False, max(0, chars_total), 0.0
+    if not (0.0 <= tracking_rate <= 1.0):
+        return False, max(0, chars_total), 0.0
+    return bool(schema_ok), max(0, chars_total), float(tracking_rate)
+
+
 def _frame_e2e_schema_ok(
     payload: dict[str, Any],
     schema: dict[str, Any] | None,
@@ -1087,6 +1136,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         seg_context_chars = 0
         seg_context_segments_out = 0
         seg_context_trunc_segments_dropped = 0
+        slam_context_present = 0
+        slam_context_schema_ok = 0
+        slam_context_chars = 0
+        slam_tracking_rate_mean = 0.0
         depth_events_present = 0
         depth_lines = 0
         depth_schema_ok = 0
@@ -1150,6 +1203,7 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         seg_schema = _load_seg_contract_schema()
         depth_schema = _load_depth_contract_schema()
         slam_schema = _load_slam_contract_schema()
+        slam_context_schema = _load_slam_context_schema()
         plan_context_pack_schema = _load_plan_context_pack_schema()
         frame_e2e_schema = _load_frame_e2e_schema()
         frame_input_schema = _load_frame_input_schema()
@@ -1618,6 +1672,47 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                 seg_context_trunc_segments_dropped = int(seg_context_truncation.get("segmentsDropped", 0) or 0)
                 seg_context_present = int(seg_context_segments_out > 0)
                 seg_context_schema_ok = int(_seg_context_schema_ok(seg_context_payload))
+                slam_context_run_id = ""
+                latest_slam_frame_seq = 0
+                for event in events_v1_rows:
+                    if not isinstance(event, dict):
+                        continue
+                    if str(event.get("name", "")).strip().lower() != "slam.pose":
+                        continue
+                    if not slam_context_run_id:
+                        slam_context_run_id = str(event.get("runId", "")).strip()
+                    try:
+                        seq = int(event.get("frameSeq", 0) or 0)
+                    except Exception:
+                        seq = 0
+                    if seq > latest_slam_frame_seq:
+                        latest_slam_frame_seq = seq
+                if not slam_context_run_id:
+                    slam_context_run_id = str(manifest.get("runId", "")).strip() or "slam-context"
+                slam_context_budget = {
+                    "maxChars": int(DEFAULT_SLAM_CONTEXT_BUDGET["maxChars"]),
+                    "mode": str(DEFAULT_SLAM_CONTEXT_BUDGET["mode"]),
+                }
+                slam_context_payload = build_slam_context_pack(
+                    run_id=slam_context_run_id,
+                    frame_seq=latest_slam_frame_seq if latest_slam_frame_seq > 0 else None,
+                    events_v1=events_v1_rows,
+                    budget=slam_context_budget,
+                )
+                slam_context_stats = slam_context_payload.get("stats")
+                slam_context_stats = slam_context_stats if isinstance(slam_context_stats, dict) else {}
+                slam_context_in = slam_context_stats.get("in")
+                slam_context_in = slam_context_in if isinstance(slam_context_in, dict) else {}
+                slam_context_poses = int(slam_context_in.get("poses", 0) or 0)
+                (
+                    slam_schema_ok,
+                    slam_chars_total,
+                    slam_tracking_rate,
+                ) = _slam_context_schema_ok(slam_context_payload, slam_context_schema)
+                slam_context_present = int(slam_context_poses > 0 and slam_chars_total > 0)
+                slam_context_schema_ok = int(slam_context_present > 0 and slam_schema_ok)
+                slam_context_chars = int(max(0, slam_chars_total))
+                slam_tracking_rate_mean = float(max(0.0, min(1.0, slam_tracking_rate)))
                 frame_e2e_duplicate_count = int(
                     sum(max(0, int(count) - 1) for count in frame_e2e_seen_keys.values())
                 )
@@ -1779,6 +1874,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "segContextChars": int(seg_context_chars),
             "segContextSegmentsOut": int(seg_context_segments_out),
             "segContextTruncSegmentsDropped": int(seg_context_trunc_segments_dropped),
+            "slamContextPresent": int(slam_context_present),
+            "slamContextSchemaOk": int(slam_context_schema_ok),
+            "slamCtxCharsP90": int(slam_context_chars),
+            "slamTrackingRateMean": round(float(slam_tracking_rate_mean), 6),
             "depthEventsPresent": int(depth_events_present),
             "depthLines": int(depth_lines),
             "depthSchemaOk": int(depth_schema_ok),
@@ -1906,6 +2005,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"segContextChars: {summary['segContextChars']}")
             print(f"segContextSegmentsOut: {summary['segContextSegmentsOut']}")
             print(f"segContextTruncSegmentsDropped: {summary['segContextTruncSegmentsDropped']}")
+            print(f"slamContextPresent: {summary['slamContextPresent']}")
+            print(f"slamContextSchemaOk: {summary['slamContextSchemaOk']}")
+            print(f"slamCtxCharsP90: {summary['slamCtxCharsP90']}")
+            print(f"slamTrackingRateMean: {summary['slamTrackingRateMean']}")
             print(f"depthEventsPresent: {summary['depthEventsPresent']}")
             print(f"depthLines: {summary['depthLines']}")
             print(f"depthSchemaOk: {summary['depthSchemaOk']}")

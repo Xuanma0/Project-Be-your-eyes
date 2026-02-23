@@ -666,6 +666,17 @@ Response is `seg.context.v1`:
 
 `report.json` also includes `segContext` (for leaderboard/regression visibility).
 
+SLAM context pack (budgeted) for Planner/VLM consumption:
+
+```powershell
+curl "http://127.0.0.1:8000/api/slam/context?runId=<run_id>"
+curl "http://127.0.0.1:8000/api/slam/context?runId=<run_id>&frameSeq=120&maxChars=512&mode=last_pose_and_health"
+```
+
+Notes:
+- `slam.context.v1` compresses recent `slam.pose` (plus optional ATE/RPE + alignment diagnostics) into a bounded text fragment.
+- This follows the same route as the planning stack: filter/fuse/compress context first, then feed VLM/Planner prompts.
+
 Plan context pack (risk+pov+seg, budgeted):
 
 ```powershell

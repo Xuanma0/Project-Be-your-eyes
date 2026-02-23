@@ -26,6 +26,7 @@ def test_api_contracts_endpoint_returns_lock_and_runtime_defaults() -> None:
         "byes.plan_request.v1",
         "plan.context_alignment.v1",
         "plan.context_pack.v1",
+        "slam.context.v1",
         "frame.e2e.v1",
         "byes.models.v1",
     ):
@@ -55,6 +56,12 @@ def test_api_contracts_endpoint_returns_lock_and_runtime_defaults() -> None:
     assert isinstance(seg_ctx_budget, dict)
     assert int(seg_ctx_budget.get("maxChars", 0)) > 0
     assert int(seg_ctx_budget.get("maxSegments", 0)) > 0
+    slam_context = runtime_defaults.get("slamContext", {})
+    assert isinstance(slam_context, dict)
+    slam_ctx_budget = slam_context.get("defaultBudget", {})
+    assert isinstance(slam_ctx_budget, dict)
+    assert int(slam_ctx_budget.get("maxChars", 0)) > 0
+    assert str(slam_ctx_budget.get("mode", "")).strip()
     plan_request = runtime_defaults.get("planRequest", {})
     assert isinstance(plan_request, dict)
     assert str(plan_request.get("defaultPromptVersion", "")).strip()

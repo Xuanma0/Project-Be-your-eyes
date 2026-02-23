@@ -98,6 +98,10 @@ class RunSummary:
     seg_context_chars: int = 0
     seg_context_segments_out: int = 0
     seg_context_trunc_segments_dropped: int = 0
+    slam_context_present: bool = False
+    slam_context_schema_ok: bool = False
+    slam_ctx_chars_p90: int = 0
+    slam_tracking_rate_mean: float = 0.0
     plan_request_events_present: bool = False
     plan_request_schema_ok: bool = False
     plan_request_lines: int = 0
@@ -260,6 +264,10 @@ class RunSummary:
                 "segContextChars": self.seg_context_chars,
                 "segContextSegmentsOut": self.seg_context_segments_out,
                 "segContextTruncSegmentsDropped": self.seg_context_trunc_segments_dropped,
+                "slamContextPresent": self.slam_context_present,
+                "slamContextSchemaOk": self.slam_context_schema_ok,
+                "slamCtxCharsP90": self.slam_ctx_chars_p90,
+                "slamTrackingRateMean": self.slam_tracking_rate_mean,
                 "planRequestEventsPresent": self.plan_request_events_present,
                 "planRequestSchemaOk": self.plan_request_schema_ok,
                 "planRequestLines": self.plan_request_lines,
@@ -661,7 +669,7 @@ def _render_markdown(result: dict[str, Any]) -> str:
         if not isinstance(run, dict):
             continue
         lines.append(
-            "- `{id}` score=`{score}` baseline=`{baseline}` delta=`{delta}` confirmTimeouts=`{ct}` criticalFn=`{cfn}` riskDelayMax=`{dmax}` riskLatencyP90=`{rlp90}` riskLatencyMax=`{rlmax}` segF1@0.5=`{seg_f1}` segCoverage=`{seg_cov}` segLatencyP90=`{seg_p90}` depthAbsRel=`{depth_absrel}` depthDelta1=`{depth_delta1}` depthCoverage=`{depth_cov}` depthLatencyP90=`{depth_p90}` slamTrackingRate=`{slam_track}` slamLostRate=`{slam_lost}` slamLatencyP90=`{slam_p90}` segCtxPresent=`{seg_ctx_present}` segCtxSchemaOk=`{seg_ctx_schema_ok}` segCtxChars=`{seg_ctx_chars}` povPresent=`{pov_present}` povDecisions=`{pov_decisions}` schema=`{schema}`".format(
+            "- `{id}` score=`{score}` baseline=`{baseline}` delta=`{delta}` confirmTimeouts=`{ct}` criticalFn=`{cfn}` riskDelayMax=`{dmax}` riskLatencyP90=`{rlp90}` riskLatencyMax=`{rlmax}` segF1@0.5=`{seg_f1}` segCoverage=`{seg_cov}` segLatencyP90=`{seg_p90}` depthAbsRel=`{depth_absrel}` depthDelta1=`{depth_delta1}` depthCoverage=`{depth_cov}` depthLatencyP90=`{depth_p90}` slamTrackingRate=`{slam_track}` slamLostRate=`{slam_lost}` slamLatencyP90=`{slam_p90}` segCtxPresent=`{seg_ctx_present}` segCtxSchemaOk=`{seg_ctx_schema_ok}` segCtxChars=`{seg_ctx_chars}` slamCtxPresent=`{slam_ctx_present}` slamCtxSchemaOk=`{slam_ctx_schema_ok}` slamCtxChars=`{slam_ctx_chars}` slamTrackRate=`{slam_track_rate}` povPresent=`{pov_present}` povDecisions=`{pov_decisions}` schema=`{schema}`".format(
                 id=run.get("id", ""),
                 score=run.get("qualityScore", None),
                 baseline=run.get("baselineScore", None),
@@ -684,6 +692,10 @@ def _render_markdown(result: dict[str, Any]) -> str:
                 seg_ctx_present=run.get("segLint", {}).get("segContextPresent", False),
                 seg_ctx_schema_ok=run.get("segLint", {}).get("segContextSchemaOk", False),
                 seg_ctx_chars=run.get("segLint", {}).get("segContextChars", 0),
+                slam_ctx_present=run.get("segLint", {}).get("slamContextPresent", False),
+                slam_ctx_schema_ok=run.get("segLint", {}).get("slamContextSchemaOk", False),
+                slam_ctx_chars=run.get("segLint", {}).get("slamCtxCharsP90", 0),
+                slam_track_rate=run.get("segLint", {}).get("slamTrackingRateMean", 0.0),
                 pov_present=run.get("pov", {}).get("present", False),
                 pov_decisions=run.get("pov", {}).get("decisions", 0),
                 schema=run.get("eventSchema", {}).get("source", ""),
@@ -767,6 +779,8 @@ def run_suite(
     run_require_seg_prompt_packed: dict[str, bool] = {}
     run_require_seg_context_present: dict[str, bool] = {}
     run_require_seg_context_schema_ok: dict[str, bool] = {}
+    run_require_slam_context_present: dict[str, bool] = {}
+    run_require_slam_context_schema_ok: dict[str, bool] = {}
     run_require_plan_request_events_present: dict[str, bool] = {}
     run_require_plan_request_schema_ok: dict[str, bool] = {}
     run_require_plan_context_events_present: dict[str, bool] = {}
@@ -821,6 +835,11 @@ def run_suite(
         run_require_seg_prompt_packed[run_id] = _to_bool01(run_cfg.get("requireSegPromptPacked"), False)
         run_require_seg_context_present[run_id] = _to_bool01(run_cfg.get("requireSegContextPresent"), False)
         run_require_seg_context_schema_ok[run_id] = _to_bool01(run_cfg.get("requireSegContextSchemaOk"), False)
+        run_require_slam_context_present[run_id] = _to_bool01(run_cfg.get("requireSlamContextPresent"), False)
+        run_require_slam_context_schema_ok[run_id] = _to_bool01(
+            run_cfg.get("requireSlamContextSchemaOk"),
+            False,
+        )
         run_require_plan_request_events_present[run_id] = _to_bool01(run_cfg.get("requirePlanRequestEventsPresent"), False)
         run_require_plan_request_schema_ok[run_id] = _to_bool01(run_cfg.get("requirePlanRequestSchemaOk"), False)
         run_require_plan_context_events_present[run_id] = _to_bool01(run_cfg.get("requirePlanContextEventsPresent"), False)
@@ -916,6 +935,10 @@ def run_suite(
                     run_summary.seg_context_trunc_segments_dropped = int(
                         lint_summary.get("segContextTruncSegmentsDropped", 0) or 0
                     )
+                    run_summary.slam_context_present = bool(lint_summary.get("slamContextPresent", 0))
+                    run_summary.slam_context_schema_ok = bool(lint_summary.get("slamContextSchemaOk", 0))
+                    run_summary.slam_ctx_chars_p90 = int(lint_summary.get("slamCtxCharsP90", 0) or 0)
+                    run_summary.slam_tracking_rate_mean = float(lint_summary.get("slamTrackingRateMean", 0.0) or 0.0)
                     run_summary.plan_request_events_present = bool(lint_summary.get("planRequestEventsPresent", 0))
                     run_summary.plan_request_schema_ok = bool(lint_summary.get("planRequestSchemaOk", 0))
                     run_summary.plan_request_lines = int(lint_summary.get("planRequestLines", 0) or 0)
@@ -1033,6 +1056,10 @@ def run_suite(
             failures.append(f"{run.run_id}: seg context missing")
         if run_require_seg_context_schema_ok.get(run.run_id, False) and not bool(run.seg_context_schema_ok):
             failures.append(f"{run.run_id}: seg context schema check failed")
+        if run_require_slam_context_present.get(run.run_id, False) and not bool(run.slam_context_present):
+            failures.append(f"{run.run_id}: slam context missing")
+        if run_require_slam_context_schema_ok.get(run.run_id, False) and not bool(run.slam_context_schema_ok):
+            failures.append(f"{run.run_id}: slam context schema check failed")
         if run_require_plan_request_events_present.get(run.run_id, False) and not bool(run.plan_request_events_present):
             failures.append(f"{run.run_id}: plan.request events missing")
         if run_require_plan_request_schema_ok.get(run.run_id, False) and not bool(run.plan_request_schema_ok):
@@ -1154,6 +1181,8 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "segPromptPackedTrueCount={seg_prompt_packed_true_count} "
                 "segContextPresent={seg_context_present} segContextSchemaOk={seg_context_schema_ok} "
                 "segContextChars={seg_context_chars} segContextSegmentsOut={seg_context_segments_out} "
+                "slamContextPresent={slam_context_present} slamContextSchemaOk={slam_context_schema_ok} "
+                "slamCtxCharsP90={slam_ctx_chars_p90} slamTrackingRateMean={slam_tracking_rate_mean} "
                 "planRequestEventsPresent={plan_request_events_present} planRequestSchemaOk={plan_request_schema_ok} "
                 "planRequestSegIncludedCount={plan_request_seg_included_count} planRequestSegCharsTotal={plan_request_seg_chars_total} "
                 "planContextEventsPresent={plan_context_events_present} planContextSchemaOk={plan_context_schema_ok} "
@@ -1208,6 +1237,10 @@ def _print_summary(result: dict[str, Any]) -> None:
                     seg_context_schema_ok=row.get("segLint", {}).get("segContextSchemaOk", False),
                     seg_context_chars=row.get("segLint", {}).get("segContextChars", 0),
                     seg_context_segments_out=row.get("segLint", {}).get("segContextSegmentsOut", 0),
+                    slam_context_present=row.get("segLint", {}).get("slamContextPresent", False),
+                    slam_context_schema_ok=row.get("segLint", {}).get("slamContextSchemaOk", False),
+                    slam_ctx_chars_p90=row.get("segLint", {}).get("slamCtxCharsP90", 0),
+                    slam_tracking_rate_mean=row.get("segLint", {}).get("slamTrackingRateMean", 0.0),
                     plan_request_events_present=row.get("segLint", {}).get("planRequestEventsPresent", False),
                     plan_request_schema_ok=row.get("segLint", {}).get("planRequestSchemaOk", False),
                     plan_request_seg_included_count=row.get("segLint", {}).get("planRequestSegIncludedCount", 0),
