@@ -2724,6 +2724,8 @@ async def run_packages_list(
     max_slam_lost_rate: float | None = None,
     max_slam_latency_p90: int | None = None,
     max_slam_align_residual_p90: int | None = None,
+    max_slam_ate_rmse: float | None = None,
+    max_slam_rpe_trans_rmse: float | None = None,
     min_seg_mask_f1_50: float | None = None,
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
@@ -2790,6 +2792,8 @@ async def run_packages_list(
         max_slam_lost_rate=max_slam_lost_rate,
         max_slam_latency_p90=max_slam_latency_p90,
         max_slam_align_residual_p90=max_slam_align_residual_p90,
+        max_slam_ate_rmse=max_slam_ate_rmse,
+        max_slam_rpe_trans_rmse=max_slam_rpe_trans_rmse,
         min_seg_mask_f1_50=min_seg_mask_f1_50,
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
@@ -2857,6 +2861,8 @@ async def run_packages_list(
             "max_slam_lost_rate": max_slam_lost_rate,
             "max_slam_latency_p90": max_slam_latency_p90,
             "max_slam_align_residual_p90": max_slam_align_residual_p90,
+            "max_slam_ate_rmse": max_slam_ate_rmse,
+            "max_slam_rpe_trans_rmse": max_slam_rpe_trans_rmse,
             "min_seg_mask_f1_50": min_seg_mask_f1_50,
             "min_seg_mask_coverage": min_seg_mask_coverage,
             "max_seg_latency_p90": max_seg_latency_p90,
@@ -2928,6 +2934,8 @@ async def run_packages_export_json(
     max_slam_lost_rate: float | None = None,
     max_slam_latency_p90: int | None = None,
     max_slam_align_residual_p90: int | None = None,
+    max_slam_ate_rmse: float | None = None,
+    max_slam_rpe_trans_rmse: float | None = None,
     min_seg_mask_f1_50: float | None = None,
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
@@ -2994,6 +3002,8 @@ async def run_packages_export_json(
         max_slam_lost_rate=max_slam_lost_rate,
         max_slam_latency_p90=max_slam_latency_p90,
         max_slam_align_residual_p90=max_slam_align_residual_p90,
+        max_slam_ate_rmse=max_slam_ate_rmse,
+        max_slam_rpe_trans_rmse=max_slam_rpe_trans_rmse,
         min_seg_mask_f1_50=min_seg_mask_f1_50,
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
@@ -3067,6 +3077,8 @@ async def run_packages_export_csv(
     max_slam_lost_rate: float | None = None,
     max_slam_latency_p90: int | None = None,
     max_slam_align_residual_p90: int | None = None,
+    max_slam_ate_rmse: float | None = None,
+    max_slam_rpe_trans_rmse: float | None = None,
     min_seg_mask_f1_50: float | None = None,
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
@@ -3133,6 +3145,8 @@ async def run_packages_export_csv(
         max_slam_lost_rate=max_slam_lost_rate,
         max_slam_latency_p90=max_slam_latency_p90,
         max_slam_align_residual_p90=max_slam_align_residual_p90,
+        max_slam_ate_rmse=max_slam_ate_rmse,
+        max_slam_rpe_trans_rmse=max_slam_rpe_trans_rmse,
         min_seg_mask_f1_50=min_seg_mask_f1_50,
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
@@ -3214,6 +3228,8 @@ async def run_packages_export_csv(
         "slam_latency_p90",
         "slam_align_residual_p90",
         "slam_align_mode",
+        "slam_ate_rmse",
+        "slam_rpe_trans_rmse",
         "frame_e2e_p90",
         "frame_e2e_max",
         "frame_seg_p90",
@@ -4643,6 +4659,7 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     seg_quality = quality_payload.get("seg", {}) if isinstance(quality_payload, dict) else {}
     depth_quality = quality_payload.get("depth", {}) if isinstance(quality_payload, dict) else {}
     slam_quality = quality_payload.get("slam", {}) if isinstance(quality_payload, dict) else {}
+    slam_error_payload = quality_payload.get("slamError", {}) if isinstance(quality_payload, dict) else {}
     pov_payload = summary.get("pov", {})
     pov_payload = pov_payload if isinstance(pov_payload, dict) else {}
     pov_context = summary.get("povContext", {})
@@ -4693,6 +4710,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     slam_latency_p90: int | None = None
     slam_align_residual_p90: int | None = None
     slam_align_mode: str | None = None
+    slam_ate_rmse: float | None = None
+    slam_rpe_trans_rmse: float | None = None
     seg_mask_f1_50: float | None = None
     seg_mask_coverage: float | None = None
     seg_mask_mean_iou: float | None = None
@@ -5061,6 +5080,13 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         slam_align_mode_text = str(alignment_payload.get("mode", "")).strip()
         if slam_align_mode_text:
             slam_align_mode = slam_align_mode_text
+    if isinstance(slam_error_payload, dict):
+        raw_slam_ate_rmse = _read_float(slam_error_payload, "ate_rmse_m")
+        if raw_slam_ate_rmse is not None:
+            slam_ate_rmse = float(raw_slam_ate_rmse)
+        raw_slam_rpe_trans = _read_float(slam_error_payload, "rpe_trans_rmse_m")
+        if raw_slam_rpe_trans is not None:
+            slam_rpe_trans_rmse = float(raw_slam_rpe_trans)
     seg_context_stats = seg_context_payload.get("stats")
     seg_context_stats = seg_context_stats if isinstance(seg_context_stats, dict) else {}
     seg_context_out = seg_context_stats.get("out")
@@ -5156,6 +5182,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "slam_latency_p90": slam_latency_p90,
         "slam_align_residual_p90": slam_align_residual_p90,
         "slam_align_mode": slam_align_mode,
+        "slam_ate_rmse": slam_ate_rmse,
+        "slam_rpe_trans_rmse": slam_rpe_trans_rmse,
         "seg_mask_f1_50": seg_mask_f1_50,
         "seg_mask_coverage": seg_mask_coverage,
         "seg_mask_mean_iou": seg_mask_mean_iou,
@@ -5253,6 +5281,8 @@ def _matches_run_filters(
     max_slam_lost_rate: float | None,
     max_slam_latency_p90: int | None,
     max_slam_align_residual_p90: int | None,
+    max_slam_ate_rmse: float | None,
+    max_slam_rpe_trans_rmse: float | None,
     min_seg_mask_f1_50: float | None,
     min_seg_mask_coverage: float | None,
     max_seg_latency_p90: int | None,
@@ -5417,6 +5447,18 @@ def _matches_run_filters(
         if value is None:
             return False
         if int(value) > int(max_slam_align_residual_p90):
+            return False
+    if max_slam_ate_rmse is not None:
+        value = row.get("slam_ate_rmse")
+        if value is None:
+            return False
+        if float(value) > float(max_slam_ate_rmse):
+            return False
+    if max_slam_rpe_trans_rmse is not None:
+        value = row.get("slam_rpe_trans_rmse")
+        if value is None:
+            return False
+        if float(value) > float(max_slam_rpe_trans_rmse):
             return False
     if min_seg_mask_f1_50 is not None:
         value = row.get("seg_mask_f1_50")
@@ -5666,6 +5708,8 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "slam_lost_rate",
         "slam_relocalized",
         "slam_latency_p90",
+        "slam_ate_rmse",
+        "slam_rpe_trans_rmse",
         "frame_e2e_p90",
         "frame_e2e_max",
         "frame_seg_p90",
@@ -5756,6 +5800,8 @@ async def _query_run_package_rows(
     max_slam_lost_rate: float | None,
     max_slam_latency_p90: int | None,
     max_slam_align_residual_p90: int | None,
+    max_slam_ate_rmse: float | None,
+    max_slam_rpe_trans_rmse: float | None,
     min_seg_mask_f1_50: float | None,
     min_seg_mask_coverage: float | None,
     max_seg_latency_p90: int | None,
@@ -5828,6 +5874,8 @@ async def _query_run_package_rows(
             max_slam_lost_rate=max_slam_lost_rate,
             max_slam_latency_p90=max_slam_latency_p90,
             max_slam_align_residual_p90=max_slam_align_residual_p90,
+            max_slam_ate_rmse=max_slam_ate_rmse,
+            max_slam_rpe_trans_rmse=max_slam_rpe_trans_rmse,
             min_seg_mask_f1_50=min_seg_mask_f1_50,
             min_seg_mask_coverage=min_seg_mask_coverage,
             max_seg_latency_p90=max_seg_latency_p90,
@@ -5928,6 +5976,8 @@ async def runs_dashboard(
     max_slam_lost_rate: float | None = None,
     max_slam_latency_p90: int | None = None,
     max_slam_align_residual_p90: int | None = None,
+    max_slam_ate_rmse: float | None = None,
+    max_slam_rpe_trans_rmse: float | None = None,
     min_seg_mask_f1_50: float | None = None,
     min_seg_mask_coverage: float | None = None,
     max_seg_latency_p90: int | None = None,
@@ -5995,6 +6045,8 @@ async def runs_dashboard(
         max_slam_lost_rate=max_slam_lost_rate,
         max_slam_latency_p90=max_slam_latency_p90,
         max_slam_align_residual_p90=max_slam_align_residual_p90,
+        max_slam_ate_rmse=max_slam_ate_rmse,
+        max_slam_rpe_trans_rmse=max_slam_rpe_trans_rmse,
         min_seg_mask_f1_50=min_seg_mask_f1_50,
         min_seg_mask_coverage=min_seg_mask_coverage,
         max_seg_latency_p90=max_seg_latency_p90,
@@ -6115,6 +6167,10 @@ async def runs_dashboard(
         slam_align_p90 = "—" if slam_align_p90_raw is None else str(int(slam_align_p90_raw))
         slam_align_mode_raw = row.get("slam_align_mode")
         slam_align_mode = "—" if slam_align_mode_raw in {None, ""} else str(slam_align_mode_raw)
+        slam_ate_rmse_raw = row.get("slam_ate_rmse")
+        slam_ate_rmse = "—" if slam_ate_rmse_raw is None else f"{float(slam_ate_rmse_raw):.4f}"
+        slam_rpe_trans_rmse_raw = row.get("slam_rpe_trans_rmse")
+        slam_rpe_trans_rmse = "—" if slam_rpe_trans_rmse_raw is None else f"{float(slam_rpe_trans_rmse_raw):.4f}"
         seg_ctx_chars_raw = row.get("seg_ctx_chars")
         seg_ctx_chars = "—" if seg_ctx_chars_raw is None else str(int(seg_ctx_chars_raw))
         seg_ctx_segments_raw = row.get("seg_ctx_segments")
@@ -6203,6 +6259,8 @@ async def runs_dashboard(
             f"<td>{html.escape(slam_p90)}</td>"
             f"<td>{html.escape(slam_align_p90)}</td>"
             f"<td>{html.escape(slam_align_mode)}</td>"
+            f"<td>{html.escape(slam_ate_rmse)}</td>"
+            f"<td>{html.escape(slam_rpe_trans_rmse)}</td>"
             f"<td>{html.escape(seg_ctx_chars)}</td>"
             f"<td>{html.escape(seg_ctx_segments)}</td>"
             f"<td>{html.escape(seg_ctx_trunc)}</td>"
@@ -6235,7 +6293,7 @@ async def runs_dashboard(
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='86' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='88' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -6264,6 +6322,8 @@ async def runs_dashboard(
     max_slam_align_residual_p90_value = html.escape(
         "" if max_slam_align_residual_p90 is None else str(max_slam_align_residual_p90)
     )
+    max_slam_ate_rmse_value = html.escape("" if max_slam_ate_rmse is None else str(max_slam_ate_rmse))
+    max_slam_rpe_trans_rmse_value = html.escape("" if max_slam_rpe_trans_rmse is None else str(max_slam_rpe_trans_rmse))
     min_seg_mask_f1_50_value = html.escape("" if min_seg_mask_f1_50 is None else str(min_seg_mask_f1_50))
     min_seg_mask_coverage_value = html.escape("" if min_seg_mask_coverage is None else str(min_seg_mask_coverage))
     max_seg_latency_p90_value = html.escape("" if max_seg_latency_p90 is None else str(max_seg_latency_p90))
@@ -6401,6 +6461,8 @@ async def runs_dashboard(
       <label>max_slam_lost_rate: <input type="number" step="0.0001" min="0" max="1" name="max_slam_lost_rate" value="{max_slam_lost_rate_value}" /></label>
       <label>max_slam_latency_p90: <input type="number" min="0" name="max_slam_latency_p90" value="{max_slam_latency_p90_value}" /></label>
       <label>max_slam_align_residual_p90: <input type="number" min="0" name="max_slam_align_residual_p90" value="{max_slam_align_residual_p90_value}" /></label>
+      <label>max_slam_ate_rmse: <input type="number" step="0.0001" min="0" name="max_slam_ate_rmse" value="{max_slam_ate_rmse_value}" /></label>
+      <label>max_slam_rpe_trans_rmse: <input type="number" step="0.0001" min="0" name="max_slam_rpe_trans_rmse" value="{max_slam_rpe_trans_rmse_value}" /></label>
       <label>min_seg_mask_f1_50: <input type="number" step="0.0001" min="0" max="1" name="min_seg_mask_f1_50" value="{min_seg_mask_f1_50_value}" /></label>
       <label>min_seg_mask_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_seg_mask_coverage" value="{min_seg_mask_coverage_value}" /></label>
       <label>max_seg_latency_p90: <input type="number" min="0" name="max_seg_latency_p90" value="{max_seg_latency_p90_value}" /></label>
@@ -6454,6 +6516,8 @@ async def runs_dashboard(
           <option value="slam_lost_rate" {"selected" if sort_value == "slam_lost_rate" else ""}>slam_lost_rate</option>
           <option value="slam_latency_p90" {"selected" if sort_value == "slam_latency_p90" else ""}>slam_latency_p90</option>
           <option value="slam_align_residual_p90" {"selected" if sort_value == "slam_align_residual_p90" else ""}>slam_align_residual_p90</option>
+          <option value="slam_ate_rmse" {"selected" if sort_value == "slam_ate_rmse" else ""}>slam_ate_rmse</option>
+          <option value="slam_rpe_trans_rmse" {"selected" if sort_value == "slam_rpe_trans_rmse" else ""}>slam_rpe_trans_rmse</option>
           <option value="slam_align_mode" {"selected" if sort_value == "slam_align_mode" else ""}>slam_align_mode</option>
           <option value="seg_mask_f1_50" {"selected" if sort_value == "seg_mask_f1_50" else ""}>seg_mask_f1_50</option>
           <option value="seg_mask_coverage" {"selected" if sort_value == "seg_mask_coverage" else ""}>seg_mask_coverage</option>
@@ -6539,6 +6603,8 @@ async def runs_dashboard(
           <th>SLAM p90(ms)</th>
           <th>SLAM Align p90(ms)</th>
           <th>SLAM Align Mode</th>
+          <th>SLAM ATE RMSE(m)</th>
+          <th>SLAM RPE RMSE(m)</th>
           <th>SegCtx Chars</th>
           <th>SegCtx Segments</th>
           <th>SegCtx DropSeg</th>

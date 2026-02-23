@@ -25,6 +25,7 @@ from byes.quality_metrics import (  # noqa: E402
     compute_seg_metrics,
     compute_depth_metrics,
     compute_slam_metrics,
+    compute_slam_error_metrics,
     load_slam_alignment_summary,
     compute_depth_risk_metrics,
     compute_ocr_metrics,
@@ -53,6 +54,7 @@ from byes.quality_metrics import (  # noqa: E402
     load_gt_seg_v1,
     load_gt_depth_v1,
     load_gt_slam_pose_v1,
+    load_gt_slam_tum,
 )
 from byes.pov_metrics import compute_pov_metrics, load_pov_ir_from_run_package  # noqa: E402
 from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text  # noqa: E402
@@ -1110,6 +1112,7 @@ def generate_report_outputs(
         "riskLatencyMs": risk_latency_stats,
         "depth": {"present": False},
         "slam": {"present": False, "alignment": slam_alignment},
+        "slamError": {"present": False},
     }
     if risk_timings_stats is not None:
         quality_payload["riskTimingsMs"] = risk_timings_stats
@@ -1129,11 +1132,13 @@ def generate_report_outputs(
         seg_path_raw = str(gt_cfg.get("segPath", "")).strip()
         depth_path_raw = str(gt_cfg.get("depthPath", "")).strip()
         slam_path_raw = str(gt_cfg.get("slamPath", "")).strip()
+        slam_tum_path_raw = str(gt_cfg.get("slamTumPath", "")).strip()
         ocr_gt = load_gt_ocr_jsonl(Path(ocr_path_raw)) if ocr_path_raw else {}
         risk_gt: dict[int, list[dict[str, Any]]] = {}
         seg_gt: dict[int, list[dict[str, Any]]] = {}
         depth_gt: dict[int, dict[str, Any]] = {}
         slam_gt: dict[int, dict[str, Any]] = {}
+        slam_tum_gt: dict[int, dict[str, Any]] = {}
         risk_norm_meta = {"unknownKinds": [], "aliasHits": [], "warningsCount": 0}
         if risk_path_raw:
             risk_gt_result = load_gt_risk_jsonl(Path(risk_path_raw), return_meta=True)
@@ -1147,6 +1152,8 @@ def generate_report_outputs(
             depth_gt = load_gt_depth_v1(Path(depth_path_raw))
         if slam_path_raw:
             slam_gt = load_gt_slam_pose_v1(Path(slam_path_raw))
+        if slam_tum_path_raw:
+            slam_tum_gt = load_gt_slam_tum(Path(slam_tum_path_raw))
         pred_ocr = extract_pred_ocr_from_ws_events(event_source_path)
         ocr_intent_frames = extract_ocr_intent_frames_from_ws_events(event_source_path)
         pred_segs, pred_seg_event_frames, seg_latencies = extract_pred_seg_from_ws_events(event_source_path)
@@ -1164,6 +1171,7 @@ def generate_report_outputs(
         seg_metrics = None
         depth_metrics = None
         slam_metrics = None
+        slam_error_metrics: dict[str, Any] | None = None
         window = int(gt_cfg.get("matchWindowFrames", 2) or 2)
         if risk_gt:
             merged_norm = _merge_hazard_normalization_meta(risk_norm_meta, pred_norm_meta)
@@ -1197,6 +1205,24 @@ def generate_report_outputs(
                 frames_total,
                 alignment=slam_alignment,
             )
+        if slam_tum_gt or slam_gt:
+            slam_error_gt = slam_tum_gt if slam_tum_gt else slam_gt
+            inferred_slam_model = None
+            inference_payload = summary.get("inference")
+            if isinstance(inference_payload, dict):
+                slam_inference = inference_payload.get("slam")
+                if isinstance(slam_inference, dict):
+                    inferred_slam_model = str(slam_inference.get("model", "")).strip() or None
+            traj_label = _infer_slam_traj_label(inferred_slam_model)
+            slam_error_source = slam_tum_path_raw or slam_path_raw
+            slam_error_metrics = compute_slam_error_metrics(
+                slam_error_gt,
+                pred_slam,
+                traj_label=traj_label,
+                align_mode="se3",
+                source=slam_error_source or None,
+                delta_frames=1,
+            )
         critical_frames = _collect_critical_gt_frames(risk_gt) if risk_gt else None
         safety_behavior = extract_safety_behavior_from_ws_events(
             event_source_path,
@@ -1226,6 +1252,8 @@ def generate_report_outputs(
             quality_payload["depth"] = depth_metrics
         if slam_metrics is not None:
             quality_payload["slam"] = slam_metrics
+        if slam_error_metrics is not None:
+            quality_payload["slamError"] = slam_error_metrics
         if risk_timings_stats is not None:
             quality_payload["riskTimingsMs"] = risk_timings_stats
     else:
@@ -1620,6 +1648,8 @@ def _resolve_ground_truth(run_package_dir: Path, manifest: dict[str, Any]) -> di
     default_depth_rel_alt = "ground_truth/depth_gt_v1.json"
     default_slam_rel = "gt/slam_pose_gt_v1.json"
     default_slam_rel_alt = "ground_truth/slam_pose_gt_v1.json"
+    default_slam_tum_rel = "gt/slam_gt_tum.txt"
+    default_slam_tum_rel_alt = "ground_truth/slam_gt_tum.txt"
     gt_raw = manifest.get("groundTruth")
     gt_cfg = gt_raw if isinstance(gt_raw, dict) else {}
 
@@ -1639,6 +1669,11 @@ def _resolve_ground_truth(run_package_dir: Path, manifest: dict[str, Any]) -> di
         str(gt_cfg.get("slamJson", "")).strip()
         or str(gt_cfg.get("slamPoseJson", "")).strip()
         or str(gt_cfg.get("slamPath", "")).strip()
+    )
+    slam_tum_rel = (
+        str(gt_cfg.get("slamTum", "")).strip()
+        or str(gt_cfg.get("slamTumPath", "")).strip()
+        or str(gt_cfg.get("slamGtTum", "")).strip()
     )
     if not ocr_rel and (run_package_dir / default_ocr_rel).exists():
         ocr_rel = default_ocr_rel
@@ -1660,12 +1695,17 @@ def _resolve_ground_truth(run_package_dir: Path, manifest: dict[str, Any]) -> di
         slam_rel = default_slam_rel
     if not slam_rel and (run_package_dir / default_slam_rel_alt).exists():
         slam_rel = default_slam_rel_alt
+    if not slam_tum_rel and (run_package_dir / default_slam_tum_rel).exists():
+        slam_tum_rel = default_slam_tum_rel
+    if not slam_tum_rel and (run_package_dir / default_slam_tum_rel_alt).exists():
+        slam_tum_rel = default_slam_tum_rel_alt
 
     ocr_path = run_package_dir / ocr_rel if ocr_rel else None
     risk_path = run_package_dir / risk_rel if risk_rel else None
     seg_path = run_package_dir / seg_rel if seg_rel else None
     depth_path = run_package_dir / depth_rel if depth_rel else None
     slam_path = run_package_dir / slam_rel if slam_rel else None
+    slam_tum_path = run_package_dir / slam_tum_rel if slam_tum_rel else None
     if ocr_path is not None and not ocr_path.exists():
         ocr_path = None
     if risk_path is not None and not risk_path.exists():
@@ -1676,6 +1716,8 @@ def _resolve_ground_truth(run_package_dir: Path, manifest: dict[str, Any]) -> di
         depth_path = None
     if slam_path is not None and not slam_path.exists():
         slam_path = None
+    if slam_tum_path is not None and not slam_tum_path.exists():
+        slam_tum_path = None
 
     raw_window = gt_cfg.get("matchWindowFrames", 2)
     try:
@@ -1685,14 +1727,26 @@ def _resolve_ground_truth(run_package_dir: Path, manifest: dict[str, Any]) -> di
     window = max(0, window)
 
     return {
-        "hasGroundTruth": bool(ocr_path or risk_path or seg_path or depth_path or slam_path),
+        "hasGroundTruth": bool(ocr_path or risk_path or seg_path or depth_path or slam_path or slam_tum_path),
         "ocrPath": str(ocr_path) if ocr_path is not None else "",
         "riskPath": str(risk_path) if risk_path is not None else "",
         "segPath": str(seg_path) if seg_path is not None else "",
         "depthPath": str(depth_path) if depth_path is not None else "",
         "slamPath": str(slam_path) if slam_path is not None else "",
+        "slamTumPath": str(slam_tum_path) if slam_tum_path is not None else "",
         "matchWindowFrames": window,
     }
+
+
+def _infer_slam_traj_label(model_name: str | None) -> str | None:
+    text = str(model_name or "").strip().lower()
+    if not text:
+        return None
+    if "online" in text:
+        return "online"
+    if "final" in text:
+        return "final"
+    return None
 
 
 def load_run_package(run_package_dir: Path) -> tuple[Path, Path | None, Path | None, dict[str, Any]]:

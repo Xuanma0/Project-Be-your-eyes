@@ -460,6 +460,16 @@ Notes:
 - Ingest diagnostics are written to `events/slam_ingest_summary.json`; report exposes them under `quality.slam.alignment`.
 - Emitted events use `name="slam.pose"`, `backend="offline"`, and `model="pyslam-online"` / `model="pyslam-final"` where applicable.
 
+SLAM trajectory quality evaluation (ATE/RPE):
+
+```powershell
+# GT format: gt/slam_gt_tum.txt (TUM 8 columns)
+python scripts/eval_slam_tum.py --run-package tests/fixtures/run_package_with_slam_gt_tum_min --pred-glob events --align se3
+```
+
+ATE (Absolute Trajectory Error) and RPE (Relative Pose Error) are standard trajectory quality metrics.  
+When GT TUM exists, `report_run.py` also injects `quality.slamError` and leaderboard columns `slam_ate_rmse` / `slam_rpe_trans_rmse`.
+
 Seg prompt budget sweep (local tooling, not CI gate):
 
 ```powershell

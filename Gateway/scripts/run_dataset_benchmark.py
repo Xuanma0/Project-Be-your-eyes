@@ -60,6 +60,8 @@ METRIC_FIELDS = [
     "slam_tracking_rate",
     "slam_coverage",
     "slam_align_residual_p90",
+    "slam_ate_rmse",
+    "slam_rpe_trans_rmse",
     "plan_score",
     "plan_fallback_used",
 ]
@@ -378,6 +380,8 @@ def _collect_summary_fields(*, run_package: Path, manifest: dict[str, Any], repo
     ocr = ocr if isinstance(ocr, dict) else {}
     slam = quality.get("slam")
     slam = slam if isinstance(slam, dict) else {}
+    slam_error = quality.get("slamError")
+    slam_error = slam_error if isinstance(slam_error, dict) else {}
     plan_quality = report.get("planQuality")
     plan_quality = plan_quality if isinstance(plan_quality, dict) else {}
     plan_eval = report.get("planEval")
@@ -431,6 +435,8 @@ def _collect_summary_fields(*, run_package: Path, manifest: dict[str, Any], repo
         "slam_tracking_rate": _to_float(_nested_get(slam, ["tracking", "trackingRate"])),
         "slam_coverage": _to_float(slam.get("coverage")),
         "slam_align_residual_p90": _to_int(_nested_get(slam, ["alignment", "residualMs", "p90"])),
+        "slam_ate_rmse": _to_float(slam_error.get("ate_rmse_m")),
+        "slam_rpe_trans_rmse": _to_float(slam_error.get("rpe_trans_rmse_m")),
         "plan_score": _to_float(plan_quality.get("score")),
         "plan_fallback_used": bool(plan_quality.get("fallbackUsed")) if "fallbackUsed" in plan_quality else None,
     }
@@ -458,6 +464,8 @@ def _summary_to_csv_row(row: dict[str, Any]) -> dict[str, Any]:
         "slam_tracking_rate": row.get("slam_tracking_rate"),
         "slam_coverage": row.get("slam_coverage"),
         "slam_align_residual_p90": row.get("slam_align_residual_p90"),
+        "slam_ate_rmse": row.get("slam_ate_rmse"),
+        "slam_rpe_trans_rmse": row.get("slam_rpe_trans_rmse"),
         "plan_score": row.get("plan_score"),
         "plan_fallback_used": row.get("plan_fallback_used"),
         "status": row.get("status"),
@@ -488,6 +496,8 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "slam_tracking_rate",
         "slam_coverage",
         "slam_align_residual_p90",
+        "slam_ate_rmse",
+        "slam_rpe_trans_rmse",
         "plan_score",
         "plan_fallback_used",
         "status",
@@ -511,12 +521,12 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]], payload: dict[str, A
     lines.append(f"- failures: `{payload.get('failures', 0)}`")
     lines.append("")
     lines.append(
-        "| profile | runId | frames | qualityScore | critical_fn | riskP90 | e2eP90 | ttsP90 | arP90 | segF1 | depthAbsRel | ocrCER | slamTrack | slamCoverage | slamAlignP90 | status |"
+        "| profile | runId | frames | qualityScore | critical_fn | riskP90 | e2eP90 | ttsP90 | arP90 | segF1 | depthAbsRel | ocrCER | slamTrack | slamCoverage | slamAlignP90 | slamATE | slamRPE | status |"
     )
     lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for row in rows:
         lines.append(
-            "| {profile} | {run_id} | {frames} | {quality} | {critical_fn} | {risk} | {e2e} | {tts} | {ar} | {seg} | {depth} | {ocr} | {slam} | {slam_cov} | {slam_align} | {status} |".format(
+            "| {profile} | {run_id} | {frames} | {quality} | {critical_fn} | {risk} | {e2e} | {tts} | {ar} | {seg} | {depth} | {ocr} | {slam} | {slam_cov} | {slam_align} | {slam_ate} | {slam_rpe} | {status} |".format(
                 profile=row.get("profile"),
                 run_id=row.get("runId"),
                 frames=row.get("framesCount"),
@@ -532,6 +542,8 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]], payload: dict[str, A
                 slam=row.get("slam_tracking_rate"),
                 slam_cov=row.get("slam_coverage"),
                 slam_align=row.get("slam_align_residual_p90"),
+                slam_ate=row.get("slam_ate_rmse"),
+                slam_rpe=row.get("slam_rpe_trans_rmse"),
                 status=row.get("status"),
             )
         )
@@ -1200,8 +1212,8 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
     lines.append(f"- processed: `{payload.get('processed', 0)}`")
     lines.append(f"- failures: `{payload.get('failures', 0)}`")
     lines.append("")
-    lines.append("| profile | services | discovered | processed | failures | quality(mean) | riskP90(p90) | frameUserTtsP90(p90) | slamCoverage(mean) | slamAlignP90(p90) |")
-    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("| profile | services | discovered | processed | failures | quality(mean) | riskP90(p90) | frameUserTtsP90(p90) | slamCoverage(mean) | slamAlignP90(p90) | slamATE(mean) | slamRPE(mean) |")
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     profiles = payload.get("profiles")
     profiles = profiles if isinstance(profiles, list) else []
     for entry in profiles:
@@ -1217,8 +1229,12 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
         slam_cov = slam_cov if isinstance(slam_cov, dict) else {}
         slam_align = metrics.get("slam_align_residual_p90")
         slam_align = slam_align if isinstance(slam_align, dict) else {}
+        slam_ate = metrics.get("slam_ate_rmse")
+        slam_ate = slam_ate if isinstance(slam_ate, dict) else {}
+        slam_rpe = metrics.get("slam_rpe_trans_rmse")
+        slam_rpe = slam_rpe if isinstance(slam_rpe, dict) else {}
         lines.append(
-            "| {name} | {services} | {d} | {p} | {f} | {quality} | {risk} | {tts} | {slam_cov} | {slam_align} |".format(
+            "| {name} | {services} | {d} | {p} | {f} | {quality} | {risk} | {tts} | {slam_cov} | {slam_align} | {slam_ate} | {slam_rpe} |".format(
                 name=entry.get("name"),
                 services=entry.get("services"),
                 d=entry.get("discovered"),
@@ -1229,6 +1245,8 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
                 tts=tts.get("p90"),
                 slam_cov=slam_cov.get("mean"),
                 slam_align=slam_align.get("p90"),
+                slam_ate=slam_ate.get("mean"),
+                slam_rpe=slam_rpe.get("mean"),
             )
         )
 
@@ -1238,20 +1256,22 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
         lines.append("")
         lines.append("## Deltas vs baseline")
         lines.append("")
-        lines.append("| profile | delta_qualityScore | delta_riskLatencyP90 | delta_frame_user_e2e_tts_p90 | delta_slam_coverage | delta_slam_align_residual_p90 |")
-        lines.append("|---|---:|---:|---:|---:|---:|")
+        lines.append("| profile | delta_qualityScore | delta_riskLatencyP90 | delta_frame_user_e2e_tts_p90 | delta_slam_coverage | delta_slam_align_residual_p90 | delta_slam_ate_rmse | delta_slam_rpe_trans_rmse |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
         for name, value in deltas.items():
             block = value if isinstance(value, dict) else {}
             flat = block.get("deltaFlat")
             flat = flat if isinstance(flat, dict) else {}
             lines.append(
-                "| {name} | {dq} | {dr} | {dt} | {ds} | {da} |".format(
+                "| {name} | {dq} | {dr} | {dt} | {ds} | {da} | {dsa} | {dsr} |".format(
                     name=name,
                     dq=flat.get("delta_qualityScore"),
                     dr=flat.get("delta_riskLatencyP90"),
                     dt=flat.get("delta_frame_user_e2e_tts_p90"),
                     ds=flat.get("delta_slam_coverage"),
                     da=flat.get("delta_slam_align_residual_p90"),
+                    dsa=flat.get("delta_slam_ate_rmse"),
+                    dsr=flat.get("delta_slam_rpe_trans_rmse"),
                 )
             )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

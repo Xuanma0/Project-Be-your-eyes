@@ -177,6 +177,35 @@ def load_gt_slam_pose_v1(path: Path) -> dict[int, dict[str, Any]]:
     return records
 
 
+def load_gt_slam_tum(path: Path) -> dict[int, dict[str, Any]]:
+    records: dict[int, dict[str, Any]] = {}
+    if not path.exists() or not path.is_file():
+        return records
+    index = 0
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except Exception:
+        return records
+    for raw_line in text.splitlines():
+        parsed = _parse_tum_line(raw_line)
+        if not isinstance(parsed, dict):
+            continue
+        index += 1
+        records[index] = {
+            "timestampSec": float(parsed["timestampSec"]),
+            "trackingState": "tracking",
+            "pose": {
+                "t": [float(parsed["tx"]), float(parsed["ty"]), float(parsed["tz"])],
+                "q": [float(parsed["qx"]), float(parsed["qy"]), float(parsed["qz"]), float(parsed["qw"])],
+            },
+        }
+    return records
+
+
+def load_slam_tum_pose_map(path: Path) -> dict[int, dict[str, Any]]:
+    return load_gt_slam_tum(path)
+
+
 def extract_pred_seg_from_ws_events(
     ws_events_jsonl_path: Path,
 ) -> tuple[dict[int, list[dict[str, Any]]], set[int], list[int]]:
@@ -1670,6 +1699,120 @@ def compute_slam_metrics(
     }
 
 
+def compute_slam_error_metrics(
+    gt_map: dict[int, dict[str, Any]],
+    pred_map: dict[int, dict[str, Any]],
+    *,
+    traj_label: str | None = None,
+    align_mode: str = "se3",
+    source: str | None = None,
+    delta_frames: int = 1,
+) -> dict[str, Any]:
+    normalized_mode = str(align_mode or "se3").strip().lower()
+    if normalized_mode not in {"none", "se3", "sim3"}:
+        normalized_mode = "se3"
+
+    total_gt = len([seq for seq, row in gt_map.items() if isinstance(seq, int) and isinstance(row, dict)])
+    total_pred = len([seq for seq, row in pred_map.items() if isinstance(seq, int) and isinstance(row, dict)])
+
+    matched_sequences = sorted(set(gt_map.keys()) & set(pred_map.keys()))
+    gt_positions: list[list[float]] = []
+    pred_positions: list[list[float]] = []
+    for seq in matched_sequences:
+        gt_row = gt_map.get(seq)
+        gt_row = gt_row if isinstance(gt_row, dict) else {}
+        pred_row = pred_map.get(seq)
+        pred_row = pred_row if isinstance(pred_row, dict) else {}
+        gt_pose = _normalize_slam_pose_object(gt_row.get("pose"))
+        pred_pose = _normalize_slam_pose_object(pred_row.get("pose"))
+        if not isinstance(gt_pose, dict) or not isinstance(pred_pose, dict):
+            continue
+        gt_t = gt_pose.get("t")
+        pred_t = pred_pose.get("t")
+        if not isinstance(gt_t, list) or not isinstance(pred_t, list):
+            continue
+        if len(gt_t) != 3 or len(pred_t) != 3:
+            continue
+        gt_positions.append([float(gt_t[0]), float(gt_t[1]), float(gt_t[2])])
+        pred_positions.append([float(pred_t[0]), float(pred_t[1]), float(pred_t[2])])
+
+    matched_pairs = len(gt_positions)
+    coverage_ratio = _safe_ratio(matched_pairs, total_gt if total_gt > 0 else matched_pairs)
+    source_text = str(source or "").strip() or None
+    traj_label_text = str(traj_label or "").strip() or None
+    if matched_pairs <= 0:
+        return {
+            "present": False,
+            "trajLabel": traj_label_text,
+            "alignMode": normalized_mode,
+            "ate_rmse_m": None,
+            "ate_mean_m": None,
+            "rpe_trans_rmse_m": None,
+            "rpe_rot_rmse_deg": None,
+            "coverage": {
+                "pairsMatched": 0,
+                "totalGt": int(total_gt),
+                "totalPred": int(total_pred),
+                "ratio": float(coverage_ratio),
+            },
+            "source": source_text,
+            "align": {
+                "mode": normalized_mode,
+                "scaleUsed": 1.0,
+                "residualM": {"p50": None, "p90": None, "max": None},
+            },
+        }
+
+    scale_used, translation = _fit_scale_translation(
+        gt_positions,
+        pred_positions,
+        allow_scale=normalized_mode == "sim3",
+        apply_alignment=normalized_mode in {"se3", "sim3"},
+    )
+    aligned_positions = [_apply_scale_translation(vec, scale_used, translation) for vec in pred_positions]
+
+    ate_errors: list[float] = []
+    for gt_vec, pred_vec in zip(gt_positions, aligned_positions):
+        ate_errors.append(_vec_distance(gt_vec, pred_vec))
+
+    ate_rmse = math.sqrt(_safe_ratio(sum(err * err for err in ate_errors), len(ate_errors))) if ate_errors else None
+    ate_mean = (sum(ate_errors) / float(len(ate_errors))) if ate_errors else None
+
+    rpe_errors: list[float] = []
+    delta = max(1, int(delta_frames or 1))
+    for idx in range(0, max(0, len(gt_positions) - delta)):
+        gt_rel = _vec_sub(gt_positions[idx + delta], gt_positions[idx])
+        pred_rel = _vec_sub(aligned_positions[idx + delta], aligned_positions[idx])
+        rpe_errors.append(_vec_norm(_vec_sub(pred_rel, gt_rel)))
+    rpe_trans_rmse = math.sqrt(_safe_ratio(sum(err * err for err in rpe_errors), len(rpe_errors))) if rpe_errors else None
+
+    return {
+        "present": True,
+        "trajLabel": traj_label_text,
+        "alignMode": normalized_mode,
+        "ate_rmse_m": float(ate_rmse) if ate_rmse is not None else None,
+        "ate_mean_m": float(ate_mean) if ate_mean is not None else None,
+        "rpe_trans_rmse_m": float(rpe_trans_rmse) if rpe_trans_rmse is not None else None,
+        "rpe_rot_rmse_deg": None,
+        "coverage": {
+            "pairsMatched": int(matched_pairs),
+            "totalGt": int(total_gt),
+            "totalPred": int(total_pred),
+            "ratio": float(coverage_ratio),
+        },
+        "source": source_text,
+        "align": {
+            "mode": normalized_mode,
+            "scaleUsed": float(scale_used),
+            "residualM": {
+                "p50": float(_percentile_float(ate_errors, 50)) if ate_errors else None,
+                "p90": float(_percentile_float(ate_errors, 90)) if ate_errors else None,
+                "max": float(max(ate_errors)) if ate_errors else None,
+            },
+        },
+    }
+
+
 def load_slam_alignment_summary(path: Path) -> dict[str, Any]:
     if not path.exists() or not path.is_file():
         return {"present": False}
@@ -2060,6 +2203,97 @@ def _normalize_slam_pose_object(raw: Any) -> dict[str, Any] | None:
     except Exception:
         return None
     return {"t": t, "q": q}
+
+
+def _parse_tum_line(raw_line: str) -> dict[str, float] | None:
+    line = str(raw_line or "").strip()
+    if not line or line.startswith("#"):
+        return None
+    parts = line.split()
+    if len(parts) < 8:
+        return None
+    try:
+        ts = float(parts[0])
+        tx = float(parts[1])
+        ty = float(parts[2])
+        tz = float(parts[3])
+        qx = float(parts[4])
+        qy = float(parts[5])
+        qz = float(parts[6])
+        qw = float(parts[7])
+    except Exception:
+        return None
+    return {
+        "timestampSec": ts,
+        "tx": tx,
+        "ty": ty,
+        "tz": tz,
+        "qx": qx,
+        "qy": qy,
+        "qz": qz,
+        "qw": qw,
+    }
+
+
+def _vec_sub(left: list[float], right: list[float]) -> list[float]:
+    return [float(left[0]) - float(right[0]), float(left[1]) - float(right[1]), float(left[2]) - float(right[2])]
+
+
+def _vec_norm(vec: list[float]) -> float:
+    return math.sqrt(float(vec[0]) ** 2 + float(vec[1]) ** 2 + float(vec[2]) ** 2)
+
+
+def _vec_distance(left: list[float], right: list[float]) -> float:
+    return _vec_norm(_vec_sub(left, right))
+
+
+def _fit_scale_translation(
+    gt_positions: list[list[float]],
+    pred_positions: list[list[float]],
+    *,
+    allow_scale: bool,
+    apply_alignment: bool,
+) -> tuple[float, list[float]]:
+    if not apply_alignment or not gt_positions or not pred_positions or len(gt_positions) != len(pred_positions):
+        return 1.0, [0.0, 0.0, 0.0]
+    count = float(len(gt_positions))
+    gt_mean = [
+        sum(float(row[i]) for row in gt_positions) / count for i in range(3)
+    ]
+    pred_mean = [
+        sum(float(row[i]) for row in pred_positions) / count for i in range(3)
+    ]
+    scale = 1.0
+    if allow_scale:
+        pred_var = 0.0
+        cov = 0.0
+        for gt_vec, pred_vec in zip(gt_positions, pred_positions):
+            gt_centered = _vec_sub(gt_vec, gt_mean)
+            pred_centered = _vec_sub(pred_vec, pred_mean)
+            pred_var += float(pred_centered[0]) ** 2 + float(pred_centered[1]) ** 2 + float(pred_centered[2]) ** 2
+            cov += (
+                float(gt_centered[0]) * float(pred_centered[0])
+                + float(gt_centered[1]) * float(pred_centered[1])
+                + float(gt_centered[2]) * float(pred_centered[2])
+            )
+        if pred_var > 1e-9:
+            scale = cov / pred_var
+            if not math.isfinite(scale) or scale <= 0.0:
+                scale = 1.0
+    translation = [
+        float(gt_mean[0]) - float(scale) * float(pred_mean[0]),
+        float(gt_mean[1]) - float(scale) * float(pred_mean[1]),
+        float(gt_mean[2]) - float(scale) * float(pred_mean[2]),
+    ]
+    return float(scale), translation
+
+
+def _apply_scale_translation(point: list[float], scale: float, translation: list[float]) -> list[float]:
+    return [
+        float(scale) * float(point[0]) + float(translation[0]),
+        float(scale) * float(point[1]) + float(translation[1]),
+        float(scale) * float(point[2]) + float(translation[2]),
+    ]
 
 
 def _bbox_iou(a: list[float], b: list[float]) -> float:

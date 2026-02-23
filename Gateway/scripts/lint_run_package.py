@@ -927,6 +927,28 @@ def _normalize_frame_ack_kind_bucket(value: Any) -> str:
     return "other"
 
 
+def _slam_gt_tum_schema_ok(path: Path) -> bool:
+    if not path.exists() or not path.is_file():
+        return False
+    has_valid = False
+    try:
+        for raw in path.read_text(encoding="utf-8-sig").splitlines():
+            line = str(raw or "").strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) != 8:
+                return False
+            try:
+                [float(part) for part in parts]
+            except Exception:
+                return False
+            has_valid = True
+    except Exception:
+        return False
+    return has_valid
+
+
 def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = False) -> tuple[int, dict[str, Any]]:
     warnings: list[str] = []
     errors: list[str] = []
@@ -961,6 +983,9 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
 
         gt = manifest.get("groundTruth")
         gt_covered = 0
+        slam_gt_tum_present = 0
+        slam_gt_tum_schema_ok = 0
+        slam_error_present = 0
         hazard_unknown_kinds: set[str] = set()
         hazard_alias_hits = 0
         risk_event_missing_frame_seq = 0
@@ -994,6 +1019,32 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                     gt_kind_stats = _collect_hazard_stats_from_gt(path)
                     hazard_unknown_kinds.update(gt_kind_stats["unknownKinds"])
                     hazard_alias_hits += int(gt_kind_stats["aliasHits"])
+            slam_tum_rel = (
+                str(gt.get("slamTum", "")).strip()
+                or str(gt.get("slamTumPath", "")).strip()
+                or str(gt.get("slamGtTum", "")).strip()
+            )
+            if not slam_tum_rel and (run_root / "gt" / "slam_gt_tum.txt").exists():
+                slam_tum_rel = "gt/slam_gt_tum.txt"
+            if not slam_tum_rel and (run_root / "ground_truth" / "slam_gt_tum.txt").exists():
+                slam_tum_rel = "ground_truth/slam_gt_tum.txt"
+            if slam_tum_rel:
+                slam_tum_path = run_root / slam_tum_rel
+                slam_gt_tum_present = int(slam_tum_path.exists() and slam_tum_path.is_file())
+                slam_gt_tum_schema_ok = int(_slam_gt_tum_schema_ok(slam_tum_path))
+
+        report_json_path = run_root / "report.json"
+        if report_json_path.exists() and report_json_path.is_file():
+            try:
+                report_payload = json.loads(report_json_path.read_text(encoding="utf-8-sig"))
+            except Exception:
+                report_payload = None
+            if isinstance(report_payload, dict):
+                quality_payload = report_payload.get("quality")
+                quality_payload = quality_payload if isinstance(quality_payload, dict) else {}
+                slam_error_payload = quality_payload.get("slamError")
+                slam_error_payload = slam_error_payload if isinstance(slam_error_payload, dict) else {}
+                slam_error_present = int(bool(slam_error_payload.get("present")))
 
         events_v1_rel = str(manifest.get("eventsV1Jsonl", "") or "").strip()
         events_v1_present = 1 if events_v1_rel else 0
@@ -1746,6 +1797,9 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "slamPosePayloadSchemaOk": int(slam_pose_lines > 0 and slam_pose_payload_schema_ok == slam_pose_lines),
             "slamPoseNormalized": int(slam_pose_normalized),
             "slamLostCount": int(slam_lost_count),
+            "slamGtTumPresent": int(slam_gt_tum_present),
+            "slamGtTumSchemaOk": int(slam_gt_tum_schema_ok),
+            "slamErrorPresent": int(slam_error_present),
             "planRequestEventsPresent": int(plan_request_events_present),
             "planRequestLines": int(plan_request_lines),
             "planRequestSchemaOk": int(plan_request_lines > 0 and plan_request_schema_ok == plan_request_lines),
@@ -1866,6 +1920,9 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"slamPosePayloadSchemaOk: {summary['slamPosePayloadSchemaOk']}")
             print(f"slamPoseNormalized: {summary['slamPoseNormalized']}")
             print(f"slamLostCount: {summary['slamLostCount']}")
+            print(f"slamGtTumPresent: {summary['slamGtTumPresent']}")
+            print(f"slamGtTumSchemaOk: {summary['slamGtTumSchemaOk']}")
+            print(f"slamErrorPresent: {summary['slamErrorPresent']}")
             print(f"planRequestEventsPresent: {summary['planRequestEventsPresent']}")
             print(f"planRequestLines: {summary['planRequestLines']}")
             print(f"planRequestSchemaOk: {summary['planRequestSchemaOk']}")
