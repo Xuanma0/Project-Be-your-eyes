@@ -74,6 +74,32 @@
           "items": {
             "type": "integer"
           }
+        },
+        "gate": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "allowed",
+            "reasons",
+            "slamModel"
+          ],
+          "properties": {
+            "allowed": {
+              "type": "boolean"
+            },
+            "reasons": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "slamModel": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
         }
       }
     },

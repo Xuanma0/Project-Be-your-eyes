@@ -1110,6 +1110,16 @@ class GatewayApp:
                         "decay": float(self.config.inference_costmap_fused_decay),
                         "windowFrames": int(self.config.inference_costmap_fused_window),
                         "shiftEnabled": bool(self.config.inference_costmap_fused_shift),
+                        "shiftGateEnabled": bool(self.config.inference_costmap_fused_shift_gate),
+                        "minTrackingRate": float(self.config.inference_costmap_fused_min_tracking_rate),
+                        "maxLostStreak": int(self.config.inference_costmap_fused_max_lost_streak),
+                        "maxAlignResidualP90Ms": float(
+                            self.config.inference_costmap_fused_max_align_residual_p90_ms
+                        ),
+                        "maxAteRmseM": float(self.config.inference_costmap_fused_max_ate_rmse_m),
+                        "maxRpeTransRmseM": float(self.config.inference_costmap_fused_max_rpe_trans_rmse_m),
+                        "slamTrajPreferred": str(self.config.inference_slam_traj_preferred),
+                        "slamTrajAllowed": [str(item) for item in self.config.inference_slam_traj_allowed],
                         "occupiedThresh": int(self.config.inference_costmap_occupied_thresh),
                     },
                     backend="local",
@@ -3018,6 +3028,8 @@ async def run_packages_list(
     max_costmap_fused_latency_p90: int | None = None,
     min_costmap_fused_iou_p90: float | None = None,
     max_costmap_fused_flicker_rate_mean: float | None = None,
+    max_costmap_fused_shift_gate_reject_rate: float | None = None,
+    min_costmap_fused_shift_used_rate: float | None = None,
     min_slam_tracking_rate: float | None = None,
     max_slam_lost_rate: float | None = None,
     max_slam_latency_p90: int | None = None,
@@ -3099,6 +3111,8 @@ async def run_packages_list(
         max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
         min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
         max_costmap_fused_flicker_rate_mean=max_costmap_fused_flicker_rate_mean,
+        max_costmap_fused_shift_gate_reject_rate=max_costmap_fused_shift_gate_reject_rate,
+        min_costmap_fused_shift_used_rate=min_costmap_fused_shift_used_rate,
         min_slam_tracking_rate=min_slam_tracking_rate,
         max_slam_lost_rate=max_slam_lost_rate,
         max_slam_latency_p90=max_slam_latency_p90,
@@ -3181,6 +3195,8 @@ async def run_packages_list(
             "max_costmap_fused_latency_p90": max_costmap_fused_latency_p90,
             "min_costmap_fused_iou_p90": min_costmap_fused_iou_p90,
             "max_costmap_fused_flicker_rate_mean": max_costmap_fused_flicker_rate_mean,
+            "max_costmap_fused_shift_gate_reject_rate": max_costmap_fused_shift_gate_reject_rate,
+            "min_costmap_fused_shift_used_rate": min_costmap_fused_shift_used_rate,
             "min_slam_tracking_rate": min_slam_tracking_rate,
             "max_slam_lost_rate": max_slam_lost_rate,
             "max_slam_latency_p90": max_slam_latency_p90,
@@ -3267,6 +3283,8 @@ async def run_packages_export_json(
     max_costmap_fused_latency_p90: int | None = None,
     min_costmap_fused_iou_p90: float | None = None,
     max_costmap_fused_flicker_rate_mean: float | None = None,
+    max_costmap_fused_shift_gate_reject_rate: float | None = None,
+    min_costmap_fused_shift_used_rate: float | None = None,
     min_slam_tracking_rate: float | None = None,
     max_slam_lost_rate: float | None = None,
     max_slam_latency_p90: int | None = None,
@@ -3348,6 +3366,8 @@ async def run_packages_export_json(
             max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
             min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
             max_costmap_fused_flicker_rate_mean=max_costmap_fused_flicker_rate_mean,
+            max_costmap_fused_shift_gate_reject_rate=max_costmap_fused_shift_gate_reject_rate,
+            min_costmap_fused_shift_used_rate=min_costmap_fused_shift_used_rate,
             min_slam_tracking_rate=min_slam_tracking_rate,
         max_slam_lost_rate=max_slam_lost_rate,
         max_slam_latency_p90=max_slam_latency_p90,
@@ -3436,6 +3456,8 @@ async def run_packages_export_csv(
     max_costmap_fused_latency_p90: int | None = None,
     min_costmap_fused_iou_p90: float | None = None,
     max_costmap_fused_flicker_rate_mean: float | None = None,
+    max_costmap_fused_shift_gate_reject_rate: float | None = None,
+    min_costmap_fused_shift_used_rate: float | None = None,
     min_slam_tracking_rate: float | None = None,
     max_slam_lost_rate: float | None = None,
     max_slam_latency_p90: int | None = None,
@@ -3517,6 +3539,8 @@ async def run_packages_export_csv(
         max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
         min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
         max_costmap_fused_flicker_rate_mean=max_costmap_fused_flicker_rate_mean,
+        max_costmap_fused_shift_gate_reject_rate=max_costmap_fused_shift_gate_reject_rate,
+        min_costmap_fused_shift_used_rate=min_costmap_fused_shift_used_rate,
         min_slam_tracking_rate=min_slam_tracking_rate,
         max_slam_lost_rate=max_slam_lost_rate,
         max_slam_latency_p90=max_slam_latency_p90,
@@ -3614,6 +3638,7 @@ async def run_packages_export_csv(
         "costmap_fused_iou_p90",
         "costmap_fused_flicker_rate_mean",
         "costmap_fused_shift_used_rate",
+        "costmap_fused_shift_gate_reject_rate",
         "slam_tracking_rate",
         "slam_lost_rate",
         "slam_latency_p90",
@@ -5166,6 +5191,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     costmap_fused_iou_p90: float | None = None
     costmap_fused_flicker_rate_mean: float | None = None
     costmap_fused_shift_used_rate: float | None = None
+    costmap_fused_shift_gate_reject_rate: float | None = None
+    costmap_fused_shift_gate_top_reason: str | None = None
     slam_tracking_rate: float | None = None
     slam_lost_rate: float | None = None
     slam_relocalized: int | None = None
@@ -5603,6 +5630,17 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         raw_shift_used_rate = _read_float(costmap_fused_quality, "shiftUsedRate")
         if raw_shift_used_rate is not None:
             costmap_fused_shift_used_rate = float(raw_shift_used_rate)
+        raw_shift_reject_rate = _read_float(costmap_fused_quality, "shiftGateRejectRate")
+        if raw_shift_reject_rate is not None:
+            costmap_fused_shift_gate_reject_rate = float(raw_shift_reject_rate)
+        top_reasons = costmap_fused_quality.get("shiftGateTopReasons")
+        top_reasons = top_reasons if isinstance(top_reasons, list) else []
+        if top_reasons:
+            first_reason = top_reasons[0]
+            if isinstance(first_reason, dict):
+                reason_text = str(first_reason.get("reason", "")).strip()
+                if reason_text:
+                    costmap_fused_shift_gate_top_reason = reason_text
     if isinstance(slam_quality, dict):
         tracking_payload = slam_quality.get("tracking")
         tracking_payload = tracking_payload if isinstance(tracking_payload, dict) else {}
@@ -5735,6 +5773,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "costmap_fused_iou_p90": costmap_fused_iou_p90,
         "costmap_fused_flicker_rate_mean": costmap_fused_flicker_rate_mean,
         "costmap_fused_shift_used_rate": costmap_fused_shift_used_rate,
+        "costmap_fused_shift_gate_reject_rate": costmap_fused_shift_gate_reject_rate,
+        "costmap_fused_shift_gate_top_reason": costmap_fused_shift_gate_top_reason,
         "slam_tracking_rate": slam_tracking_rate,
         "slam_lost_rate": slam_lost_rate,
         "slam_relocalized": slam_relocalized,
@@ -5852,6 +5892,8 @@ def _matches_run_filters(
     max_costmap_fused_latency_p90: int | None = None,
     min_costmap_fused_iou_p90: float | None = None,
     max_costmap_fused_flicker_rate_mean: float | None = None,
+    max_costmap_fused_shift_gate_reject_rate: float | None = None,
+    min_costmap_fused_shift_used_rate: float | None = None,
     min_slam_tracking_rate: float | None,
     max_slam_lost_rate: float | None,
     max_slam_latency_p90: int | None,
@@ -6046,6 +6088,18 @@ def _matches_run_filters(
         if value is None:
             return False
         if float(value) > float(max_costmap_fused_flicker_rate_mean):
+            return False
+    if max_costmap_fused_shift_gate_reject_rate is not None:
+        value = row.get("costmap_fused_shift_gate_reject_rate")
+        if value is None:
+            return False
+        if float(value) > float(max_costmap_fused_shift_gate_reject_rate):
+            return False
+    if min_costmap_fused_shift_used_rate is not None:
+        value = row.get("costmap_fused_shift_used_rate")
+        if value is None:
+            return False
+        if float(value) < float(min_costmap_fused_shift_used_rate):
             return False
     if min_slam_tracking_rate is not None:
         value = row.get("slam_tracking_rate")
@@ -6377,6 +6431,7 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "costmap_fused_iou_p90",
         "costmap_fused_flicker_rate_mean",
         "costmap_fused_shift_used_rate",
+        "costmap_fused_shift_gate_reject_rate",
         "slam_tracking_rate",
         "slam_lost_rate",
         "slam_relocalized",
@@ -6483,6 +6538,8 @@ async def _query_run_package_rows(
     max_costmap_fused_latency_p90: int | None,
     min_costmap_fused_iou_p90: float | None,
     max_costmap_fused_flicker_rate_mean: float | None,
+    max_costmap_fused_shift_gate_reject_rate: float | None,
+    min_costmap_fused_shift_used_rate: float | None,
     min_slam_tracking_rate: float | None,
     max_slam_lost_rate: float | None,
     max_slam_latency_p90: int | None,
@@ -6570,6 +6627,8 @@ async def _query_run_package_rows(
             max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
             min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
             max_costmap_fused_flicker_rate_mean=max_costmap_fused_flicker_rate_mean,
+            max_costmap_fused_shift_gate_reject_rate=max_costmap_fused_shift_gate_reject_rate,
+            min_costmap_fused_shift_used_rate=min_costmap_fused_shift_used_rate,
             min_slam_tracking_rate=min_slam_tracking_rate,
             max_slam_lost_rate=max_slam_lost_rate,
             max_slam_latency_p90=max_slam_latency_p90,
@@ -6685,6 +6744,8 @@ async def runs_dashboard(
     max_costmap_fused_latency_p90: int | None = None,
     min_costmap_fused_iou_p90: float | None = None,
     max_costmap_fused_flicker_rate_mean: float | None = None,
+    max_costmap_fused_shift_gate_reject_rate: float | None = None,
+    min_costmap_fused_shift_used_rate: float | None = None,
     min_slam_tracking_rate: float | None = None,
     max_slam_lost_rate: float | None = None,
     max_slam_latency_p90: int | None = None,
@@ -6767,6 +6828,8 @@ async def runs_dashboard(
         max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
         min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
         max_costmap_fused_flicker_rate_mean=max_costmap_fused_flicker_rate_mean,
+        max_costmap_fused_shift_gate_reject_rate=max_costmap_fused_shift_gate_reject_rate,
+        min_costmap_fused_shift_used_rate=min_costmap_fused_shift_used_rate,
         min_slam_tracking_rate=min_slam_tracking_rate,
         max_slam_lost_rate=max_slam_lost_rate,
         max_slam_latency_p90=max_slam_latency_p90,
@@ -6905,6 +6968,12 @@ async def runs_dashboard(
         costmap_fused_flicker = "—" if costmap_fused_flicker_raw is None else f"{float(costmap_fused_flicker_raw):.4f}"
         costmap_fused_shift_raw = row.get("costmap_fused_shift_used_rate")
         costmap_fused_shift = "—" if costmap_fused_shift_raw is None else f"{float(costmap_fused_shift_raw):.4f}"
+        costmap_fused_shift_reject_raw = row.get("costmap_fused_shift_gate_reject_rate")
+        costmap_fused_shift_reject = (
+            "—" if costmap_fused_shift_reject_raw is None else f"{float(costmap_fused_shift_reject_raw):.4f}"
+        )
+        costmap_fused_shift_reason_raw = row.get("costmap_fused_shift_gate_top_reason")
+        costmap_fused_shift_reason = "—" if costmap_fused_shift_reason_raw in {None, ""} else str(costmap_fused_shift_reason_raw)
         slam_tracking_rate_raw = row.get("slam_tracking_rate")
         slam_tracking_rate = "—" if slam_tracking_rate_raw is None else f"{float(slam_tracking_rate_raw):.4f}"
         slam_lost_rate_raw = row.get("slam_lost_rate")
@@ -7016,6 +7085,8 @@ async def runs_dashboard(
             f"<td>{html.escape(costmap_fused_iou)}</td>"
             f"<td>{html.escape(costmap_fused_flicker)}</td>"
             f"<td>{html.escape(costmap_fused_shift)}</td>"
+            f"<td>{html.escape(costmap_fused_shift_reject)}</td>"
+            f"<td>{html.escape(costmap_fused_shift_reason)}</td>"
             f"<td>{html.escape(slam_tracking_rate)}</td>"
             f"<td>{html.escape(slam_lost_rate)}</td>"
             f"<td>{html.escape(slam_relocalized)}</td>"
@@ -7097,6 +7168,12 @@ async def runs_dashboard(
     )
     max_costmap_fused_flicker_rate_mean_value = html.escape(
         "" if max_costmap_fused_flicker_rate_mean is None else str(max_costmap_fused_flicker_rate_mean)
+    )
+    max_costmap_fused_shift_gate_reject_rate_value = html.escape(
+        "" if max_costmap_fused_shift_gate_reject_rate is None else str(max_costmap_fused_shift_gate_reject_rate)
+    )
+    min_costmap_fused_shift_used_rate_value = html.escape(
+        "" if min_costmap_fused_shift_used_rate is None else str(min_costmap_fused_shift_used_rate)
     )
     min_slam_tracking_rate_value = html.escape("" if min_slam_tracking_rate is None else str(min_slam_tracking_rate))
     max_slam_lost_rate_value = html.escape("" if max_slam_lost_rate is None else str(max_slam_lost_rate))
@@ -7247,6 +7324,8 @@ async def runs_dashboard(
       <label>max_costmap_fused_latency_p90: <input type="number" min="0" name="max_costmap_fused_latency_p90" value="{max_costmap_fused_latency_p90_value}" /></label>
       <label>min_costmap_fused_iou_p90: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_fused_iou_p90" value="{min_costmap_fused_iou_p90_value}" /></label>
       <label>max_costmap_fused_flicker_rate_mean: <input type="number" step="0.0001" min="0" max="1" name="max_costmap_fused_flicker_rate_mean" value="{max_costmap_fused_flicker_rate_mean_value}" /></label>
+      <label>max_costmap_fused_shift_gate_reject_rate: <input type="number" step="0.0001" min="0" max="1" name="max_costmap_fused_shift_gate_reject_rate" value="{max_costmap_fused_shift_gate_reject_rate_value}" /></label>
+      <label>min_costmap_fused_shift_used_rate: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_fused_shift_used_rate" value="{min_costmap_fused_shift_used_rate_value}" /></label>
       <label>min_slam_tracking_rate: <input type="number" step="0.0001" min="0" max="1" name="min_slam_tracking_rate" value="{min_slam_tracking_rate_value}" /></label>
       <label>max_slam_lost_rate: <input type="number" step="0.0001" min="0" max="1" name="max_slam_lost_rate" value="{max_slam_lost_rate_value}" /></label>
       <label>max_slam_latency_p90: <input type="number" min="0" name="max_slam_latency_p90" value="{max_slam_latency_p90_value}" /></label>
@@ -7317,6 +7396,8 @@ async def runs_dashboard(
           <option value="costmap_fused_latency_p90" {"selected" if sort_value == "costmap_fused_latency_p90" else ""}>costmap_fused_latency_p90</option>
           <option value="costmap_fused_iou_p90" {"selected" if sort_value == "costmap_fused_iou_p90" else ""}>costmap_fused_iou_p90</option>
           <option value="costmap_fused_flicker_rate_mean" {"selected" if sort_value == "costmap_fused_flicker_rate_mean" else ""}>costmap_fused_flicker_rate_mean</option>
+          <option value="costmap_fused_shift_used_rate" {"selected" if sort_value == "costmap_fused_shift_used_rate" else ""}>costmap_fused_shift_used_rate</option>
+          <option value="costmap_fused_shift_gate_reject_rate" {"selected" if sort_value == "costmap_fused_shift_gate_reject_rate" else ""}>costmap_fused_shift_gate_reject_rate</option>
           <option value="slam_tracking_rate" {"selected" if sort_value == "slam_tracking_rate" else ""}>slam_tracking_rate</option>
           <option value="slam_lost_rate" {"selected" if sort_value == "slam_lost_rate" else ""}>slam_lost_rate</option>
           <option value="slam_latency_p90" {"selected" if sort_value == "slam_latency_p90" else ""}>slam_latency_p90</option>
@@ -7362,8 +7443,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&min_costmap_fused_coverage={min_costmap_fused_coverage_value}&max_costmap_fused_latency_p90={max_costmap_fused_latency_p90_value}&min_costmap_fused_iou_p90={min_costmap_fused_iou_p90_value}&max_costmap_fused_flicker_rate_mean={max_costmap_fused_flicker_rate_mean_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&min_costmap_fused_coverage={min_costmap_fused_coverage_value}&max_costmap_fused_latency_p90={max_costmap_fused_latency_p90_value}&min_costmap_fused_iou_p90={min_costmap_fused_iou_p90_value}&max_costmap_fused_flicker_rate_mean={max_costmap_fused_flicker_rate_mean_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&min_costmap_fused_coverage={min_costmap_fused_coverage_value}&max_costmap_fused_latency_p90={max_costmap_fused_latency_p90_value}&min_costmap_fused_iou_p90={min_costmap_fused_iou_p90_value}&max_costmap_fused_flicker_rate_mean={max_costmap_fused_flicker_rate_mean_value}&max_costmap_fused_shift_gate_reject_rate={max_costmap_fused_shift_gate_reject_rate_value}&min_costmap_fused_shift_used_rate={min_costmap_fused_shift_used_rate_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&min_costmap_fused_coverage={min_costmap_fused_coverage_value}&max_costmap_fused_latency_p90={max_costmap_fused_latency_p90_value}&min_costmap_fused_iou_p90={min_costmap_fused_iou_p90_value}&max_costmap_fused_flicker_rate_mean={max_costmap_fused_flicker_rate_mean_value}&max_costmap_fused_shift_gate_reject_rate={max_costmap_fused_shift_gate_reject_rate_value}&min_costmap_fused_shift_used_rate={min_costmap_fused_shift_used_rate_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -7413,6 +7494,8 @@ async def runs_dashboard(
           <th>Costmap Fused IoU p90</th>
           <th>Costmap Fused Flicker Mean</th>
           <th>Costmap Fused ShiftUsed Rate</th>
+          <th>Costmap Fused ShiftReject Rate</th>
+          <th>Costmap Fused ShiftReject TopReason</th>
           <th>SLAM Tracking</th>
           <th>SLAM Lost</th>
           <th>SLAM Relocalized</th>

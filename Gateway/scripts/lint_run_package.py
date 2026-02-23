@@ -1380,6 +1380,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         costmap_fused_schema_ok = 0
         costmap_fused_iou_prev_values: list[float] = []
         costmap_fused_flicker_prev_values: list[float] = []
+        costmap_fused_shift_used_count = 0
+        costmap_fused_shift_gate_present_count = 0
+        costmap_fused_shift_gate_reject_count = 0
+        costmap_fused_shift_gate_reason_counts: dict[str, int] = {}
         costmap_context_present = 0
         costmap_context_lines = 0
         costmap_context_schema_ok = 0
@@ -1719,6 +1723,24 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                         costmap_fused_flicker_prev_values.append(float(flicker_prev))
                                     else:
                                         warnings.append("map.costmap_fused payload missing required fields")
+                                    fuse_payload = payload.get("fuse")
+                                    fuse_payload = fuse_payload if isinstance(fuse_payload, dict) else {}
+                                    if bool(fuse_payload.get("shiftUsed")):
+                                        costmap_fused_shift_used_count += 1
+                                    gate_payload = fuse_payload.get("gate")
+                                    if isinstance(gate_payload, dict):
+                                        costmap_fused_shift_gate_present_count += 1
+                                        if gate_payload.get("allowed") is False:
+                                            costmap_fused_shift_gate_reject_count += 1
+                                        reasons = gate_payload.get("reasons")
+                                        if isinstance(reasons, list):
+                                            for item in reasons:
+                                                text = str(item or "").strip().lower()
+                                                if not text:
+                                                    continue
+                                                costmap_fused_shift_gate_reason_counts[text] = int(
+                                                    costmap_fused_shift_gate_reason_counts.get(text, 0)
+                                                ) + 1
                                 if name == "map.costmap_context":
                                     costmap_context_present = 1
                                     costmap_context_lines += 1
@@ -2206,6 +2228,25 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "costmapFusedLines": int(costmap_fused_lines),
             "costmapFusedSchemaOk": int(costmap_fused_lines > 0 and costmap_fused_schema_ok == costmap_fused_lines),
             "costmapFusedCount": int(costmap_fused_lines),
+            "costmapFusedShiftUsedRate": round(
+                float(costmap_fused_shift_used_count / max(1, int(costmap_fused_lines))),
+                6,
+            ),
+            "costmapFusedShiftGatePresent": int(
+                costmap_fused_lines > 0 and costmap_fused_shift_gate_present_count == costmap_fused_lines
+            ),
+            "costmapFusedShiftGateRejectRate": round(
+                float(costmap_fused_shift_gate_reject_count / max(1, int(costmap_fused_lines))),
+                6,
+            ),
+            "costmapFusedShiftGateTopReason": (
+                sorted(
+                    costmap_fused_shift_gate_reason_counts.items(),
+                    key=lambda item: (-int(item[1]), str(item[0])),
+                )[0][0]
+                if costmap_fused_shift_gate_reason_counts
+                else None
+            ),
             "costmapContextPresent": int(costmap_context_present),
             "costmapContextLines": int(costmap_context_lines),
             "costmapContextSchemaOk": int(
@@ -2366,6 +2407,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"costmapFusedLines: {summary['costmapFusedLines']}")
             print(f"costmapFusedSchemaOk: {summary['costmapFusedSchemaOk']}")
             print(f"costmapFusedCount: {summary['costmapFusedCount']}")
+            print(f"costmapFusedShiftUsedRate: {summary['costmapFusedShiftUsedRate']}")
+            print(f"costmapFusedShiftGatePresent: {summary['costmapFusedShiftGatePresent']}")
+            print(f"costmapFusedShiftGateRejectRate: {summary['costmapFusedShiftGateRejectRate']}")
+            print(f"costmapFusedShiftGateTopReason: {summary['costmapFusedShiftGateTopReason']}")
             print(f"costmapContextPresent: {summary['costmapContextPresent']}")
             print(f"costmapContextLines: {summary['costmapContextLines']}")
             print(f"costmapContextSchemaOk: {summary['costmapContextSchemaOk']}")

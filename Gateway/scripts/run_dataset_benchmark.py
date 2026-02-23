@@ -68,6 +68,8 @@ METRIC_FIELDS = [
     "costmap_fused_latency_p90",
     "costmap_fused_iou_p90",
     "costmap_fused_flicker_rate_mean",
+    "costmap_fused_shift_used_rate",
+    "costmap_fused_shift_gate_reject_rate",
     "plan_costmap_ctx_used_rate",
     "plan_score",
     "plan_fallback_used",
@@ -458,6 +460,9 @@ def _collect_summary_fields(*, run_package: Path, manifest: dict[str, Any], repo
         "costmap_fused_latency_p90": _to_int(_nested_get(costmap_fused, ["latencyMs", "p90"])),
         "costmap_fused_iou_p90": _to_float(_nested_get(costmap_fused, ["stability", "iouPrevP90"])),
         "costmap_fused_flicker_rate_mean": _to_float(_nested_get(costmap_fused, ["stability", "flickerRatePrevMean"])),
+        "costmap_fused_shift_used_rate": _to_float(costmap_fused.get("shiftUsedRate")),
+        "costmap_fused_shift_gate_reject_rate": _to_float(costmap_fused.get("shiftGateRejectRate")),
+        "slam_model_preferred": str(costmap_fused.get("slamModelPreferred", "")).strip() or None,
         "plan_costmap_ctx_used_rate": _to_float(plan_context_costmap.get("contextUsedRate")),
         "plan_score": _to_float(plan_quality.get("score")),
         "plan_fallback_used": bool(plan_quality.get("fallbackUsed")) if "fallbackUsed" in plan_quality else None,
@@ -494,6 +499,9 @@ def _summary_to_csv_row(row: dict[str, Any]) -> dict[str, Any]:
         "costmap_fused_latency_p90": row.get("costmap_fused_latency_p90"),
         "costmap_fused_iou_p90": row.get("costmap_fused_iou_p90"),
         "costmap_fused_flicker_rate_mean": row.get("costmap_fused_flicker_rate_mean"),
+        "costmap_fused_shift_used_rate": row.get("costmap_fused_shift_used_rate"),
+        "costmap_fused_shift_gate_reject_rate": row.get("costmap_fused_shift_gate_reject_rate"),
+        "slam_model_preferred": row.get("slam_model_preferred"),
         "plan_costmap_ctx_used_rate": row.get("plan_costmap_ctx_used_rate"),
         "plan_score": row.get("plan_score"),
         "plan_fallback_used": row.get("plan_fallback_used"),
@@ -533,6 +541,9 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "costmap_fused_latency_p90",
         "costmap_fused_iou_p90",
         "costmap_fused_flicker_rate_mean",
+        "costmap_fused_shift_used_rate",
+        "costmap_fused_shift_gate_reject_rate",
+        "slam_model_preferred",
         "plan_costmap_ctx_used_rate",
         "plan_score",
         "plan_fallback_used",
@@ -557,12 +568,12 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]], payload: dict[str, A
     lines.append(f"- failures: `{payload.get('failures', 0)}`")
     lines.append("")
     lines.append(
-        "| profile | runId | frames | qualityScore | critical_fn | riskP90 | e2eP90 | ttsP90 | arP90 | segF1 | depthAbsRel | ocrCER | slamTrack | slamCoverage | slamAlignP90 | slamATE | slamRPE | costmapCoverage | costmapP90 | costmapFusedCoverage | costmapFusedIoUP90 | costmapFusedFlickerMean | planCostmapUsed | status |"
+        "| profile | runId | frames | qualityScore | critical_fn | riskP90 | e2eP90 | ttsP90 | arP90 | segF1 | depthAbsRel | ocrCER | slamTrack | slamCoverage | slamAlignP90 | slamATE | slamRPE | costmapCoverage | costmapP90 | costmapFusedCoverage | costmapFusedIoUP90 | costmapFusedFlickerMean | costmapFusedShiftUsedRate | costmapFusedShiftRejectRate | slamModelPreferred | planCostmapUsed | status |"
     )
     lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for row in rows:
         lines.append(
-            "| {profile} | {run_id} | {frames} | {quality} | {critical_fn} | {risk} | {e2e} | {tts} | {ar} | {seg} | {depth} | {ocr} | {slam} | {slam_cov} | {slam_align} | {slam_ate} | {slam_rpe} | {costmap_cov} | {costmap_p90} | {costmap_fused_cov} | {costmap_fused_iou} | {costmap_fused_flicker} | {plan_costmap_used} | {status} |".format(
+            "| {profile} | {run_id} | {frames} | {quality} | {critical_fn} | {risk} | {e2e} | {tts} | {ar} | {seg} | {depth} | {ocr} | {slam} | {slam_cov} | {slam_align} | {slam_ate} | {slam_rpe} | {costmap_cov} | {costmap_p90} | {costmap_fused_cov} | {costmap_fused_iou} | {costmap_fused_flicker} | {costmap_fused_shift_used} | {costmap_fused_shift_reject} | {slam_model_preferred} | {plan_costmap_used} | {status} |".format(
                 profile=row.get("profile"),
                 run_id=row.get("runId"),
                 frames=row.get("framesCount"),
@@ -585,6 +596,9 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]], payload: dict[str, A
                 costmap_fused_cov=row.get("costmap_fused_coverage"),
                 costmap_fused_iou=row.get("costmap_fused_iou_p90"),
                 costmap_fused_flicker=row.get("costmap_fused_flicker_rate_mean"),
+                costmap_fused_shift_used=row.get("costmap_fused_shift_used_rate"),
+                costmap_fused_shift_reject=row.get("costmap_fused_shift_gate_reject_rate"),
+                slam_model_preferred=row.get("slam_model_preferred"),
                 plan_costmap_used=row.get("plan_costmap_ctx_used_rate"),
                 status=row.get("status"),
             )
@@ -1180,6 +1194,16 @@ def _build_matrix_summary_payload(
         rows = payload.get("rows")
         rows = rows if isinstance(rows, list) else []
         combined_rows.extend(rows)
+        mode_counter: dict[str, int] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            mode_text = str(row.get("slam_model_preferred", "")).strip()
+            if mode_text:
+                mode_counter[mode_text] = mode_counter.get(mode_text, 0) + 1
+        slam_model_preferred_mode = None
+        if mode_counter:
+            slam_model_preferred_mode = sorted(mode_counter.items(), key=lambda item: (-item[1], item[0]))[0][0]
         profile_summaries.append(
             {
                 "name": str(payload.get("profile", "")),
@@ -1190,6 +1214,7 @@ def _build_matrix_summary_payload(
                 "processed": int(payload.get("processed", 0) or 0),
                 "failures": int(payload.get("failures", 0) or 0),
                 "metrics": _summarize_profile_metrics(rows),
+                "slamModelPreferredMode": slam_model_preferred_mode,
             }
         )
 
@@ -1254,8 +1279,8 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
     lines.append(f"- processed: `{payload.get('processed', 0)}`")
     lines.append(f"- failures: `{payload.get('failures', 0)}`")
     lines.append("")
-    lines.append("| profile | services | discovered | processed | failures | quality(mean) | riskP90(p90) | frameUserTtsP90(p90) | slamCoverage(mean) | slamAlignP90(p90) | slamATE(mean) | slamRPE(mean) | costmapCoverage(mean) | costmapLatencyP90(p90) | costmapFusedCoverage(mean) | costmapFusedIouP90(p90) | costmapFusedFlickerMean(mean) | planCostmapUsedRate(mean) |")
-    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("| profile | services | discovered | processed | failures | quality(mean) | riskP90(p90) | frameUserTtsP90(p90) | slamCoverage(mean) | slamAlignP90(p90) | slamATE(mean) | slamRPE(mean) | costmapCoverage(mean) | costmapLatencyP90(p90) | costmapFusedCoverage(mean) | costmapFusedIouP90(p90) | costmapFusedFlickerMean(mean) | costmapFusedShiftUsedRate(mean) | costmapFusedShiftRejectRate(mean) | slamModelPreferred(mode) | planCostmapUsedRate(mean) |")
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|")
     profiles = payload.get("profiles")
     profiles = profiles if isinstance(profiles, list) else []
     for entry in profiles:
@@ -1285,10 +1310,16 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
         costmap_fused_iou = costmap_fused_iou if isinstance(costmap_fused_iou, dict) else {}
         costmap_fused_flicker = metrics.get("costmap_fused_flicker_rate_mean")
         costmap_fused_flicker = costmap_fused_flicker if isinstance(costmap_fused_flicker, dict) else {}
+        costmap_fused_shift_used = metrics.get("costmap_fused_shift_used_rate")
+        costmap_fused_shift_used = costmap_fused_shift_used if isinstance(costmap_fused_shift_used, dict) else {}
+        costmap_fused_shift_reject = metrics.get("costmap_fused_shift_gate_reject_rate")
+        costmap_fused_shift_reject = (
+            costmap_fused_shift_reject if isinstance(costmap_fused_shift_reject, dict) else {}
+        )
         plan_costmap_used = metrics.get("plan_costmap_ctx_used_rate")
         plan_costmap_used = plan_costmap_used if isinstance(plan_costmap_used, dict) else {}
         lines.append(
-            "| {name} | {services} | {d} | {p} | {f} | {quality} | {risk} | {tts} | {slam_cov} | {slam_align} | {slam_ate} | {slam_rpe} | {costmap_cov} | {costmap_p90} | {costmap_fused_cov} | {costmap_fused_iou} | {costmap_fused_flicker} | {plan_costmap_used} |".format(
+            "| {name} | {services} | {d} | {p} | {f} | {quality} | {risk} | {tts} | {slam_cov} | {slam_align} | {slam_ate} | {slam_rpe} | {costmap_cov} | {costmap_p90} | {costmap_fused_cov} | {costmap_fused_iou} | {costmap_fused_flicker} | {costmap_fused_shift_used} | {costmap_fused_shift_reject} | {slam_model_preferred} | {plan_costmap_used} |".format(
                 name=entry.get("name"),
                 services=entry.get("services"),
                 d=entry.get("discovered"),
@@ -1306,6 +1337,9 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
                 costmap_fused_cov=costmap_fused_cov.get("mean"),
                 costmap_fused_iou=costmap_fused_iou.get("p90"),
                 costmap_fused_flicker=costmap_fused_flicker.get("mean"),
+                costmap_fused_shift_used=costmap_fused_shift_used.get("mean"),
+                costmap_fused_shift_reject=costmap_fused_shift_reject.get("mean"),
+                slam_model_preferred=entry.get("slamModelPreferredMode"),
                 plan_costmap_used=plan_costmap_used.get("mean"),
             )
         )
@@ -1316,14 +1350,14 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
         lines.append("")
         lines.append("## Deltas vs baseline")
         lines.append("")
-        lines.append("| profile | delta_qualityScore | delta_riskLatencyP90 | delta_frame_user_e2e_tts_p90 | delta_slam_coverage | delta_slam_align_residual_p90 | delta_slam_ate_rmse | delta_slam_rpe_trans_rmse | delta_costmap_coverage | delta_costmap_latency_p90 | delta_costmap_fused_coverage | delta_costmap_fused_iou_p90 | delta_costmap_fused_flicker_rate_mean | delta_plan_costmap_ctx_used_rate |")
-        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+        lines.append("| profile | delta_qualityScore | delta_riskLatencyP90 | delta_frame_user_e2e_tts_p90 | delta_slam_coverage | delta_slam_align_residual_p90 | delta_slam_ate_rmse | delta_slam_rpe_trans_rmse | delta_costmap_coverage | delta_costmap_latency_p90 | delta_costmap_fused_coverage | delta_costmap_fused_iou_p90 | delta_costmap_fused_flicker_rate_mean | delta_costmap_fused_shift_used_rate | delta_costmap_fused_shift_gate_reject_rate | delta_plan_costmap_ctx_used_rate |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         for name, value in deltas.items():
             block = value if isinstance(value, dict) else {}
             flat = block.get("deltaFlat")
             flat = flat if isinstance(flat, dict) else {}
             lines.append(
-                "| {name} | {dq} | {dr} | {dt} | {ds} | {da} | {dsa} | {dsr} | {dcc} | {dcl} | {dcfc} | {dcfi} | {dcff} | {dpcu} |".format(
+                "| {name} | {dq} | {dr} | {dt} | {ds} | {da} | {dsa} | {dsr} | {dcc} | {dcl} | {dcfc} | {dcfi} | {dcff} | {dcfsu} | {dcfsr} | {dpcu} |".format(
                     name=name,
                     dq=flat.get("delta_qualityScore"),
                     dr=flat.get("delta_riskLatencyP90"),
@@ -1337,6 +1371,8 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
                     dcfc=flat.get("delta_costmap_fused_coverage"),
                     dcfi=flat.get("delta_costmap_fused_iou_p90"),
                     dcff=flat.get("delta_costmap_fused_flicker_rate_mean"),
+                    dcfsu=flat.get("delta_costmap_fused_shift_used_rate"),
+                    dcfsr=flat.get("delta_costmap_fused_shift_gate_reject_rate"),
                     dpcu=flat.get("delta_plan_costmap_ctx_used_rate"),
                 )
             )

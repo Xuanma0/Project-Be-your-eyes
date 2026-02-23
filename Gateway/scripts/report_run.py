@@ -25,6 +25,7 @@ from byes.quality_metrics import (  # noqa: E402
     compute_seg_metrics,
     compute_depth_metrics,
     compute_slam_metrics,
+    compute_slam_metrics_by_model_from_events,
     compute_slam_error_metrics,
     load_slam_alignment_summary,
     compute_depth_risk_metrics,
@@ -1225,6 +1226,16 @@ def generate_report_outputs(
                 frames_total,
                 alignment=slam_alignment,
             )
+            slam_error_gt_for_models = slam_tum_gt if slam_tum_gt else slam_gt
+            slam_by_model = compute_slam_metrics_by_model_from_events(
+                event_rows,
+                gt_map=slam_gt,
+                frames_total=frames_total,
+                slam_error_gt_map=slam_error_gt_for_models,
+                alignment=slam_alignment,
+            )
+            if slam_by_model:
+                slam_metrics["byModel"] = slam_by_model
         if slam_tum_gt or slam_gt:
             slam_error_gt = slam_tum_gt if slam_tum_gt else slam_gt
             inferred_slam_model = None

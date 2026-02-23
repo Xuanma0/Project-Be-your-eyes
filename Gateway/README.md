@@ -729,6 +729,26 @@ Notes:
 - Gateway emits `map.costmap_fused` and aggregates stability metrics (`iouPrev/flickerRatePrev`) in `report["quality"]["costmapFused"]`.
 - Benchmark matrix summaries now include fused columns: `costmapFusedCoverage(mean)`, `costmapFusedIouP90(p90)`, `costmapFusedFlickerMean(mean)`.
 
+pySLAM online vs final + shift gate (v4.79):
+
+```powershell
+$env:BYES_ENABLE_COSTMAP=\"1\"
+$env:BYES_ENABLE_COSTMAP_FUSED=\"1\"
+$env:BYES_SLAM_TRAJ_PREFERRED=\"auto\"   # auto|online|final
+$env:BYES_SLAM_TRAJ_ALLOWED=\"online,final\"
+$env:BYES_COSTMAP_FUSED_SHIFT_GATE=\"1\"
+$env:BYES_COSTMAP_FUSED_MIN_TRACKING_RATE=\"0.6\"
+$env:BYES_COSTMAP_FUSED_MAX_LOST_STREAK=\"2\"
+$env:BYES_COSTMAP_FUSED_MAX_ALIGN_RESIDUAL_P90_MS=\"80\"
+$env:BYES_COSTMAP_FUSED_MAX_ATE_RMSE_M=\"0.25\"
+$env:BYES_COSTMAP_FUSED_MAX_RPE_TRANS_RMSE_M=\"0.10\"
+```
+
+Notes:
+- `pyslam-online` is closer to real-time behavior; `pyslam-final` is usually better accuracy after backend optimization.
+- When shift gate rejects SLAM-based shift, fused map falls back to EMA-only (`ema_v1`) and records reasons (`tracking_rate_low`, `lost_streak_high`, `align_residual_high`, `slam_error_high`, etc.).
+- `/api/run_packages` and benchmark matrix include `costmap_fused_shift_used_rate` and `costmap_fused_shift_gate_reject_rate` for profile comparison.
+
 Plan context pack (risk+pov+seg, budgeted):
 
 ```powershell

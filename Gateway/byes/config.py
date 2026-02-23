@@ -306,6 +306,8 @@ class GatewayConfig:
     inference_seg_model_id: str = "mock-seg"
     inference_depth_model_id: str = "mock-depth"
     inference_slam_model_id: str = "mock-slam"
+    inference_slam_traj_preferred: str = "auto"
+    inference_slam_traj_allowed: tuple[str, ...] = ("online", "final")
     inference_costmap_grid_h: int = 32
     inference_costmap_grid_w: int = 32
     inference_costmap_resolution_m: float = 0.1
@@ -315,6 +317,12 @@ class GatewayConfig:
     inference_costmap_fused_decay: float = 0.95
     inference_costmap_fused_window: int = 10
     inference_costmap_fused_shift: bool = True
+    inference_costmap_fused_shift_gate: bool = True
+    inference_costmap_fused_min_tracking_rate: float = 0.6
+    inference_costmap_fused_max_lost_streak: int = 2
+    inference_costmap_fused_max_align_residual_p90_ms: int = 80
+    inference_costmap_fused_max_ate_rmse_m: float = 0.25
+    inference_costmap_fused_max_rpe_trans_rmse_m: float = 0.1
     inference_costmap_occupied_thresh: int = 200
     inference_costmap_context_max_chars: int = 512
     inference_costmap_context_mode: str = "topk_hotspots"
@@ -490,6 +498,11 @@ def load_config() -> GatewayConfig:
         inference_seg_model_id=os.getenv("BYES_SEG_MODEL_ID", "mock-seg"),
         inference_depth_model_id=os.getenv("BYES_DEPTH_MODEL_ID", "mock-depth"),
         inference_slam_model_id=os.getenv("BYES_SLAM_MODEL_ID", os.getenv("BYES_SERVICE_SLAM_MODEL_ID", "mock-slam")),
+        inference_slam_traj_preferred=(str(os.getenv("BYES_SLAM_TRAJ_PREFERRED", "auto")).strip().lower() or "auto"),
+        inference_slam_traj_allowed=(
+            _env_string_list("BYES_SLAM_TRAJ_ALLOWED", "BYES_SLAM_TRAJ_ALLOWED_JSON")
+            or ("online", "final")
+        ),
         inference_costmap_grid_h=_env_int("BYES_COSTMAP_GRID_H", 32),
         inference_costmap_grid_w=_env_int("BYES_COSTMAP_GRID_W", 32),
         inference_costmap_resolution_m=_env_float("BYES_COSTMAP_RES_M", 0.1),
@@ -502,6 +515,15 @@ def load_config() -> GatewayConfig:
         inference_costmap_fused_decay=_env_float("BYES_COSTMAP_FUSED_DECAY", 0.95),
         inference_costmap_fused_window=_env_int("BYES_COSTMAP_FUSED_WINDOW", 10),
         inference_costmap_fused_shift=_env_bool("BYES_COSTMAP_FUSED_SHIFT", True),
+        inference_costmap_fused_shift_gate=_env_bool("BYES_COSTMAP_FUSED_SHIFT_GATE", True),
+        inference_costmap_fused_min_tracking_rate=_env_float("BYES_COSTMAP_FUSED_MIN_TRACKING_RATE", 0.6),
+        inference_costmap_fused_max_lost_streak=_env_int("BYES_COSTMAP_FUSED_MAX_LOST_STREAK", 2),
+        inference_costmap_fused_max_align_residual_p90_ms=_env_int(
+            "BYES_COSTMAP_FUSED_MAX_ALIGN_RESIDUAL_P90_MS",
+            80,
+        ),
+        inference_costmap_fused_max_ate_rmse_m=_env_float("BYES_COSTMAP_FUSED_MAX_ATE_RMSE_M", 0.25),
+        inference_costmap_fused_max_rpe_trans_rmse_m=_env_float("BYES_COSTMAP_FUSED_MAX_RPE_TRANS_RMSE_M", 0.1),
         inference_costmap_occupied_thresh=_env_int("BYES_COSTMAP_OCCUPIED_THRESH", 200),
         inference_costmap_context_max_chars=_env_int("BYES_COSTMAP_CONTEXT_MAX_CHARS", 512),
         inference_costmap_context_mode=(

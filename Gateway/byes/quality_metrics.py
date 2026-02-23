@@ -1699,6 +1699,115 @@ def compute_slam_metrics(
     }
 
 
+def compute_slam_metrics_by_model_from_events(
+    events: Iterable[dict[str, Any]],
+    *,
+    gt_map: dict[int, dict[str, Any]] | None = None,
+    frames_total: int = 0,
+    slam_error_gt_map: dict[int, dict[str, Any]] | None = None,
+    alignment: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "slam.pose":
+            continue
+        if str(event.get("phase", "")).strip().lower() not in {"", "result"}:
+            continue
+        if str(event.get("status", "")).strip().lower() not in {"", "ok"}:
+            continue
+        seq = _extract_frame_seq(event)
+        if seq is None:
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        pose = _normalize_slam_pose_object(payload.get("pose"))
+        if not isinstance(pose, dict):
+            continue
+        tracking_state = _normalize_slam_tracking_state(payload.get("trackingState")) or "tracking"
+        model_name = str(payload.get("model", "")).strip() or "unknown"
+        bucket = grouped.setdefault(
+            model_name,
+            {"pred_map": {}, "event_frames": set(), "latencies": []},
+        )
+        pred_map = bucket["pred_map"]
+        pred_map = pred_map if isinstance(pred_map, dict) else {}
+        event_frames = bucket["event_frames"]
+        event_frames = event_frames if isinstance(event_frames, set) else set()
+        latencies = bucket["latencies"]
+        latencies = latencies if isinstance(latencies, list) else []
+        pred_map[int(seq)] = {"trackingState": tracking_state, "pose": pose}
+        event_frames.add(int(seq))
+        latency = _extract_latency_ms(event)
+        if latency is not None and latency >= 0:
+            latencies.append(int(latency))
+        bucket["pred_map"] = pred_map
+        bucket["event_frames"] = event_frames
+        bucket["latencies"] = latencies
+        grouped[model_name] = bucket
+
+    out: dict[str, dict[str, Any]] = {}
+    gt_map = gt_map if isinstance(gt_map, dict) else {}
+    slam_error_gt_map = slam_error_gt_map if isinstance(slam_error_gt_map, dict) else {}
+    for model_name, bucket in grouped.items():
+        pred_map = bucket.get("pred_map")
+        pred_map = pred_map if isinstance(pred_map, dict) else {}
+        event_frames = bucket.get("event_frames")
+        event_frames = event_frames if isinstance(event_frames, set) else set()
+        latencies = bucket.get("latencies")
+        latencies = latencies if isinstance(latencies, list) else []
+        metrics = compute_slam_metrics(
+            gt_map,
+            pred_map,
+            event_frames,
+            latencies,
+            int(max(0, int(frames_total))),
+            alignment=alignment,
+        )
+        tracking_payload = metrics.get("tracking")
+        tracking_payload = tracking_payload if isinstance(tracking_payload, dict) else {}
+        alignment_payload = metrics.get("alignment")
+        alignment_payload = alignment_payload if isinstance(alignment_payload, dict) else {}
+        residual_payload = alignment_payload.get("residualMs")
+        residual_payload = residual_payload if isinstance(residual_payload, dict) else {}
+        row: dict[str, Any] = {
+            "coverage": _to_float(metrics.get("coverage")),
+            "trackingRate": _to_float(tracking_payload.get("trackingRate")),
+            "lostRate": _to_float(tracking_payload.get("lostRate")),
+            "ate_rmse_m": None,
+            "rpe_trans_rmse_m": None,
+            "align_residual_p90_ms": _to_float(residual_payload.get("p90")),
+        }
+        if slam_error_gt_map:
+            error_metrics = compute_slam_error_metrics(
+                slam_error_gt_map,
+                pred_map,
+                traj_label=_infer_slam_traj_label_from_model(model_name),
+                align_mode="se3",
+                source=None,
+                delta_frames=1,
+            )
+            row["ate_rmse_m"] = _to_float(error_metrics.get("ate_rmse_m"))
+            row["rpe_trans_rmse_m"] = _to_float(error_metrics.get("rpe_trans_rmse_m"))
+        out[model_name] = row
+    return out
+
+
+def _infer_slam_traj_label_from_model(model_name: str | None) -> str | None:
+    text = str(model_name or "").strip().lower()
+    if not text:
+        return None
+    if "final" in text:
+        return "final"
+    if "online" in text:
+        return "online"
+    return None
+
+
 def compute_slam_error_metrics(
     gt_map: dict[int, dict[str, Any]],
     pred_map: dict[int, dict[str, Any]],
@@ -3371,6 +3480,9 @@ def extract_costmap_fused_metrics_from_events_v1(
     flicker_prev_values: list[float] = []
     hotspot_values: list[int] = []
     shift_used_count = 0
+    shift_gate_reject_count = 0
+    shift_gate_reason_counter: Counter[str] = Counter()
+    shift_gate_slam_model_counter: Counter[str] = Counter()
     event_count = 0
 
     for row in events:
@@ -3430,6 +3542,20 @@ def extract_costmap_fused_metrics_from_events_v1(
         fuse = fuse if isinstance(fuse, dict) else {}
         if bool(fuse.get("shiftUsed")):
             shift_used_count += 1
+        gate = fuse.get("gate")
+        gate = gate if isinstance(gate, dict) else {}
+        if gate:
+            if gate.get("allowed") is False:
+                shift_gate_reject_count += 1
+            reasons = gate.get("reasons")
+            reasons = reasons if isinstance(reasons, list) else []
+            for item in reasons:
+                text = str(item or "").strip()
+                if text:
+                    shift_gate_reason_counter[text] += 1
+            slam_model_text = str(gate.get("slamModel", "")).strip()
+            if slam_model_text:
+                shift_gate_slam_model_counter[slam_model_text] += 1
 
     if event_count <= 0:
         return {
@@ -3449,6 +3575,10 @@ def extract_costmap_fused_metrics_from_events_v1(
                 "hotspotCountP90": 0.0,
             },
             "shiftUsedRate": 0.0,
+            "shiftGateRejectRate": 0.0,
+            "shiftGateTopReasons": [],
+            "shiftGateSlamModelDiversity": 0,
+            "slamModelPreferred": None,
         }
 
     frames_with_fused = len(frame_keys) if frame_keys else int(event_count)
@@ -3479,6 +3609,15 @@ def extract_costmap_fused_metrics_from_events_v1(
             "hotspotCountP90": round(_percentile_float([float(v) for v in hotspot_values], 90), 6),
         },
         "shiftUsedRate": round(_safe_ratio(shift_used_count, event_count), 6),
+        "shiftGateRejectRate": round(_safe_ratio(shift_gate_reject_count, event_count), 6),
+        "shiftGateTopReasons": [
+            {"reason": str(reason), "count": int(count)}
+            for reason, count in shift_gate_reason_counter.most_common(5)
+        ],
+        "shiftGateSlamModelDiversity": int(len(shift_gate_slam_model_counter)),
+        "slamModelPreferred": (
+            shift_gate_slam_model_counter.most_common(1)[0][0] if shift_gate_slam_model_counter else None
+        ),
     }
 
 

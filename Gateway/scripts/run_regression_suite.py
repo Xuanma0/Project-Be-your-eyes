@@ -88,6 +88,10 @@ class RunSummary:
     costmap_fused_lines: int = 0
     costmap_fused_iou_p90: float = 0.0
     costmap_fused_flicker_mean: float = 0.0
+    costmap_fused_shift_used_rate: float = 0.0
+    costmap_fused_shift_gate_present: bool = False
+    costmap_fused_shift_gate_reject_rate: float = 0.0
+    costmap_fused_shift_gate_top_reason: str | None = None
     costmap_context_present: bool = False
     costmap_context_schema_ok: bool = False
     costmap_context_lines: int = 0
@@ -275,6 +279,10 @@ class RunSummary:
                 "costmapFusedLines": self.costmap_fused_lines,
                 "costmapFusedIouP90": self.costmap_fused_iou_p90,
                 "costmapFusedFlickerMean": self.costmap_fused_flicker_mean,
+                "costmapFusedShiftUsedRate": self.costmap_fused_shift_used_rate,
+                "costmapFusedShiftGatePresent": self.costmap_fused_shift_gate_present,
+                "costmapFusedShiftGateRejectRate": self.costmap_fused_shift_gate_reject_rate,
+                "costmapFusedShiftGateTopReason": self.costmap_fused_shift_gate_top_reason,
                 "costmapContextPresent": self.costmap_context_present,
                 "costmapContextSchemaOk": self.costmap_context_schema_ok,
                 "costmapContextLines": self.costmap_context_lines,
@@ -816,6 +824,7 @@ def run_suite(
     run_require_costmap_schema_ok: dict[str, bool] = {}
     run_require_costmap_fused_events_present: dict[str, bool] = {}
     run_require_costmap_fused_schema_ok: dict[str, bool] = {}
+    run_require_costmap_fused_shift_gate_present: dict[str, bool] = {}
     run_require_costmap_context_present: dict[str, bool] = {}
     run_require_costmap_context_schema_ok: dict[str, bool] = {}
     run_require_slam_pose_events_present: dict[str, bool] = {}
@@ -878,6 +887,10 @@ def run_suite(
         )
         run_require_costmap_fused_schema_ok[run_id] = _to_bool01(
             run_cfg.get("requireCostmapFusedSchemaOk"),
+            False,
+        )
+        run_require_costmap_fused_shift_gate_present[run_id] = _to_bool01(
+            run_cfg.get("requireCostmapFusedShiftGatePresent"),
             False,
         )
         run_require_costmap_context_present[run_id] = _to_bool01(
@@ -1000,6 +1013,19 @@ def run_suite(
                     run_summary.costmap_fused_iou_p90 = float(lint_summary.get("costmapFusedIouP90", 0.0) or 0.0)
                     run_summary.costmap_fused_flicker_mean = float(
                         lint_summary.get("costmapFusedFlickerMean", 0.0) or 0.0
+                    )
+                    run_summary.costmap_fused_shift_used_rate = float(
+                        lint_summary.get("costmapFusedShiftUsedRate", 0.0) or 0.0
+                    )
+                    run_summary.costmap_fused_shift_gate_present = bool(
+                        lint_summary.get("costmapFusedShiftGatePresent", 0)
+                    )
+                    run_summary.costmap_fused_shift_gate_reject_rate = float(
+                        lint_summary.get("costmapFusedShiftGateRejectRate", 0.0) or 0.0
+                    )
+                    shift_reason_raw = lint_summary.get("costmapFusedShiftGateTopReason")
+                    run_summary.costmap_fused_shift_gate_top_reason = (
+                        str(shift_reason_raw).strip() if shift_reason_raw not in {None, ""} else None
                     )
                     run_summary.costmap_context_present = bool(lint_summary.get("costmapContextPresent", 0))
                     run_summary.costmap_context_schema_ok = bool(lint_summary.get("costmapContextSchemaOk", 0))
@@ -1151,6 +1177,10 @@ def run_suite(
             failures.append(f"{run.run_id}: costmap fused events missing (map.costmap_fused)")
         if run_require_costmap_fused_schema_ok.get(run.run_id, False) and not bool(run.costmap_fused_schema_ok):
             failures.append(f"{run.run_id}: costmap fused payload schema check failed")
+        if run_require_costmap_fused_shift_gate_present.get(run.run_id, False) and not bool(
+            run.costmap_fused_shift_gate_present
+        ):
+            failures.append(f"{run.run_id}: costmap fused shift gate fields missing")
         if run_require_costmap_context_present.get(run.run_id, False) and not bool(run.costmap_context_present):
             failures.append(f"{run.run_id}: costmap context events missing (map.costmap_context)")
         if run_require_costmap_context_schema_ok.get(run.run_id, False) and not bool(run.costmap_context_schema_ok):
@@ -1299,6 +1329,10 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "costmapEventsPresent={costmap_events_present} costmapSchemaOk={costmap_schema_ok} "
                 "costmapFusedEventsPresent={costmap_fused_events_present} costmapFusedSchemaOk={costmap_fused_schema_ok} "
                 "costmapFusedIouP90={costmap_fused_iou_p90} costmapFusedFlickerMean={costmap_fused_flicker_mean} "
+                "costmapFusedShiftUsedRate={costmap_fused_shift_used_rate} "
+                "costmapFusedShiftGatePresent={costmap_fused_shift_gate_present} "
+                "costmapFusedShiftGateRejectRate={costmap_fused_shift_gate_reject_rate} "
+                "costmapFusedShiftGateTopReason={costmap_fused_shift_gate_top_reason} "
                 "costmapContextPresent={costmap_context_present} costmapContextSchemaOk={costmap_context_schema_ok} "
                 "slamPoseEventsPresent={slam_pose_events_present} slamPosePayloadSchemaOk={slam_pose_payload_schema_ok} "
                 "segPromptEventsPresent={seg_prompt_events_present} segPromptPayloadSchemaOk={seg_prompt_payload_schema_ok} "
@@ -1361,6 +1395,16 @@ def _print_summary(result: dict[str, Any]) -> None:
                     costmap_fused_schema_ok=row.get("segLint", {}).get("costmapFusedSchemaOk", False),
                     costmap_fused_iou_p90=row.get("segLint", {}).get("costmapFusedIouP90", 0.0),
                     costmap_fused_flicker_mean=row.get("segLint", {}).get("costmapFusedFlickerMean", 0.0),
+                    costmap_fused_shift_used_rate=row.get("segLint", {}).get("costmapFusedShiftUsedRate", 0.0),
+                    costmap_fused_shift_gate_present=row.get("segLint", {}).get("costmapFusedShiftGatePresent", False),
+                    costmap_fused_shift_gate_reject_rate=row.get("segLint", {}).get(
+                        "costmapFusedShiftGateRejectRate",
+                        0.0,
+                    ),
+                    costmap_fused_shift_gate_top_reason=row.get("segLint", {}).get(
+                        "costmapFusedShiftGateTopReason",
+                        None,
+                    ),
                     costmap_context_present=row.get("segLint", {}).get("costmapContextPresent", False),
                     costmap_context_schema_ok=row.get("segLint", {}).get("costmapContextSchemaOk", False),
                     slam_pose_events_present=row.get("segLint", {}).get("slamPoseEventsPresent", False),
