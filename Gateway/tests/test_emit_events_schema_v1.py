@@ -51,7 +51,7 @@ def test_emitters_generate_schema_v1_rows() -> None:
         assert isinstance(row.get("payload"), dict)
 
     names = [str(row["name"]) for row in rows]
-    assert names == ["ocr.scan_text", "ocr.scan_text", "risk.hazards"]
+    assert names == ["ocr.read", "ocr.read", "risk.hazards"]
     assert rows[0]["phase"] == "start"
     assert rows[1]["phase"] == "result"
     assert rows[2]["phase"] == "result"

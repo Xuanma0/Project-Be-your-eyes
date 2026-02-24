@@ -2,10 +2,12 @@
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
 import tempfile
+import time
 import zipfile
 from collections import Counter
 from pathlib import Path
@@ -20,10 +22,30 @@ if str(GATEWAY_ROOT) not in sys.path:
     sys.path.insert(0, str(GATEWAY_ROOT))
 
 from byes.quality_metrics import (  # noqa: E402
+    compute_seg_metrics,
+    compute_seg_tracking_metrics,
+    compute_depth_metrics,
+    extract_depth_temporal_metrics_from_events_v1,
+    compute_slam_metrics,
+    compute_slam_metrics_by_model_from_events,
+    compute_slam_error_metrics,
+    load_slam_alignment_summary,
     compute_depth_risk_metrics,
     compute_ocr_metrics,
     compute_quality_score,
     extract_risk_latency_metrics_from_events_v1,
+    extract_seg_prompt_summary_from_events_v1,
+    extract_plan_request_summary_from_events_v1,
+    extract_plan_rule_summary_from_events_v1,
+    extract_plan_context_summary_from_events_v1,
+    extract_plan_context_pack_summary_from_events_v1,
+    extract_costmap_context_summary_from_events_v1,
+    extract_costmap_fused_metrics_from_events_v1,
+    extract_costmap_metrics_from_events_v1,
+    extract_slam_context_summary_from_events_v1,
+    extract_models_summary_from_events_v1,
+    extract_frame_e2e_summary_from_events_v1,
+    extract_frame_user_e2e_summary_from_events_v1,
     extract_event_schema_stats,
     extract_inference_summary_from_ws_events,
     infer_inference_summary_from_events_v1,
@@ -31,13 +53,79 @@ from byes.quality_metrics import (  # noqa: E402
     extract_ocr_intent_frames_from_ws_events,
     extract_pred_hazards_from_ws_events,
     extract_pred_ocr_from_ws_events,
+    extract_pred_seg_from_ws_events,
+    extract_pred_depth_from_ws_events,
+    extract_pred_slam_from_ws_events,
     load_gt_ocr_jsonl,
     load_gt_risk_jsonl,
+    load_gt_seg_v1,
+    load_gt_depth_v1,
+    load_gt_slam_pose_v1,
+    load_gt_slam_tum,
 )
+from byes.pov_metrics import compute_pov_metrics, load_pov_ir_from_run_package  # noqa: E402
+from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text  # noqa: E402
+from byes.plan_pipeline import generate_action_plan, summarize_plan_for_report  # noqa: E402
+from byes.plan_quality import compute_plan_quality  # noqa: E402
+from byes.plan_eval import compute_plan_eval  # noqa: E402
+from byes.pov_plan_metrics import compute_pov_plan_metrics  # noqa: E402
+from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events  # noqa: E402
+from byes.inference.slam_context import DEFAULT_SLAM_CONTEXT_BUDGET, build_slam_context_pack  # noqa: E402
 
 _LABEL_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=\"((?:\\.|[^\"])*)\"")
+_DEFAULT_POV_CONTEXT_BUDGET = {"maxChars": 2000, "maxTokensApprox": 500}
+_DEFAULT_POV_CONTEXT_MODE = "decisions_plus_highlights"
+_DEFAULT_PLAN_BUDGET = {"maxChars": 2000, "maxTokensApprox": 256}
 
 SeriesKey = tuple[str, tuple[tuple[str, str], ...]]
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _resolve_plan_budget_from_env() -> dict[str, int]:
+    max_tokens = _coerce_positive_int(os.getenv("BYES_PLAN_BUDGET_MAX_TOKENS"), _DEFAULT_PLAN_BUDGET["maxTokensApprox"])
+    max_chars_default = min(4000, int(max_tokens) * 4)
+    max_chars = _coerce_positive_int(os.getenv("BYES_PLAN_BUDGET_MAX_CHARS"), max_chars_default)
+    return {"maxChars": int(max_chars), "maxTokensApprox": int(max_tokens)}
+
+
+def _coerce_positive_int(raw: Any, fallback: int) -> int:
+    try:
+        if raw is None:
+            return int(fallback)
+        value = int(raw)
+        if value <= 0:
+            return int(fallback)
+        return value
+    except Exception:
+        return int(fallback)
+
+
+def _coerce_nonnegative_float(raw: Any, fallback: float) -> float:
+    try:
+        if raw is None:
+            return float(fallback)
+        value = float(raw)
+        if value < 0.0:
+            return float(fallback)
+        return float(value)
+    except Exception:
+        return float(fallback)
+
+
+def _coerce_bool(raw: Any, fallback: bool) -> bool:
+    if raw is None:
+        return bool(fallback)
+    if isinstance(raw, bool):
+        return bool(raw)
+    text = str(raw).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(fallback)
 
 
 def parse_metric_labels(raw_labels: str | None) -> dict[str, str]:
@@ -892,10 +980,152 @@ def generate_report_outputs(
 
     summary = build_summary_payload(ws_stats, after_samples, delta_samples, run_package_summary)
     event_rows = load_jsonl(event_source_path)
+    pov_ir_payload: dict[str, Any] | None = None
+    pov_context_payload: dict[str, Any] | None = None
+    if isinstance(run_package_summary, dict):
+        run_package_dir = str(run_package_summary.get("runPackageDir", "")).strip()
+        if run_package_dir:
+            pov_ir_payload = load_pov_ir_from_run_package(Path(run_package_dir))
+    summary["pov"] = compute_pov_metrics(pov_ir_payload, event_rows)
+    if isinstance(pov_ir_payload, dict):
+        try:
+            pov_context = build_context_pack(
+                pov_ir_payload,
+                budget=dict(_DEFAULT_POV_CONTEXT_BUDGET),
+                mode=_DEFAULT_POV_CONTEXT_MODE,
+            )
+            pov_text = render_context_text(pov_context)
+            pov_context = finalize_context_pack_text(pov_context, pov_text, _now_ms())
+            stats = pov_context.get("stats", {})
+            stats = stats if isinstance(stats, dict) else {}
+            out_stats = stats.get("out", {})
+            out_stats = out_stats if isinstance(out_stats, dict) else {}
+            truncation = stats.get("truncation", {})
+            truncation = truncation if isinstance(truncation, dict) else {}
+            pov_context_payload = {
+                "defaultBudget": {
+                    "maxChars": int(_DEFAULT_POV_CONTEXT_BUDGET["maxChars"]),
+                    "maxTokensApprox": int(_DEFAULT_POV_CONTEXT_BUDGET["maxTokensApprox"]),
+                    "mode": _DEFAULT_POV_CONTEXT_MODE,
+                },
+                "out": {
+                    "charsTotal": int(out_stats.get("charsTotal", 0) or 0),
+                    "tokenApprox": int(out_stats.get("tokenApprox", 0) or 0),
+                    "decisions": int(out_stats.get("decisions", 0) or 0),
+                    "highlights": int(out_stats.get("highlights", 0) or 0),
+                    "tokens": int(out_stats.get("tokens", 0) or 0),
+                },
+                "truncation": {
+                    "decisionsDropped": int(truncation.get("decisionsDropped", 0) or 0),
+                    "highlightsDropped": int(truncation.get("highlightsDropped", 0) or 0),
+                    "tokensDropped": int(truncation.get("tokensDropped", 0) or 0),
+                    "charsDropped": int(truncation.get("charsDropped", 0) or 0),
+                },
+            }
+        except Exception:
+            pov_context_payload = None
+    if pov_context_payload is not None:
+        summary["povContext"] = pov_context_payload
+    summary["plan"] = {"present": False}
+    if isinstance(pov_ir_payload, dict):
+        try:
+            plan_budget = _resolve_plan_budget_from_env()
+            plan_bundle = generate_action_plan(
+                pov_ir=pov_ir_payload,
+                run_id=_resolve_plan_run_id(run_package_summary, pov_ir_payload, event_rows),
+                frame_seq=_pick_plan_frame_seq(event_rows),
+                budget=plan_budget,
+                mode="decisions_plus_highlights",
+                constraints={"allowConfirm": True, "allowHaptic": False, "maxActions": 3},
+                events_rows=event_rows,
+                run_package_path=str((run_package_summary or {}).get("runPackageDir", "")),
+            )
+            summary["plan"] = summarize_plan_for_report(plan_bundle)
+        except Exception:
+            summary["plan"] = {"present": False}
+    inferred_planner = _infer_planner_meta_from_events(event_rows)
+    plan_payload = summary.get("plan")
+    if isinstance(plan_payload, dict):
+        planner_payload = plan_payload.get("planner")
+        planner_payload = planner_payload if isinstance(planner_payload, dict) else {}
+        for key in ("backend", "model", "endpoint", "provider", "promptVersion", "fallbackReason"):
+            current_raw = planner_payload.get(key)
+            current = "" if current_raw is None else str(current_raw).strip()
+            fallback = inferred_planner.get(key)
+            if not current and isinstance(fallback, str) and fallback.strip():
+                planner_payload[key] = fallback.strip()
+        for key in ("fallbackUsed", "jsonValid"):
+            current = planner_payload.get(key)
+            fallback = inferred_planner.get(key)
+            if not isinstance(current, bool) and isinstance(fallback, bool):
+                planner_payload[key] = fallback
+        if planner_payload:
+            plan_payload["planner"] = planner_payload
+        summary["plan"] = plan_payload
+    summary["planQuality"] = compute_plan_quality(summary.get("plan"))
+    summary["planEval"] = compute_plan_eval(event_rows, summary)
+    summary["planRequest"] = extract_plan_request_summary_from_events_v1(event_rows)
+    summary["planRules"] = extract_plan_rule_summary_from_events_v1(event_rows)
+    summary["planContext"] = extract_plan_context_summary_from_events_v1(event_rows)
+    summary["planContextPack"] = extract_plan_context_pack_summary_from_events_v1(event_rows)
+    summary["costmapContext"] = extract_costmap_context_summary_from_events_v1(event_rows)
+    summary["slamContext"] = extract_slam_context_summary_from_events_v1(event_rows)
+    frames_total_declared: int | None = None
+    if isinstance(run_package_summary, dict):
+        try:
+            declared = int(run_package_summary.get("frameCountSent", 0) or 0)
+        except Exception:
+            declared = 0
+        if declared > 0:
+            frames_total_declared = declared
+    if frames_total_declared is None:
+        try:
+            received = int(round(float(summary.get("frame_received", 0) or 0)))
+        except Exception:
+            received = 0
+        if received > 0:
+            frames_total_declared = received
+    summary["frameE2E"] = extract_frame_e2e_summary_from_events_v1(
+        event_rows,
+        frames_total_declared=frames_total_declared,
+    )
+    summary["frameUserE2E"] = extract_frame_user_e2e_summary_from_events_v1(event_rows)
+    summary["models"] = extract_models_summary_from_events_v1(event_rows)
+    summary["povPlan"] = compute_pov_plan_metrics(pov_ir_payload, summary.get("plan"))
     inferred_summary = extract_inference_summary_from_ws_events(event_source_path)
     events_v1_inferred = infer_inference_summary_from_events_v1(event_rows)
     risk_latency_stats, risk_timings_stats = extract_risk_latency_metrics_from_events_v1(event_rows)
     summary["inference"] = _merge_inference_summary(inferred_summary, events_v1_inferred)
+    summary["segPrompt"] = extract_seg_prompt_summary_from_events_v1(event_rows)
+    seg_context_budget = {
+        "maxChars": int(DEFAULT_SEG_CONTEXT_BUDGET["maxChars"]),
+        "maxSegments": int(DEFAULT_SEG_CONTEXT_BUDGET["maxSegments"]),
+        "mode": str(DEFAULT_SEG_CONTEXT_BUDGET["mode"]),
+    }
+    seg_context_raw = build_seg_context_from_events(event_rows, budget=seg_context_budget)
+    seg_context_stats = seg_context_raw.get("stats")
+    seg_context_stats = seg_context_stats if isinstance(seg_context_stats, dict) else {}
+    seg_context_out = seg_context_stats.get("out")
+    seg_context_out = seg_context_out if isinstance(seg_context_out, dict) else {}
+    seg_context_truncation = seg_context_stats.get("truncation")
+    seg_context_truncation = seg_context_truncation if isinstance(seg_context_truncation, dict) else {}
+    seg_context_text = seg_context_raw.get("text")
+    seg_context_text = seg_context_text if isinstance(seg_context_text, dict) else {}
+    seg_context_prompt_fragment = str(seg_context_text.get("promptFragment", ""))
+    seg_context_segments_out = int(seg_context_out.get("segments", 0) or 0)
+    summary["segContext"] = {
+        "present": bool(seg_context_segments_out > 0),
+        "budget": seg_context_raw.get("budget", seg_context_budget),
+        "stats": {
+            "out": seg_context_out,
+            "truncation": seg_context_truncation,
+        },
+        "text": {
+            "summary": str(seg_context_text.get("summary", "")),
+            "promptFragmentLength": len(seg_context_prompt_fragment),
+            "promptFragment": seg_context_prompt_fragment,
+        },
+    }
     event_schema_stats = extract_event_schema_stats(event_source_path)
     event_schema_stats["source"] = event_schema_source
     event_schema_stats["eventsV1Path"] = events_v1_rel if event_schema_source == "eventsV1Jsonl" else None
@@ -908,29 +1138,67 @@ def generate_report_outputs(
         event_schema_stats["warningsCount"] = int(event_schema_stats.get("warningsCount", 0) or 0) + len(extra_event_warnings)
     gt_cfg = (run_package_summary or {}).get("groundTruth", {})
     base_safety_behavior = extract_safety_behavior_from_ws_events(event_source_path)
+    slam_ingest_summary_path = event_source_path.parent / "slam_ingest_summary.json"
+    slam_alignment = load_slam_alignment_summary(slam_ingest_summary_path)
+    try:
+        frames_total_hint = int(round(float(summary.get("frame_received", 0) or 0)))
+    except Exception:
+        frames_total_hint = 0
+    if frames_total_hint <= 0 and isinstance(run_package_summary, dict):
+        try:
+            frames_total_hint = int(run_package_summary.get("frameCountSent", 0) or 0)
+        except Exception:
+            frames_total_hint = 0
+    if frames_total_hint <= 0:
+        frames_total_hint = None
+    depth_temporal_roi = str(os.getenv("BYES_DEPTH_TEMPORAL_ROI", "bottom_center")).strip() or "bottom_center"
+    depth_temporal_near_thresh_m = _coerce_nonnegative_float(os.getenv("BYES_DEPTH_TEMPORAL_NEAR_THRESH_M"), 1.0)
+    depth_temporal_require_same_size = _coerce_bool(os.getenv("BYES_DEPTH_TEMPORAL_REQUIRE_SAME_SIZE"), True)
+    depth_temporal_metrics = extract_depth_temporal_metrics_from_events_v1(
+        event_rows,
+        frames_total_declared=frames_total_hint,
+        roi_mode=depth_temporal_roi,
+        near_thresh_m=depth_temporal_near_thresh_m,
+        require_same_size=depth_temporal_require_same_size,
+    )
+    costmap_metrics = extract_costmap_metrics_from_events_v1(
+        event_rows,
+        frames_total_declared=frames_total_hint,
+    )
+    costmap_fused_metrics = extract_costmap_fused_metrics_from_events_v1(
+        event_rows,
+        frames_total_declared=frames_total_hint,
+    )
     quality_payload: dict[str, Any] = {
         "hasGroundTruth": False,
         "safetyBehavior": base_safety_behavior,
         "eventSchema": event_schema_stats,
         "riskLatencyMs": risk_latency_stats,
+        "depth": {"present": False},
+        "depthTemporal": depth_temporal_metrics,
+        "costmap": costmap_metrics,
+        "costmapFused": costmap_fused_metrics,
+        "slam": {"present": False, "alignment": slam_alignment},
+        "slamError": {"present": False},
+        "segTracking": compute_seg_tracking_metrics(event_rows, frames_total=frames_total_hint or 0),
     }
     if risk_timings_stats is not None:
         quality_payload["riskTimingsMs"] = risk_timings_stats
     if isinstance(gt_cfg, dict) and bool(gt_cfg.get("hasGroundTruth")):
-        try:
-            frames_total = int(round(float(summary.get("frame_received", 0) or 0)))
-        except Exception:
-            frames_total = 0
-        if frames_total <= 0 and isinstance(run_package_summary, dict):
-            try:
-                frames_total = int(run_package_summary.get("frameCountSent", 0) or 0)
-            except Exception:
-                frames_total = 0
+        frames_total = int(frames_total_hint or 0)
 
         ocr_path_raw = str(gt_cfg.get("ocrPath", "")).strip()
         risk_path_raw = str(gt_cfg.get("riskPath", "")).strip()
+        seg_path_raw = str(gt_cfg.get("segPath", "")).strip()
+        depth_path_raw = str(gt_cfg.get("depthPath", "")).strip()
+        slam_path_raw = str(gt_cfg.get("slamPath", "")).strip()
+        slam_tum_path_raw = str(gt_cfg.get("slamTumPath", "")).strip()
         ocr_gt = load_gt_ocr_jsonl(Path(ocr_path_raw)) if ocr_path_raw else {}
         risk_gt: dict[int, list[dict[str, Any]]] = {}
+        seg_gt: dict[int, list[dict[str, Any]]] = {}
+        depth_gt: dict[int, dict[str, Any]] = {}
+        slam_gt: dict[int, dict[str, Any]] = {}
+        slam_tum_gt: dict[int, dict[str, Any]] = {}
         risk_norm_meta = {"unknownKinds": [], "aliasHits": [], "warningsCount": 0}
         if risk_path_raw:
             risk_gt_result = load_gt_risk_jsonl(Path(risk_path_raw), return_meta=True)
@@ -938,8 +1206,19 @@ def generate_report_outputs(
                 risk_gt, risk_norm_meta = risk_gt_result
             else:
                 risk_gt = risk_gt_result
+        if seg_path_raw:
+            seg_gt = load_gt_seg_v1(Path(seg_path_raw))
+        if depth_path_raw:
+            depth_gt = load_gt_depth_v1(Path(depth_path_raw))
+        if slam_path_raw:
+            slam_gt = load_gt_slam_pose_v1(Path(slam_path_raw))
+        if slam_tum_path_raw:
+            slam_tum_gt = load_gt_slam_tum(Path(slam_tum_path_raw))
         pred_ocr = extract_pred_ocr_from_ws_events(event_source_path)
         ocr_intent_frames = extract_ocr_intent_frames_from_ws_events(event_source_path)
+        pred_segs, pred_seg_event_frames, seg_latencies = extract_pred_seg_from_ws_events(event_source_path)
+        pred_depth, pred_depth_event_frames, depth_latencies = extract_pred_depth_from_ws_events(event_source_path)
+        pred_slam, pred_slam_event_frames, slam_latencies = extract_pred_slam_from_ws_events(event_source_path)
         pred_hazard_result = extract_pred_hazards_from_ws_events(event_source_path, return_meta=True)
         pred_hazards: dict[int, list[dict[str, Any]]] = {}
         pred_norm_meta = {"unknownKinds": [], "aliasHits": [], "warningsCount": 0}
@@ -949,12 +1228,70 @@ def generate_report_outputs(
             pred_hazards = pred_hazard_result
         ocr_metrics = compute_ocr_metrics(ocr_gt, pred_ocr, frames_total, intent_frames=ocr_intent_frames) if ocr_gt else None
         risk_metrics = None
+        seg_metrics = None
+        depth_metrics = None
+        slam_metrics = None
+        slam_error_metrics: dict[str, Any] | None = None
         window = int(gt_cfg.get("matchWindowFrames", 2) or 2)
         if risk_gt:
             merged_norm = _merge_hazard_normalization_meta(risk_norm_meta, pred_norm_meta)
             risk_metrics = compute_depth_risk_metrics(risk_gt, pred_hazards, window, normalization=merged_norm)
             event_schema_stats["warningsCount"] = int(event_schema_stats.get("warningsCount", 0) or 0) + int(
                 merged_norm.get("warningsCount", 0) or 0
+            )
+        if seg_gt:
+            seg_metrics = compute_seg_metrics(
+                seg_gt,
+                pred_segs,
+                pred_seg_event_frames,
+                seg_latencies,
+                frames_total,
+                iou_threshold=0.5,
+            )
+        if depth_gt:
+            depth_metrics = compute_depth_metrics(
+                depth_gt,
+                pred_depth,
+                pred_depth_event_frames,
+                depth_latencies,
+                frames_total,
+            )
+        if slam_gt or pred_slam_event_frames:
+            slam_metrics = compute_slam_metrics(
+                slam_gt,
+                pred_slam,
+                pred_slam_event_frames,
+                slam_latencies,
+                frames_total,
+                alignment=slam_alignment,
+            )
+            slam_error_gt_for_models = slam_tum_gt if slam_tum_gt else slam_gt
+            slam_by_model = compute_slam_metrics_by_model_from_events(
+                event_rows,
+                gt_map=slam_gt,
+                frames_total=frames_total,
+                slam_error_gt_map=slam_error_gt_for_models,
+                alignment=slam_alignment,
+            )
+            if slam_by_model:
+                slam_metrics["byModel"] = slam_by_model
+        if slam_tum_gt or slam_gt:
+            slam_error_gt = slam_tum_gt if slam_tum_gt else slam_gt
+            inferred_slam_model = None
+            inference_payload = summary.get("inference")
+            if isinstance(inference_payload, dict):
+                slam_inference = inference_payload.get("slam")
+                if isinstance(slam_inference, dict):
+                    inferred_slam_model = str(slam_inference.get("model", "")).strip() or None
+            traj_label = _infer_slam_traj_label(inferred_slam_model)
+            slam_error_source = slam_tum_path_raw or slam_path_raw
+            slam_error_metrics = compute_slam_error_metrics(
+                slam_error_gt,
+                pred_slam,
+                traj_label=traj_label,
+                align_mode="se3",
+                source=slam_error_source or None,
+                delta_frames=1,
             )
         critical_frames = _collect_critical_gt_frames(risk_gt) if risk_gt else None
         safety_behavior = extract_safety_behavior_from_ws_events(
@@ -970,6 +1307,9 @@ def generate_report_outputs(
             "hasGroundTruth": True,
             "ocr": ocr_metrics,
             "depthRisk": risk_metrics,
+            "depth": {"present": False},
+            "depthTemporal": depth_temporal_metrics,
+            "slam": {"present": False, "alignment": slam_alignment},
             "safetyBehavior": safety_behavior,
             "eventSchema": event_schema_stats,
             "topFindings": top_findings,
@@ -977,11 +1317,101 @@ def generate_report_outputs(
             "qualityScoreBreakdown": breakdown,
             "riskLatencyMs": risk_latency_stats,
         }
+        if seg_metrics is not None:
+            quality_payload["seg"] = seg_metrics
+        quality_payload["segTracking"] = compute_seg_tracking_metrics(event_rows, frames_total=frames_total)
+        if depth_metrics is not None:
+            quality_payload["depth"] = depth_metrics
+        if slam_metrics is not None:
+            quality_payload["slam"] = slam_metrics
+        if slam_error_metrics is not None:
+            quality_payload["slamError"] = slam_error_metrics
         if risk_timings_stats is not None:
             quality_payload["riskTimingsMs"] = risk_timings_stats
     else:
         quality_payload["topFindings"] = _build_quality_top_findings(None, None, base_safety_behavior)
     summary["quality"] = quality_payload
+
+    slam_context_summary = summary.get("slamContext")
+    slam_context_summary = slam_context_summary if isinstance(slam_context_summary, dict) else {}
+    if not bool(slam_context_summary.get("present")):
+        slam_quality_payload = quality_payload.get("slam")
+        slam_quality_payload = slam_quality_payload if isinstance(slam_quality_payload, dict) else {}
+        slam_alignment_payload = slam_quality_payload.get("alignment")
+        slam_alignment_payload = slam_alignment_payload if isinstance(slam_alignment_payload, dict) else {}
+        slam_error_payload = quality_payload.get("slamError")
+        slam_error_payload = slam_error_payload if isinstance(slam_error_payload, dict) else {}
+        latest_slam_frame_seq: int | None = None
+        for row in event_rows:
+            if not isinstance(row, dict):
+                continue
+            event = row.get("event") if isinstance(row.get("event"), dict) else row
+            if not isinstance(event, dict):
+                continue
+            if str(event.get("name", "")).strip().lower() != "slam.pose":
+                continue
+            seq_raw = event.get("frameSeq")
+            try:
+                seq = int(seq_raw)
+            except Exception:
+                continue
+            if seq <= 0:
+                continue
+            if latest_slam_frame_seq is None or seq > latest_slam_frame_seq:
+                latest_slam_frame_seq = seq
+        slam_context_pack = build_slam_context_pack(
+            run_id=_resolve_plan_run_id(run_package_summary, pov_ir_payload, event_rows),
+            frame_seq=latest_slam_frame_seq,
+            events_v1=event_rows,
+            budget={
+                "maxChars": int(DEFAULT_SLAM_CONTEXT_BUDGET["maxChars"]),
+                "mode": str(DEFAULT_SLAM_CONTEXT_BUDGET["mode"]),
+            },
+            slam_error=slam_error_payload,
+            alignment=slam_alignment_payload,
+        )
+        slam_stats = slam_context_pack.get("stats")
+        slam_stats = slam_stats if isinstance(slam_stats, dict) else {}
+        slam_in = slam_stats.get("in")
+        slam_in = slam_in if isinstance(slam_in, dict) else {}
+        slam_out = slam_stats.get("out")
+        slam_out = slam_out if isinstance(slam_out, dict) else {}
+        slam_truncation = slam_stats.get("truncation")
+        slam_truncation = slam_truncation if isinstance(slam_truncation, dict) else {}
+        slam_health = slam_context_pack.get("health")
+        slam_health = slam_health if isinstance(slam_health, dict) else {}
+        slam_quality = slam_context_pack.get("quality")
+        slam_quality = slam_quality if isinstance(slam_quality, dict) else {}
+        chars_total = int(slam_out.get("charsTotal", 0) or 0)
+        chars_dropped = int(slam_truncation.get("charsDropped", 0) or 0)
+        truncation_rate = 0.0
+        denom = max(1, chars_total + chars_dropped)
+        truncation_rate = float(chars_dropped) / float(denom)
+        summary["slamContext"] = {
+            "present": bool(int(slam_in.get("poses", 0) or 0) > 0 and chars_total > 0),
+            "events": 1 if int(slam_in.get("poses", 0) or 0) > 0 else 0,
+            "budgetDefault": {
+                "maxChars": int(DEFAULT_SLAM_CONTEXT_BUDGET["maxChars"]),
+                "mode": str(DEFAULT_SLAM_CONTEXT_BUDGET["mode"]),
+            },
+            "out": {
+                "charsTotalP90": chars_total,
+                "tokenApproxP90": int(slam_out.get("tokenApprox", 0) or 0),
+            },
+            "truncation": {
+                "posesDroppedTotal": int(slam_truncation.get("posesDropped", 0) or 0),
+                "charsDroppedTotal": chars_dropped,
+                "truncationRate": round(max(0.0, min(1.0, truncation_rate)), 6),
+            },
+            "health": {
+                "trackingRateMean": float(slam_health.get("trackingRateWindow", 0.0) or 0.0),
+                "lostStreakMax": int(slam_health.get("longestLostStreak", 0) or 0),
+            },
+            "quality": {
+                "ateRmseMMean": _try_float(slam_quality.get("ateRmseM")),
+                "ateRmseMP90": _try_float(slam_quality.get("ateRmseM")),
+            },
+        }
 
     json_path: Path | None = output_json
     if json_path is None:
@@ -991,19 +1421,57 @@ def generate_report_outputs(
     return output, json_path, summary
 
 
+def _try_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
 def _merge_inference_summary(
-    primary: dict[str, dict[str, str | None]],
-    fallback: dict[str, dict[str, str | None]],
-) -> dict[str, dict[str, str | None]]:
-    merged: dict[str, dict[str, str | None]] = {}
-    for tool_name in ("ocr", "risk"):
+    primary: dict[str, dict[str, Any]],
+    fallback: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for tool_name in ("ocr", "risk", "seg", "depth", "slam"):
         primary_bucket = primary.get(tool_name, {}) if isinstance(primary, dict) else {}
         fallback_bucket = fallback.get(tool_name, {}) if isinstance(fallback, dict) else {}
-        bucket = {
+        bucket: dict[str, Any] = {
             "backend": _coalesce_inference_field(primary_bucket, fallback_bucket, "backend"),
             "model": _coalesce_inference_field(primary_bucket, fallback_bucket, "model"),
             "endpoint": _coalesce_inference_field(primary_bucket, fallback_bucket, "endpoint"),
         }
+        if tool_name == "seg":
+            prompt_present = bool(primary_bucket.get("promptPresent")) or bool(fallback_bucket.get("promptPresent"))
+            if prompt_present:
+                bucket["promptPresent"] = True
+                bucket["promptTextCharsTotal"] = max(
+                    _coalesce_nonnegative_int(primary_bucket, "promptTextCharsTotal"),
+                    _coalesce_nonnegative_int(fallback_bucket, "promptTextCharsTotal"),
+                )
+                bucket["promptBoxesTotal"] = max(
+                    _coalesce_nonnegative_int(primary_bucket, "promptBoxesTotal"),
+                    _coalesce_nonnegative_int(fallback_bucket, "promptBoxesTotal"),
+                )
+                bucket["promptPointsTotal"] = max(
+                    _coalesce_nonnegative_int(primary_bucket, "promptPointsTotal"),
+                    _coalesce_nonnegative_int(fallback_bucket, "promptPointsTotal"),
+                )
+                bucket["promptTargetsTotal"] = max(
+                    _coalesce_nonnegative_int(primary_bucket, "promptTargetsTotal"),
+                    _coalesce_nonnegative_int(fallback_bucket, "promptTargetsTotal"),
+                )
+                bucket["promptEventCount"] = max(
+                    _coalesce_nonnegative_int(primary_bucket, "promptEventCount"),
+                    _coalesce_nonnegative_int(fallback_bucket, "promptEventCount"),
+                )
+                bucket["promptVersion"] = _coalesce_inference_field(primary_bucket, fallback_bucket, "promptVersion")
+                bucket["promptVersionDiversityCount"] = max(
+                    _coalesce_nonnegative_int(primary_bucket, "promptVersionDiversityCount"),
+                    _coalesce_nonnegative_int(fallback_bucket, "promptVersionDiversityCount"),
+                )
         merged[tool_name] = bucket
     return merged
 
@@ -1020,6 +1488,135 @@ def _coalesce_inference_field(
     if fallback_value:
         return fallback_value
     return None
+
+
+def _coalesce_nonnegative_int(bucket: dict[str, Any], key: str) -> int:
+    try:
+        return max(0, int(bucket.get(key, 0)))
+    except Exception:
+        return 0
+
+
+def _resolve_plan_run_id(
+    run_package_summary: dict[str, Any] | None,
+    pov_ir_payload: dict[str, Any] | None,
+    event_rows: list[dict[str, Any]],
+) -> str:
+    if isinstance(pov_ir_payload, dict):
+        run_id = str(pov_ir_payload.get("runId", "")).strip()
+        if run_id:
+            return run_id
+    if isinstance(run_package_summary, dict):
+        for key in ("runId", "sessionId"):
+            run_id = str(run_package_summary.get(key, "")).strip()
+            if run_id:
+                return run_id
+    for row in event_rows:
+        run_id = str(row.get("runId", "")).strip()
+        if run_id:
+            return run_id
+    return "plan-report"
+
+
+def _pick_plan_frame_seq(event_rows: list[dict[str, Any]]) -> int | None:
+    risk_rows: list[dict[str, Any]] = []
+    for row in event_rows:
+        if str(row.get("name", "")).strip().lower() != "risk.hazards":
+            continue
+        if str(row.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(row.get("status", "")).strip().lower() != "ok":
+            continue
+        if not isinstance(row.get("payload"), dict):
+            continue
+        risk_rows.append(row)
+    if not risk_rows:
+        return None
+    risk_rows = sorted(
+        risk_rows,
+        key=lambda item: (
+            int(item.get("tsMs", 0) or 0),
+            int(item.get("frameSeq", 0) or 0),
+        ),
+    )
+    for row in risk_rows:
+        payload = row.get("payload", {})
+        hazards = payload.get("hazards", []) if isinstance(payload, dict) else []
+        if not isinstance(hazards, list):
+            continue
+        for hazard in hazards:
+            if not isinstance(hazard, dict):
+                continue
+            if str(hazard.get("severity", "")).strip().lower() == "critical":
+                frame_seq = int(row.get("frameSeq", 0) or 0)
+                return frame_seq if frame_seq > 0 else None
+    fallback_seq = int(risk_rows[-1].get("frameSeq", 0) or 0)
+    return fallback_seq if fallback_seq > 0 else None
+
+
+def _infer_planner_meta_from_events(event_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    planner_meta: dict[str, Any] = {
+        "backend": None,
+        "model": None,
+        "endpoint": None,
+        "provider": None,
+        "promptVersion": None,
+        "fallbackUsed": None,
+        "fallbackReason": None,
+        "jsonValid": None,
+    }
+    for row in event_rows:
+        event_name = str(row.get("name", "")).strip().lower()
+        if event_name not in {"plan.generate", "plan.request"}:
+            continue
+        if str(row.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(row.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = row.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if event_name == "plan.request":
+            backend = _normalize_optional_text(payload.get("provider"))
+            model = _normalize_optional_text(payload.get("model"))
+            endpoint = _normalize_optional_text(payload.get("endpoint"))
+            provider = _normalize_optional_text(payload.get("provider"))
+            prompt_version = _normalize_optional_text(payload.get("promptVersion"))
+        else:
+            backend = _normalize_optional_text(payload.get("backend"))
+            model = _normalize_optional_text(payload.get("model"))
+            endpoint = _normalize_optional_text(payload.get("endpoint"))
+            provider = _normalize_optional_text(payload.get("plannerProvider"))
+            prompt_version = _normalize_optional_text(payload.get("promptVersion"))
+        fallback_used = payload.get("fallbackUsed")
+        fallback_reason = _normalize_optional_text(payload.get("fallbackReason"))
+        json_valid = payload.get("jsonValid")
+        if backend:
+            planner_meta["backend"] = backend
+        if model:
+            planner_meta["model"] = model
+        if endpoint:
+            planner_meta["endpoint"] = endpoint
+        if provider:
+            planner_meta["provider"] = provider
+        if prompt_version:
+            planner_meta["promptVersion"] = prompt_version
+        if isinstance(fallback_used, bool):
+            planner_meta["fallbackUsed"] = fallback_used
+        if fallback_reason:
+            planner_meta["fallbackReason"] = fallback_reason
+        if isinstance(json_valid, bool):
+            planner_meta["jsonValid"] = json_valid
+    return planner_meta
+
+
+def _normalize_optional_text(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() == "none":
+        return ""
+    return text
 
 
 def _append_tool_focus(lines: list[str], samples: dict[SeriesKey, float], tool: str, delta: bool) -> None:
@@ -1203,24 +1800,86 @@ def _build_quality_top_findings(
 
 
 def _resolve_ground_truth(run_package_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
-    default_ocr_rel = "ground_truth/ocr.jsonl"
+    default_ocr_rel = "gt/ocr_gt_v1.json"
+    default_ocr_rel_alt = "ground_truth/ocr_gt_v1.json"
+    default_ocr_rel_legacy = "ground_truth/ocr.jsonl"
     default_risk_rel = "ground_truth/depth_risk.jsonl"
+    default_seg_rel = "gt/seg_gt_v1.json"
+    default_seg_rel_alt = "ground_truth/seg_gt_v1.json"
+    default_depth_rel = "gt/depth_gt_v1.json"
+    default_depth_rel_alt = "ground_truth/depth_gt_v1.json"
+    default_slam_rel = "gt/slam_pose_gt_v1.json"
+    default_slam_rel_alt = "ground_truth/slam_pose_gt_v1.json"
+    default_slam_tum_rel = "gt/slam_gt_tum.txt"
+    default_slam_tum_rel_alt = "ground_truth/slam_gt_tum.txt"
     gt_raw = manifest.get("groundTruth")
     gt_cfg = gt_raw if isinstance(gt_raw, dict) else {}
 
     ocr_rel = str(gt_cfg.get("ocrJsonl", "")).strip()
     risk_rel = str(gt_cfg.get("riskJsonl", "")).strip()
+    seg_rel = (
+        str(gt_cfg.get("segJson", "")).strip()
+        or str(gt_cfg.get("segGtJson", "")).strip()
+        or str(gt_cfg.get("segPath", "")).strip()
+    )
+    depth_rel = (
+        str(gt_cfg.get("depthJson", "")).strip()
+        or str(gt_cfg.get("depthGtJson", "")).strip()
+        or str(gt_cfg.get("depthPath", "")).strip()
+    )
+    slam_rel = (
+        str(gt_cfg.get("slamJson", "")).strip()
+        or str(gt_cfg.get("slamPoseJson", "")).strip()
+        or str(gt_cfg.get("slamPath", "")).strip()
+    )
+    slam_tum_rel = (
+        str(gt_cfg.get("slamTum", "")).strip()
+        or str(gt_cfg.get("slamTumPath", "")).strip()
+        or str(gt_cfg.get("slamGtTum", "")).strip()
+    )
     if not ocr_rel and (run_package_dir / default_ocr_rel).exists():
         ocr_rel = default_ocr_rel
+    if not ocr_rel and (run_package_dir / default_ocr_rel_alt).exists():
+        ocr_rel = default_ocr_rel_alt
+    if not ocr_rel and (run_package_dir / default_ocr_rel_legacy).exists():
+        ocr_rel = default_ocr_rel_legacy
     if not risk_rel and (run_package_dir / default_risk_rel).exists():
         risk_rel = default_risk_rel
+    if not seg_rel and (run_package_dir / default_seg_rel).exists():
+        seg_rel = default_seg_rel
+    if not seg_rel and (run_package_dir / default_seg_rel_alt).exists():
+        seg_rel = default_seg_rel_alt
+    if not depth_rel and (run_package_dir / default_depth_rel).exists():
+        depth_rel = default_depth_rel
+    if not depth_rel and (run_package_dir / default_depth_rel_alt).exists():
+        depth_rel = default_depth_rel_alt
+    if not slam_rel and (run_package_dir / default_slam_rel).exists():
+        slam_rel = default_slam_rel
+    if not slam_rel and (run_package_dir / default_slam_rel_alt).exists():
+        slam_rel = default_slam_rel_alt
+    if not slam_tum_rel and (run_package_dir / default_slam_tum_rel).exists():
+        slam_tum_rel = default_slam_tum_rel
+    if not slam_tum_rel and (run_package_dir / default_slam_tum_rel_alt).exists():
+        slam_tum_rel = default_slam_tum_rel_alt
 
     ocr_path = run_package_dir / ocr_rel if ocr_rel else None
     risk_path = run_package_dir / risk_rel if risk_rel else None
+    seg_path = run_package_dir / seg_rel if seg_rel else None
+    depth_path = run_package_dir / depth_rel if depth_rel else None
+    slam_path = run_package_dir / slam_rel if slam_rel else None
+    slam_tum_path = run_package_dir / slam_tum_rel if slam_tum_rel else None
     if ocr_path is not None and not ocr_path.exists():
         ocr_path = None
     if risk_path is not None and not risk_path.exists():
         risk_path = None
+    if seg_path is not None and not seg_path.exists():
+        seg_path = None
+    if depth_path is not None and not depth_path.exists():
+        depth_path = None
+    if slam_path is not None and not slam_path.exists():
+        slam_path = None
+    if slam_tum_path is not None and not slam_tum_path.exists():
+        slam_tum_path = None
 
     raw_window = gt_cfg.get("matchWindowFrames", 2)
     try:
@@ -1230,11 +1889,26 @@ def _resolve_ground_truth(run_package_dir: Path, manifest: dict[str, Any]) -> di
     window = max(0, window)
 
     return {
-        "hasGroundTruth": bool(ocr_path or risk_path),
+        "hasGroundTruth": bool(ocr_path or risk_path or seg_path or depth_path or slam_path or slam_tum_path),
         "ocrPath": str(ocr_path) if ocr_path is not None else "",
         "riskPath": str(risk_path) if risk_path is not None else "",
+        "segPath": str(seg_path) if seg_path is not None else "",
+        "depthPath": str(depth_path) if depth_path is not None else "",
+        "slamPath": str(slam_path) if slam_path is not None else "",
+        "slamTumPath": str(slam_tum_path) if slam_tum_path is not None else "",
         "matchWindowFrames": window,
     }
+
+
+def _infer_slam_traj_label(model_name: str | None) -> str | None:
+    text = str(model_name or "").strip().lower()
+    if not text:
+        return None
+    if "online" in text:
+        return "online"
+    if "final" in text:
+        return "final"
+    return None
 
 
 def load_run_package(run_package_dir: Path) -> tuple[Path, Path | None, Path | None, dict[str, Any]]:

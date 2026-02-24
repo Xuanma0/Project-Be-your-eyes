@@ -1,0 +1,14 @@
+{
+  "runId": "fixture-pov-plan-min",
+  "scenarioTag": "fixture_pov_plan_min",
+  "startMs": 1709100000000,
+  "endMs": 1709100001200,
+  "eventsV1Jsonl": "events/events_v1.jsonl",
+  "wsJsonl": "events/events_v1.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "povIrJson": "pov/pov_ir_v1.json",
+  "frameCountSent": 0,
+  "eventCountAccepted": 0,
+  "errors": []
+}

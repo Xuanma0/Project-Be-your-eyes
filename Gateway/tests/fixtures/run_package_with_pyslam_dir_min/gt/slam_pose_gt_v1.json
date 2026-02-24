@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "byes.slam_pose.gt.v1",
+  "frames": [
+    {
+      "frameSeq": 1,
+      "trackingState": "tracking",
+      "pose": {
+        "t": [0.0, 0.0, 0.0],
+        "q": [0.0, 0.0, 0.0, 1.0],
+        "frame": "world_to_cam"
+      }
+    },
+    {
+      "frameSeq": 2,
+      "trackingState": "tracking",
+      "pose": {
+        "t": [0.1, 0.0, 0.0],
+        "q": [0.0, 0.0, 0.0, 1.0],
+        "frame": "world_to_cam"
+      }
+    },
+    {
+      "frameSeq": 3,
+      "trackingState": "tracking",
+      "pose": {
+        "t": [0.2, 0.0, 0.0],
+        "q": [0.0, 0.0, 0.0, 1.0],
+        "frame": "world_to_cam"
+      }
+    }
+  ]
+}

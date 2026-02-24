@@ -1,5 +1,6 @@
 using System.Collections;
 using BeYourEyes.Adapters;
+using BYES.Telemetry;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -23,6 +24,9 @@ namespace BeYourEyes.Adapters.Networking
             {
                 form.AddField("meta", metaJson);
             }
+            form.AddField("captureTsMs", ByesFrameTelemetry.NowUnixMs().ToString());
+            form.AddField("deviceId", ByesFrameTelemetry.DeviceId);
+            form.AddField("deviceTimeBase", ByesFrameTelemetry.DeviceTimeBase);
 
             var url = BuildFrameUrl();
             using (var req = UnityWebRequest.Post(url, form))

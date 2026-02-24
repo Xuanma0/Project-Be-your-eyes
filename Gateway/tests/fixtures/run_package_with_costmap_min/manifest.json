@@ -1,0 +1,15 @@
+﻿{
+  "runId": "fixture-costmap-min",
+  "scenarioTag": "fixture_with_costmap_min",
+  "startMs": 1713000000000,
+  "endMs": 1713000002000,
+  "wsJsonl": "events/events_v1.jsonl",
+  "eventsV1Jsonl": "events/events_v1.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "framesDir": "frames",
+  "framesMetaJsonl": "frames_meta.jsonl",
+  "frameCountSent": 2,
+  "eventCountAccepted": 8,
+  "errors": []
+}

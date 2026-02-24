@@ -1,0 +1,96 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "byes.models.v1",
+  "title": "BYES Model/Artifact Manifest v1",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "generatedAtMs",
+    "summary",
+    "components"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "byes.models.v1"
+    },
+    "generatedAtMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "componentsTotal",
+        "enabledTotal",
+        "missingRequiredTotal"
+      ],
+      "properties": {
+        "componentsTotal": { "type": "integer", "minimum": 0 },
+        "enabledTotal": { "type": "integer", "minimum": 0 },
+        "missingRequiredTotal": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "enabled",
+          "provider",
+          "modelId",
+          "endpoint",
+          "required",
+          "optional",
+          "warnings"
+        ],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "enabled": { "type": "boolean" },
+          "provider": { "type": "string" },
+          "modelId": { "type": ["string", "null"] },
+          "endpoint": { "type": ["string", "null"] },
+          "required": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "kind", "pathOrValue", "envVar", "exists", "notes"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "kind": { "type": "string", "enum": ["file", "dir", "env", "endpoint"] },
+                "pathOrValue": { "type": ["string", "null"] },
+                "envVar": { "type": ["string", "null"] },
+                "exists": { "type": "boolean" },
+                "notes": { "type": "string" }
+              },
+              "additionalProperties": true
+            }
+          },
+          "optional": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "kind", "pathOrValue", "envVar", "exists", "notes"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "kind": { "type": "string", "enum": ["file", "dir", "env", "endpoint"] },
+                "pathOrValue": { "type": ["string", "null"] },
+                "envVar": { "type": ["string", "null"] },
+                "exists": { "type": "boolean" },
+                "notes": { "type": "string" }
+              },
+              "additionalProperties": true
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

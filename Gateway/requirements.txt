@@ -12,5 +12,7 @@ websockets
 Pillow
 requests
 PyYAML
+jsonschema
 onnxruntime
 onnx
+flask

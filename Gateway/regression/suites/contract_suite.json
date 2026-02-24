@@ -1,0 +1,258 @@
+{
+  "name": "contract",
+  "expected": {
+    "requirePovPresent": false,
+    "minPovDecisions": 2
+  },
+  "runs": [
+    {
+      "id": "fixture_pov_ir_min",
+      "runPackage": "Gateway/tests/fixtures/pov_ir_v1_min",
+      "steps": [
+        {
+          "type": "ingest_pov_ir",
+          "strict": 1
+        }
+      ],
+      "requireCriticalFnZero": true,
+      "requirePovPresent": true,
+      "minPovDecisions": 2
+    },
+    {
+      "id": "fixture_pov_plan_min",
+      "runPackage": "Gateway/tests/fixtures/pov_plan_min",
+      "steps": [
+        {
+          "type": "ingest_pov_ir",
+          "strict": 1
+        }
+      ],
+      "requireCriticalFnZero": true,
+      "requirePovPresent": true,
+      "minPovDecisions": 2
+    },
+    {
+      "id": "fixture_with_seg_gt_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_seg_gt_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireSegEventsPresent": true,
+      "requireSegPayloadSchemaOk": true
+    },
+    {
+      "id": "fixture_with_seg_mask_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_seg_mask_gt_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireSegEventsPresent": true,
+      "requireSegPayloadSchemaOk": true
+    },
+    {
+      "id": "fixture_with_sam3_tracking_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_sam3_tracking_fixture_seg_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireSegEventsPresent": true,
+      "requireSegPayloadSchemaOk": true,
+      "requireSegTrackPresent": true,
+      "requireSegTrackSchemaOk": true
+    },
+    {
+      "id": "fixture_with_depth_gt_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_depth_gt_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireDepthEventsPresent": true,
+      "requireDepthPayloadSchemaOk": true
+    },
+    {
+      "id": "fixture_with_depth_temporal_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_depth_temporal_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireDepthEventsPresent": true,
+      "requireDepthPayloadSchemaOk": true,
+      "requireDepthTemporalPresent": true
+    },
+    {
+      "id": "fixture_with_costmap_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_costmap_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireCostmapEventsPresent": true,
+      "requireCostmapSchemaOk": true,
+      "requireCostmapContextPresent": true,
+      "requireCostmapContextSchemaOk": true
+    },
+    {
+      "id": "fixture_with_costmap_dynamic_track_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_costmap_dynamic_track_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireCostmapEventsPresent": true,
+      "requireCostmapSchemaOk": true,
+      "requireCostmapDynamicFieldsPresent": true,
+      "requireCostmapDynamicSchemaOk": true
+    },
+    {
+      "id": "fixture_with_costmap_fused_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_costmap_fused_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireCostmapFusedEventsPresent": true,
+      "requireCostmapFusedSchemaOk": true
+    },
+    {
+      "id": "fixture_with_costmap_fused_gate_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_costmap_fused_gate_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireCostmapFusedEventsPresent": true,
+      "requireCostmapFusedSchemaOk": true,
+      "requireCostmapFusedShiftGatePresent": true
+    },
+    {
+      "id": "fixture_with_slam_pose_gt_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_slam_pose_gt_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireSlamPoseEventsPresent": true,
+      "requireSlamPosePayloadSchemaOk": true
+    },
+    {
+      "id": "fixture_with_slam_context_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_slam_context_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireSlamPoseEventsPresent": true,
+      "requireSlamPosePayloadSchemaOk": true,
+      "requireSlamContextPresent": true,
+      "requireSlamContextSchemaOk": true
+    },
+    {
+      "id": "fixture_with_seg_prompt_mask_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_seg_prompt_and_mask_gt_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireSegEventsPresent": true,
+      "requireSegPayloadSchemaOk": true,
+      "requireSegPromptEventsPresent": true,
+      "requireSegPromptPayloadSchemaOk": true
+    },
+    {
+      "id": "fixture_with_seg_prompt_budget_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_seg_prompt_budget_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireSegEventsPresent": true,
+      "requireSegPayloadSchemaOk": true,
+      "requireSegPromptEventsPresent": true,
+      "requireSegPromptPayloadSchemaOk": true,
+      "requireSegPromptBudgetPresent": true,
+      "requireSegPromptTruncationPresent": true,
+      "requireSegPromptPacked": true
+    },
+    {
+      "id": "fixture_with_seg_context_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_seg_context_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireSegEventsPresent": true,
+      "requireSegPayloadSchemaOk": true,
+      "requireSegContextPresent": true,
+      "requireSegContextSchemaOk": true
+    },
+    {
+      "id": "fixture_with_plan_request_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_plan_request_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requirePlanRequestEventsPresent": true,
+      "requirePlanRequestSchemaOk": true
+    },
+    {
+      "id": "fixture_with_plan_context_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_plan_context_alignment_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requirePlanContextEventsPresent": true,
+      "requirePlanContextSchemaOk": true
+    },
+    {
+      "id": "fixture_with_plan_context_slam_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_plan_context_slam_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requirePlanContextEventsPresent": true,
+      "requirePlanContextSchemaOk": true,
+      "requirePlanContextSlamPresent": true,
+      "requirePlanContextSlamSchemaOk": true
+    },
+    {
+      "id": "fixture_with_plan_context_pack_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_plan_context_pack_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requirePlanContextPackEventsPresent": true,
+      "requirePlanContextPackSchemaOk": true
+    },
+    {
+      "id": "fixture_with_frame_e2e_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_frame_e2e_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireFrameE2eEventsPresent": true,
+      "requireFrameE2eSchemaOk": true
+    },
+    {
+      "id": "fixture_with_frame_user_e2e_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_frame_user_e2e_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireFrameInputEventsPresent": true,
+      "requireFrameInputSchemaOk": true,
+      "requireFrameAckEventsPresent": true,
+      "requireFrameAckSchemaOk": true,
+      "requireFrameUserE2eEventsPresent": true,
+      "requireFrameUserE2eSchemaOk": true
+    },
+    {
+      "id": "fixture_with_ocr_gt_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_ocr_gt_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireOcrEventsPresent": true,
+      "requireOcrPayloadSchemaOk": true
+    },
+    {
+      "id": "fixture_with_models_manifest_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_models_manifest_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireModelsPresent": true,
+      "requireModelsMissingRequiredZero": true
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+﻿{
+  "scenarioTag": "fixture_events_v1_inference_seg_min",
+  "startMs": 1707000000000,
+  "endMs": 1707000000500,
+  "wsJsonl": "ws_events.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "frameCountSent": 1,
+  "eventCountAccepted": 4,
+  "errors": []
+}

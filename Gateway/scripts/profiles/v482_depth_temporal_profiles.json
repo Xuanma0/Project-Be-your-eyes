@@ -1,0 +1,31 @@
+{
+  "profiles": [
+    {
+      "name": "baseline_reference",
+      "services": {
+        "seg": "reference",
+        "depth": "reference",
+        "ocr": "reference"
+      },
+      "env": {
+        "BYES_ENABLE_SEG": "1",
+        "BYES_ENABLE_DEPTH": "1",
+        "BYES_ENABLE_OCR": "1"
+      }
+    },
+    {
+      "name": "da3_fixture_depth_temporal",
+      "services": {
+        "seg": "reference",
+        "depth": "da3",
+        "ocr": "reference"
+      },
+      "env": {
+        "BYES_ENABLE_DEPTH": "1",
+        "BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM": "da3",
+        "BYES_DA3_MODE": "fixture",
+        "BYES_SERVICE_DEPTH_HTTP_REF_VIEW_STRATEGY": "auto_ref"
+      }
+    }
+  ]
+}

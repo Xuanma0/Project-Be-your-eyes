@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-be-your-eyes/contracts/costmap.context.v1.json",
+  "title": "Costmap Context Pack v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "frameSeq",
+    "budget",
+    "stats",
+    "text"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "costmap.context.v1"
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "frameSeq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "maxChars",
+        "mode"
+      ],
+      "properties": {
+        "maxChars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "topk_hotspots"
+          ]
+        }
+      }
+    },
+    "stats": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "in",
+        "out",
+        "truncation"
+      ],
+      "properties": {
+        "in": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "cells",
+            "charsTotal"
+          ],
+          "properties": {
+            "cells": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "charsTotal": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "out": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "charsTotal",
+            "tokenApprox",
+            "hotspots"
+          ],
+          "properties": {
+            "charsTotal": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tokenApprox": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hotspots": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "truncation": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "hotspotsDropped",
+            "charsDropped"
+          ],
+          "properties": {
+            "hotspotsDropped": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "charsDropped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "text": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "summary",
+        "promptFragment",
+        "promptFragmentLength"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "promptFragment": {
+          "type": "string"
+        },
+        "promptFragmentLength": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-be-your-eyes/contracts/slam.context.v1.json",
+  "title": "SLAM Context Pack v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "frameSeq",
+    "budget",
+    "stats",
+    "health",
+    "text"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "slam.context.v1"
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "frameSeq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "maxChars",
+        "mode"
+      ],
+      "properties": {
+        "maxChars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "last_pose_and_health"
+          ]
+        }
+      }
+    },
+    "stats": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "in",
+        "out",
+        "truncation"
+      ],
+      "properties": {
+        "in": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "poses",
+            "hasSlamError",
+            "hasAlign",
+            "charsTotal"
+          ],
+          "properties": {
+            "poses": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hasSlamError": {
+              "type": "boolean"
+            },
+            "hasAlign": {
+              "type": "boolean"
+            },
+            "charsTotal": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "out": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "charsTotal",
+            "tokenApprox"
+          ],
+          "properties": {
+            "charsTotal": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tokenApprox": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "truncation": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "posesDropped",
+            "charsDropped"
+          ],
+          "properties": {
+            "posesDropped": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "charsDropped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "trackingState",
+        "trackingRateWindow",
+        "longestLostStreak"
+      ],
+      "properties": {
+        "trackingState": {
+          "type": "string",
+          "enum": [
+            "tracking",
+            "lost",
+            "relocalized",
+            "unknown"
+          ]
+        },
+        "trackingRateWindow": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "longestLostStreak": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "motion": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "latestSpeedMps": {
+          "type": "number",
+          "minimum": 0
+        },
+        "speedMpsP50": {
+          "type": "number",
+          "minimum": 0
+        },
+        "speedMpsP90": {
+          "type": "number",
+          "minimum": 0
+        },
+        "yawRateDpsP90": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ateRmseM": {
+          "type": "number",
+          "minimum": 0
+        },
+        "rpeTransRmseM": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "alignment": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "mode": {
+          "type": "string"
+        },
+        "residualP90Ms": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "text": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "summary",
+        "promptFragment",
+        "promptFragmentLength"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "promptFragment": {
+          "type": "string"
+        },
+        "promptFragmentLength": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

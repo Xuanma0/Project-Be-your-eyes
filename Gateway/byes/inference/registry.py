@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 
 from byes.config import GatewayConfig
-from byes.inference.backends.base import OCRBackend, RiskBackend
-from byes.inference.backends.http import HttpOCRBackend, HttpRiskBackend
-from byes.inference.backends.mock import MockOCRBackend, MockRiskBackend
+from byes.inference.backends.base import OCRBackend, RiskBackend, SegBackend, DepthBackend, SlamBackend
+from byes.inference.backends.http import HttpOCRBackend, HttpRiskBackend, HttpSegBackend, HttpDepthBackend, HttpSlamBackend
+from byes.inference.backends.mock import MockOCRBackend, MockRiskBackend, MockSegBackend, MockDepthBackend, MockSlamBackend
 
 
 def _backend_name(value: str) -> str:
@@ -35,3 +35,51 @@ def get_risk_backend(config: GatewayConfig) -> RiskBackend:
         )
         return HttpRiskBackend(url=url, timeout_ms=timeout_ms, model_id=model_id)
     return MockRiskBackend(model_id=model_id or "mock-risk")
+
+
+def get_seg_backend(config: GatewayConfig) -> SegBackend:
+    name = _backend_name(os.getenv("BYES_SEG_BACKEND", config.inference_seg_backend))
+    model_id = str(os.getenv("BYES_SEG_MODEL_ID", config.inference_seg_model_id)).strip() or None
+    if name == "http":
+        url = os.getenv("BYES_SEG_HTTP_URL", config.inference_seg_http_url)
+        timeout_ms = int(os.getenv("BYES_SEG_HTTP_TIMEOUT_MS", str(config.inference_seg_timeout_ms)) or config.inference_seg_timeout_ms)
+        return HttpSegBackend(url=url, timeout_ms=timeout_ms, model_id=model_id)
+    return MockSegBackend(model_id=model_id or "mock-seg")
+
+
+def get_depth_backend(config: GatewayConfig) -> DepthBackend:
+    name = _backend_name(os.getenv("BYES_DEPTH_BACKEND", config.inference_depth_backend))
+    model_id = str(os.getenv("BYES_DEPTH_MODEL_ID", config.inference_depth_model_id)).strip() or None
+    if name == "http":
+        url = os.getenv("BYES_DEPTH_HTTP_URL", config.inference_depth_http_url)
+        timeout_ms = int(
+            os.getenv("BYES_DEPTH_HTTP_TIMEOUT_MS", str(config.inference_depth_timeout_ms)) or config.inference_depth_timeout_ms
+        )
+        ref_view_strategy = (
+            str(
+                os.getenv(
+                    "BYES_DEPTH_HTTP_REF_VIEW_STRATEGY",
+                    config.inference_depth_http_ref_view_strategy,
+                )
+            ).strip()
+            or None
+        )
+        return HttpDepthBackend(
+            url=url,
+            timeout_ms=timeout_ms,
+            model_id=model_id,
+            ref_view_strategy=ref_view_strategy,
+        )
+    return MockDepthBackend(model_id=model_id or "mock-depth")
+
+
+def get_slam_backend(config: GatewayConfig) -> SlamBackend:
+    name = _backend_name(os.getenv("BYES_SLAM_BACKEND", config.inference_slam_backend))
+    model_id = str(os.getenv("BYES_SLAM_MODEL_ID", config.inference_slam_model_id)).strip() or None
+    if name == "http":
+        url = os.getenv("BYES_SLAM_HTTP_URL", config.inference_slam_http_url)
+        timeout_ms = int(
+            os.getenv("BYES_SLAM_HTTP_TIMEOUT_MS", str(config.inference_slam_timeout_ms)) or config.inference_slam_timeout_ms
+        )
+        return HttpSlamBackend(url=url, timeout_ms=timeout_ms, model_id=model_id)
+    return MockSlamBackend(model_id=model_id or "mock-slam")

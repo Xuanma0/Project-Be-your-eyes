@@ -1,0 +1,12 @@
+﻿{
+  "scenarioTag": "fixture_with_seg_prompt_min",
+  "startMs": 1711000000000,
+  "endMs": 1711000000600,
+  "wsJsonl": "events/events_v1.jsonl",
+  "eventsV1Jsonl": "events/events_v1.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "frameCountSent": 1,
+  "eventCountAccepted": 2,
+  "errors": []
+}

@@ -1,0 +1,3 @@
+﻿# HELP byes_dummy dummy
+# TYPE byes_dummy counter
+byes_dummy 0

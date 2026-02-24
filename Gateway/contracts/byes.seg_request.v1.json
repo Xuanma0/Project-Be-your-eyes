@@ -1,0 +1,80 @@
+﻿{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-be-your-eyes/contracts/byes.seg_request.v1.json",
+  "title": "BYES Seg Request Prompt v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "byes.seg_request.v1"
+    },
+    "targets": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "text": {
+      "type": "string"
+    },
+    "boxes": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "items": {
+          "type": "number"
+        }
+      }
+    },
+    "points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "x",
+          "y",
+          "label"
+        ],
+        "properties": {
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          },
+          "label": {
+            "type": "integer",
+            "enum": [0, 1]
+          }
+        }
+      }
+    },
+    "imageWidth": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "imageHeight": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "promptVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

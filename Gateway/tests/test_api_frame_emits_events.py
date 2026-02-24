@@ -39,11 +39,11 @@ def test_api_frame_emits_inference_events_v1() -> None:
             rows = gateway.drain_inference_events()
             assert rows
             names = [str(item.get("name", "")) for item in rows]
-            assert "ocr.scan_text" in names
+            assert "ocr.read" in names
             assert "risk.hazards" in names
             for item in rows:
                 assert item.get("schemaVersion") == "byes.event.v1"
-                if item.get("name") in {"ocr.scan_text", "risk.hazards"}:
+                if item.get("name") in {"ocr.read", "risk.hazards"}:
                     assert item.get("frameSeq") == seq
                     payload = item.get("payload")
                     assert isinstance(payload, dict)
@@ -110,7 +110,7 @@ def test_api_frame_emits_http_backend_metadata(monkeypatch) -> None:
 
             rows = gateway.drain_inference_events()
             assert rows
-            ocr_result = next(item for item in rows if item.get("name") == "ocr.scan_text" and item.get("phase") == "result")
+            ocr_result = next(item for item in rows if item.get("name") == "ocr.read" and item.get("phase") == "result")
             risk_result = next(item for item in rows if item.get("name") == "risk.hazards")
             ocr_payload = ocr_result.get("payload")
             risk_payload = risk_result.get("payload")

@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "byes.slam_pose.v1",
+  "title": "BYES SLAM Pose Payload v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "trackingState",
+    "pose"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "byes.slam_pose.v1"
+    },
+    "runId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "frameSeq": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "backend": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "endpoint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "trackingState": {
+      "type": "string",
+      "enum": [
+        "tracking",
+        "lost",
+        "relocalized",
+        "initializing",
+        "unknown"
+      ]
+    },
+    "pose": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "t",
+        "q"
+      ],
+      "properties": {
+        "t": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "number"
+          }
+        },
+        "q": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "number"
+          }
+        },
+        "frame": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "world_to_cam",
+            "cam_to_world",
+            null
+          ]
+        },
+        "mapId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cov": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      }
+    },
+    "warningsCount": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

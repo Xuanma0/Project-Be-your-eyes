@@ -1,0 +1,57 @@
+{
+  "schemaVersion": "pov.ir.v1",
+  "runId": "fixture-pov-plan-min",
+  "video": {
+    "source": "fixture_pov_plan_min.mp4",
+    "fps": 30.0,
+    "durationSec": 1.0
+  },
+  "decisionPoints": [
+    {
+      "id": "dp-stop",
+      "t0Ms": 100,
+      "t1Ms": 240,
+      "state": "crosswalk_pause",
+      "action": "stop",
+      "outcome": "safe",
+      "confidence": 0.96,
+      "constraints": [
+        "critical_vehicle"
+      ],
+      "alternatives": [
+        "go"
+      ]
+    },
+    {
+      "id": "dp-confirm",
+      "t0Ms": 280,
+      "t1Ms": 520,
+      "state": "obstacle_near",
+      "action": "ask_confirm",
+      "outcome": "detour_left",
+      "confidence": 0.91,
+      "constraints": [
+        "confirm_user"
+      ],
+      "alternatives": [
+        "wait"
+      ]
+    }
+  ],
+  "events": [
+    {
+      "id": "evt-risk",
+      "tMs": 300,
+      "kind": "stair_down_edge",
+      "severity": "critical"
+    }
+  ],
+  "highlights": [
+    {
+      "id": "hl-1",
+      "tMs": 420,
+      "text": "detour left and keep railing side"
+    }
+  ],
+  "tokens": []
+}

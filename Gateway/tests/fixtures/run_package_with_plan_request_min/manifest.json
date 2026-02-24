@@ -1,0 +1,15 @@
+﻿{
+  "runId": "fixture-plan-request-min",
+  "scenarioTag": "fixture_with_plan_request_min",
+  "startMs": 1712001000000,
+  "endMs": 1712001001500,
+  "wsJsonl": "events/events_v1.jsonl",
+  "eventsV1Jsonl": "events/events_v1.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "framesDir": "frames",
+  "framesMetaJsonl": "frames_meta.jsonl",
+  "frameCountSent": 2,
+  "eventCountAccepted": 2,
+  "errors": []
+}

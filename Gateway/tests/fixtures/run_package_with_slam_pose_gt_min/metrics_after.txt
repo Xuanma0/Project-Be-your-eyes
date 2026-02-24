@@ -1,0 +1,2 @@
+﻿# TYPE byes_frame_received_total counter
+byes_frame_received_total 2

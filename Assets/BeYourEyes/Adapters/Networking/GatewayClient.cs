@@ -10,6 +10,7 @@ using NativeWebSocket;
 using UnityEngine;
 using UnityEngine.Networking;
 using BeYourEyes.Presenters.DebugHUD;
+using BYES.Telemetry;
 
 namespace BeYourEyes.Adapters.Networking
 {
@@ -431,12 +432,66 @@ namespace BeYourEyes.Adapters.Networking
             frameRequestInFlight = true;
             try
             {
+                var runIdForTelemetry = SessionId;
+                var frameSeqForTelemetry = seq > 0 ? seq : -1;
+                var captureTsForTelemetry = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var deviceIdForTelemetry = ByesFrameTelemetry.DeviceId;
+                var deviceTimeBaseForTelemetry = ByesFrameTelemetry.DeviceTimeBase;
+                if (!string.IsNullOrWhiteSpace(metaJson))
+                {
+                    try
+                    {
+                        var metaObj = JObject.Parse(metaJson);
+                        var metaRunId = ReadString(metaObj, "runId");
+                        if (string.IsNullOrWhiteSpace(metaRunId))
+                        {
+                            metaRunId = ReadString(metaObj, "sessionId");
+                        }
+                        if (string.IsNullOrWhiteSpace(metaRunId))
+                        {
+                            metaRunId = ReadString(metaObj, "session_id");
+                        }
+                        if (!string.IsNullOrWhiteSpace(metaRunId))
+                        {
+                            runIdForTelemetry = metaRunId;
+                        }
+                        if (frameSeqForTelemetry <= 0 && TryReadLong(metaObj, "seq", out var parsedSeq) && parsedSeq > 0)
+                        {
+                            frameSeqForTelemetry = parsedSeq;
+                        }
+                        if (TryReadLong(metaObj, "captureTsMs", out var parsedCaptureTs) && parsedCaptureTs > 0)
+                        {
+                            captureTsForTelemetry = parsedCaptureTs;
+                        }
+                        else if (TryReadLong(metaObj, "tsCaptureMs", out var parsedTsCaptureMs) && parsedTsCaptureMs > 0)
+                        {
+                            captureTsForTelemetry = parsedTsCaptureMs;
+                        }
+                        var metaDeviceId = ReadString(metaObj, "deviceId");
+                        if (!string.IsNullOrWhiteSpace(metaDeviceId))
+                        {
+                            deviceIdForTelemetry = metaDeviceId;
+                        }
+                        var metaTimeBase = ReadString(metaObj, "deviceTimeBase");
+                        if (!string.IsNullOrWhiteSpace(metaTimeBase))
+                        {
+                            deviceTimeBaseForTelemetry = metaTimeBase;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+
                 var form = new WWWForm();
                 form.AddBinaryData("image", jpg, "frame.jpg", "image/jpeg");
                 if (!string.IsNullOrWhiteSpace(metaJson))
                 {
                     form.AddField("meta", metaJson);
                 }
+                form.AddField("captureTsMs", Math.Max(0, captureTsForTelemetry).ToString());
+                form.AddField("deviceId", string.IsNullOrWhiteSpace(deviceIdForTelemetry) ? "unity-device" : deviceIdForTelemetry);
+                form.AddField("deviceTimeBase", string.IsNullOrWhiteSpace(deviceTimeBaseForTelemetry) ? "unix_ms" : deviceTimeBaseForTelemetry);
 
                 using (var req = UnityWebRequest.Post(BuildApiUrl("/api/frame"), form))
                 {
@@ -444,6 +499,11 @@ namespace BeYourEyes.Adapters.Networking
                     if (req.result == UnityWebRequest.Result.Success)
                     {
                         frameOkCount++;
+                        ByesFrameTelemetry.OnFrameSentToGateway(
+                            runIdForTelemetry,
+                            frameSeqForTelemetry > 0 ? frameSeqForTelemetry : 1,
+                            captureTsForTelemetry
+                        );
                         if (verboseLogs && frameOkCount % Math.Max(1, frameOkLogEvery) == 0)
                         {
                             Debug.Log($"[GatewayClient] frame POST 200 x{frameOkCount}");

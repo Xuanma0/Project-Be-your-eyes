@@ -7,7 +7,11 @@ import hashlib
 import html
 import io
 import json
+import os
 import re
+import shutil
+import threading
+import tempfile
 import time
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -27,9 +31,31 @@ from byes.frame_tracker import FrameTracker
 from byes.fusion import FusionEngine
 from byes.governor import SloGovernor
 from byes.intent import IntentManager
-from byes.inference.event_emitters import emit_ocr_events, emit_risk_events
-from byes.inference.registry import get_ocr_backend, get_risk_backend
-from byes.inference.backends.base import OCRResult, RiskResult
+from byes.inference.event_emitters import emit_ocr_events, emit_risk_events, emit_seg_events, emit_depth_events, emit_slam_pose_events
+from byes.inference.registry import get_ocr_backend, get_risk_backend, get_seg_backend, get_depth_backend, get_slam_backend
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult, SlamResult
+from byes.inference.prompt_budget import normalize_prompt, pack_prompt
+from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events
+from byes.inference.slam_context import DEFAULT_SLAM_CONTEXT_BUDGET, build_slam_context_pack
+from byes.inference.plan_context_pack import (
+    DEFAULT_PLAN_CONTEXT_PACK_BUDGET,
+    build_plan_context_pack,
+    resolve_plan_context_pack_budget_from_env,
+)
+from byes.mapping.costmap import (
+    DEFAULT_COSTMAP_CONFIG,
+    DEFAULT_COSTMAP_CONTEXT_BUDGET,
+    DEFAULT_COSTMAP_CONTEXT_SOURCE,
+    build_costmap_context_pack,
+    build_local_costmap,
+)
+from byes.mapping.costmap_fuser import (
+    DEFAULT_COSTMAP_FUSED_CONFIG,
+    CostmapFuser,
+)
+from byes.mapping.dynamic_mask_cache import (
+    DynamicMaskCache,
+)
 from byes.metrics import GatewayMetrics
 from byes.observability import Observability
 from byes.planner import PolicyPlannerV0, PolicyPlannerV1
@@ -43,6 +69,13 @@ from byes.tool_registry import ToolRegistry
 from byes.tools import MockOcrTool, MockRiskTool, RealDepthTool, RealDetTool, RealOcrTool, RealVlmTool
 from byes.tools.base import FrameInput, ToolLane
 from byes.world_state import WorldState
+from byes.pov.store import PovStore
+from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text
+from byes.plan_context_alignment import compute_plan_context_alignment
+from byes.plan_pipeline import extract_risk_summary, generate_action_plan, load_events_v1_rows
+from byes.plan_executor import execute_plan as execute_action_plan
+from byes.schemas.pov_ir_schema import validate_pov_ir
+from byes.model_manifest import build_model_manifest
 from scripts.report_run import generate_report_outputs, load_run_package, safe_extract_zip
 
 
@@ -84,6 +117,134 @@ def _split_report_sections(report_md: str) -> list[tuple[str, str, str]]:
     if final_body:
         sections.append((current_title, final_body, _slugify_anchor(current_title)))
     return sections
+
+
+def _contracts_dir() -> Path:
+    return Path(__file__).resolve().parent / "contracts"
+
+
+def _load_contract_lock() -> tuple[Path, dict[str, Any]]:
+    lock_path = _contracts_dir() / "contract.lock.json"
+    if not lock_path.exists():
+        raise FileNotFoundError(f"contract lock not found: {lock_path}")
+    payload = json.loads(lock_path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"contract lock must be object: {lock_path}")
+    versions = payload.get("versions")
+    if not isinstance(versions, dict):
+        raise ValueError(f"contract lock missing versions object: {lock_path}")
+    return lock_path, payload
+
+
+def _runtime_contract_defaults() -> dict[str, Any]:
+    runtime_cfg = load_config()
+    pov_budget = PovContextBudgetRequest().model_dump()
+    plan_budget = PlanBudgetRequest().model_dump()
+    plan_constraints = PlanConstraintsRequest().model_dump()
+    risk_threshold_defaults = {
+        "version": "heuristic-risk-v4.29-defaults",
+        "depthObsWarn": 1.0,
+        "depthObsCrit": 0.55,
+        "depthDropoffDelta": 0.4,
+        "obsWarn": 0.14,
+        "obsCrit": 0.28,
+        "dropoffPeak": 28.0,
+        "dropoffContrast": 0.2,
+        "guardrailDropoffDelta": None,
+        "guardrailObstacleP10Crit": None,
+    }
+    planner_defaults = {
+        "backend": str(os.getenv("BYES_PLANNER_BACKEND", "mock")).strip() or "mock",
+        "provider": str(os.getenv("BYES_PLANNER_PROVIDER", "reference")).strip() or "reference",
+        "endpoint": str(os.getenv("BYES_PLANNER_ENDPOINT", "")).strip() or None,
+    }
+    seg_targets = [str(item).strip() for item in runtime_cfg.inference_seg_targets if str(item).strip()]
+    seg_prompt = runtime_cfg.inference_seg_prompt
+    seg_prompt_present = isinstance(seg_prompt, dict)
+    seg_prompt_budget = {
+        "maxChars": max(0, int(runtime_cfg.inference_seg_prompt_max_chars)),
+        "maxTargets": max(0, int(runtime_cfg.inference_seg_prompt_max_targets)),
+        "maxBoxes": max(0, int(runtime_cfg.inference_seg_prompt_max_boxes)),
+        "maxPoints": max(0, int(runtime_cfg.inference_seg_prompt_max_points)),
+        "mode": str(runtime_cfg.inference_seg_prompt_budget_mode or "targets_text_boxes_points").strip()
+        or "targets_text_boxes_points",
+    }
+    plan_context_pack_budget = resolve_plan_context_pack_budget_from_env()
+    return {
+        "segContext": {
+            "defaultBudget": {
+                "maxChars": int(DEFAULT_SEG_CONTEXT_BUDGET["maxChars"]),
+                "maxSegments": int(DEFAULT_SEG_CONTEXT_BUDGET["maxSegments"]),
+                "mode": str(DEFAULT_SEG_CONTEXT_BUDGET["mode"]),
+            }
+        },
+        "slamContext": {
+            "defaultBudget": {
+                "maxChars": int(DEFAULT_SLAM_CONTEXT_BUDGET["maxChars"]),
+                "mode": str(DEFAULT_SLAM_CONTEXT_BUDGET["mode"]),
+            }
+        },
+        "povContext": {
+            "defaultBudget": {
+                "maxChars": int(pov_budget.get("maxChars", 2000)),
+                "maxTokensApprox": int(pov_budget.get("maxTokensApprox", 500)),
+                "mode": "decisions_plus_highlights",
+            }
+        },
+        "plan": {
+            "defaultBudget": {
+                "maxChars": int(plan_budget.get("maxChars", 2000)),
+                "maxTokensApprox": int(plan_budget.get("maxTokensApprox", 256)),
+                "mode": str(plan_budget.get("mode", "decisions_plus_highlights")),
+            },
+            "defaultConstraints": {
+                "allowConfirm": bool(plan_constraints.get("allowConfirm", True)),
+                "allowHaptic": bool(plan_constraints.get("allowHaptic", False)),
+                "maxActions": int(plan_constraints.get("maxActions", 3)),
+            },
+            "plannerDefaults": planner_defaults,
+        },
+        "planRequest": {
+            "defaultPromptVersion": "v4",
+            "includeSegContext": True,
+            "includePovContext": True,
+            "includeSlamContext": True,
+            "includeCostmapContext": True,
+        },
+        "planContextPack": {
+            "defaultBudget": {
+                "maxChars": int(plan_context_pack_budget.get("maxChars", DEFAULT_PLAN_CONTEXT_PACK_BUDGET["maxChars"])),
+                "mode": str(plan_context_pack_budget.get("mode", DEFAULT_PLAN_CONTEXT_PACK_BUDGET["mode"])),
+            }
+        },
+        "costmapContext": {
+            "defaultBudget": {
+                "maxChars": int(DEFAULT_COSTMAP_CONTEXT_BUDGET["maxChars"]),
+                "mode": str(DEFAULT_COSTMAP_CONTEXT_BUDGET["mode"]),
+                "source": str(DEFAULT_COSTMAP_CONTEXT_SOURCE),
+            }
+        },
+        "costmapFused": {
+            "defaultFuse": {
+                "alpha": float(DEFAULT_COSTMAP_FUSED_CONFIG["alpha"]),
+                "decay": float(DEFAULT_COSTMAP_FUSED_CONFIG["decay"]),
+                "windowFrames": int(DEFAULT_COSTMAP_FUSED_CONFIG["windowFrames"]),
+                "shiftEnabled": bool(DEFAULT_COSTMAP_FUSED_CONFIG["shiftEnabled"]),
+                "occupiedThresh": int(DEFAULT_COSTMAP_FUSED_CONFIG["occupiedThresh"]),
+            }
+        },
+        "segPrompt": {
+            "targets": seg_targets,
+            "promptPresent": seg_prompt_present,
+            "promptTextChars": len(str(seg_prompt.get("text", ""))) if seg_prompt_present else 0,
+            "defaultBudget": seg_prompt_budget,
+        },
+        "riskThresholdDefaults": risk_threshold_defaults,
+        "models": {
+            "notes": "Use GET /api/models or scripts/verify_models.py for required model/env/endpoint checks.",
+            "checkScript": "python Gateway/scripts/verify_models.py --json",
+        },
+    }
 
 
 class MockEvent(BaseModel):
@@ -147,6 +308,146 @@ class ConfirmSubmitRequest(BaseModel):
     confirmId: str
     answer: Literal["yes", "no", "unknown"]
     source: str | None = "api"
+
+
+class PovContextBudgetRequest(BaseModel):
+    maxChars: int = 2000
+    maxTokensApprox: int = 500
+
+    @model_validator(mode="after")
+    def _validate_budget(self) -> "PovContextBudgetRequest":
+        if int(self.maxChars) < 0:
+            raise ValueError("budget.maxChars must be >= 0")
+        if int(self.maxTokensApprox) < 0:
+            raise ValueError("budget.maxTokensApprox must be >= 0")
+        return self
+
+
+class PovContextRequest(BaseModel):
+    runPackage: str | None = None
+    runId: str | None = None
+    budget: PovContextBudgetRequest = PovContextBudgetRequest()
+    mode: Literal["decisions_only", "decisions_plus_highlights", "full"] = "decisions_plus_highlights"
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> "PovContextRequest":
+        run_package = str(self.runPackage or "").strip()
+        run_id = str(self.runId or "").strip()
+        if not run_package and not run_id:
+            raise ValueError("runPackage or runId is required")
+        return self
+
+
+class PlanBudgetRequest(BaseModel):
+    maxChars: int = 2000
+    maxTokensApprox: int = 256
+    mode: Literal["decisions_only", "decisions_plus_highlights", "full"] = "decisions_plus_highlights"
+
+    @model_validator(mode="after")
+    def _validate_budget(self) -> "PlanBudgetRequest":
+        if int(self.maxChars) < 0:
+            raise ValueError("budget.maxChars must be >= 0")
+        if int(self.maxTokensApprox) < 0:
+            raise ValueError("budget.maxTokensApprox must be >= 0")
+        return self
+
+
+class PlanConstraintsRequest(BaseModel):
+    allowConfirm: bool = True
+    allowHaptic: bool = False
+    maxActions: int = 3
+
+    @model_validator(mode="after")
+    def _validate_constraints(self) -> "PlanConstraintsRequest":
+        if int(self.maxActions) <= 0:
+            raise ValueError("constraints.maxActions must be >= 1")
+        return self
+
+
+class PlanContextPackOverrideRequest(BaseModel):
+    maxChars: int | None = None
+    slamMaxChars: int | None = None
+    mode: Literal[
+        "seg_plus_pov_plus_risk",
+        "seg_plus_pov",
+        "pov_plus_risk",
+        "seg_only",
+        "pov_only",
+        "risk_only",
+    ] | None = None
+
+    @model_validator(mode="after")
+    def _validate_override(self) -> "PlanContextPackOverrideRequest":
+        if self.maxChars is None and self.mode is None and self.slamMaxChars is None:
+            raise ValueError("contextPackOverride requires maxChars, slamMaxChars, or mode")
+        if self.maxChars is not None and int(self.maxChars) < 0:
+            raise ValueError("contextPackOverride.maxChars must be >= 0")
+        if self.slamMaxChars is not None and int(self.slamMaxChars) < 0:
+            raise ValueError("contextPackOverride.slamMaxChars must be >= 0")
+        return self
+
+
+class PlanGenerateRequest(BaseModel):
+    runPackage: str | None = None
+    runId: str | None = None
+    frameSeq: int | None = 1
+    budget: PlanBudgetRequest = PlanBudgetRequest()
+    constraints: PlanConstraintsRequest = PlanConstraintsRequest()
+    contextPackOverride: PlanContextPackOverrideRequest | None = None
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> "PlanGenerateRequest":
+        run_package = str(self.runPackage or "").strip()
+        run_id = str(self.runId or "").strip()
+        if not run_package and not run_id:
+            raise ValueError("runPackage or runId is required")
+        if self.frameSeq is not None and int(self.frameSeq) <= 0:
+            raise ValueError("frameSeq must be >= 1 when provided")
+        return self
+
+
+class PlanExecuteRequest(BaseModel):
+    plan: dict[str, Any]
+    runPackage: str | None = None
+    runId: str | None = None
+    frameSeq: int | None = None
+
+
+class FrameAckRequest(BaseModel):
+    runId: str
+    frameSeq: int
+    feedbackTsMs: int
+    kind: Literal["tts", "ar", "overlay", "haptic", "other", "any"] = "any"
+    accepted: bool = True
+    runPackage: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_ack(self) -> "FrameAckRequest":
+        if not str(self.runId or "").strip():
+            raise ValueError("runId is required")
+        if int(self.frameSeq) <= 0:
+            raise ValueError("frameSeq must be >= 1")
+        if int(self.feedbackTsMs) < 0:
+            raise ValueError("feedbackTsMs must be >= 0")
+        return self
+
+
+class ConfirmResponseRequest(BaseModel):
+    runId: str
+    frameSeq: int
+    confirmId: str
+    accepted: bool
+    runPackage: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_confirm(self) -> "ConfirmResponseRequest":
+        if not str(self.runId or "").strip():
+            raise ValueError("runId is required")
+        if int(self.frameSeq) <= 0:
+            raise ValueError("frameSeq must be >= 1")
+        if not str(self.confirmId or "").strip():
+            raise ValueError("confirmId is required")
+        return self
 
 
 class ConnectionManager:
@@ -235,6 +536,11 @@ class GatewayApp:
         self.connections = ConnectionManager()
         self.ocr_backend = get_ocr_backend(self.config)
         self.risk_backend = get_risk_backend(self.config)
+        self.seg_backend = get_seg_backend(self.config)
+        self.depth_backend = get_depth_backend(self.config)
+        self.slam_backend = get_slam_backend(self.config)
+        self.costmap_fuser = CostmapFuser()
+        self.dynamic_mask_cache = DynamicMaskCache()
         self._inference_events: list[dict[str, Any]] = []
         self._inference_events_limit = 2048
         self.scheduler = Scheduler(
@@ -268,12 +574,18 @@ class GatewayApp:
         self.run_packages_root = Path(__file__).resolve().parent / "artifacts" / "run_packages"
         self.run_packages_index_path = self.run_packages_root / "index.json"
         self._run_packages_lock = asyncio.Lock()
+        self.pov_store = PovStore()
 
     async def startup(self) -> None:
         self.run_packages_root.mkdir(parents=True, exist_ok=True)
         self.ocr_backend = get_ocr_backend(self.config)
         self.risk_backend = get_risk_backend(self.config)
+        self.seg_backend = get_seg_backend(self.config)
+        self.depth_backend = get_depth_backend(self.config)
+        self.slam_backend = get_slam_backend(self.config)
         self._inference_events.clear()
+        self.costmap_fuser.reset()
+        self.dynamic_mask_cache.reset()
         self._external_readiness = {}
         self.registry.clear()
         startup_unavailable_tools: list[str] = []
@@ -422,10 +734,9 @@ class GatewayApp:
                 return text
         return None
 
-    async def _run_inference_for_frame(self, frame_bytes: bytes, seq: int, ts_ms: int, meta: dict[str, Any]) -> None:
-        run_id = self._extract_run_id(meta)
-        component = str(self.config.inference_event_component or "gateway")
-        event_frame_seq = seq
+    @staticmethod
+    def _resolve_event_frame_seq(seq: int, meta: dict[str, Any]) -> int:
+        event_frame_seq = int(max(1, int(seq)))
         for key in ("clientSeq", "frameSeq", "frame_seq", "seq"):
             raw_value = meta.get(key)
             if raw_value is None:
@@ -435,12 +746,121 @@ class GatewayApp:
             except Exception:
                 continue
             if parsed > 0:
-                event_frame_seq = parsed
+                event_frame_seq = int(parsed)
                 break
+        return int(max(1, event_frame_seq))
+
+    @staticmethod
+    def _normalize_seg_prompt(prompt: dict[str, Any] | None) -> dict[str, Any] | None:
+        return normalize_prompt(prompt)
+
+    @staticmethod
+    def _build_seg_prompt_payload(
+        prompt: dict[str, Any],
+        *,
+        backend: str | None,
+        model: str | None,
+        endpoint: str | None,
+        budget: dict[str, Any] | None = None,
+        pack_stats: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        targets_raw = prompt.get("targets")
+        text_raw = str(prompt.get("text", ""))
+        boxes_raw = prompt.get("boxes")
+        points_raw = prompt.get("points")
+        meta_raw = prompt.get("meta")
+        prompt_version = None
+        if isinstance(meta_raw, dict):
+            raw_prompt_version = meta_raw.get("promptVersion")
+            text_version = "" if raw_prompt_version is None else str(raw_prompt_version).strip()
+            prompt_version = text_version or None
+        out_stats = pack_stats.get("out", {}) if isinstance(pack_stats, dict) and isinstance(pack_stats.get("out"), dict) else {}
+        trunc_stats = (
+            pack_stats.get("truncation", {})
+            if isinstance(pack_stats, dict) and isinstance(pack_stats.get("truncation"), dict)
+            else {}
+        )
+        complexity = (
+            pack_stats.get("complexity", {})
+            if isinstance(pack_stats, dict) and isinstance(pack_stats.get("complexity"), dict)
+            else {}
+        )
+        warnings_count = int(pack_stats.get("warningsCount", 0) or 0) if isinstance(pack_stats, dict) else 0
+        packed = bool(pack_stats.get("packed", False)) if isinstance(pack_stats, dict) else False
+        budget_payload = {
+            "maxChars": int(budget.get("maxChars", 0) or 0) if isinstance(budget, dict) else 0,
+            "maxTargets": int(budget.get("maxTargets", 0) or 0) if isinstance(budget, dict) else 0,
+            "maxBoxes": int(budget.get("maxBoxes", 0) or 0) if isinstance(budget, dict) else 0,
+            "maxPoints": int(budget.get("maxPoints", 0) or 0) if isinstance(budget, dict) else 0,
+            "mode": str(budget.get("mode", "")).strip() if isinstance(budget, dict) else "",
+        }
+        return {
+            "targetsCount": int(out_stats.get("targets", len(targets_raw) if isinstance(targets_raw, list) else 0) or 0),
+            "textChars": int(out_stats.get("textChars", len(text_raw)) or 0),
+            "boxesCount": int(out_stats.get("boxes", len(boxes_raw) if isinstance(boxes_raw, list) else 0) or 0),
+            "pointsCount": int(out_stats.get("points", len(points_raw) if isinstance(points_raw, list) else 0) or 0),
+            "promptVersion": prompt_version,
+            "backend": (str(backend or "").strip().lower() or None),
+            "endpoint": (str(endpoint or "").strip() or None),
+            "model": (str(model or "").strip() or None),
+            "budget": budget_payload,
+            "out": {
+                "targetsCount": int(out_stats.get("targets", len(targets_raw) if isinstance(targets_raw, list) else 0) or 0),
+                "textChars": int(out_stats.get("textChars", len(text_raw)) or 0),
+                "boxesCount": int(out_stats.get("boxes", len(boxes_raw) if isinstance(boxes_raw, list) else 0) or 0),
+                "pointsCount": int(out_stats.get("points", len(points_raw) if isinstance(points_raw, list) else 0) or 0),
+                "charsTotal": int(
+                    out_stats.get(
+                        "charsTotal",
+                        (
+                            len(text_raw)
+                            + (len(targets_raw) if isinstance(targets_raw, list) else 0)
+                            + (len(boxes_raw) if isinstance(boxes_raw, list) else 0)
+                            + (len(points_raw) if isinstance(points_raw, list) else 0)
+                        ),
+                    )
+                    or 0
+                ),
+            },
+            "truncation": {
+                "targetsDropped": int(trunc_stats.get("targetsDropped", 0) or 0),
+                "boxesDropped": int(trunc_stats.get("boxesDropped", 0) or 0),
+                "pointsDropped": int(trunc_stats.get("pointsDropped", 0) or 0),
+                "textCharsDropped": int(trunc_stats.get("textCharsDropped", 0) or 0),
+            },
+            "complexity": {
+                "hasText": bool(complexity.get("hasText", False)),
+                "hasBoxes": bool(complexity.get("hasBoxes", False)),
+                "hasPoints": bool(complexity.get("hasPoints", False)),
+                "hasTargets": bool(complexity.get("hasTargets", False)),
+                "score": float(complexity.get("score", 0.0) or 0.0),
+            },
+            "packed": packed,
+            "warningsCount": warnings_count,
+        }
+
+    async def _run_inference_for_frame(self, frame_bytes: bytes, seq: int, ts_ms: int, meta: dict[str, Any]) -> None:
+        run_id = self._extract_run_id(meta)
+        component = str(self.config.inference_event_component or "gateway")
+        event_frame_seq = self._resolve_event_frame_seq(seq, meta)
+        depth_payload_for_costmap: dict[str, Any] | None = None
+        seg_payload_for_costmap: dict[str, Any] | None = None
+        slam_payload_for_costmap: dict[str, Any] | None = None
+        depth_backend_for_costmap = None
+        depth_model_for_costmap = None
+        depth_endpoint_for_costmap = None
+        costmap_fused_payload: dict[str, Any] | None = None
         if self.config.inference_enable_ocr:
             ocr_started_ms = _now_ms()
             try:
-                ocr_result = await self.ocr_backend.infer(frame_bytes, seq, ts_ms)
+                ocr_result = await self.ocr_backend.infer(
+                    frame_bytes,
+                    seq,
+                    ts_ms,
+                    run_id=run_id,
+                    targets=None,
+                    prompt=None,
+                )
             except Exception as exc:  # noqa: BLE001
                 ocr_result = OCRResult(status="error", error=exc.__class__.__name__, payload={"reason": exc.__class__.__name__})
             await emit_ocr_events(
@@ -478,6 +898,302 @@ class GatewayApp:
                 backend=getattr(self.risk_backend, "name", None),
                 model=getattr(self.risk_backend, "model_id", None),
                 endpoint=getattr(self.risk_backend, "endpoint", None),
+            )
+
+        if self.config.inference_enable_depth:
+            depth_started_ms = _now_ms()
+            depth_backend_name = getattr(self.depth_backend, "name", None)
+            depth_model_id = getattr(self.depth_backend, "model_id", None)
+            depth_endpoint = getattr(self.depth_backend, "endpoint", None)
+            try:
+                depth_result = await self.depth_backend.infer(
+                    frame_bytes,
+                    seq,
+                    ts_ms,
+                    run_id=run_id,
+                    targets=None,
+                    ref_view_strategy=self.config.inference_depth_http_ref_view_strategy or None,
+                    pose=None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                depth_result = DepthResult(
+                    status="error",
+                    error=exc.__class__.__name__,
+                    payload={
+                        "reason": exc.__class__.__name__,
+                        "gridCount": 0,
+                        "valuesCount": 0,
+                    },
+                    latency_ms=max(0, _now_ms() - depth_started_ms),
+                )
+            await emit_depth_events(
+                depth_result,
+                frame_seq=event_frame_seq,
+                ts_ms=_now_ms(),
+                started_ts_ms=depth_started_ms,
+                sink=self._emit_inference_event,
+                run_id=run_id,
+                component=component,
+                backend=depth_backend_name,
+                model=depth_model_id,
+                endpoint=depth_endpoint,
+            )
+            depth_payload_for_costmap = depth_result.payload if isinstance(depth_result.payload, dict) else {}
+            if isinstance(depth_result.grid, dict):
+                depth_payload_for_costmap = dict(depth_payload_for_costmap)
+                depth_payload_for_costmap["grid"] = dict(depth_result.grid)
+            depth_backend_for_costmap = depth_backend_name
+            depth_model_for_costmap = depth_model_id
+            depth_endpoint_for_costmap = depth_endpoint
+
+        if self.config.inference_enable_slam:
+            slam_started_ms = _now_ms()
+            slam_backend_name = getattr(self.slam_backend, "name", None)
+            slam_model_id = getattr(self.slam_backend, "model_id", None)
+            slam_endpoint = getattr(self.slam_backend, "endpoint", None)
+            try:
+                slam_result = await self.slam_backend.infer(
+                    frame_bytes,
+                    seq,
+                    ts_ms,
+                    run_id=run_id,
+                    targets=None,
+                    prompt=None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                slam_result = SlamResult(
+                    status="error",
+                    error=exc.__class__.__name__,
+                    payload={"reason": exc.__class__.__name__},
+                    latency_ms=max(0, _now_ms() - slam_started_ms),
+                )
+            await emit_slam_pose_events(
+                slam_result,
+                frame_seq=event_frame_seq,
+                ts_ms=_now_ms(),
+                started_ts_ms=slam_started_ms,
+                sink=self._emit_inference_event,
+                run_id=run_id,
+                component=component,
+                backend=slam_backend_name,
+                model=slam_model_id,
+                endpoint=slam_endpoint,
+            )
+            slam_payload_for_costmap = slam_result.payload if isinstance(slam_result.payload, dict) else {}
+            if isinstance(slam_result.pose, dict):
+                slam_payload_for_costmap = dict(slam_payload_for_costmap)
+                pose_obj = slam_payload_for_costmap.get("pose")
+                pose_obj = pose_obj if isinstance(pose_obj, dict) else {}
+                if "t" not in pose_obj and isinstance(slam_result.pose.get("t"), list):
+                    pose_obj["t"] = list(slam_result.pose.get("t") or [])
+                if "q" not in pose_obj and isinstance(slam_result.pose.get("q"), list):
+                    pose_obj["q"] = list(slam_result.pose.get("q") or [])
+                slam_payload_for_costmap["pose"] = pose_obj
+                slam_payload_for_costmap.setdefault("trackingState", slam_result.tracking_state)
+
+        if self.config.inference_enable_seg:
+            seg_started_ms = _now_ms()
+            seg_targets = [str(item).strip() for item in self.config.inference_seg_targets if str(item).strip()]
+            seg_prompt = self._normalize_seg_prompt(self.config.inference_seg_prompt)
+            seg_prompt_budget = {
+                "maxChars": max(0, int(self.config.inference_seg_prompt_max_chars)),
+                "maxTargets": max(0, int(self.config.inference_seg_prompt_max_targets)),
+                "maxBoxes": max(0, int(self.config.inference_seg_prompt_max_boxes)),
+                "maxPoints": max(0, int(self.config.inference_seg_prompt_max_points)),
+                "mode": str(self.config.inference_seg_prompt_budget_mode or "targets_text_boxes_points").strip()
+                or "targets_text_boxes_points",
+            }
+            packed_seg_prompt, seg_prompt_stats = pack_prompt(seg_prompt, budget=seg_prompt_budget)
+            seg_backend_name = getattr(self.seg_backend, "name", None)
+            seg_model_id = getattr(self.seg_backend, "model_id", None)
+            seg_endpoint = getattr(self.seg_backend, "endpoint", None)
+            if packed_seg_prompt is not None:
+                seg_prompt_payload = self._build_seg_prompt_payload(
+                    packed_seg_prompt,
+                    backend=seg_backend_name,
+                    model=seg_model_id,
+                    endpoint=seg_endpoint,
+                    budget=seg_prompt_budget,
+                    pack_stats=seg_prompt_stats,
+                )
+                await self._emit_inference_event(
+                    {
+                        "schemaVersion": "byes.event.v1",
+                        "tsMs": seg_started_ms,
+                        "runId": run_id,
+                        "frameSeq": event_frame_seq,
+                        "component": component,
+                        "category": "tool",
+                        "name": "seg.prompt",
+                        "phase": "result",
+                        "status": "ok",
+                        "latencyMs": None,
+                        "payload": seg_prompt_payload,
+                    }
+                )
+            try:
+                seg_result = await self.seg_backend.infer(
+                    frame_bytes,
+                    seq,
+                    ts_ms,
+                    run_id=run_id,
+                    targets=seg_targets or None,
+                    prompt=packed_seg_prompt,
+                    tracking=bool(self.config.inference_seg_tracking),
+                )
+            except Exception as exc:  # noqa: BLE001
+                seg_result = SegResult(
+                    status="error",
+                    error=exc.__class__.__name__,
+                    payload={
+                        "reason": exc.__class__.__name__,
+                        "segmentsCount": 0,
+                        "targetsCount": len(seg_targets),
+                        "targetsUsed": seg_targets,
+                    },
+                    latency_ms=max(0, _now_ms() - seg_started_ms),
+                )
+            await emit_seg_events(
+                seg_result,
+                frame_seq=event_frame_seq,
+                ts_ms=_now_ms(),
+                started_ts_ms=seg_started_ms,
+                sink=self._emit_inference_event,
+                run_id=run_id,
+                component=component,
+                backend=seg_backend_name,
+                model=seg_model_id,
+                endpoint=seg_endpoint,
+            )
+            seg_payload_for_costmap = seg_result.payload if isinstance(seg_result.payload, dict) else {}
+            if isinstance(seg_result.segments, list):
+                seg_payload_for_costmap = dict(seg_payload_for_costmap)
+                seg_payload_for_costmap["segments"] = [row for row in seg_result.segments if isinstance(row, dict)]
+
+        if self.config.inference_enable_costmap:
+            costmap_started_ms = _now_ms()
+            costmap_payload = build_local_costmap(
+                run_id=run_id or "costmap-live",
+                frame_seq=event_frame_seq,
+                depth_payload=depth_payload_for_costmap,
+                seg_payload=seg_payload_for_costmap,
+                slam_payload=slam_payload_for_costmap,
+                config={
+                    "gridH": int(self.config.inference_costmap_grid_h),
+                    "gridW": int(self.config.inference_costmap_grid_w),
+                    "resolutionM": float(self.config.inference_costmap_resolution_m),
+                    "depthThreshM": float(self.config.inference_costmap_depth_thresh_m),
+                    "dynamicLabels": list(self.config.inference_costmap_dynamic_labels),
+                    "enableDynamicTrack": bool(self.config.inference_costmap_dynamic_track),
+                    "dynamicTrackTtlFrames": int(self.config.inference_costmap_dynamic_track_ttl_frames),
+                },
+                dynamic_mask_cache=self.dynamic_mask_cache,
+                backend="local",
+                model="local-costmap-v1",
+                endpoint=None,
+            )
+            costmap_latency_ms = max(0, _now_ms() - costmap_started_ms)
+            await self._emit_inference_event(
+                {
+                    "schemaVersion": "byes.event.v1",
+                    "tsMs": _now_ms(),
+                    "runId": run_id,
+                    "frameSeq": event_frame_seq,
+                    "component": component,
+                    "category": "map",
+                    "name": "map.costmap",
+                    "phase": "result",
+                    "status": "ok",
+                    "latencyMs": int(costmap_latency_ms),
+                    "payload": costmap_payload,
+                }
+            )
+            fused_latency_ms = 0
+            if self.config.inference_enable_costmap_fused:
+                fused_started_ms = _now_ms()
+                costmap_fused_payload = self.costmap_fuser.update(
+                    run_id=run_id or "costmap-live",
+                    frame_seq=event_frame_seq,
+                    raw_costmap_payload=costmap_payload,
+                    slam_payload=slam_payload_for_costmap,
+                    config={
+                        "alpha": float(self.config.inference_costmap_fused_alpha),
+                        "decay": float(self.config.inference_costmap_fused_decay),
+                        "windowFrames": int(self.config.inference_costmap_fused_window),
+                        "shiftEnabled": bool(self.config.inference_costmap_fused_shift),
+                        "shiftGateEnabled": bool(self.config.inference_costmap_fused_shift_gate),
+                        "minTrackingRate": float(self.config.inference_costmap_fused_min_tracking_rate),
+                        "maxLostStreak": int(self.config.inference_costmap_fused_max_lost_streak),
+                        "maxAlignResidualP90Ms": float(
+                            self.config.inference_costmap_fused_max_align_residual_p90_ms
+                        ),
+                        "maxAteRmseM": float(self.config.inference_costmap_fused_max_ate_rmse_m),
+                        "maxRpeTransRmseM": float(self.config.inference_costmap_fused_max_rpe_trans_rmse_m),
+                        "slamTrajPreferred": str(self.config.inference_slam_traj_preferred),
+                        "slamTrajAllowed": [str(item) for item in self.config.inference_slam_traj_allowed],
+                        "occupiedThresh": int(self.config.inference_costmap_occupied_thresh),
+                    },
+                    backend="local",
+                    model="local-costmap-fused-v1",
+                    endpoint=None,
+                )
+                fused_latency_ms = max(0, _now_ms() - fused_started_ms)
+                await self._emit_inference_event(
+                    {
+                        "schemaVersion": "byes.event.v1",
+                        "tsMs": _now_ms(),
+                        "runId": run_id,
+                        "frameSeq": event_frame_seq,
+                        "component": component,
+                        "category": "map",
+                        "name": "map.costmap_fused",
+                        "phase": "result",
+                        "status": "ok",
+                        "latencyMs": int(fused_latency_ms),
+                        "payload": costmap_fused_payload,
+                    }
+                )
+
+            context_source = str(
+                self.config.inference_costmap_context_source or DEFAULT_COSTMAP_CONTEXT_SOURCE
+            ).strip().lower()
+            if context_source not in {"auto", "raw", "fused"}:
+                context_source = DEFAULT_COSTMAP_CONTEXT_SOURCE
+            selected_source = "raw"
+            selected_costmap_payload = costmap_payload
+            selected_latency_ms = costmap_latency_ms
+            if context_source == "fused" and isinstance(costmap_fused_payload, dict):
+                selected_source = "fused"
+                selected_costmap_payload = costmap_fused_payload
+                selected_latency_ms = fused_latency_ms
+            elif context_source == "auto" and isinstance(costmap_fused_payload, dict):
+                selected_source = "fused"
+                selected_costmap_payload = costmap_fused_payload
+                selected_latency_ms = fused_latency_ms
+
+            costmap_context_payload = build_costmap_context_pack(
+                costmap_payload=selected_costmap_payload,
+                budget={
+                    "maxChars": int(self.config.inference_costmap_context_max_chars),
+                    "mode": str(self.config.inference_costmap_context_mode or DEFAULT_COSTMAP_CONTEXT_BUDGET["mode"]).strip()
+                    or str(DEFAULT_COSTMAP_CONTEXT_BUDGET["mode"]),
+                },
+                source=selected_source,
+            )
+            await self._emit_inference_event(
+                {
+                    "schemaVersion": "byes.event.v1",
+                    "tsMs": _now_ms(),
+                    "runId": run_id,
+                    "frameSeq": event_frame_seq,
+                    "component": component,
+                    "category": "map",
+                    "name": "map.costmap_context",
+                    "phase": "result",
+                    "status": "ok",
+                    "latencyMs": int(selected_latency_ms),
+                    "payload": costmap_context_payload,
+                }
             )
 
     async def submit_frame(
@@ -537,6 +1253,12 @@ class GatewayApp:
         self.fusion.reset_runtime()
         self.scheduler.reset_runtime()
         self._inference_events.clear()
+        self.costmap_fuser.reset()
+        self.dynamic_mask_cache.reset()
+        with _FRAME_E2E_STATE_LOCK:
+            _FRAME_E2E_STATE.clear()
+        with _FRAME_USER_E2E_STATE_LOCK:
+            _FRAME_USER_E2E_STATE.clear()
         self._last_safe_mode_pulse_ms = -1
         self._last_meta_warn_ms = {"meta_missing": -1, "meta_parse_error": -1}
         self._forced_crosscheck_kind = "none"
@@ -1050,10 +1772,14 @@ async def frame(
     request: Request,
     image: UploadFile | None = File(default=None),
     meta: str | None = Form(None),
+    captureTsMs: int | None = Form(default=None),
+    deviceId: str | None = Form(default=None),
+    deviceTimeBase: str | None = Form(default=None),
 ) -> dict[str, Any]:
     content_type = str(request.headers.get("content-type", "")).lower()
     frame_bytes: bytes | None = None
     raw_meta: str | None = None
+    recv_ts_ms = _now_ms()
 
     if "multipart/form-data" in content_type:
         if image is None:
@@ -1083,7 +1809,127 @@ async def frame(
         await gateway.emit_meta_health_warn("meta_missing", "frame_meta_not_provided")
 
     seq = await gateway.submit_frame(frame_bytes=frame_bytes, meta=meta_json, request=request, frame_meta=frame_meta)
+    run_id = gateway._extract_run_id(meta_json) or "unknown-run"  # noqa: SLF001
+    event_frame_seq = gateway._resolve_event_frame_seq(seq, meta_json)  # noqa: SLF001
+    capture_ts_ms = _to_nonnegative_int_or_none(meta_json.get("captureTsMs"))
+    if capture_ts_ms is None:
+        capture_ts_ms = _to_nonnegative_int_or_none(captureTsMs)
+    device_id = str(meta_json.get("deviceId", "")).strip() or (str(deviceId or "").strip() or None)
+    raw_time_base = str(meta_json.get("deviceTimeBase", "")).strip() or (str(deviceTimeBase or "").strip() or None)
+    frame_input_payload = _build_frame_input_payload(
+        run_id=run_id,
+        frame_seq=event_frame_seq,
+        capture_ts_ms=capture_ts_ms,
+        recv_ts_ms=recv_ts_ms,
+        device_time_base=raw_time_base,
+        device_id=device_id,
+    )
+    frame_input_event = _build_byes_event(
+        run_id=run_id,
+        frame_seq=event_frame_seq,
+        category="frame",
+        name="frame.input",
+        payload=frame_input_payload,
+    )
+    await gateway._emit_inference_event(frame_input_event)  # noqa: SLF001
+
+    t0_for_state = _to_nonnegative_int_or_none(capture_ts_ms)
+    if t0_for_state is None:
+        t0_for_state = int(max(0, recv_ts_ms))
+    _frame_user_e2e_mark_input(run_id, event_frame_seq, t0_for_state)
+
+    run_package_raw = str(meta_json.get("runPackage", "")).strip()
+    if run_package_raw:
+        cleanup_dir: Path | None = None
+        try:
+            run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
+                run_package_raw=run_package_raw,
+                run_id=run_id,
+            )
+            if can_write_events:
+                _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+                events_path = _resolve_events_v1_path(run_package_dir, manifest)
+                _append_events_v1_rows(events_path, [frame_input_event])
+                _frame_e2e_begin_state(
+                    events_path=events_path,
+                    run_id=run_id,
+                    frame_seq=event_frame_seq,
+                    t0_hint_ms=t0_for_state,
+                )
+        except Exception:
+            pass
+        finally:
+            if cleanup_dir is not None and cleanup_dir.exists():
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
     return {"ok": True, "bytes": len(frame_bytes), "seq": seq}
+
+
+@app.post("/api/frame/ack")
+async def frame_ack(request: FrameAckRequest) -> dict[str, Any]:
+    cleanup_dir: Path | None = None
+    run_id = str(request.runId or "").strip() or "unknown-run"
+    frame_seq = int(max(1, int(request.frameSeq)))
+    feedback_ts_ms = int(max(0, int(request.feedbackTsMs)))
+    ack_payload = _build_frame_ack_payload(
+        run_id=run_id,
+        frame_seq=frame_seq,
+        feedback_ts_ms=feedback_ts_ms,
+        kind=request.kind,
+        accepted=bool(request.accepted),
+    )
+    ack_event = _build_byes_event(
+        run_id=run_id,
+        frame_seq=frame_seq,
+        category="frame",
+        name="frame.ack",
+        payload=ack_payload,
+    )
+    await gateway._emit_inference_event(ack_event)  # noqa: SLF001
+    _frame_user_e2e_mark_ack(run_id, frame_seq, feedback_ts_ms, bool(request.accepted))
+
+    user_e2e_ms: int | None = None
+    snapshot = _frame_user_e2e_snapshot(run_id, frame_seq)
+    if isinstance(snapshot, dict):
+        t0_ms = _to_nonnegative_int_or_none(snapshot.get("t0Ms"))
+        if t0_ms is not None:
+            user_e2e_ms = int(feedback_ts_ms - t0_ms)
+
+    try:
+        run_package_raw = str(request.runPackage or "").strip() or None
+        run_package_dir: Path | None = None
+        can_write_events = False
+        try:
+            run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
+                run_package_raw=run_package_raw,
+                run_id=run_id,
+            )
+        except HTTPException as ex:
+            if int(ex.status_code) != 404:
+                raise
+            run_package_dir = None
+            can_write_events = False
+        if run_package_dir is not None and can_write_events:
+            _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+            events_path = _resolve_events_v1_path(run_package_dir, manifest)
+            _append_events_v1_rows(events_path, [ack_event])
+            _try_append_frame_user_e2e_event(
+                events_path=events_path,
+                run_id=run_id,
+                frame_seq=frame_seq,
+            )
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+    return {
+        "ok": True,
+        "runId": run_id,
+        "frameSeq": frame_seq,
+        "feedbackTsMs": feedback_ts_ms,
+        "kind": str(request.kind),
+        "accepted": bool(request.accepted),
+        "userE2eMs": user_e2e_ms,
+    }
 
 
 @app.post("/api/fault/set")
@@ -1274,6 +2120,895 @@ async def run_package_upload(
         raise HTTPException(status_code=500, detail=f"run package processing failed: {ex}") from ex
 
 
+def _summarize_pov_ir(payload: dict[str, Any], run_id: str) -> dict[str, Any]:
+    decisions = payload.get("decisionPoints")
+    events = payload.get("events")
+    highlights = payload.get("highlights")
+    tokens = payload.get("tokens")
+    return {
+        "runId": run_id,
+        "counts": {
+            "decisions": sum(1 for item in decisions if isinstance(item, dict)) if isinstance(decisions, list) else 0,
+            "events": sum(1 for item in events if isinstance(item, dict)) if isinstance(events, list) else 0,
+            "highlights": sum(1 for item in highlights if isinstance(item, dict)) if isinstance(highlights, list) else 0,
+            "tokens": sum(1 for item in tokens if isinstance(item, dict)) if isinstance(tokens, list) else 0,
+        },
+        "createdAtMs": _now_ms(),
+        "present": True,
+    }
+
+
+@app.post("/api/pov/ingest")
+async def ingest_pov_ir(
+    payload: dict[str, Any],
+    runPackage: str | None = None,
+    runId: str | None = None,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="request body must be object")
+    ok, errors = validate_pov_ir(payload, strict=True)
+    if not ok:
+        raise HTTPException(status_code=400, detail={"message": "pov ir schema invalid", "errors": errors})
+
+    event_run_id = str(payload.get("runId", "")).strip()
+    if not event_run_id:
+        raise HTTPException(status_code=400, detail="pov ir runId is required")
+    gateway.pov_store.set(event_run_id, payload)
+    summary = _summarize_pov_ir(payload, event_run_id)
+
+    event_row = _build_byes_event(
+        run_id=event_run_id,
+        frame_seq=1,
+        category="pov",
+        name="pov.ingest",
+        payload={
+            "runId": event_run_id,
+            "decisions": int(summary["counts"]["decisions"]),
+            "events": int(summary["counts"]["events"]),
+            "highlights": int(summary["counts"]["highlights"]),
+            "tokens": int(summary["counts"]["tokens"]),
+        },
+    )
+    await gateway._emit_inference_event(event_row)  # noqa: SLF001
+
+    cleanup_dir: Path | None = None
+    run_package_dir: Path | None = None
+    can_write_events = False
+    try:
+        run_package_text = str(runPackage or "").strip()
+        run_id_text = str(runId or "").strip() or event_run_id
+        if run_package_text:
+            run_package_dir, cleanup_dir, can_write_events = _resolve_context_run_package_input(run_package_text)
+        else:
+            try:
+                run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
+                    run_package_raw=None,
+                    run_id=run_id_text,
+                )
+            except HTTPException:
+                run_package_dir = None
+                can_write_events = False
+        if run_package_dir is not None and can_write_events:
+            _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+            events_path = _resolve_events_v1_path(run_package_dir, manifest)
+            _append_events_v1_rows(events_path, [event_row])
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+    return {"ok": True, **summary}
+
+
+@app.get("/api/pov/latest")
+async def get_latest_pov(runId: str) -> dict[str, Any]:
+    run_id = str(runId or "").strip()
+    if not run_id:
+        raise HTTPException(status_code=400, detail="runId is required")
+    summary = gateway.pov_store.summary(run_id)
+    if not bool(summary.get("present")):
+        raise HTTPException(status_code=404, detail=f"pov not found for runId: {run_id}")
+    return {"ok": True, **summary}
+
+
+@app.get("/api/seg/context")
+async def get_seg_context(
+    runId: str,
+    maxChars: int = int(DEFAULT_SEG_CONTEXT_BUDGET["maxChars"]),
+    maxSegments: int = int(DEFAULT_SEG_CONTEXT_BUDGET["maxSegments"]),
+    mode: Literal["topk_by_score", "label_grouped"] = str(DEFAULT_SEG_CONTEXT_BUDGET["mode"]),
+) -> dict[str, Any]:
+    run_id = str(runId or "").strip()
+    if not run_id:
+        raise HTTPException(status_code=400, detail="runId is required")
+
+    budget = {
+        "maxChars": max(0, int(maxChars)),
+        "maxSegments": max(0, int(maxSegments)),
+        "mode": str(mode or DEFAULT_SEG_CONTEXT_BUDGET["mode"]).strip() or str(DEFAULT_SEG_CONTEXT_BUDGET["mode"]),
+    }
+    cleanup_dir: Path | None = None
+    events_rows: list[dict[str, Any]] = []
+    try:
+        try:
+            run_package_dir, cleanup_dir, _can_write_events = await _resolve_context_run_package_dir_async(
+                run_package_raw=None,
+                run_id=run_id,
+            )
+            _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+            events_rows, _events_path = load_events_v1_rows(run_package_dir, manifest)
+        except HTTPException as ex:
+            if int(ex.status_code) != 404:
+                raise
+            events_rows = []
+
+        if not events_rows:
+            for row in gateway._inference_events:  # noqa: SLF001
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("runId", "")).strip() != run_id:
+                    continue
+                events_rows.append(dict(row))
+
+        if not events_rows:
+            raise HTTPException(status_code=404, detail=f"no events found for runId: {run_id}")
+
+        context = build_seg_context_from_events(events_rows, budget=budget)
+        return context
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
+@app.get("/api/slam/context")
+async def get_slam_context(
+    runId: str,
+    frameSeq: int | None = None,
+    maxChars: int = int(DEFAULT_SLAM_CONTEXT_BUDGET["maxChars"]),
+    mode: Literal["last_pose_and_health"] = str(DEFAULT_SLAM_CONTEXT_BUDGET["mode"]),
+) -> dict[str, Any]:
+    run_id = str(runId or "").strip()
+    if not run_id:
+        raise HTTPException(status_code=400, detail="runId is required")
+
+    budget = {
+        "maxChars": max(0, int(maxChars)),
+        "mode": str(mode or DEFAULT_SLAM_CONTEXT_BUDGET["mode"]).strip() or str(DEFAULT_SLAM_CONTEXT_BUDGET["mode"]),
+    }
+    requested_frame_seq = int(frameSeq) if frameSeq is not None else None
+
+    cleanup_dir: Path | None = None
+    events_rows: list[dict[str, Any]] = []
+    slam_error_payload: dict[str, Any] | None = None
+    alignment_payload: dict[str, Any] | None = None
+    try:
+        try:
+            run_package_dir, cleanup_dir, _can_write_events = await _resolve_context_run_package_dir_async(
+                run_package_raw=None,
+                run_id=run_id,
+            )
+            _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+            events_rows, _events_path = load_events_v1_rows(run_package_dir, manifest)
+
+            report_path = run_package_dir / "report.json"
+            if report_path.exists() and report_path.is_file():
+                try:
+                    report_payload = json.loads(report_path.read_text(encoding="utf-8-sig"))
+                except Exception:
+                    report_payload = None
+                if isinstance(report_payload, dict):
+                    quality_payload = report_payload.get("quality")
+                    quality_payload = quality_payload if isinstance(quality_payload, dict) else {}
+                    slam_error = quality_payload.get("slamError")
+                    if isinstance(slam_error, dict):
+                        slam_error_payload = slam_error
+                    slam_quality = quality_payload.get("slam")
+                    slam_quality = slam_quality if isinstance(slam_quality, dict) else {}
+                    slam_alignment = slam_quality.get("alignment")
+                    if isinstance(slam_alignment, dict):
+                        alignment_payload = slam_alignment
+        except HTTPException as ex:
+            if int(ex.status_code) != 404:
+                raise
+            events_rows = []
+
+        if not events_rows:
+            for row in gateway._inference_events:  # noqa: SLF001
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("runId", "")).strip() != run_id:
+                    continue
+                events_rows.append(dict(row))
+
+        if not events_rows:
+            raise HTTPException(status_code=404, detail=f"no SLAM events found for runId: {run_id}")
+
+        context_run_id = run_id
+        has_requested_run_id = False
+        fallback_run_id = ""
+        for row in events_rows:
+            if not isinstance(row, dict):
+                continue
+            event = row.get("event") if isinstance(row.get("event"), dict) else row
+            if not isinstance(event, dict):
+                continue
+            if str(event.get("name", "")).strip().lower() != "slam.pose":
+                continue
+            event_run_id = str(event.get("runId", "")).strip()
+            if event_run_id and not fallback_run_id:
+                fallback_run_id = event_run_id
+            if not event_run_id or event_run_id == run_id:
+                has_requested_run_id = True
+        if not has_requested_run_id and fallback_run_id:
+            context_run_id = fallback_run_id
+
+        return build_slam_context_pack(
+            run_id=context_run_id,
+            frame_seq=requested_frame_seq,
+            events_v1=events_rows,
+            budget=budget,
+            slam_error=slam_error_payload,
+            alignment=alignment_payload,
+        )
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
+@app.get("/api/plan/context")
+async def get_plan_context(
+    runId: str,
+    maxChars: int = int(DEFAULT_PLAN_CONTEXT_PACK_BUDGET["maxChars"]),
+    mode: Literal[
+        "seg_plus_pov_plus_risk",
+        "seg_plus_pov",
+        "pov_plus_risk",
+        "seg_only",
+        "pov_only",
+        "risk_only",
+    ] = str(DEFAULT_PLAN_CONTEXT_PACK_BUDGET["mode"]),
+    ctxMaxChars: int | None = None,
+    ctxMode: Literal[
+        "seg_plus_pov_plus_risk",
+        "seg_plus_pov",
+        "pov_plus_risk",
+        "seg_only",
+        "pov_only",
+        "risk_only",
+    ] | None = None,
+) -> dict[str, Any]:
+    run_id = str(runId or "").strip()
+    if not run_id:
+        raise HTTPException(status_code=400, detail="runId is required")
+
+    budget_override_used = ctxMaxChars is not None or ctxMode is not None
+    effective_max_chars = int(ctxMaxChars) if ctxMaxChars is not None else int(maxChars)
+    effective_mode = (
+        str(ctxMode).strip()
+        if ctxMode is not None
+        else str(mode or DEFAULT_PLAN_CONTEXT_PACK_BUDGET["mode"]).strip()
+    )
+    budget = {
+        "maxChars": max(0, int(effective_max_chars)),
+        "mode": effective_mode or str(DEFAULT_PLAN_CONTEXT_PACK_BUDGET["mode"]),
+    }
+
+    cleanup_dir: Path | None = None
+    events_rows: list[dict[str, Any]] = []
+    pov_ir_payload: dict[str, Any] | None = None
+    try:
+        try:
+            run_package_dir, cleanup_dir, _can_write_events = await _resolve_context_run_package_dir_async(
+                run_package_raw=None,
+                run_id=run_id,
+            )
+            _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+            events_rows, _events_path = load_events_v1_rows(run_package_dir, manifest)
+            if str(manifest.get("povIrJson", "")).strip():
+                _manifest, pov_ir_payload, _pov_path = _load_pov_ir_for_context(run_package_dir)
+        except HTTPException as ex:
+            if int(ex.status_code) != 404:
+                raise
+            events_rows = []
+
+        if not isinstance(pov_ir_payload, dict):
+            store_pov = gateway.pov_store.get(run_id)
+            pov_ir_payload = store_pov if isinstance(store_pov, dict) else None
+
+        if not events_rows:
+            for row in gateway._inference_events:  # noqa: SLF001
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("runId", "")).strip() != run_id:
+                    continue
+                events_rows.append(dict(row))
+
+        if not events_rows and not isinstance(pov_ir_payload, dict):
+            raise HTTPException(status_code=404, detail=f"no plan context data found for runId: {run_id}")
+
+        seg_context_budget = {
+            "maxChars": int(DEFAULT_SEG_CONTEXT_BUDGET["maxChars"]),
+            "maxSegments": int(DEFAULT_SEG_CONTEXT_BUDGET["maxSegments"]),
+            "mode": str(DEFAULT_SEG_CONTEXT_BUDGET["mode"]),
+        }
+        seg_context_raw = build_seg_context_from_events(events_rows, budget=seg_context_budget)
+        seg_stats = seg_context_raw.get("stats")
+        seg_stats = seg_stats if isinstance(seg_stats, dict) else {}
+        seg_out = seg_stats.get("out")
+        seg_out = seg_out if isinstance(seg_out, dict) else {}
+        seg_context = seg_context_raw if int(seg_out.get("segments", 0) or 0) > 0 else None
+
+        pov_context: dict[str, Any] | None = None
+        if isinstance(pov_ir_payload, dict):
+            pov_budget = PovContextBudgetRequest().model_dump()
+            ctx = build_context_pack(pov_ir_payload, budget=pov_budget, mode="decisions_plus_highlights")
+            ctx_text = render_context_text(ctx)
+            pov_context = finalize_context_pack_text(ctx, ctx_text, _now_ms())
+
+        risk_summary = extract_risk_summary(events_rows, frame_seq=None)
+        context_pack = build_plan_context_pack(
+            run_id=run_id,
+            seg_context=seg_context,
+            pov_context=pov_context,
+            risk_context=risk_summary,
+            budget=budget,
+        )
+        response_payload = dict(context_pack) if isinstance(context_pack, dict) else {}
+        response_payload["budgetOverrideUsed"] = bool(budget_override_used)
+        return response_payload
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
+@app.get("/api/contracts")
+async def contracts_index() -> dict[str, Any]:
+    try:
+        lock_path, lock_payload = _load_contract_lock()
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+    except ValueError as ex:
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+    versions = lock_payload.get("versions", {})
+    versions = versions if isinstance(versions, dict) else {}
+    return {
+        "schemaVersion": "byes.contracts.index.v1",
+        "generatedAtMs": _now_ms(),
+        "lockPath": str(lock_path),
+        "lockGeneratedAtMs": int(lock_payload.get("generatedAtMs", 0) or 0),
+        "versions": versions,
+        "runtimeDefaults": _runtime_contract_defaults(),
+    }
+
+
+@app.get("/api/models")
+async def models_index() -> dict[str, Any]:
+    return build_model_manifest(load_config())
+
+
+def _resolve_planner_provider(request_provider: str | None) -> str:
+    provider_text = str(request_provider or "").strip().lower()
+    if provider_text in {"reference", "llm", "pov"}:
+        return provider_text
+    env_provider = str(os.getenv("BYES_PLANNER_PROVIDER", "")).strip().lower()
+    if env_provider in {"reference", "llm", "pov"}:
+        return env_provider
+    return "reference"
+
+
+@app.post("/api/pov/context")
+async def build_pov_context(request: PovContextRequest) -> dict[str, Any]:
+    started_at = time.perf_counter()
+    cleanup_dir: Path | None = None
+    try:
+        run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
+            run_package_raw=request.runPackage,
+            run_id=request.runId,
+        )
+        manifest, pov_ir, _pov_path = _load_pov_ir_for_context(run_package_dir)
+        budget_payload = {
+            "maxChars": int(request.budget.maxChars),
+            "maxTokensApprox": int(request.budget.maxTokensApprox),
+        }
+        context_pack = build_context_pack(pov_ir, budget=budget_payload, mode=request.mode)
+        text_payload = render_context_text(context_pack)
+        context_pack = finalize_context_pack_text(context_pack, text_payload, _now_ms())
+
+        run_id = str(context_pack.get("runId", "")).strip()
+        if not run_id:
+            run_id = str(manifest.get("runId", "")).strip() or run_package_dir.name
+            context_pack["runId"] = run_id
+
+        latency_ms = int(max(0, (time.perf_counter() - started_at) * 1000.0))
+        if can_write_events:
+            stats = context_pack.get("stats", {})
+            stats = stats if isinstance(stats, dict) else {}
+            out_stats = stats.get("out", {})
+            out_stats = out_stats if isinstance(out_stats, dict) else {}
+            truncation = stats.get("truncation", {})
+            truncation = truncation if isinstance(truncation, dict) else {}
+            _try_append_pov_context_event(
+                run_package_dir=run_package_dir,
+                manifest=manifest,
+                run_id=run_id,
+                latency_ms=latency_ms,
+                budget=context_pack.get("budget", {}),
+                out_stats=out_stats,
+                truncation=truncation,
+            )
+        return context_pack
+    except HTTPException:
+        raise
+    except ValidationError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"pov context build failed: {ex}") from ex
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
+@app.post("/api/plan")
+async def generate_plan(request: PlanGenerateRequest, provider: str | None = None) -> dict[str, Any]:
+    started_at = time.perf_counter()
+    started_at_ms = _now_ms()
+    cleanup_dir: Path | None = None
+    try:
+        run_package_dir: Path | None = None
+        can_write_events = False
+        manifest: dict[str, Any] = {}
+        pov_ir_from_package: dict[str, Any] | None = None
+        events_rows: list[dict[str, Any]] = []
+        run_package_text = str(request.runPackage or "").strip()
+        run_id_text = str(request.runId or "").strip()
+
+        if run_package_text:
+            run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
+                run_package_raw=run_package_text,
+                run_id=run_id_text or None,
+            )
+        elif run_id_text:
+            try:
+                run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
+                    run_package_raw=None,
+                    run_id=run_id_text,
+                )
+            except HTTPException as ex:
+                if int(ex.status_code) != 404:
+                    raise
+                run_package_dir = None
+                can_write_events = False
+
+        if run_package_dir is not None:
+            manifest, pov_ir_from_package, _ = _load_pov_ir_for_context(run_package_dir)
+            events_rows, _ = load_events_v1_rows(run_package_dir, manifest)
+
+        frame_seq = int(request.frameSeq) if isinstance(request.frameSeq, int) and request.frameSeq > 0 else None
+        safe_frame_seq = int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1
+        run_id = (
+            str(request.runId or "").strip()
+            or str(manifest.get("runId", "")).strip()
+            or str((pov_ir_from_package or {}).get("runId", "")).strip()
+            or (run_package_dir.name if run_package_dir is not None else "")
+        )
+        frame_e2e_events_path: Path | None = None
+        if can_write_events and run_package_dir is not None:
+            frame_e2e_events_path = _resolve_events_v1_path(run_package_dir, manifest)
+            _frame_e2e_begin_state(
+                events_path=frame_e2e_events_path,
+                run_id=run_id,
+                frame_seq=safe_frame_seq,
+                t0_hint_ms=started_at_ms,
+            )
+        planner_provider = _resolve_planner_provider(provider)
+        inline_pov_ir = gateway.pov_store.get(run_id) if planner_provider == "pov" else None
+        pov_ir = inline_pov_ir if isinstance(inline_pov_ir, dict) else pov_ir_from_package
+        if not isinstance(pov_ir, dict):
+            raise HTTPException(status_code=404, detail=f"pov ir not found for runId: {run_id}")
+        budget_payload = {
+            "maxChars": int(request.budget.maxChars),
+            "maxTokensApprox": int(request.budget.maxTokensApprox),
+        }
+        constraints_payload = {
+            "allowConfirm": bool(request.constraints.allowConfirm),
+            "allowHaptic": bool(request.constraints.allowHaptic),
+            "maxActions": int(request.constraints.maxActions),
+        }
+        context_pack_override_payload: dict[str, Any] | None = None
+        slam_context_override_payload: dict[str, Any] | None = None
+        if isinstance(request.contextPackOverride, PlanContextPackOverrideRequest):
+            override_payload: dict[str, Any] = {}
+            if request.contextPackOverride.maxChars is not None:
+                override_payload["maxChars"] = int(max(0, int(request.contextPackOverride.maxChars)))
+            if request.contextPackOverride.mode is not None:
+                override_payload["mode"] = str(request.contextPackOverride.mode).strip()
+            if override_payload:
+                context_pack_override_payload = override_payload
+            slam_override_payload: dict[str, Any] = {}
+            if request.contextPackOverride.slamMaxChars is not None:
+                slam_override_payload["maxChars"] = int(max(0, int(request.contextPackOverride.slamMaxChars)))
+            if slam_override_payload:
+                slam_context_override_payload = slam_override_payload
+        bundle = generate_action_plan(
+            pov_ir=pov_ir,
+            run_id=run_id,
+            frame_seq=frame_seq,
+            budget=budget_payload,
+            mode=request.budget.mode,
+            constraints=constraints_payload,
+            events_rows=events_rows,
+            run_package_path=str(run_package_dir) if run_package_dir is not None else None,
+            planner_provider=planner_provider,
+            planner_pov_ir=inline_pov_ir if isinstance(inline_pov_ir, dict) else None,
+            plan_context_pack_budget=context_pack_override_payload,
+            slam_context_budget=slam_context_override_payload,
+            costmap_context_source=str(
+                gateway.config.inference_costmap_context_source or DEFAULT_COSTMAP_CONTEXT_SOURCE
+            ).strip().lower()
+            or DEFAULT_COSTMAP_CONTEXT_SOURCE,
+        )
+        plan_payload = bundle.get("plan")
+        if not isinstance(plan_payload, dict):
+            raise RuntimeError("planner returned invalid plan payload")
+        latency_ms = int(max(0, (time.perf_counter() - started_at) * 1000.0))
+        if can_write_events and run_package_dir is not None:
+            actions_payload = plan_payload.get("actions")
+            actions_payload = actions_payload if isinstance(actions_payload, list) else []
+            stop_count = sum(
+                1 for action in actions_payload if str(action.get("type", "")).strip().lower() == "stop"
+            )
+            confirm_action_count = sum(
+                1 for action in actions_payload if str(action.get("type", "")).strip().lower() == "confirm"
+            )
+            blocking_count = sum(1 for action in actions_payload if bool(action.get("blocking")))
+            planner = bundle.get("planner", {})
+            planner = planner if isinstance(planner, dict) else {}
+            guardrails = bundle.get("guardrailsApplied", [])
+            guardrails = guardrails if isinstance(guardrails, list) else []
+            findings = bundle.get("findings", [])
+            findings = findings if isinstance(findings, list) else []
+            plan_request_payload = bundle.get("planRequest")
+            plan_request_payload = plan_request_payload if isinstance(plan_request_payload, dict) else {}
+            plan_context_pack_payload = bundle.get("planContextPack")
+            plan_context_pack_payload = plan_context_pack_payload if isinstance(plan_context_pack_payload, dict) else {}
+            plan_context_alignment_payload = compute_plan_context_alignment(plan_request_payload, plan_payload)
+            planner_rule_payload = {
+                "applied": bool(planner.get("ruleApplied")),
+                "ruleVersion": planner.get("ruleVersion"),
+                "hazardHint": planner.get("ruleHazardHint"),
+                "matchedKeywords": planner.get("matchedKeywords"),
+                "segContextUsed": planner.get("segContextUsed"),
+                "riskLevel": str(plan_payload.get("riskLevel", "low")),
+            }
+            _try_append_plan_events(
+                run_package_dir=run_package_dir,
+                manifest=manifest,
+                run_id=run_id,
+                frame_seq=frame_seq,
+                latency_ms=latency_ms,
+                planner=planner,
+                risk_level=str(plan_payload.get("riskLevel", "low")),
+                actions_count=len(actions_payload),
+                stop_count=stop_count,
+                confirm_action_count=confirm_action_count,
+                blocking_count=blocking_count,
+                guardrails_applied=[str(item) for item in guardrails if str(item).strip()],
+                findings_count=len(findings),
+                plan_request=plan_request_payload,
+                rule_payload=planner_rule_payload,
+                alignment_payload=plan_context_alignment_payload,
+                plan_context_pack=plan_context_pack_payload,
+                t0_hint_ms=started_at_ms,
+            )
+            if frame_e2e_events_path is not None:
+                _try_append_frame_e2e_event(
+                    events_path=frame_e2e_events_path,
+                    run_id=run_id,
+                    frame_seq=safe_frame_seq,
+                    t1_ms=_now_ms(),
+                    t0_hint_ms=started_at_ms,
+                    plan_ms=latency_ms,
+                    plan_present=True,
+                )
+        else:
+            planner = bundle.get("planner", {})
+            planner = planner if isinstance(planner, dict) else {}
+            plan_request_payload = bundle.get("planRequest")
+            plan_request_payload = plan_request_payload if isinstance(plan_request_payload, dict) else {}
+            plan_context_pack_payload = bundle.get("planContextPack")
+            plan_context_pack_payload = plan_context_pack_payload if isinstance(plan_context_pack_payload, dict) else {}
+            plan_context_alignment_payload = compute_plan_context_alignment(plan_request_payload, plan_payload)
+            actions_payload = plan_payload.get("actions")
+            actions_payload = actions_payload if isinstance(actions_payload, list) else []
+            guardrails = bundle.get("guardrailsApplied", [])
+            guardrails = guardrails if isinstance(guardrails, list) else []
+            findings = bundle.get("findings", [])
+            findings = findings if isinstance(findings, list) else []
+            plan_context_pack_row = _build_byes_event(
+                run_id=run_id or "pov-live",
+                frame_seq=frame_seq or 1,
+                category="plan",
+                name="plan.context_pack",
+                latency_ms=latency_ms,
+                payload=_build_plan_context_pack_event_payload(plan_context_pack_payload),
+            )
+            plan_request_row = _build_byes_event(
+                run_id=run_id or "pov-live",
+                frame_seq=frame_seq or 1,
+                category="plan",
+                name="plan.request",
+                latency_ms=latency_ms,
+                payload=_build_plan_request_event_payload(plan_request_payload, planner),
+            )
+            plan_row = _build_byes_event(
+                run_id=run_id or "pov-live",
+                frame_seq=frame_seq or 1,
+                category="plan",
+                name="plan.generate",
+                latency_ms=latency_ms,
+                payload={
+                    "backend": planner.get("backend"),
+                    "model": planner.get("model"),
+                    "endpoint": planner.get("endpoint"),
+                    "plannerProvider": planner.get("plannerProvider") or planner.get("provider"),
+                    "promptVersion": planner.get("promptVersion"),
+                    "fallbackUsed": planner.get("fallbackUsed"),
+                    "fallbackReason": planner.get("fallbackReason"),
+                    "jsonValid": planner.get("jsonValid"),
+                    "contextUsedDetail": planner.get("contextUsedDetail"),
+                    "riskLevel": str(plan_payload.get("riskLevel", "low")),
+                    "actionsCount": len(actions_payload),
+                },
+            )
+            context_alignment_row = _build_byes_event(
+                run_id=run_id or "pov-live",
+                frame_seq=frame_seq or 1,
+                category="plan",
+                name="plan.context_alignment",
+                latency_ms=latency_ms,
+                payload=_build_plan_context_alignment_event_payload(plan_context_alignment_payload),
+            )
+            rule_row = None
+            if bool(planner.get("ruleApplied")):
+                rule_row = _build_byes_event(
+                    run_id=run_id or "pov-live",
+                    frame_seq=frame_seq or 1,
+                    category="plan",
+                    name="plan.rule_applied",
+                    latency_ms=latency_ms,
+                    payload={
+                        "ruleVersion": planner.get("ruleVersion"),
+                        "hazardHint": planner.get("ruleHazardHint"),
+                        "matchedKeywords": [str(item) for item in (planner.get("matchedKeywords") or [])[:3]],
+                        "segContextUsed": bool(planner.get("segContextUsed")),
+                        "riskLevel": str(plan_payload.get("riskLevel", "low")),
+                    },
+                )
+            safety_row = _build_byes_event(
+                run_id=run_id or "pov-live",
+                frame_seq=frame_seq or 1,
+                category="safety",
+                name="safety.kernel",
+                latency_ms=latency_ms,
+                payload={
+                    "riskLevel": str(plan_payload.get("riskLevel", "low")),
+                    "guardrailsApplied": [str(item) for item in guardrails if str(item).strip()],
+                    "findingsCount": len(findings),
+                },
+            )
+            existing_rows = list(gateway._inference_events)  # noqa: SLF001
+            existing_rows.extend(
+                [
+                    plan_context_pack_row,
+                    plan_request_row,
+                    plan_row,
+                    context_alignment_row,
+                ]
+            )
+            if isinstance(rule_row, dict):
+                existing_rows.append(rule_row)
+            existing_rows.append(safety_row)
+            has_frame_e2e = _frame_e2e_exists_in_rows(
+                existing_rows,
+                run_id=run_id or "pov-live",
+                frame_seq=frame_seq or 1,
+            )
+            await gateway._emit_inference_event(plan_context_pack_row)  # noqa: SLF001
+            await gateway._emit_inference_event(plan_request_row)  # noqa: SLF001
+            await gateway._emit_inference_event(plan_row)  # noqa: SLF001
+            await gateway._emit_inference_event(context_alignment_row)  # noqa: SLF001
+            if isinstance(rule_row, dict):
+                await gateway._emit_inference_event(rule_row)  # noqa: SLF001
+            await gateway._emit_inference_event(safety_row)  # noqa: SLF001
+            if not has_frame_e2e:
+                frame_e2e_row = _build_frame_e2e_event(
+                    rows=existing_rows,
+                    run_id=run_id or "pov-live",
+                    frame_seq=frame_seq or 1,
+                    t1_ms=_now_ms(),
+                    t0_hint_ms=started_at_ms,
+                )
+                await gateway._emit_inference_event(frame_e2e_row)  # noqa: SLF001
+        return plan_payload
+    except HTTPException:
+        raise
+    except ValidationError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"plan generation failed: {ex}") from ex
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
+@app.post("/api/plan/execute")
+async def execute_plan(request: PlanExecuteRequest) -> dict[str, Any]:
+    started_at = time.perf_counter()
+    started_at_ms = _now_ms()
+    cleanup_dir: Path | None = None
+    try:
+        plan = request.plan if isinstance(request.plan, dict) else None
+        if not isinstance(plan, dict):
+            raise HTTPException(status_code=400, detail="plan must be object")
+        if str(plan.get("schemaVersion", "")).strip() != "byes.action_plan.v1":
+            raise HTTPException(status_code=400, detail="plan.schemaVersion must be byes.action_plan.v1")
+        command_rows: list[dict[str, Any]] = []
+
+        def _emit_command(command: dict[str, Any]) -> None:
+            command_rows.append(dict(command))
+
+        result = execute_action_plan(plan, emit_event_fn=_emit_command, now_ms_fn=_now_ms)
+        run_package_text = str(request.runPackage or "").strip()
+        run_id_text = str(request.runId or "").strip()
+        if run_package_text or run_id_text:
+            run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
+                run_package_raw=run_package_text or None,
+                run_id=run_id_text or None,
+            )
+            _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+            events_path = _resolve_events_v1_path(run_package_dir, manifest)
+            run_id = str(plan.get("runId", "")).strip() or str(manifest.get("runId", "")).strip() or run_package_dir.name
+            frame_seq: int | None = None
+            if isinstance(request.frameSeq, int) and request.frameSeq > 0:
+                frame_seq = int(request.frameSeq)
+            elif isinstance(plan.get("frameSeq"), int) and int(plan.get("frameSeq", 0)) > 0:
+                frame_seq = int(plan.get("frameSeq", 0))
+            safe_frame_seq = int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1
+            _frame_e2e_begin_state(
+                events_path=events_path,
+                run_id=run_id,
+                frame_seq=safe_frame_seq,
+                t0_hint_ms=started_at_ms,
+            )
+            latency_ms = int(max(0, (time.perf_counter() - started_at) * 1000.0))
+            if can_write_events:
+                ui_events = _build_ui_events_from_commands(command_rows)
+                _try_append_plan_execute_event(
+                    run_package_dir=run_package_dir,
+                    manifest=manifest,
+                    run_id=run_id,
+                    frame_seq=frame_seq,
+                    latency_ms=latency_ms,
+                    executed_count=int(result.get("executedCount", 0) or 0),
+                    blocked_count=int(result.get("blockedCount", 0) or 0),
+                    pending_confirm_count=int(result.get("pendingConfirmCount", 0) or 0),
+                    ui_events=ui_events,
+                    t0_hint_ms=started_at_ms,
+                )
+                _try_append_frame_e2e_event(
+                    events_path=events_path,
+                    run_id=run_id,
+                    frame_seq=safe_frame_seq,
+                    t1_ms=_now_ms(),
+                    t0_hint_ms=started_at_ms,
+                    execute_ms=latency_ms,
+                    execute_present=True,
+                )
+        return result
+    except HTTPException:
+        raise
+    except Exception as ex:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"plan execution failed: {ex}") from ex
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
+@app.post("/api/confirm/response")
+async def confirm_response(request: ConfirmResponseRequest) -> dict[str, Any]:
+    started_at_ms = _now_ms()
+    cleanup_dir: Path | None = None
+    try:
+        run_package_dir, cleanup_dir, _can_write_events = await _resolve_context_run_package_dir_async(
+            run_package_raw=request.runPackage,
+            run_id=request.runId,
+        )
+        _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+        events_path = _resolve_events_v1_path(run_package_dir, manifest)
+        if not events_path.exists() or not events_path.is_file():
+            raise HTTPException(status_code=404, detail="eventsV1Jsonl not found")
+
+        run_id = str(request.runId).strip()
+        frame_seq = int(request.frameSeq)
+        confirm_id = str(request.confirmId).strip()
+        accepted = bool(request.accepted)
+        _frame_e2e_begin_state(
+            events_path=events_path,
+            run_id=run_id,
+            frame_seq=frame_seq,
+            t0_hint_ms=started_at_ms,
+        )
+        now_ms = _now_ms()
+        request_ts = _find_confirm_request_ts_ms(
+            events_path,
+            run_id=run_id,
+            frame_seq=frame_seq,
+            confirm_id=confirm_id,
+        )
+        latency_ms: int | None = None
+        if request_ts is not None and now_ms >= request_ts:
+            latency_ms = int(now_ms - request_ts)
+
+        rows: list[dict[str, Any]] = [
+            _build_byes_event(
+                run_id=run_id,
+                frame_seq=frame_seq,
+                category="ui",
+                name="ui.confirm_response",
+                latency_ms=latency_ms,
+                payload={
+                    "confirmId": confirm_id,
+                    "accepted": accepted,
+                    "latencyMs": latency_ms,
+                },
+            )
+        ]
+        wrote_guardrail_stop = False
+        if not accepted and _is_latest_risk_level_critical(events_path, run_id=run_id, frame_seq=frame_seq):
+            rows.append(
+                _build_byes_event(
+                    run_id=run_id,
+                    frame_seq=frame_seq,
+                    category="ui",
+                    name="ui.command",
+                    payload={
+                        "commandType": "stop",
+                        "actionId": f"guardrail-stop-{confirm_id}",
+                        "reason": "confirm_rejected_critical",
+                    },
+                )
+            )
+            wrote_guardrail_stop = True
+
+        _append_events_v1_rows(events_path, rows)
+        _try_append_frame_e2e_event(
+            events_path=events_path,
+            run_id=run_id,
+            frame_seq=frame_seq,
+            t1_ms=_now_ms(),
+            t0_hint_ms=started_at_ms,
+            confirm_ms=latency_ms,
+            confirm_present=True,
+        )
+        return {
+            "ok": True,
+            "runId": run_id,
+            "frameSeq": frame_seq,
+            "confirmId": confirm_id,
+            "accepted": accepted,
+            "latencyMs": latency_ms,
+            "guardrailStopIssued": wrote_guardrail_stop,
+        }
+    except HTTPException:
+        raise
+    except ValidationError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"confirm response failed: {ex}") from ex
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
 @app.get("/api/run_packages")
 async def run_packages_list(
     request: Request,
@@ -1288,6 +3023,82 @@ async def run_packages_list(
     max_critical_misses: int | None = None,
     max_risk_latency_p90: int | None = None,
     max_risk_latency_max: int | None = None,
+    max_ocr_cer: float | None = None,
+    min_ocr_exact_match_rate: float | None = None,
+    min_ocr_coverage: float | None = None,
+    max_ocr_latency_p90: int | None = None,
+    min_seg_f1_50: float | None = None,
+    min_seg_coverage: float | None = None,
+    min_seg_track_coverage: float | None = None,
+    min_seg_tracks_total: int | None = None,
+    max_seg_id_switches: int | None = None,
+    min_depth_delta1: float | None = None,
+    max_depth_absrel: float | None = None,
+    min_depth_coverage: float | None = None,
+    max_depth_latency_p90: int | None = None,
+    max_depth_jitter_p90: float | None = None,
+    max_depth_flicker_mean: float | None = None,
+    max_depth_scale_drift_p90: float | None = None,
+    min_costmap_coverage: float | None = None,
+    max_costmap_latency_p90: int | None = None,
+    max_costmap_dynamic_filter_rate_mean: float | None = None,
+    min_costmap_dynamic_temporal_used_rate: float | None = None,
+    min_costmap_dynamic_mask_used_rate: float | None = None,
+    max_costmap_dynamic_tracks_used_mean: float | None = None,
+    min_costmap_fused_coverage: float | None = None,
+    max_costmap_fused_latency_p90: int | None = None,
+    min_costmap_fused_iou_p90: float | None = None,
+    max_costmap_fused_flicker_rate_mean: float | None = None,
+    max_costmap_fused_shift_gate_reject_rate: float | None = None,
+    min_costmap_fused_shift_used_rate: float | None = None,
+    min_slam_tracking_rate: float | None = None,
+    max_slam_lost_rate: float | None = None,
+    max_slam_latency_p90: int | None = None,
+    max_slam_align_residual_p90: int | None = None,
+    max_slam_ate_rmse: float | None = None,
+    max_slam_rpe_trans_rmse: float | None = None,
+    min_seg_mask_f1_50: float | None = None,
+    min_seg_mask_coverage: float | None = None,
+    max_seg_latency_p90: int | None = None,
+    max_frame_e2e_p90: int | None = None,
+    max_frame_e2e_max: int | None = None,
+    max_frame_user_e2e_p90: int | None = None,
+    max_frame_user_e2e_max: int | None = None,
+    max_frame_user_e2e_tts_p90: int | None = None,
+    max_frame_user_e2e_ar_p90: int | None = None,
+    min_ack_kind_diversity: int | None = None,
+    max_models_missing_required: int | None = None,
+    max_seg_ctx_chars: int | None = None,
+    max_seg_ctx_trunc_dropped: int | None = None,
+    max_plan_req_seg_chars_p90: int | None = None,
+    max_plan_req_seg_trunc_dropped: int | None = None,
+    plan_req_fallback_used: str = "any",
+    min_plan_seg_ctx_coverage: float | None = None,
+    min_plan_pov_ctx_coverage: float | None = None,
+    min_plan_slam_ctx_coverage: float | None = None,
+    require_plan_ctx_used: str = "any",
+    require_plan_slam_ctx_used: str = "any",
+    require_plan_costmap_ctx_used: str = "any",
+    max_plan_ctx_trunc_rate: float | None = None,
+    min_plan_ctx_chars_p90: int | None = None,
+    require_slam_ctx_present: str = "any",
+    max_slam_ctx_trunc_rate: float | None = None,
+    min_slam_tracking_rate_mean: float | None = None,
+    min_seg_prompt_text_chars: int | None = None,
+    max_seg_prompt_trunc_rate: float | None = None,
+    max_seg_prompt_trunc_dropped: int | None = None,
+    has_pov: str = "any",
+    min_pov_decisions: int | None = None,
+    has_pov_context: str = "any",
+    min_pov_context_token_approx: int | None = None,
+    has_plan: str = "any",
+    plan_fallback_used: str = "any",
+    max_plan_latency_p90: int | None = None,
+    max_plan_overcautious_rate: float | None = None,
+    max_plan_guardrail_override_rate: float | None = None,
+    max_plan_guardrails: int | None = None,
+    min_plan_score: float | None = None,
+    plan_risk_level: str | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> dict[str, Any]:
@@ -1304,6 +3115,82 @@ async def run_packages_list(
         max_critical_misses=max_critical_misses,
         max_risk_latency_p90=max_risk_latency_p90,
         max_risk_latency_max=max_risk_latency_max,
+        max_ocr_cer=max_ocr_cer,
+        min_ocr_exact_match_rate=min_ocr_exact_match_rate,
+        min_ocr_coverage=min_ocr_coverage,
+        max_ocr_latency_p90=max_ocr_latency_p90,
+        min_seg_f1_50=min_seg_f1_50,
+        min_seg_coverage=min_seg_coverage,
+        min_seg_track_coverage=min_seg_track_coverage,
+        min_seg_tracks_total=min_seg_tracks_total,
+        max_seg_id_switches=max_seg_id_switches,
+        min_depth_delta1=min_depth_delta1,
+        max_depth_absrel=max_depth_absrel,
+        min_depth_coverage=min_depth_coverage,
+        max_depth_latency_p90=max_depth_latency_p90,
+        max_depth_jitter_p90=max_depth_jitter_p90,
+        max_depth_flicker_mean=max_depth_flicker_mean,
+        max_depth_scale_drift_p90=max_depth_scale_drift_p90,
+        min_costmap_coverage=min_costmap_coverage,
+        max_costmap_latency_p90=max_costmap_latency_p90,
+        max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+        min_costmap_dynamic_temporal_used_rate=min_costmap_dynamic_temporal_used_rate,
+        min_costmap_dynamic_mask_used_rate=min_costmap_dynamic_mask_used_rate,
+        max_costmap_dynamic_tracks_used_mean=max_costmap_dynamic_tracks_used_mean,
+        min_costmap_fused_coverage=min_costmap_fused_coverage,
+        max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
+        min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
+        max_costmap_fused_flicker_rate_mean=max_costmap_fused_flicker_rate_mean,
+        max_costmap_fused_shift_gate_reject_rate=max_costmap_fused_shift_gate_reject_rate,
+        min_costmap_fused_shift_used_rate=min_costmap_fused_shift_used_rate,
+        min_slam_tracking_rate=min_slam_tracking_rate,
+        max_slam_lost_rate=max_slam_lost_rate,
+        max_slam_latency_p90=max_slam_latency_p90,
+        max_slam_align_residual_p90=max_slam_align_residual_p90,
+        max_slam_ate_rmse=max_slam_ate_rmse,
+        max_slam_rpe_trans_rmse=max_slam_rpe_trans_rmse,
+        min_seg_mask_f1_50=min_seg_mask_f1_50,
+        min_seg_mask_coverage=min_seg_mask_coverage,
+        max_seg_latency_p90=max_seg_latency_p90,
+        max_frame_e2e_p90=max_frame_e2e_p90,
+        max_frame_e2e_max=max_frame_e2e_max,
+        max_frame_user_e2e_p90=max_frame_user_e2e_p90,
+        max_frame_user_e2e_max=max_frame_user_e2e_max,
+        max_frame_user_e2e_tts_p90=max_frame_user_e2e_tts_p90,
+        max_frame_user_e2e_ar_p90=max_frame_user_e2e_ar_p90,
+        min_ack_kind_diversity=min_ack_kind_diversity,
+        max_models_missing_required=max_models_missing_required,
+        max_seg_ctx_chars=max_seg_ctx_chars,
+        max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
+        max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
+        max_plan_req_seg_trunc_dropped=max_plan_req_seg_trunc_dropped,
+        plan_req_fallback_used=plan_req_fallback_used,
+        min_plan_seg_ctx_coverage=min_plan_seg_ctx_coverage,
+        min_plan_pov_ctx_coverage=min_plan_pov_ctx_coverage,
+        min_plan_slam_ctx_coverage=min_plan_slam_ctx_coverage,
+        require_plan_ctx_used=require_plan_ctx_used,
+        require_plan_slam_ctx_used=require_plan_slam_ctx_used,
+        require_plan_costmap_ctx_used=require_plan_costmap_ctx_used,
+        max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
+        min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
+        require_slam_ctx_present=require_slam_ctx_present,
+        max_slam_ctx_trunc_rate=max_slam_ctx_trunc_rate,
+        min_slam_tracking_rate_mean=min_slam_tracking_rate_mean,
+        min_seg_prompt_text_chars=min_seg_prompt_text_chars,
+        max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
+        max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
+        has_pov=has_pov,
+        min_pov_decisions=min_pov_decisions,
+        has_pov_context=has_pov_context,
+        min_pov_context_token_approx=min_pov_context_token_approx,
+        has_plan=has_plan,
+        plan_fallback_used=plan_fallback_used,
+        max_plan_latency_p90=max_plan_latency_p90,
+        max_plan_overcautious_rate=max_plan_overcautious_rate,
+        max_plan_guardrail_override_rate=max_plan_guardrail_override_rate,
+        max_plan_guardrails=max_plan_guardrails,
+        min_plan_score=min_plan_score,
+        plan_risk_level=plan_risk_level,
         sort=sort,
         order=order,
     )
@@ -1321,6 +3208,82 @@ async def run_packages_list(
             "max_critical_misses": max_critical_misses,
             "max_risk_latency_p90": max_risk_latency_p90,
             "max_risk_latency_max": max_risk_latency_max,
+            "max_ocr_cer": max_ocr_cer,
+            "min_ocr_exact_match_rate": min_ocr_exact_match_rate,
+            "min_ocr_coverage": min_ocr_coverage,
+            "max_ocr_latency_p90": max_ocr_latency_p90,
+            "min_seg_f1_50": min_seg_f1_50,
+            "min_seg_coverage": min_seg_coverage,
+            "min_seg_track_coverage": min_seg_track_coverage,
+            "min_seg_tracks_total": min_seg_tracks_total,
+            "max_seg_id_switches": max_seg_id_switches,
+            "min_depth_delta1": min_depth_delta1,
+            "max_depth_absrel": max_depth_absrel,
+            "min_depth_coverage": min_depth_coverage,
+            "max_depth_latency_p90": max_depth_latency_p90,
+            "max_depth_jitter_p90": max_depth_jitter_p90,
+            "max_depth_flicker_mean": max_depth_flicker_mean,
+            "max_depth_scale_drift_p90": max_depth_scale_drift_p90,
+            "min_costmap_coverage": min_costmap_coverage,
+            "max_costmap_latency_p90": max_costmap_latency_p90,
+            "max_costmap_dynamic_filter_rate_mean": max_costmap_dynamic_filter_rate_mean,
+            "min_costmap_dynamic_temporal_used_rate": min_costmap_dynamic_temporal_used_rate,
+            "min_costmap_dynamic_mask_used_rate": min_costmap_dynamic_mask_used_rate,
+            "max_costmap_dynamic_tracks_used_mean": max_costmap_dynamic_tracks_used_mean,
+            "min_costmap_fused_coverage": min_costmap_fused_coverage,
+            "max_costmap_fused_latency_p90": max_costmap_fused_latency_p90,
+            "min_costmap_fused_iou_p90": min_costmap_fused_iou_p90,
+            "max_costmap_fused_flicker_rate_mean": max_costmap_fused_flicker_rate_mean,
+            "max_costmap_fused_shift_gate_reject_rate": max_costmap_fused_shift_gate_reject_rate,
+            "min_costmap_fused_shift_used_rate": min_costmap_fused_shift_used_rate,
+            "min_slam_tracking_rate": min_slam_tracking_rate,
+            "max_slam_lost_rate": max_slam_lost_rate,
+            "max_slam_latency_p90": max_slam_latency_p90,
+            "max_slam_align_residual_p90": max_slam_align_residual_p90,
+            "max_slam_ate_rmse": max_slam_ate_rmse,
+            "max_slam_rpe_trans_rmse": max_slam_rpe_trans_rmse,
+            "min_seg_mask_f1_50": min_seg_mask_f1_50,
+            "min_seg_mask_coverage": min_seg_mask_coverage,
+            "max_seg_latency_p90": max_seg_latency_p90,
+            "max_frame_e2e_p90": max_frame_e2e_p90,
+            "max_frame_e2e_max": max_frame_e2e_max,
+            "max_frame_user_e2e_p90": max_frame_user_e2e_p90,
+            "max_frame_user_e2e_max": max_frame_user_e2e_max,
+            "max_frame_user_e2e_tts_p90": max_frame_user_e2e_tts_p90,
+            "max_frame_user_e2e_ar_p90": max_frame_user_e2e_ar_p90,
+            "min_ack_kind_diversity": min_ack_kind_diversity,
+            "max_models_missing_required": max_models_missing_required,
+            "max_seg_ctx_chars": max_seg_ctx_chars,
+            "max_seg_ctx_trunc_dropped": max_seg_ctx_trunc_dropped,
+            "max_plan_req_seg_chars_p90": max_plan_req_seg_chars_p90,
+            "max_plan_req_seg_trunc_dropped": max_plan_req_seg_trunc_dropped,
+            "plan_req_fallback_used": plan_req_fallback_used,
+            "min_plan_seg_ctx_coverage": min_plan_seg_ctx_coverage,
+            "min_plan_pov_ctx_coverage": min_plan_pov_ctx_coverage,
+            "min_plan_slam_ctx_coverage": min_plan_slam_ctx_coverage,
+            "require_plan_ctx_used": require_plan_ctx_used,
+            "require_plan_slam_ctx_used": require_plan_slam_ctx_used,
+            "require_plan_costmap_ctx_used": require_plan_costmap_ctx_used,
+            "max_plan_ctx_trunc_rate": max_plan_ctx_trunc_rate,
+            "min_plan_ctx_chars_p90": min_plan_ctx_chars_p90,
+            "require_slam_ctx_present": require_slam_ctx_present,
+            "max_slam_ctx_trunc_rate": max_slam_ctx_trunc_rate,
+            "min_slam_tracking_rate_mean": min_slam_tracking_rate_mean,
+            "min_seg_prompt_text_chars": min_seg_prompt_text_chars,
+            "max_seg_prompt_trunc_rate": max_seg_prompt_trunc_rate,
+            "max_seg_prompt_trunc_dropped": max_seg_prompt_trunc_dropped,
+            "has_pov": has_pov,
+            "min_pov_decisions": min_pov_decisions,
+            "has_pov_context": has_pov_context,
+            "min_pov_context_token_approx": min_pov_context_token_approx,
+            "has_plan": has_plan,
+            "plan_fallback_used": plan_fallback_used,
+            "max_plan_latency_p90": max_plan_latency_p90,
+            "max_plan_overcautious_rate": max_plan_overcautious_rate,
+            "max_plan_guardrail_override_rate": max_plan_guardrail_override_rate,
+            "max_plan_guardrails": max_plan_guardrails,
+            "min_plan_score": min_plan_score,
+            "plan_risk_level": plan_risk_level,
             "sort": sort,
             "order": order,
             "limit": limit,
@@ -1342,6 +3305,82 @@ async def run_packages_export_json(
     max_critical_misses: int | None = None,
     max_risk_latency_p90: int | None = None,
     max_risk_latency_max: int | None = None,
+    max_ocr_cer: float | None = None,
+    min_ocr_exact_match_rate: float | None = None,
+    min_ocr_coverage: float | None = None,
+    max_ocr_latency_p90: int | None = None,
+    min_seg_f1_50: float | None = None,
+    min_seg_coverage: float | None = None,
+    min_seg_track_coverage: float | None = None,
+    min_seg_tracks_total: int | None = None,
+    max_seg_id_switches: int | None = None,
+    min_depth_delta1: float | None = None,
+    max_depth_absrel: float | None = None,
+    min_depth_coverage: float | None = None,
+    max_depth_latency_p90: int | None = None,
+    max_depth_jitter_p90: float | None = None,
+    max_depth_flicker_mean: float | None = None,
+    max_depth_scale_drift_p90: float | None = None,
+    min_costmap_coverage: float | None = None,
+    max_costmap_latency_p90: int | None = None,
+    max_costmap_dynamic_filter_rate_mean: float | None = None,
+    min_costmap_dynamic_temporal_used_rate: float | None = None,
+    min_costmap_dynamic_mask_used_rate: float | None = None,
+    max_costmap_dynamic_tracks_used_mean: float | None = None,
+    min_costmap_fused_coverage: float | None = None,
+    max_costmap_fused_latency_p90: int | None = None,
+    min_costmap_fused_iou_p90: float | None = None,
+    max_costmap_fused_flicker_rate_mean: float | None = None,
+    max_costmap_fused_shift_gate_reject_rate: float | None = None,
+    min_costmap_fused_shift_used_rate: float | None = None,
+    min_slam_tracking_rate: float | None = None,
+    max_slam_lost_rate: float | None = None,
+    max_slam_latency_p90: int | None = None,
+    max_slam_align_residual_p90: int | None = None,
+    max_slam_ate_rmse: float | None = None,
+    max_slam_rpe_trans_rmse: float | None = None,
+    min_seg_mask_f1_50: float | None = None,
+    min_seg_mask_coverage: float | None = None,
+    max_seg_latency_p90: int | None = None,
+    max_frame_e2e_p90: int | None = None,
+    max_frame_e2e_max: int | None = None,
+    max_frame_user_e2e_p90: int | None = None,
+    max_frame_user_e2e_max: int | None = None,
+    max_frame_user_e2e_tts_p90: int | None = None,
+    max_frame_user_e2e_ar_p90: int | None = None,
+    min_ack_kind_diversity: int | None = None,
+    max_models_missing_required: int | None = None,
+    max_seg_ctx_chars: int | None = None,
+    max_seg_ctx_trunc_dropped: int | None = None,
+    max_plan_req_seg_chars_p90: int | None = None,
+    max_plan_req_seg_trunc_dropped: int | None = None,
+    plan_req_fallback_used: str = "any",
+    min_plan_seg_ctx_coverage: float | None = None,
+    min_plan_pov_ctx_coverage: float | None = None,
+    min_plan_slam_ctx_coverage: float | None = None,
+    require_plan_ctx_used: str = "any",
+    require_plan_slam_ctx_used: str = "any",
+    max_plan_ctx_trunc_rate: float | None = None,
+    min_plan_ctx_chars_p90: int | None = None,
+    require_slam_ctx_present: str = "any",
+    max_slam_ctx_trunc_rate: float | None = None,
+    min_slam_tracking_rate_mean: float | None = None,
+    min_seg_prompt_text_chars: int | None = None,
+    max_seg_prompt_trunc_rate: float | None = None,
+    max_seg_prompt_trunc_dropped: int | None = None,
+    has_pov: str = "any",
+    min_pov_decisions: int | None = None,
+    has_pov_context: str = "any",
+    min_pov_context_token_approx: int | None = None,
+    has_plan: str = "any",
+    plan_fallback_used: str = "any",
+    max_plan_latency_p90: int | None = None,
+    max_plan_overcautious_rate: float | None = None,
+    max_plan_guardrail_override_rate: float | None = None,
+    require_plan_costmap_ctx_used: str = "any",
+    max_plan_guardrails: int | None = None,
+    min_plan_score: float | None = None,
+    plan_risk_level: str | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> dict[str, Any]:
@@ -1358,6 +3397,82 @@ async def run_packages_export_json(
         max_critical_misses=max_critical_misses,
         max_risk_latency_p90=max_risk_latency_p90,
         max_risk_latency_max=max_risk_latency_max,
+        max_ocr_cer=max_ocr_cer,
+        min_ocr_exact_match_rate=min_ocr_exact_match_rate,
+        min_ocr_coverage=min_ocr_coverage,
+        max_ocr_latency_p90=max_ocr_latency_p90,
+        min_seg_f1_50=min_seg_f1_50,
+        min_seg_coverage=min_seg_coverage,
+        min_seg_track_coverage=min_seg_track_coverage,
+        min_seg_tracks_total=min_seg_tracks_total,
+        max_seg_id_switches=max_seg_id_switches,
+        min_depth_delta1=min_depth_delta1,
+        max_depth_absrel=max_depth_absrel,
+        min_depth_coverage=min_depth_coverage,
+        max_depth_latency_p90=max_depth_latency_p90,
+        max_depth_jitter_p90=max_depth_jitter_p90,
+        max_depth_flicker_mean=max_depth_flicker_mean,
+        max_depth_scale_drift_p90=max_depth_scale_drift_p90,
+        min_costmap_coverage=min_costmap_coverage,
+        max_costmap_latency_p90=max_costmap_latency_p90,
+        max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+        min_costmap_dynamic_temporal_used_rate=min_costmap_dynamic_temporal_used_rate,
+        min_costmap_dynamic_mask_used_rate=min_costmap_dynamic_mask_used_rate,
+        max_costmap_dynamic_tracks_used_mean=max_costmap_dynamic_tracks_used_mean,
+            min_costmap_fused_coverage=min_costmap_fused_coverage,
+            max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
+            min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
+            max_costmap_fused_flicker_rate_mean=max_costmap_fused_flicker_rate_mean,
+            max_costmap_fused_shift_gate_reject_rate=max_costmap_fused_shift_gate_reject_rate,
+            min_costmap_fused_shift_used_rate=min_costmap_fused_shift_used_rate,
+            min_slam_tracking_rate=min_slam_tracking_rate,
+        max_slam_lost_rate=max_slam_lost_rate,
+        max_slam_latency_p90=max_slam_latency_p90,
+        max_slam_align_residual_p90=max_slam_align_residual_p90,
+        max_slam_ate_rmse=max_slam_ate_rmse,
+        max_slam_rpe_trans_rmse=max_slam_rpe_trans_rmse,
+        min_seg_mask_f1_50=min_seg_mask_f1_50,
+        min_seg_mask_coverage=min_seg_mask_coverage,
+        max_seg_latency_p90=max_seg_latency_p90,
+        max_frame_e2e_p90=max_frame_e2e_p90,
+        max_frame_e2e_max=max_frame_e2e_max,
+        max_frame_user_e2e_p90=max_frame_user_e2e_p90,
+        max_frame_user_e2e_max=max_frame_user_e2e_max,
+        max_frame_user_e2e_tts_p90=max_frame_user_e2e_tts_p90,
+        max_frame_user_e2e_ar_p90=max_frame_user_e2e_ar_p90,
+        min_ack_kind_diversity=min_ack_kind_diversity,
+        max_models_missing_required=max_models_missing_required,
+        max_seg_ctx_chars=max_seg_ctx_chars,
+        max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
+        max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
+        max_plan_req_seg_trunc_dropped=max_plan_req_seg_trunc_dropped,
+        plan_req_fallback_used=plan_req_fallback_used,
+        min_plan_seg_ctx_coverage=min_plan_seg_ctx_coverage,
+        min_plan_pov_ctx_coverage=min_plan_pov_ctx_coverage,
+        min_plan_slam_ctx_coverage=min_plan_slam_ctx_coverage,
+        require_plan_ctx_used=require_plan_ctx_used,
+        require_plan_slam_ctx_used=require_plan_slam_ctx_used,
+        require_plan_costmap_ctx_used=require_plan_costmap_ctx_used,
+        max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
+        min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
+        require_slam_ctx_present=require_slam_ctx_present,
+        max_slam_ctx_trunc_rate=max_slam_ctx_trunc_rate,
+        min_slam_tracking_rate_mean=min_slam_tracking_rate_mean,
+        min_seg_prompt_text_chars=min_seg_prompt_text_chars,
+        max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
+        max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
+        has_pov=has_pov,
+        min_pov_decisions=min_pov_decisions,
+        has_pov_context=has_pov_context,
+        min_pov_context_token_approx=min_pov_context_token_approx,
+        has_plan=has_plan,
+        plan_fallback_used=plan_fallback_used,
+        max_plan_latency_p90=max_plan_latency_p90,
+        max_plan_overcautious_rate=max_plan_overcautious_rate,
+        max_plan_guardrail_override_rate=max_plan_guardrail_override_rate,
+        max_plan_guardrails=max_plan_guardrails,
+        min_plan_score=min_plan_score,
+        plan_risk_level=plan_risk_level,
         sort=sort,
         order=order,
     )
@@ -1381,6 +3496,82 @@ async def run_packages_export_csv(
     max_critical_misses: int | None = None,
     max_risk_latency_p90: int | None = None,
     max_risk_latency_max: int | None = None,
+    max_ocr_cer: float | None = None,
+    min_ocr_exact_match_rate: float | None = None,
+    min_ocr_coverage: float | None = None,
+    max_ocr_latency_p90: int | None = None,
+    min_seg_f1_50: float | None = None,
+    min_seg_coverage: float | None = None,
+    min_seg_track_coverage: float | None = None,
+    min_seg_tracks_total: int | None = None,
+    max_seg_id_switches: int | None = None,
+    min_depth_delta1: float | None = None,
+    max_depth_absrel: float | None = None,
+    min_depth_coverage: float | None = None,
+    max_depth_latency_p90: int | None = None,
+    max_depth_jitter_p90: float | None = None,
+    max_depth_flicker_mean: float | None = None,
+    max_depth_scale_drift_p90: float | None = None,
+    min_costmap_coverage: float | None = None,
+    max_costmap_latency_p90: int | None = None,
+    max_costmap_dynamic_filter_rate_mean: float | None = None,
+    min_costmap_dynamic_temporal_used_rate: float | None = None,
+    min_costmap_dynamic_mask_used_rate: float | None = None,
+    max_costmap_dynamic_tracks_used_mean: float | None = None,
+    min_costmap_fused_coverage: float | None = None,
+    max_costmap_fused_latency_p90: int | None = None,
+    min_costmap_fused_iou_p90: float | None = None,
+    max_costmap_fused_flicker_rate_mean: float | None = None,
+    max_costmap_fused_shift_gate_reject_rate: float | None = None,
+    min_costmap_fused_shift_used_rate: float | None = None,
+    min_slam_tracking_rate: float | None = None,
+    max_slam_lost_rate: float | None = None,
+    max_slam_latency_p90: int | None = None,
+    max_slam_align_residual_p90: int | None = None,
+    max_slam_ate_rmse: float | None = None,
+    max_slam_rpe_trans_rmse: float | None = None,
+    min_seg_mask_f1_50: float | None = None,
+    min_seg_mask_coverage: float | None = None,
+    max_seg_latency_p90: int | None = None,
+    max_frame_e2e_p90: int | None = None,
+    max_frame_e2e_max: int | None = None,
+    max_frame_user_e2e_p90: int | None = None,
+    max_frame_user_e2e_max: int | None = None,
+    max_frame_user_e2e_tts_p90: int | None = None,
+    max_frame_user_e2e_ar_p90: int | None = None,
+    min_ack_kind_diversity: int | None = None,
+    max_models_missing_required: int | None = None,
+    max_seg_ctx_chars: int | None = None,
+    max_seg_ctx_trunc_dropped: int | None = None,
+    max_plan_req_seg_chars_p90: int | None = None,
+    max_plan_req_seg_trunc_dropped: int | None = None,
+    plan_req_fallback_used: str = "any",
+    min_plan_seg_ctx_coverage: float | None = None,
+    min_plan_pov_ctx_coverage: float | None = None,
+    min_plan_slam_ctx_coverage: float | None = None,
+    require_plan_ctx_used: str = "any",
+    require_plan_slam_ctx_used: str = "any",
+    max_plan_ctx_trunc_rate: float | None = None,
+    min_plan_ctx_chars_p90: int | None = None,
+    require_slam_ctx_present: str = "any",
+    max_slam_ctx_trunc_rate: float | None = None,
+    min_slam_tracking_rate_mean: float | None = None,
+    min_seg_prompt_text_chars: int | None = None,
+    max_seg_prompt_trunc_rate: float | None = None,
+    max_seg_prompt_trunc_dropped: int | None = None,
+    has_pov: str = "any",
+    min_pov_decisions: int | None = None,
+    has_pov_context: str = "any",
+    min_pov_context_token_approx: int | None = None,
+    has_plan: str = "any",
+    plan_fallback_used: str = "any",
+    max_plan_latency_p90: int | None = None,
+    max_plan_overcautious_rate: float | None = None,
+    max_plan_guardrail_override_rate: float | None = None,
+    require_plan_costmap_ctx_used: str = "any",
+    max_plan_guardrails: int | None = None,
+    min_plan_score: float | None = None,
+    plan_risk_level: str | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> Response:
@@ -1397,6 +3588,82 @@ async def run_packages_export_csv(
         max_critical_misses=max_critical_misses,
         max_risk_latency_p90=max_risk_latency_p90,
         max_risk_latency_max=max_risk_latency_max,
+        max_ocr_cer=max_ocr_cer,
+        min_ocr_exact_match_rate=min_ocr_exact_match_rate,
+        min_ocr_coverage=min_ocr_coverage,
+        max_ocr_latency_p90=max_ocr_latency_p90,
+        min_seg_f1_50=min_seg_f1_50,
+        min_seg_coverage=min_seg_coverage,
+        min_seg_track_coverage=min_seg_track_coverage,
+        min_seg_tracks_total=min_seg_tracks_total,
+        max_seg_id_switches=max_seg_id_switches,
+        min_depth_delta1=min_depth_delta1,
+        max_depth_absrel=max_depth_absrel,
+        min_depth_coverage=min_depth_coverage,
+        max_depth_latency_p90=max_depth_latency_p90,
+        max_depth_jitter_p90=max_depth_jitter_p90,
+        max_depth_flicker_mean=max_depth_flicker_mean,
+        max_depth_scale_drift_p90=max_depth_scale_drift_p90,
+        min_costmap_coverage=min_costmap_coverage,
+        max_costmap_latency_p90=max_costmap_latency_p90,
+        max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+        min_costmap_dynamic_temporal_used_rate=min_costmap_dynamic_temporal_used_rate,
+        min_costmap_dynamic_mask_used_rate=min_costmap_dynamic_mask_used_rate,
+        max_costmap_dynamic_tracks_used_mean=max_costmap_dynamic_tracks_used_mean,
+        min_costmap_fused_coverage=min_costmap_fused_coverage,
+        max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
+        min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
+        max_costmap_fused_flicker_rate_mean=max_costmap_fused_flicker_rate_mean,
+        max_costmap_fused_shift_gate_reject_rate=max_costmap_fused_shift_gate_reject_rate,
+        min_costmap_fused_shift_used_rate=min_costmap_fused_shift_used_rate,
+        min_slam_tracking_rate=min_slam_tracking_rate,
+        max_slam_lost_rate=max_slam_lost_rate,
+        max_slam_latency_p90=max_slam_latency_p90,
+        max_slam_align_residual_p90=max_slam_align_residual_p90,
+        max_slam_ate_rmse=max_slam_ate_rmse,
+        max_slam_rpe_trans_rmse=max_slam_rpe_trans_rmse,
+        min_seg_mask_f1_50=min_seg_mask_f1_50,
+        min_seg_mask_coverage=min_seg_mask_coverage,
+        max_seg_latency_p90=max_seg_latency_p90,
+        max_frame_e2e_p90=max_frame_e2e_p90,
+        max_frame_e2e_max=max_frame_e2e_max,
+        max_frame_user_e2e_p90=max_frame_user_e2e_p90,
+        max_frame_user_e2e_max=max_frame_user_e2e_max,
+        max_frame_user_e2e_tts_p90=max_frame_user_e2e_tts_p90,
+        max_frame_user_e2e_ar_p90=max_frame_user_e2e_ar_p90,
+        min_ack_kind_diversity=min_ack_kind_diversity,
+        max_models_missing_required=max_models_missing_required,
+        max_seg_ctx_chars=max_seg_ctx_chars,
+        max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
+        max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
+        max_plan_req_seg_trunc_dropped=max_plan_req_seg_trunc_dropped,
+        plan_req_fallback_used=plan_req_fallback_used,
+        min_plan_seg_ctx_coverage=min_plan_seg_ctx_coverage,
+        min_plan_pov_ctx_coverage=min_plan_pov_ctx_coverage,
+        min_plan_slam_ctx_coverage=min_plan_slam_ctx_coverage,
+        require_plan_ctx_used=require_plan_ctx_used,
+        require_plan_slam_ctx_used=require_plan_slam_ctx_used,
+        max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
+        min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
+        require_slam_ctx_present=require_slam_ctx_present,
+        max_slam_ctx_trunc_rate=max_slam_ctx_trunc_rate,
+        min_slam_tracking_rate_mean=min_slam_tracking_rate_mean,
+        min_seg_prompt_text_chars=min_seg_prompt_text_chars,
+        max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
+        max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
+        has_pov=has_pov,
+        min_pov_decisions=min_pov_decisions,
+        has_pov_context=has_pov_context,
+        min_pov_context_token_approx=min_pov_context_token_approx,
+        has_plan=has_plan,
+        plan_fallback_used=plan_fallback_used,
+        max_plan_latency_p90=max_plan_latency_p90,
+        max_plan_overcautious_rate=max_plan_overcautious_rate,
+        max_plan_guardrail_override_rate=max_plan_guardrail_override_rate,
+        require_plan_costmap_ctx_used=require_plan_costmap_ctx_used,
+        max_plan_guardrails=max_plan_guardrails,
+        min_plan_score=min_plan_score,
+        plan_risk_level=plan_risk_level,
         sort=sort,
         order=order,
     )
@@ -1425,6 +3692,118 @@ async def run_packages_export_csv(
         "max_delay_frames",
         "risk_latency_p90",
         "risk_latency_max",
+        "ocr_cer",
+        "ocr_exact_match_rate",
+        "ocr_coverage",
+        "ocr_latency_p90",
+        "seg_f1_50",
+        "seg_latency_p90",
+        "seg_coverage",
+        "seg_track_coverage",
+        "seg_tracks_total",
+        "seg_id_switches",
+        "depth_absrel",
+        "depth_rmse",
+        "depth_delta1",
+        "depth_coverage",
+        "depth_latency_p90",
+        "depth_jitter_p90",
+        "depth_flicker_mean",
+        "depth_scale_drift_p90",
+        "depth_ref_view_diversity",
+        "costmap_coverage",
+        "costmap_latency_p90",
+        "costmap_density_mean",
+        "costmap_dynamic_filter_rate_mean",
+        "costmap_dynamic_temporal_used_rate",
+        "costmap_dynamic_tracks_used_mean",
+        "costmap_dynamic_mask_used_rate",
+        "costmap_fused_coverage",
+        "costmap_fused_latency_p90",
+        "costmap_fused_iou_p90",
+        "costmap_fused_flicker_rate_mean",
+        "costmap_fused_shift_used_rate",
+        "costmap_fused_shift_gate_reject_rate",
+        "slam_tracking_rate",
+        "slam_lost_rate",
+        "slam_latency_p90",
+        "slam_align_residual_p90",
+        "slam_align_mode",
+        "slam_ate_rmse",
+        "slam_rpe_trans_rmse",
+        "frame_e2e_p90",
+        "frame_e2e_max",
+        "frame_seg_p90",
+        "frame_risk_p90",
+        "frame_plan_p90",
+        "frame_execute_p90",
+        "frame_user_e2e_p90",
+        "frame_user_e2e_max",
+        "frame_user_e2e_tts_p90",
+        "frame_user_e2e_tts_max",
+        "frame_user_e2e_ar_p90",
+        "frame_user_e2e_ar_max",
+        "ack_kind_diversity",
+        "ack_coverage",
+        "models_missing_required",
+        "models_enabled_total",
+        "seg_mask_f1_50",
+        "seg_mask_coverage",
+        "seg_mask_mean_iou",
+        "seg_ctx_chars",
+        "seg_ctx_segments",
+        "seg_ctx_trunc_dropped",
+        "plan_req_seg_chars_p90",
+        "plan_req_seg_trunc_dropped",
+        "plan_req_pov_chars_p90",
+        "plan_req_fallback_used",
+        "plan_rule_applied",
+        "plan_rule_hint",
+        "plan_ctx_used",
+        "plan_ctx_used_rate",
+        "plan_seg_ctx_coverage",
+        "plan_pov_ctx_coverage",
+        "plan_slam_ctx_coverage",
+        "plan_slam_ctx_hit_rate",
+        "plan_slam_ctx_used_rate",
+        "plan_costmap_ctx_coverage_p90",
+        "plan_costmap_ctx_used_rate",
+        "plan_ctx_chars_p90",
+        "plan_ctx_trunc_rate",
+        "plan_ctx_seg_chars_p90",
+        "plan_ctx_pov_chars_p90",
+        "plan_ctx_risk_chars_p90",
+        "slam_ctx_present",
+        "slam_ctx_chars_p90",
+        "slam_ctx_trunc_rate",
+        "slam_tracking_rate_mean",
+        "seg_prompt_present",
+        "seg_prompt_text_chars_total",
+        "seg_prompt_chars_out",
+        "seg_prompt_targets_out",
+        "seg_prompt_trunc_dropped",
+        "seg_prompt_trunc_rate",
+        "pov_present",
+        "pov_decisions",
+        "pov_duration_ms",
+        "pov_token_approx",
+        "pov_decision_per_min",
+        "pov_context_token_approx",
+        "pov_context_chars",
+        "plan_present",
+        "plan_risk_level",
+        "plan_actions",
+        "plan_guardrails",
+        "plan_has_stop",
+        "plan_has_confirm",
+        "plan_score",
+        "plan_fallback_used",
+        "plan_json_valid",
+        "plan_prompt_version",
+        "plan_latency_p90",
+        "confirm_requests",
+        "plan_overcautious_rate",
+        "plan_guardrail_override_rate",
         "runUrl",
         "reportUrl",
         "summaryUrl",
@@ -1481,6 +3860,1282 @@ def _load_run_manifest_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
         if isinstance(payload, dict):
             return payload
     return {}
+
+
+def _load_run_package_manifest(run_package_dir: Path) -> tuple[Path, dict[str, Any]]:
+    for name in ("manifest.json", "run_manifest.json"):
+        path = run_package_dir / name
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"manifest parse failed: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="manifest must be object")
+        return path, payload
+    raise HTTPException(status_code=404, detail="manifest not found in run package")
+
+
+def _find_package_dir_with_manifest(root: Path) -> Path:
+    candidates = list(root.rglob("manifest.json")) + list(root.rglob("run_manifest.json"))
+    if not candidates:
+        raise HTTPException(status_code=404, detail="manifest not found in extracted run package")
+    candidates.sort(key=lambda item: len(str(item)))
+    return candidates[0].parent
+
+
+def _resolve_context_run_package_input(run_package_raw: str) -> tuple[Path, Path | None, bool]:
+    run_package_text = str(run_package_raw or "").strip()
+    source_path = Path(run_package_text)
+    if not source_path.exists():
+        raise HTTPException(status_code=404, detail=f"runPackage not found: {run_package_text}")
+    if source_path.is_dir():
+        return source_path.resolve(), None, True
+    if source_path.is_file() and source_path.suffix.lower() == ".zip":
+        extract_root = Path(tempfile.mkdtemp(prefix="pov_context_extract_"))
+        safe_extract_zip(source_path, extract_root)
+        package_dir = extract_root
+        try:
+            load_run_package(package_dir)
+        except Exception:
+            package_dir = _find_package_dir_with_manifest(extract_root)
+        return package_dir.resolve(), extract_root, False
+    raise HTTPException(status_code=400, detail="runPackage must be directory or .zip")
+
+
+async def _resolve_context_run_package_dir_async(
+    *,
+    run_package_raw: str | None,
+    run_id: str | None,
+) -> tuple[Path, Path | None, bool]:
+    run_package_text = str(run_package_raw or "").strip()
+    run_id_text = str(run_id or "").strip()
+    if run_package_text:
+        return _resolve_context_run_package_input(run_package_text)
+    if not run_id_text:
+        raise HTTPException(status_code=400, detail="runPackage or runId is required")
+    entry = await gateway.get_run_package(run_id_text)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"runId not found: {run_id_text}")
+    report_path = gateway._resolve_run_packages_path(str(entry.get("reportMdPath", "")))  # noqa: SLF001
+    package_dir = report_path.parent
+    if not package_dir.exists():
+        raise HTTPException(status_code=404, detail=f"run package dir not found for runId: {run_id_text}")
+    return package_dir.resolve(), None, True
+
+
+def _load_pov_ir_for_context(run_package_dir: Path) -> tuple[dict[str, Any], dict[str, Any], Path]:
+    _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+    pov_rel = str(manifest.get("povIrJson", "")).strip()
+    if not pov_rel:
+        raise HTTPException(status_code=404, detail="povIrJson missing in manifest")
+    pov_path = run_package_dir / pov_rel
+    if not pov_path.exists():
+        raise HTTPException(status_code=404, detail=f"povIrJson not found: {pov_rel}")
+    try:
+        payload = json.loads(pov_path.read_text(encoding="utf-8-sig"))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"povIrJson parse failed: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="povIrJson must be object")
+    ok, errors = validate_pov_ir(payload, strict=True)
+    if not ok:
+        raise HTTPException(status_code=400, detail={"message": "pov ir schema invalid", "errors": errors})
+    return manifest, payload, pov_path
+
+
+def _try_append_pov_context_event(
+    *,
+    run_package_dir: Path,
+    manifest: dict[str, Any],
+    run_id: str,
+    latency_ms: int,
+    budget: dict[str, Any],
+    out_stats: dict[str, Any],
+    truncation: dict[str, Any],
+) -> bool:
+    events_rel = str(manifest.get("eventsV1Jsonl", "")).strip() or "events/events_v1.jsonl"
+    events_path = run_package_dir / events_rel
+    if not events_path.exists() or not events_path.is_file():
+        return False
+    payload = {
+        "schemaVersion": "pov.context.v1",
+        "budget": budget,
+        "outStats": out_stats,
+        "truncation": truncation,
+    }
+    event = {
+        "schemaVersion": "byes.event.v1",
+        "tsMs": _now_ms(),
+        "runId": run_id,
+        "frameSeq": 1,
+        "component": "gateway",
+        "category": "pov",
+        "name": "pov.context",
+        "phase": "result",
+        "status": "ok",
+        "latencyMs": int(max(0, latency_ms)),
+        "payload": payload,
+    }
+    with events_path.open("a", encoding="utf-8") as fp:
+        fp.write(json.dumps(event, ensure_ascii=False) + "\n")
+    return True
+
+
+def _resolve_events_v1_path(run_package_dir: Path, manifest: dict[str, Any]) -> Path:
+    events_rel = str(manifest.get("eventsV1Jsonl", "")).strip() or "events/events_v1.jsonl"
+    return run_package_dir / events_rel
+
+
+_FRAME_E2E_STATE_LOCK = threading.Lock()
+_FRAME_E2E_STATE: dict[tuple[str, str, int], dict[str, Any]] = {}
+_FRAME_USER_E2E_STATE_LOCK = threading.Lock()
+_FRAME_USER_E2E_STATE: dict[tuple[str, int], dict[str, Any]] = {}
+
+
+def _frame_e2e_state_key(events_path: Path, run_id: str, frame_seq: int) -> tuple[str, str, int]:
+    resolved = str(events_path.resolve()).lower()
+    safe_run_id = str(run_id or "").strip()
+    safe_frame_seq = int(max(1, int(frame_seq)))
+    return (resolved, safe_run_id, safe_frame_seq)
+
+
+def _frame_user_e2e_state_key(run_id: str, frame_seq: int) -> tuple[str, int]:
+    return (str(run_id or "").strip() or "unknown-run", int(max(1, int(frame_seq))))
+
+
+def _frame_user_e2e_mark_input(run_id: str, frame_seq: int, t0_ms: int | None) -> None:
+    key = _frame_user_e2e_state_key(run_id, frame_seq)
+    t0_value = _to_nonnegative_int_or_none(t0_ms)
+    with _FRAME_USER_E2E_STATE_LOCK:
+        state = _FRAME_USER_E2E_STATE.get(key)
+        if not isinstance(state, dict):
+            state = {"t0Ms": t0_value, "feedbackTsMs": None, "accepted": True, "emitted": False}
+            _FRAME_USER_E2E_STATE[key] = state
+            return
+        current_t0 = _to_nonnegative_int_or_none(state.get("t0Ms"))
+        if t0_value is not None and (current_t0 is None or t0_value < current_t0):
+            state["t0Ms"] = int(t0_value)
+
+
+def _frame_user_e2e_mark_ack(run_id: str, frame_seq: int, feedback_ts_ms: int, accepted: bool) -> None:
+    key = _frame_user_e2e_state_key(run_id, frame_seq)
+    feedback_value = _to_nonnegative_int_or_none(feedback_ts_ms)
+    with _FRAME_USER_E2E_STATE_LOCK:
+        state = _FRAME_USER_E2E_STATE.get(key)
+        if not isinstance(state, dict):
+            state = {"t0Ms": None, "feedbackTsMs": feedback_value, "accepted": bool(accepted), "emitted": False}
+            _FRAME_USER_E2E_STATE[key] = state
+            return
+        if feedback_value is not None:
+            state["feedbackTsMs"] = int(feedback_value)
+        state["accepted"] = bool(accepted)
+
+
+def _frame_user_e2e_snapshot(run_id: str, frame_seq: int) -> dict[str, Any] | None:
+    key = _frame_user_e2e_state_key(run_id, frame_seq)
+    with _FRAME_USER_E2E_STATE_LOCK:
+        state = _FRAME_USER_E2E_STATE.get(key)
+        if not isinstance(state, dict):
+            return None
+        return {
+            "t0Ms": _to_nonnegative_int_or_none(state.get("t0Ms")),
+            "feedbackTsMs": _to_nonnegative_int_or_none(state.get("feedbackTsMs")),
+            "accepted": bool(state.get("accepted", True)),
+            "emitted": bool(state.get("emitted", False)),
+        }
+
+
+def _frame_user_e2e_mark_emitted(run_id: str, frame_seq: int) -> None:
+    key = _frame_user_e2e_state_key(run_id, frame_seq)
+    with _FRAME_USER_E2E_STATE_LOCK:
+        state = _FRAME_USER_E2E_STATE.get(key)
+        if isinstance(state, dict):
+            state["emitted"] = True
+
+
+def _frame_user_e2e_exists_in_rows(rows: list[dict[str, Any]], *, run_id: str, frame_seq: int) -> bool:
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("name", "")).strip().lower() != "frame.user_e2e":
+            continue
+        if str(row.get("runId", "")).strip() != str(run_id or "").strip():
+            continue
+        if _to_nonnegative_int(row.get("frameSeq"), 0) != int(max(1, int(frame_seq))):
+            continue
+        return True
+    return False
+
+
+def _frame_e2e_begin_state(
+    *,
+    events_path: Path,
+    run_id: str,
+    frame_seq: int,
+    t0_hint_ms: int | None = None,
+) -> None:
+    key = _frame_e2e_state_key(events_path, run_id, frame_seq)
+    t0_hint = _to_nonnegative_int_or_none(t0_hint_ms)
+    with _FRAME_E2E_STATE_LOCK:
+        state = _FRAME_E2E_STATE.get(key)
+        if not isinstance(state, dict):
+            state = {
+                "t0Ms": t0_hint,
+                "partsMs": {
+                    "segMs": None,
+                    "riskMs": None,
+                    "planMs": None,
+                    "executeMs": None,
+                    "confirmMs": None,
+                },
+                "present": {
+                    "seg": False,
+                    "risk": False,
+                    "plan": False,
+                    "execute": False,
+                    "confirm": False,
+                },
+                "emitted": False,
+            }
+            _FRAME_E2E_STATE[key] = state
+            return
+        if t0_hint is not None:
+            current_t0 = _to_nonnegative_int_or_none(state.get("t0Ms"))
+            if current_t0 is None:
+                state["t0Ms"] = t0_hint
+            else:
+                state["t0Ms"] = int(min(current_t0, t0_hint))
+
+
+def _frame_e2e_update_state(
+    *,
+    events_path: Path,
+    run_id: str,
+    frame_seq: int,
+    t0_hint_ms: int | None = None,
+    seg_ms: int | None = None,
+    risk_ms: int | None = None,
+    plan_ms: int | None = None,
+    execute_ms: int | None = None,
+    confirm_ms: int | None = None,
+    seg_present: bool | None = None,
+    risk_present: bool | None = None,
+    plan_present: bool | None = None,
+    execute_present: bool | None = None,
+    confirm_present: bool | None = None,
+) -> None:
+    _frame_e2e_begin_state(
+        events_path=events_path,
+        run_id=run_id,
+        frame_seq=frame_seq,
+        t0_hint_ms=t0_hint_ms,
+    )
+    key = _frame_e2e_state_key(events_path, run_id, frame_seq)
+    with _FRAME_E2E_STATE_LOCK:
+        state = _FRAME_E2E_STATE.get(key)
+        if not isinstance(state, dict):
+            return
+        parts = state.get("partsMs")
+        if not isinstance(parts, dict):
+            parts = {}
+            state["partsMs"] = parts
+        present = state.get("present")
+        if not isinstance(present, dict):
+            present = {}
+            state["present"] = present
+        for key_name, raw_value in (
+            ("segMs", seg_ms),
+            ("riskMs", risk_ms),
+            ("planMs", plan_ms),
+            ("executeMs", execute_ms),
+            ("confirmMs", confirm_ms),
+        ):
+            value = _to_nonnegative_int_or_none(raw_value)
+            if value is not None:
+                parts[key_name] = int(value)
+        for key_name, raw_value in (
+            ("seg", seg_present),
+            ("risk", risk_present),
+            ("plan", plan_present),
+            ("execute", execute_present),
+            ("confirm", confirm_present),
+        ):
+            if raw_value is None:
+                continue
+            present[key_name] = bool(present.get(key_name, False) or bool(raw_value))
+
+
+def _frame_e2e_state_snapshot(events_path: Path, run_id: str, frame_seq: int) -> dict[str, Any] | None:
+    key = _frame_e2e_state_key(events_path, run_id, frame_seq)
+    with _FRAME_E2E_STATE_LOCK:
+        state = _FRAME_E2E_STATE.get(key)
+        if not isinstance(state, dict):
+            return None
+        payload = {
+            "t0Ms": _to_nonnegative_int_or_none(state.get("t0Ms")),
+            "partsMs": {},
+            "present": {},
+            "emitted": bool(state.get("emitted")),
+        }
+        parts = state.get("partsMs")
+        parts = parts if isinstance(parts, dict) else {}
+        for key_name in ("segMs", "riskMs", "planMs", "executeMs", "confirmMs"):
+            payload["partsMs"][key_name] = _to_nonnegative_int_or_none(parts.get(key_name))
+        present = state.get("present")
+        present = present if isinstance(present, dict) else {}
+        for key_name in ("seg", "risk", "plan", "execute", "confirm"):
+            payload["present"][key_name] = bool(present.get(key_name, False))
+        return payload
+
+
+def _frame_e2e_mark_emitted(events_path: Path, run_id: str, frame_seq: int) -> None:
+    key = _frame_e2e_state_key(events_path, run_id, frame_seq)
+    with _FRAME_E2E_STATE_LOCK:
+        state = _FRAME_E2E_STATE.get(key)
+        if isinstance(state, dict):
+            state["emitted"] = True
+
+
+def _frame_e2e_already_emitted(events_path: Path, run_id: str, frame_seq: int) -> bool:
+    snapshot = _frame_e2e_state_snapshot(events_path, run_id, frame_seq)
+    return bool(snapshot and snapshot.get("emitted"))
+
+
+def _frame_e2e_exists_in_rows(rows: list[dict[str, Any]], *, run_id: str, frame_seq: int) -> bool:
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("name", "")).strip().lower() != "frame.e2e":
+            continue
+        if str(row.get("runId", "")).strip() != str(run_id or "").strip():
+            continue
+        if _to_nonnegative_int(row.get("frameSeq"), 0) != int(max(1, int(frame_seq))):
+            continue
+        return True
+    return False
+
+
+def _append_events_v1_rows(events_path: Path, rows: list[dict[str, Any]]) -> bool:
+    if not events_path.exists() or not events_path.is_file():
+        return False
+    with events_path.open("a", encoding="utf-8") as fp:
+        for row in rows:
+            fp.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return True
+
+
+def _to_nonnegative_int_or_none(value: Any) -> int | None:
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        parsed = int(float(value))
+    except Exception:
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def _to_nonnegative_int(value: Any, default: int = 0) -> int:
+    parsed = _to_nonnegative_int_or_none(value)
+    if parsed is None:
+        return int(default)
+    return int(parsed)
+
+
+def _collect_frame_rows(
+    rows: list[dict[str, Any]],
+    *,
+    run_id: str,
+    frame_seq: int,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("runId", "")).strip() != run_id:
+            continue
+        if _to_nonnegative_int(row.get("frameSeq"), 0) != frame_seq:
+            continue
+        out.append(row)
+    return out
+
+
+def _read_events_v1_rows(events_path: Path) -> list[dict[str, Any]]:
+    if not events_path.exists() or not events_path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    with events_path.open("r", encoding="utf-8-sig") as fp:
+        for raw in fp:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                rows.append(payload)
+    return rows
+
+
+def _latest_event_latency_ms(
+    rows: list[dict[str, Any]],
+    *,
+    event_name: str,
+    fallback_payload_path: list[str] | None = None,
+) -> int | None:
+    latest_ts = -1
+    value: int | None = None
+    for row in rows:
+        if str(row.get("name", "")).strip().lower() != event_name:
+            continue
+        if str(row.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(row.get("status", "")).strip().lower() != "ok":
+            continue
+        ts_ms = _to_nonnegative_int(row.get("tsMs"), 0)
+        latency = _to_nonnegative_int_or_none(row.get("latencyMs"))
+        if latency is None and fallback_payload_path:
+            payload = row.get("payload")
+            payload = payload if isinstance(payload, dict) else {}
+            current: Any = payload
+            for key in fallback_payload_path:
+                if isinstance(current, dict):
+                    current = current.get(key)
+                else:
+                    current = None
+                if current is None:
+                    break
+            latency = _to_nonnegative_int_or_none(current)
+        if ts_ms >= latest_ts:
+            latest_ts = ts_ms
+            value = latency
+    return value
+
+
+def _build_frame_input_payload(
+    *,
+    run_id: str,
+    frame_seq: int,
+    capture_ts_ms: int | None,
+    recv_ts_ms: int,
+    device_time_base: str | None,
+    device_id: str | None,
+) -> dict[str, Any]:
+    normalized_time_base = str(device_time_base or "").strip().lower()
+    if normalized_time_base not in {"unix_ms", "monotonic_ms"}:
+        normalized_time_base = None
+    normalized_device_id = str(device_id or "").strip() or None
+    return {
+        "schemaVersion": "frame.input.v1",
+        "runId": str(run_id or "").strip() or "unknown-run",
+        "frameSeq": int(max(1, int(frame_seq))),
+        "captureTsMs": _to_nonnegative_int_or_none(capture_ts_ms),
+        "recvTsMs": int(max(0, int(recv_ts_ms))),
+        "meta": {
+            "deviceTimeBase": normalized_time_base,
+            "deviceId": normalized_device_id,
+        },
+    }
+
+
+def _build_frame_ack_payload(
+    *,
+    run_id: str,
+    frame_seq: int,
+    feedback_ts_ms: int,
+    kind: str,
+    accepted: bool,
+) -> dict[str, Any]:
+    normalized_kind = str(kind or "any").strip().lower()
+    if normalized_kind == "ar":
+        normalized_kind = "overlay"
+    elif normalized_kind == "other":
+        normalized_kind = "any"
+    if normalized_kind not in {"tts", "overlay", "haptic", "any"}:
+        normalized_kind = "any"
+    return {
+        "schemaVersion": "frame.ack.v1",
+        "runId": str(run_id or "").strip() or "unknown-run",
+        "frameSeq": int(max(1, int(frame_seq))),
+        "feedbackTsMs": int(max(0, int(feedback_ts_ms))),
+        "kind": normalized_kind,
+        "accepted": bool(accepted),
+    }
+
+
+def _build_frame_user_e2e_event(
+    *,
+    run_id: str,
+    frame_seq: int,
+    t0_ms: int,
+    feedback_ts_ms: int,
+) -> dict[str, Any]:
+    safe_t0 = int(max(0, int(t0_ms)))
+    safe_feedback = int(max(0, int(feedback_ts_ms)))
+    safe_t1 = int(max(safe_t0, safe_feedback))
+    total_ms = int(max(0, safe_t1 - safe_t0))
+    payload = {
+        "schemaVersion": "frame.e2e.v1",
+        "runId": str(run_id or "").strip() or "unknown-run",
+        "frameSeq": int(max(1, int(frame_seq))),
+        "t0Ms": safe_t0,
+        "t1Ms": safe_t1,
+        "totalMs": total_ms,
+        "partsMs": {
+            "segMs": None,
+            "riskMs": None,
+            "planMs": None,
+            "executeMs": None,
+            "confirmMs": None,
+        },
+        "present": {
+            "seg": False,
+            "risk": False,
+            "plan": False,
+            "execute": False,
+            "confirm": False,
+        },
+    }
+    return _build_byes_event(
+        run_id=str(run_id or "").strip() or "unknown-run",
+        frame_seq=int(max(1, int(frame_seq))),
+        category="frame",
+        name="frame.user_e2e",
+        latency_ms=total_ms,
+        payload=payload,
+    )
+
+
+def _try_append_frame_user_e2e_event(
+    *,
+    events_path: Path,
+    run_id: str,
+    frame_seq: int,
+) -> bool:
+    safe_frame_seq = int(max(1, int(frame_seq)))
+    snapshot = _frame_user_e2e_snapshot(run_id, safe_frame_seq)
+    if not isinstance(snapshot, dict):
+        return False
+    if bool(snapshot.get("emitted")):
+        return True
+    t0_ms = _to_nonnegative_int_or_none(snapshot.get("t0Ms"))
+    feedback_ts_ms = _to_nonnegative_int_or_none(snapshot.get("feedbackTsMs"))
+    if t0_ms is None or feedback_ts_ms is None:
+        return False
+    existing = _read_events_v1_rows(events_path)
+    if _frame_user_e2e_exists_in_rows(existing, run_id=run_id, frame_seq=safe_frame_seq):
+        _frame_user_e2e_mark_emitted(run_id, safe_frame_seq)
+        return True
+    row = _build_frame_user_e2e_event(
+        run_id=run_id,
+        frame_seq=safe_frame_seq,
+        t0_ms=t0_ms,
+        feedback_ts_ms=feedback_ts_ms,
+    )
+    ok = _append_events_v1_rows(events_path, [row])
+    if ok:
+        _frame_user_e2e_mark_emitted(run_id, safe_frame_seq)
+    return ok
+
+
+def _build_frame_e2e_payload(
+    *,
+    rows: list[dict[str, Any]],
+    run_id: str,
+    frame_seq: int,
+    t1_ms: int,
+    t0_hint_ms: int | None = None,
+    state_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    frame_rows = _collect_frame_rows(rows, run_id=run_id, frame_seq=frame_seq)
+    non_e2e_rows = [
+        row
+        for row in frame_rows
+        if str(row.get("name", "")).strip().lower() != "frame.e2e"
+    ]
+    ts_candidates = [
+        _to_nonnegative_int(row.get("tsMs"), 0)
+        for row in non_e2e_rows
+        if _to_nonnegative_int_or_none(row.get("tsMs")) is not None
+    ]
+    fallback_t0 = _to_nonnegative_int_or_none(t0_hint_ms)
+    state = state_snapshot if isinstance(state_snapshot, dict) else {}
+    state_t0 = _to_nonnegative_int_or_none(state.get("t0Ms"))
+    t0_ms = min(ts_candidates) if ts_candidates else (fallback_t0 if fallback_t0 is not None else int(max(0, t1_ms)))
+    if state_t0 is not None:
+        t0_ms = min(int(max(0, t0_ms)), int(max(0, state_t0)))
+    safe_t1 = max(int(max(0, t1_ms)), int(max(0, t0_ms)))
+
+    seg_present = any(str(row.get("name", "")).strip().lower() == "seg.segment" for row in non_e2e_rows)
+    risk_present = any(str(row.get("name", "")).strip().lower() == "risk.hazards" for row in non_e2e_rows)
+    plan_present = any(str(row.get("name", "")).strip().lower() == "plan.generate" for row in non_e2e_rows)
+    execute_present = any(str(row.get("name", "")).strip().lower() == "plan.execute" for row in non_e2e_rows)
+    confirm_present = any(str(row.get("name", "")).strip().lower() == "ui.confirm_response" for row in non_e2e_rows)
+
+    seg_ms = _latest_event_latency_ms(non_e2e_rows, event_name="seg.segment")
+    risk_ms = _latest_event_latency_ms(
+        non_e2e_rows,
+        event_name="risk.hazards",
+        fallback_payload_path=["debug", "timings", "totalMs"],
+    )
+    plan_ms = _latest_event_latency_ms(non_e2e_rows, event_name="plan.generate")
+    execute_ms = _latest_event_latency_ms(non_e2e_rows, event_name="plan.execute")
+    confirm_ms = _latest_event_latency_ms(
+        non_e2e_rows,
+        event_name="ui.confirm_response",
+        fallback_payload_path=["latencyMs"],
+    )
+    state_parts = state.get("partsMs")
+    state_parts = state_parts if isinstance(state_parts, dict) else {}
+    state_present = state.get("present")
+    state_present = state_present if isinstance(state_present, dict) else {}
+    seg_ms = _to_nonnegative_int_or_none(state_parts.get("segMs")) if _to_nonnegative_int_or_none(state_parts.get("segMs")) is not None else seg_ms
+    risk_ms = _to_nonnegative_int_or_none(state_parts.get("riskMs")) if _to_nonnegative_int_or_none(state_parts.get("riskMs")) is not None else risk_ms
+    plan_ms = _to_nonnegative_int_or_none(state_parts.get("planMs")) if _to_nonnegative_int_or_none(state_parts.get("planMs")) is not None else plan_ms
+    execute_ms = (
+        _to_nonnegative_int_or_none(state_parts.get("executeMs"))
+        if _to_nonnegative_int_or_none(state_parts.get("executeMs")) is not None
+        else execute_ms
+    )
+    confirm_ms = (
+        _to_nonnegative_int_or_none(state_parts.get("confirmMs"))
+        if _to_nonnegative_int_or_none(state_parts.get("confirmMs")) is not None
+        else confirm_ms
+    )
+    seg_present = bool(seg_present or bool(state_present.get("seg")))
+    risk_present = bool(risk_present or bool(state_present.get("risk")))
+    plan_present = bool(plan_present or bool(state_present.get("plan")))
+    execute_present = bool(execute_present or bool(state_present.get("execute")))
+    confirm_present = bool(confirm_present or bool(state_present.get("confirm")))
+
+    return {
+        "schemaVersion": "frame.e2e.v1",
+        "runId": run_id,
+        "frameSeq": int(max(1, frame_seq)),
+        "t0Ms": int(max(0, t0_ms)),
+        "t1Ms": int(max(0, safe_t1)),
+        "totalMs": int(max(0, safe_t1 - int(max(0, t0_ms)))),
+        "partsMs": {
+            "segMs": seg_ms,
+            "riskMs": risk_ms,
+            "planMs": plan_ms,
+            "executeMs": execute_ms,
+            "confirmMs": confirm_ms,
+        },
+        "present": {
+            "seg": bool(seg_present),
+            "risk": bool(risk_present),
+            "plan": bool(plan_present),
+            "execute": bool(execute_present),
+            "confirm": bool(confirm_present),
+        },
+    }
+
+
+def _build_frame_e2e_event(
+    *,
+    rows: list[dict[str, Any]],
+    run_id: str,
+    frame_seq: int,
+    t1_ms: int,
+    t0_hint_ms: int | None = None,
+    state_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = _build_frame_e2e_payload(
+        rows=rows,
+        run_id=run_id,
+        frame_seq=frame_seq,
+        t1_ms=t1_ms,
+        t0_hint_ms=t0_hint_ms,
+        state_snapshot=state_snapshot,
+    )
+    return _build_byes_event(
+        run_id=run_id,
+        frame_seq=frame_seq,
+        category="frame",
+        name="frame.e2e",
+        latency_ms=int(max(0, _to_nonnegative_int(payload.get("totalMs"), 0))),
+        payload=payload,
+    )
+
+
+def _try_append_frame_e2e_event(
+    *,
+    events_path: Path,
+    run_id: str,
+    frame_seq: int,
+    t1_ms: int,
+    t0_hint_ms: int | None = None,
+    seg_ms: int | None = None,
+    risk_ms: int | None = None,
+    plan_ms: int | None = None,
+    execute_ms: int | None = None,
+    confirm_ms: int | None = None,
+    seg_present: bool | None = None,
+    risk_present: bool | None = None,
+    plan_present: bool | None = None,
+    execute_present: bool | None = None,
+    confirm_present: bool | None = None,
+) -> bool:
+    safe_frame_seq = int(max(1, int(frame_seq)))
+    _frame_e2e_update_state(
+        events_path=events_path,
+        run_id=run_id,
+        frame_seq=safe_frame_seq,
+        t0_hint_ms=t0_hint_ms,
+        seg_ms=seg_ms,
+        risk_ms=risk_ms,
+        plan_ms=plan_ms,
+        execute_ms=execute_ms,
+        confirm_ms=confirm_ms,
+        seg_present=seg_present,
+        risk_present=risk_present,
+        plan_present=plan_present,
+        execute_present=execute_present,
+        confirm_present=confirm_present,
+    )
+    if _frame_e2e_already_emitted(events_path, run_id, safe_frame_seq):
+        return True
+    existing = _read_events_v1_rows(events_path)
+    if _frame_e2e_exists_in_rows(existing, run_id=run_id, frame_seq=safe_frame_seq):
+        _frame_e2e_mark_emitted(events_path, run_id, safe_frame_seq)
+        return True
+    state_snapshot = _frame_e2e_state_snapshot(events_path, run_id, safe_frame_seq)
+    row = _build_frame_e2e_event(
+        rows=existing,
+        run_id=run_id,
+        frame_seq=safe_frame_seq,
+        t1_ms=t1_ms,
+        t0_hint_ms=t0_hint_ms,
+        state_snapshot=state_snapshot,
+    )
+    ok = _append_events_v1_rows(events_path, [row])
+    if ok:
+        _frame_e2e_mark_emitted(events_path, run_id, safe_frame_seq)
+    return ok
+
+
+def _build_plan_request_event_payload(plan_request: dict[str, Any] | None, planner: dict[str, Any]) -> dict[str, Any]:
+    request_payload = plan_request if isinstance(plan_request, dict) else {}
+    contexts = request_payload.get("contexts")
+    contexts = contexts if isinstance(contexts, dict) else {}
+    seg = contexts.get("seg")
+    seg = seg if isinstance(seg, dict) else {}
+    pov = contexts.get("pov")
+    pov = pov if isinstance(pov, dict) else {}
+    slam = contexts.get("slam")
+    slam = slam if isinstance(slam, dict) else {}
+    costmap = contexts.get("costmap")
+    costmap = costmap if isinstance(costmap, dict) else {}
+    seg_trunc = seg.get("truncation")
+    seg_trunc = seg_trunc if isinstance(seg_trunc, dict) else {}
+    meta = request_payload.get("meta")
+    meta = meta if isinstance(meta, dict) else {}
+    seg_chars = int(seg.get("chars", 0) or 0)
+    pov_chars = int(pov.get("chars", 0) or 0)
+    slam_chars = int(slam.get("chars", meta.get("slamChars", 0)) or 0)
+    costmap_chars = int(costmap.get("chars", meta.get("costmapChars", 0)) or 0)
+    slam_included_raw = slam.get("present")
+    if not isinstance(slam_included_raw, bool):
+        slam_included_raw = meta.get("slamIncluded")
+    costmap_included_raw = costmap.get("present")
+    if not isinstance(costmap_included_raw, bool):
+        costmap_included_raw = meta.get("costmapIncluded")
+    return {
+        "schemaVersion": "byes.plan_request.v1",
+        "provider": planner.get("plannerProvider") or planner.get("provider") or meta.get("provider"),
+        "promptVersion": planner.get("promptVersion") or meta.get("promptVersion"),
+        "segIncluded": bool(seg.get("included")),
+        "povIncluded": bool(pov.get("included")),
+        "slamIncluded": bool(slam_included_raw) if isinstance(slam_included_raw, bool) else bool(slam.get("promptFragment")),
+        "costmapIncluded": bool(costmap_included_raw)
+        if isinstance(costmap_included_raw, bool)
+        else bool(costmap.get("promptFragment")),
+        "segChars": int(max(0, seg_chars)),
+        "povChars": int(max(0, pov_chars)),
+        "slamChars": int(max(0, slam_chars)),
+        "costmapChars": int(max(0, costmap_chars)),
+        "segTruncSegmentsDropped": int(max(0, int(seg_trunc.get("segmentsDropped", 0) or 0))),
+        "segTruncCharsDropped": int(max(0, int(seg_trunc.get("charsDropped", 0) or 0))),
+        "fallbackUsed": bool(planner.get("fallbackUsed")) if isinstance(planner.get("fallbackUsed"), bool) else None,
+        "fallbackReason": planner.get("fallbackReason"),
+    }
+
+
+def _build_plan_context_alignment_event_payload(
+    alignment_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    def _nn_int(raw: Any) -> int:
+        try:
+            if raw is None or isinstance(raw, bool):
+                return 0
+            return max(0, int(float(raw)))
+        except Exception:
+            return 0
+
+    def _unit_float(raw: Any) -> float:
+        try:
+            if raw is None or isinstance(raw, bool):
+                return 0.0
+            parsed = float(raw)
+        except Exception:
+            return 0.0
+        if parsed < 0.0:
+            return 0.0
+        if parsed > 1.0:
+            return 1.0
+        return parsed
+
+    payload = alignment_payload if isinstance(alignment_payload, dict) else {}
+    seg = payload.get("seg")
+    seg = seg if isinstance(seg, dict) else {}
+    pov = payload.get("pov")
+    pov = pov if isinstance(pov, dict) else {}
+    slam = payload.get("slam")
+    slam = slam if isinstance(slam, dict) else {}
+    costmap = payload.get("costmap")
+    costmap = costmap if isinstance(costmap, dict) else {}
+    detail = payload.get("contextUsedDetail")
+    detail = detail if isinstance(detail, dict) else {}
+    matched_raw = seg.get("matched")
+    matched = [str(item) for item in matched_raw[:5]] if isinstance(matched_raw, list) else []
+    slam_matched_raw = slam.get("matched")
+    slam_matched = [str(item) for item in slam_matched_raw[:5]] if isinstance(slam_matched_raw, list) else []
+    costmap_matched_raw = costmap.get("matched")
+    costmap_matched = [str(item) for item in costmap_matched_raw[:5]] if isinstance(costmap_matched_raw, list) else []
+    return {
+        "schemaVersion": "plan.context_alignment.v1",
+        "seg": {
+            "present": bool(seg.get("present")),
+            "labelCount": _nn_int(seg.get("labelCount")),
+            "hit": bool(seg.get("hit")),
+            "coverage": _unit_float(seg.get("coverage")),
+            "matched": matched,
+        },
+        "pov": {
+            "present": bool(pov.get("present")),
+            "tokenCount": _nn_int(pov.get("tokenCount")),
+            "hit": bool(pov.get("hit")),
+            "coverage": _unit_float(pov.get("coverage")),
+            "hitCount": _nn_int(pov.get("hitCount")),
+        },
+        "slam": {
+            "present": bool(slam.get("present")),
+            "hit": bool(slam.get("hit")),
+            "coverage": _unit_float(slam.get("coverage")),
+            "planTextChars": _nn_int(slam.get("planTextChars")),
+            "matched": slam_matched,
+        },
+        "costmap": {
+            "present": bool(costmap.get("present")),
+            "hit": bool(costmap.get("hit")),
+            "coverage": _unit_float(costmap.get("coverage")),
+            "planTextChars": _nn_int(costmap.get("planTextChars")),
+            "matched": costmap_matched,
+        },
+        "contextUsed": bool(payload.get("contextUsed")),
+        "contextUsedDetail": {
+            "seg": bool(detail.get("seg")),
+            "pov": bool(detail.get("pov")),
+            "slam": bool(detail.get("slam")),
+            "costmap": bool(detail.get("costmap")),
+        },
+    }
+
+
+def _build_plan_context_pack_event_payload(
+    plan_context_pack: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload = plan_context_pack if isinstance(plan_context_pack, dict) else {}
+    budget = payload.get("budget")
+    budget = budget if isinstance(budget, dict) else {}
+    stats = payload.get("stats")
+    stats = stats if isinstance(stats, dict) else {}
+    out_stats = stats.get("out")
+    out_stats = out_stats if isinstance(out_stats, dict) else {}
+    truncation = stats.get("truncation")
+    truncation = truncation if isinstance(truncation, dict) else {}
+    text = payload.get("text")
+    text = text if isinstance(text, dict) else {}
+    parts = payload.get("parts")
+    parts = parts if isinstance(parts, dict) else {}
+    run_id_value = str(payload.get("runId", "")).strip() or "plan-context-pack"
+    return {
+        "schemaVersion": "plan.context_pack.v1",
+        "runId": run_id_value,
+        "budget": {
+            "maxChars": int(max(0, int(budget.get("maxChars", 0) or 0))),
+            "mode": str(budget.get("mode", "")).strip() or None,
+        },
+        "parts": {
+            "seg": parts.get("seg"),
+            "pov": parts.get("pov"),
+            "risk": parts.get("risk"),
+        },
+        "stats": {
+            "out": {
+                "charsTotal": int(max(0, int(out_stats.get("charsTotal", 0) or 0))),
+                "tokenApprox": int(max(0, int(out_stats.get("tokenApprox", 0) or 0))),
+                "segChars": int(max(0, int(out_stats.get("segChars", 0) or 0))),
+                "povChars": int(max(0, int(out_stats.get("povChars", 0) or 0))),
+                "riskChars": int(max(0, int(out_stats.get("riskChars", 0) or 0))),
+            },
+            "truncation": {
+                "charsDropped": int(max(0, int(truncation.get("charsDropped", 0) or 0))),
+                "segCharsDropped": int(max(0, int(truncation.get("segCharsDropped", 0) or 0))),
+                "povCharsDropped": int(max(0, int(truncation.get("povCharsDropped", 0) or 0))),
+                "riskCharsDropped": int(max(0, int(truncation.get("riskCharsDropped", 0) or 0))),
+            },
+        },
+        "text": {
+            "summary": str(text.get("summary", "") or ""),
+            "prompt": str(text.get("prompt", "") or ""),
+        },
+    }
+
+
+def _try_append_plan_events(
+    *,
+    run_package_dir: Path,
+    manifest: dict[str, Any],
+    run_id: str,
+    frame_seq: int | None,
+    latency_ms: int,
+    planner: dict[str, Any],
+    risk_level: str,
+    actions_count: int,
+    stop_count: int,
+    confirm_action_count: int,
+    blocking_count: int,
+    guardrails_applied: list[str],
+    findings_count: int,
+    plan_request: dict[str, Any] | None = None,
+    rule_payload: dict[str, Any] | None = None,
+    alignment_payload: dict[str, Any] | None = None,
+    plan_context_pack: dict[str, Any] | None = None,
+    t0_hint_ms: int | None = None,
+) -> bool:
+    events_path = _resolve_events_v1_path(run_package_dir, manifest)
+    _frame_e2e_update_state(
+        events_path=events_path,
+        run_id=run_id,
+        frame_seq=int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1,
+        t0_hint_ms=t0_hint_ms,
+        plan_ms=latency_ms,
+        plan_present=True,
+    )
+    now_ms = _now_ms()
+    safe_frame_seq = int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1
+    planner_payload = {
+        "backend": planner.get("backend"),
+        "model": planner.get("model"),
+        "endpoint": planner.get("endpoint"),
+        "plannerProvider": planner.get("plannerProvider") or planner.get("provider"),
+        "promptVersion": planner.get("promptVersion"),
+        "fallbackUsed": planner.get("fallbackUsed"),
+        "fallbackReason": planner.get("fallbackReason"),
+        "jsonValid": planner.get("jsonValid"),
+        "contextUsedDetail": planner.get("contextUsedDetail"),
+        "riskLevel": str(risk_level or "low"),
+        "actionsCount": int(max(0, actions_count)),
+        "stopCount": int(max(0, stop_count)),
+        "confirmActionCount": int(max(0, confirm_action_count)),
+        "blockingCount": int(max(0, blocking_count)),
+    }
+    safety_payload = {
+        "riskLevel": str(risk_level or "low"),
+        "guardrailsApplied": [str(item) for item in guardrails_applied if str(item).strip()],
+        "findingsCount": int(max(0, findings_count)),
+    }
+    plan_request_payload = _build_plan_request_event_payload(plan_request, planner)
+    alignment = _build_plan_context_alignment_event_payload(alignment_payload)
+    plan_context_pack_payload = _build_plan_context_pack_event_payload(plan_context_pack)
+    rows = [
+        {
+            "schemaVersion": "byes.event.v1",
+            "tsMs": now_ms,
+            "runId": run_id,
+            "frameSeq": safe_frame_seq,
+            "component": "gateway",
+            "category": "plan",
+            "name": "plan.context_pack",
+            "phase": "result",
+            "status": "ok",
+            "latencyMs": int(max(0, latency_ms)),
+            "payload": plan_context_pack_payload,
+        },
+        {
+            "schemaVersion": "byes.event.v1",
+            "tsMs": now_ms,
+            "runId": run_id,
+            "frameSeq": safe_frame_seq,
+            "component": "gateway",
+            "category": "plan",
+            "name": "plan.request",
+            "phase": "result",
+            "status": "ok",
+            "latencyMs": int(max(0, latency_ms)),
+            "payload": plan_request_payload,
+        },
+        {
+            "schemaVersion": "byes.event.v1",
+            "tsMs": now_ms,
+            "runId": run_id,
+            "frameSeq": safe_frame_seq,
+            "component": "gateway",
+            "category": "plan",
+            "name": "plan.context_alignment",
+            "phase": "result",
+            "status": "ok",
+            "latencyMs": int(max(0, latency_ms)),
+            "payload": alignment,
+        },
+        {
+            "schemaVersion": "byes.event.v1",
+            "tsMs": now_ms,
+            "runId": run_id,
+            "frameSeq": safe_frame_seq,
+            "component": "gateway",
+            "category": "plan",
+            "name": "plan.generate",
+            "phase": "result",
+            "status": "ok",
+            "latencyMs": int(max(0, latency_ms)),
+            "payload": planner_payload,
+        },
+        {
+            "schemaVersion": "byes.event.v1",
+            "tsMs": now_ms,
+            "runId": run_id,
+            "frameSeq": safe_frame_seq,
+            "component": "gateway",
+            "category": "safety",
+            "name": "safety.kernel",
+            "phase": "result",
+            "status": "ok",
+            "latencyMs": int(max(0, latency_ms)),
+            "payload": safety_payload,
+        },
+    ]
+    rule = rule_payload if isinstance(rule_payload, dict) else {}
+    if bool(rule.get("applied")):
+        rows.append(
+            {
+                "schemaVersion": "byes.event.v1",
+                "tsMs": now_ms,
+                "runId": run_id,
+                "frameSeq": safe_frame_seq,
+                "component": "gateway",
+                "category": "plan",
+                "name": "plan.rule_applied",
+                "phase": "result",
+                "status": "ok",
+                "latencyMs": int(max(0, latency_ms)),
+                "payload": {
+                    "ruleVersion": str(rule.get("ruleVersion", "v1")),
+                    "hazardHint": rule.get("hazardHint"),
+                    "matchedKeywords": [str(item) for item in (rule.get("matchedKeywords") or [])[:3]],
+                    "segContextUsed": bool(rule.get("segContextUsed")),
+                    "riskLevel": rule.get("riskLevel"),
+                },
+            }
+        )
+    if not _append_events_v1_rows(events_path, rows):
+        return False
+    return True
+
+
+def _try_append_plan_execute_event(
+    *,
+    run_package_dir: Path,
+    manifest: dict[str, Any],
+    run_id: str,
+    frame_seq: int | None,
+    latency_ms: int,
+    executed_count: int,
+    blocked_count: int,
+    pending_confirm_count: int,
+    ui_events: list[dict[str, Any]],
+    t0_hint_ms: int | None = None,
+) -> bool:
+    events_path = _resolve_events_v1_path(run_package_dir, manifest)
+    _frame_e2e_update_state(
+        events_path=events_path,
+        run_id=run_id,
+        frame_seq=int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1,
+        t0_hint_ms=t0_hint_ms,
+        execute_ms=latency_ms,
+        execute_present=True,
+    )
+    safe_frame_seq = int(frame_seq) if isinstance(frame_seq, int) and frame_seq > 0 else 1
+    rows: list[dict[str, Any]] = [
+        _build_byes_event(
+            run_id=run_id,
+            frame_seq=safe_frame_seq,
+            category="plan",
+            name="plan.execute",
+            latency_ms=int(max(0, latency_ms)),
+            payload={
+                "executedCount": int(max(0, executed_count)),
+                "blockedCount": int(max(0, blocked_count)),
+                "pendingConfirmCount": int(max(0, pending_confirm_count)),
+            },
+        )
+    ]
+    for ui_event in ui_events:
+        event_name = str(ui_event.get("name", "")).strip().lower()
+        if event_name == "ui.command":
+            rows.append(
+                _build_byes_event(
+                    run_id=run_id,
+                    frame_seq=safe_frame_seq,
+                    category="ui",
+                    name="ui.command",
+                    payload=ui_event.get("payload", {}),
+                )
+            )
+        elif event_name == "ui.confirm_request":
+            rows.append(
+                _build_byes_event(
+                    run_id=run_id,
+                    frame_seq=safe_frame_seq,
+                    category="ui",
+                    name="ui.confirm_request",
+                    payload=ui_event.get("payload", {}),
+                    phase="start",
+                )
+            )
+    if not _append_events_v1_rows(events_path, rows):
+        return False
+    return True
+
+
+def _build_byes_event(
+    *,
+    run_id: str,
+    frame_seq: int,
+    category: str,
+    name: str,
+    payload: dict[str, Any] | None = None,
+    latency_ms: int | None = None,
+    phase: str = "result",
+) -> dict[str, Any]:
+    return {
+        "schemaVersion": "byes.event.v1",
+        "tsMs": _now_ms(),
+        "runId": run_id,
+        "frameSeq": int(max(1, frame_seq)),
+        "component": "gateway",
+        "category": str(category),
+        "name": str(name),
+        "phase": str(phase or "result"),
+        "status": "ok",
+        "latencyMs": int(latency_ms) if isinstance(latency_ms, int) and latency_ms >= 0 else None,
+        "payload": payload if isinstance(payload, dict) else {},
+    }
+ 
+
+def _build_ui_events_from_commands(commands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for command in commands:
+        kind = str(command.get("kind", "")).strip().lower()
+        if kind == "ui.command":
+            payload = {
+                "commandType": str(command.get("commandType", "")).strip(),
+                "actionId": str(command.get("actionId", "")).strip(),
+                "text": str(command.get("text", "")).strip(),
+                "label": str(command.get("label", "")).strip(),
+                "reason": str(command.get("reason", "")).strip(),
+            }
+            out.append({"name": "ui.command", "payload": payload})
+        elif kind == "ui.confirm_request":
+            payload = {
+                "confirmId": str(command.get("confirmId", "")).strip(),
+                "text": str(command.get("text", "")).strip(),
+                "timeoutMs": int(command.get("timeoutMs", 0) or 0),
+                "actionId": str(command.get("actionId", "")).strip(),
+            }
+            out.append({"name": "ui.confirm_request", "payload": payload})
+    return out
+
+
+def _find_confirm_request_ts_ms(
+    events_path: Path,
+    *,
+    run_id: str,
+    frame_seq: int,
+    confirm_id: str,
+) -> int | None:
+    if not events_path.exists() or not events_path.is_file():
+        return None
+    latest_ts: int | None = None
+    with events_path.open("r", encoding="utf-8-sig") as fp:
+        for raw in fp:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("name", "")).strip().lower() != "ui.confirm_request":
+                continue
+            if str(row.get("runId", "")).strip() != run_id:
+                continue
+            row_frame = int(row.get("frameSeq", 0) or 0)
+            if row_frame != int(frame_seq):
+                continue
+            payload = row.get("payload", {})
+            payload = payload if isinstance(payload, dict) else {}
+            row_confirm_id = str(payload.get("confirmId", "")).strip()
+            if row_confirm_id != confirm_id:
+                continue
+            ts_ms = int(row.get("tsMs", 0) or 0)
+            if ts_ms > 0:
+                latest_ts = ts_ms
+    return latest_ts
+
+
+def _is_latest_risk_level_critical(
+    events_path: Path,
+    *,
+    run_id: str,
+    frame_seq: int,
+) -> bool:
+    if not events_path.exists() or not events_path.is_file():
+        return False
+    latest_payload: dict[str, Any] | None = None
+    with events_path.open("r", encoding="utf-8-sig") as fp:
+        for raw in fp:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("name", "")).strip().lower() != "plan.generate":
+                continue
+            if str(row.get("runId", "")).strip() != run_id:
+                continue
+            row_frame = int(row.get("frameSeq", 0) or 0)
+            if row_frame != int(frame_seq):
+                continue
+            payload = row.get("payload", {})
+            if isinstance(payload, dict):
+                latest_payload = payload
+    if not isinstance(latest_payload, dict):
+        return False
+    risk_level = str(latest_payload.get("riskLevel", "")).strip().lower()
+    return risk_level == "critical"
 
 
 def _read_float(payload: dict[str, Any], key: str) -> float | None:
@@ -1559,10 +5214,407 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     confirm_timeouts = int(confirm_behavior.get("timeouts", 0) or 0) if isinstance(confirm_behavior, dict) else 0
     depth_risk = quality_payload.get("depthRisk", {}) if isinstance(quality_payload, dict) else {}
     risk_latency = quality_payload.get("riskLatencyMs", {}) if isinstance(quality_payload, dict) else {}
+    ocr_quality = quality_payload.get("ocr", {}) if isinstance(quality_payload, dict) else {}
+    seg_quality = quality_payload.get("seg", {}) if isinstance(quality_payload, dict) else {}
+    seg_tracking_quality = quality_payload.get("segTracking", {}) if isinstance(quality_payload, dict) else {}
+    depth_quality = quality_payload.get("depth", {}) if isinstance(quality_payload, dict) else {}
+    depth_temporal_quality = quality_payload.get("depthTemporal", {}) if isinstance(quality_payload, dict) else {}
+    slam_quality = quality_payload.get("slam", {}) if isinstance(quality_payload, dict) else {}
+    costmap_quality = quality_payload.get("costmap", {}) if isinstance(quality_payload, dict) else {}
+    costmap_fused_quality = quality_payload.get("costmapFused", {}) if isinstance(quality_payload, dict) else {}
+    slam_error_payload = quality_payload.get("slamError", {}) if isinstance(quality_payload, dict) else {}
+    pov_payload = summary.get("pov", {})
+    pov_payload = pov_payload if isinstance(pov_payload, dict) else {}
+    pov_context = summary.get("povContext", {})
+    pov_context = pov_context if isinstance(pov_context, dict) else {}
+    pov_context_out = pov_context.get("out", {})
+    pov_context_out = pov_context_out if isinstance(pov_context_out, dict) else {}
+    plan_payload = summary.get("plan", {})
+    plan_payload = plan_payload if isinstance(plan_payload, dict) else {}
+    seg_prompt_payload = summary.get("segPrompt", {})
+    seg_prompt_payload = seg_prompt_payload if isinstance(seg_prompt_payload, dict) else {}
+    seg_context_payload = summary.get("segContext", {})
+    seg_context_payload = seg_context_payload if isinstance(seg_context_payload, dict) else {}
+    plan_request_payload = summary.get("planRequest", {})
+    plan_request_payload = plan_request_payload if isinstance(plan_request_payload, dict) else {}
+    plan_context_payload = summary.get("planContext", {})
+    plan_context_payload = plan_context_payload if isinstance(plan_context_payload, dict) else {}
+    plan_context_pack_payload = summary.get("planContextPack", {})
+    plan_context_pack_payload = plan_context_pack_payload if isinstance(plan_context_pack_payload, dict) else {}
+    slam_context_payload = summary.get("slamContext", {})
+    slam_context_payload = slam_context_payload if isinstance(slam_context_payload, dict) else {}
+    frame_e2e_payload = summary.get("frameE2E", {})
+    frame_e2e_payload = frame_e2e_payload if isinstance(frame_e2e_payload, dict) else {}
+    frame_user_e2e_payload = summary.get("frameUserE2E", {})
+    frame_user_e2e_payload = frame_user_e2e_payload if isinstance(frame_user_e2e_payload, dict) else {}
+    models_payload = summary.get("models", {})
+    models_payload = models_payload if isinstance(models_payload, dict) else {}
+    plan_quality_payload = summary.get("planQuality", {})
+    plan_quality_payload = plan_quality_payload if isinstance(plan_quality_payload, dict) else {}
+    plan_eval_payload = summary.get("planEval", {})
+    plan_eval_payload = plan_eval_payload if isinstance(plan_eval_payload, dict) else {}
     critical_misses: int | None = None
     max_delay_frames: int | None = None
     risk_latency_p90: int | None = None
     risk_latency_max: int | None = None
+    ocr_cer: float | None = None
+    ocr_exact_match_rate: float | None = None
+    ocr_coverage: float | None = None
+    ocr_latency_p90: int | None = None
+    seg_f1_50: float | None = None
+    seg_latency_p90: int | None = None
+    seg_coverage: float | None = None
+    seg_track_coverage: float | None = None
+    seg_tracks_total: int | None = None
+    seg_id_switches: int | None = None
+    depth_absrel: float | None = None
+    depth_rmse: float | None = None
+    depth_delta1: float | None = None
+    depth_coverage: float | None = None
+    depth_latency_p90: int | None = None
+    depth_jitter_p90: float | None = None
+    depth_flicker_mean: float | None = None
+    depth_scale_drift_p90: float | None = None
+    depth_ref_view_diversity: int | None = None
+    costmap_coverage: float | None = None
+    costmap_latency_p90: int | None = None
+    costmap_density_mean: float | None = None
+    costmap_dynamic_filter_rate_mean: float | None = None
+    costmap_dynamic_temporal_used_rate: float | None = None
+    costmap_dynamic_tracks_used_mean: float | None = None
+    costmap_dynamic_mask_used_rate: float | None = None
+    costmap_dynamic_leak_proxy_mean: float | None = None
+    costmap_fused_coverage: float | None = None
+    costmap_fused_latency_p90: int | None = None
+    costmap_fused_iou_p90: float | None = None
+    costmap_fused_flicker_rate_mean: float | None = None
+    costmap_fused_shift_used_rate: float | None = None
+    costmap_fused_shift_gate_reject_rate: float | None = None
+    costmap_fused_shift_gate_top_reason: str | None = None
+    slam_tracking_rate: float | None = None
+    slam_lost_rate: float | None = None
+    slam_relocalized: int | None = None
+    slam_latency_p90: int | None = None
+    slam_align_residual_p90: int | None = None
+    slam_align_mode: str | None = None
+    slam_ate_rmse: float | None = None
+    slam_rpe_trans_rmse: float | None = None
+    seg_mask_f1_50: float | None = None
+    seg_mask_coverage: float | None = None
+    seg_mask_mean_iou: float | None = None
+    seg_ctx_chars: int | None = None
+    seg_ctx_segments: int | None = None
+    seg_ctx_trunc_dropped: int | None = None
+    seg_prompt_present = bool(seg_prompt_payload.get("present")) if isinstance(seg_prompt_payload, dict) else False
+    seg_prompt_text_chars_total: int | None = None
+    seg_prompt_chars_out: int | None = None
+    seg_prompt_targets_out: int | None = None
+    seg_prompt_trunc_dropped: int | None = None
+    seg_prompt_trunc_rate: float | None = None
+    pov_present = bool(pov_payload.get("present")) if isinstance(pov_payload, dict) else False
+    pov_counts = pov_payload.get("counts", {}) if isinstance(pov_payload.get("counts"), dict) else {}
+    pov_time = pov_payload.get("time", {}) if isinstance(pov_payload.get("time"), dict) else {}
+    pov_budget = pov_payload.get("budget", {}) if isinstance(pov_payload.get("budget"), dict) else {}
+    pov_decisions = int(_read_float(pov_counts, "decisions") or 0)
+    pov_duration_ms = _read_float(pov_time, "durationMs")
+    pov_decision_per_min = _read_float(pov_time, "decisionPerMin")
+    pov_token_approx = int(_read_float(pov_budget, "tokenApprox") or 0)
+    pov_context_token_approx_raw = _read_float(pov_context_out, "tokenApprox")
+    pov_context_chars_raw = _read_float(pov_context_out, "charsTotal")
+    pov_context_token_approx = int(pov_context_token_approx_raw) if pov_context_token_approx_raw is not None else None
+    pov_context_chars = int(pov_context_chars_raw) if pov_context_chars_raw is not None else None
+    has_pov_context = bool(pov_context_token_approx is not None)
+    plan_present = bool(plan_payload.get("present"))
+    plan_risk_level = str(plan_payload.get("riskLevel", "")).strip() or None
+    plan_actions = 0
+    plan_guardrails = 0
+    plan_has_stop = False
+    plan_has_confirm = False
+    plan_score: float | None = None
+    plan_fallback_used = False
+    plan_json_valid: bool | None = None
+    plan_prompt_version: str | None = None
+    plan_latency_p90: int | None = None
+    confirm_requests = int((_read_float(summary, "confirm_request") or 0.0))
+    plan_confirm_timeouts = confirm_timeouts
+    plan_overcautious_rate: float | None = None
+    plan_guardrail_override_rate: float | None = None
+    plan_rule_applied = False
+    plan_rule_hint: str | None = None
+    plan_req_seg_chars_p90: int | None = None
+    plan_req_seg_trunc_dropped: int | None = None
+    plan_req_pov_chars_p90: int | None = None
+    plan_req_fallback_used = False
+    plan_ctx_used = False
+    plan_ctx_used_rate: float | None = None
+    plan_seg_ctx_coverage: float | None = None
+    plan_pov_ctx_coverage: float | None = None
+    plan_slam_ctx_coverage: float | None = None
+    plan_slam_ctx_hit_rate: float | None = None
+    plan_slam_ctx_used_rate: float | None = None
+    plan_costmap_ctx_coverage_p90: float | None = None
+    plan_costmap_ctx_used_rate: float | None = None
+    plan_ctx_chars_p90: int | None = None
+    plan_ctx_trunc_rate: float | None = None
+    plan_ctx_seg_chars_p90: int | None = None
+    plan_ctx_pov_chars_p90: int | None = None
+    plan_ctx_risk_chars_p90: int | None = None
+    slam_ctx_present = False
+    slam_ctx_chars_p90: int | None = None
+    slam_ctx_trunc_rate: float | None = None
+    slam_tracking_rate_mean: float | None = None
+    frame_e2e_p90: int | None = None
+    frame_e2e_max: int | None = None
+    frame_seg_p90: int | None = None
+    frame_risk_p90: int | None = None
+    frame_plan_p90: int | None = None
+    frame_execute_p90: int | None = None
+    frame_user_e2e_p90: int | None = None
+    frame_user_e2e_max: int | None = None
+    ack_coverage: float | None = None
+    frame_user_e2e_tts_p90: int | None = None
+    frame_user_e2e_tts_max: int | None = None
+    frame_user_e2e_ar_p90: int | None = None
+    frame_user_e2e_ar_max: int | None = None
+    ack_kind_diversity: int = 0
+    models_missing_required: int | None = None
+    models_enabled_total: int | None = None
+    plan_actions_payload = plan_payload.get("actions")
+    if isinstance(plan_actions_payload, dict):
+        raw_actions = _read_float(plan_actions_payload, "count")
+        if raw_actions is not None:
+            plan_actions = int(raw_actions)
+        types = plan_actions_payload.get("types")
+        if isinstance(types, list):
+            normalized_types = {str(item).strip().lower() for item in types if str(item).strip()}
+            plan_has_stop = "stop" in normalized_types
+            plan_has_confirm = "confirm" in normalized_types
+    plan_guardrails_payload = plan_payload.get("guardrailsApplied")
+    if isinstance(plan_guardrails_payload, list):
+        plan_guardrails = len([item for item in plan_guardrails_payload if str(item).strip()])
+    if isinstance(plan_quality_payload, dict):
+        risk_level_override = str(plan_quality_payload.get("riskLevel", "")).strip()
+        if risk_level_override:
+            plan_risk_level = risk_level_override
+        has_stop_override = plan_quality_payload.get("hasStop")
+        if isinstance(has_stop_override, bool):
+            plan_has_stop = has_stop_override
+        has_confirm_override = plan_quality_payload.get("hasConfirm")
+        if isinstance(has_confirm_override, bool):
+            plan_has_confirm = has_confirm_override
+        score_raw = _read_float(plan_quality_payload, "score")
+        if score_raw is not None:
+            plan_score = float(score_raw)
+        fallback_used_raw = plan_quality_payload.get("fallbackUsed")
+        if isinstance(fallback_used_raw, bool):
+            plan_fallback_used = fallback_used_raw
+        json_valid_raw = plan_quality_payload.get("jsonValid")
+        if isinstance(json_valid_raw, bool):
+            plan_json_valid = json_valid_raw
+        prompt_version_raw = str(plan_quality_payload.get("promptVersion", "")).strip()
+        if prompt_version_raw:
+            plan_prompt_version = prompt_version_raw
+    if isinstance(plan_eval_payload, dict) and bool(plan_eval_payload.get("present")):
+        latency_payload = plan_eval_payload.get("latencyMs")
+        latency_payload = latency_payload if isinstance(latency_payload, dict) else {}
+        p90_raw = _read_float(latency_payload, "p90")
+        if p90_raw is not None:
+            plan_latency_p90 = int(p90_raw)
+        confirm_payload = plan_eval_payload.get("confirm")
+        confirm_payload = confirm_payload if isinstance(confirm_payload, dict) else {}
+        requests_raw = _read_float(confirm_payload, "requests")
+        if requests_raw is not None:
+            confirm_requests = int(requests_raw)
+        timeouts_raw = _read_float(confirm_payload, "timeouts")
+        if timeouts_raw is not None:
+            plan_confirm_timeouts = int(timeouts_raw)
+        guardrail_payload = plan_eval_payload.get("guardrails")
+        guardrail_payload = guardrail_payload if isinstance(guardrail_payload, dict) else {}
+        override_raw = _read_float(guardrail_payload, "overrideRate")
+        if override_raw is not None:
+            plan_guardrail_override_rate = float(override_raw)
+        overcautious_payload = plan_eval_payload.get("overcautious")
+        overcautious_payload = overcautious_payload if isinstance(overcautious_payload, dict) else {}
+        overcautious_raw = _read_float(overcautious_payload, "rate")
+        if overcautious_raw is not None:
+            plan_overcautious_rate = float(overcautious_raw)
+        plan_rule_applied = int(plan_eval_payload.get("ruleAppliedCount", 0) or 0) > 0
+        hint_text = str(plan_eval_payload.get("ruleHazardHintTop", "")).strip()
+        if hint_text:
+            plan_rule_hint = hint_text
+    planner_payload = plan_payload.get("planner")
+    planner_payload = planner_payload if isinstance(planner_payload, dict) else {}
+    if not plan_prompt_version:
+        prompt_version_raw = str(planner_payload.get("promptVersion", "")).strip()
+        if prompt_version_raw:
+            plan_prompt_version = prompt_version_raw
+    if plan_json_valid is None:
+        json_valid_raw = planner_payload.get("jsonValid")
+        if isinstance(json_valid_raw, bool):
+            plan_json_valid = json_valid_raw
+    if not plan_fallback_used and isinstance(planner_payload.get("fallbackUsed"), bool):
+        plan_fallback_used = bool(planner_payload.get("fallbackUsed"))
+    if isinstance(plan_request_payload, dict) and bool(plan_request_payload.get("present")):
+        seg_chars_raw = _read_float(plan_request_payload, "segCharsP90")
+        if seg_chars_raw is not None:
+            plan_req_seg_chars_p90 = int(seg_chars_raw)
+        seg_trunc_raw = _read_float(plan_request_payload, "segTruncSegmentsDroppedTotal")
+        if seg_trunc_raw is not None:
+            plan_req_seg_trunc_dropped = int(seg_trunc_raw)
+        pov_chars_raw = _read_float(plan_request_payload, "povCharsP90")
+        if pov_chars_raw is not None:
+            plan_req_pov_chars_p90 = int(pov_chars_raw)
+        fallback_count_raw = _read_float(plan_request_payload, "fallbackUsedCount")
+        if fallback_count_raw is not None:
+            plan_req_fallback_used = int(fallback_count_raw) > 0
+    if isinstance(plan_context_payload, dict) and bool(plan_context_payload.get("present")):
+        ctx_used_rate_raw = _read_float(plan_context_payload, "contextUsedRate")
+        if ctx_used_rate_raw is not None:
+            plan_ctx_used_rate = float(ctx_used_rate_raw)
+            plan_ctx_used = float(ctx_used_rate_raw) > 0.0
+        seg_ctx_payload = plan_context_payload.get("seg")
+        seg_ctx_payload = seg_ctx_payload if isinstance(seg_ctx_payload, dict) else {}
+        seg_cov_raw = _read_float(seg_ctx_payload, "coverageMean")
+        if seg_cov_raw is not None:
+            plan_seg_ctx_coverage = float(seg_cov_raw)
+        pov_ctx_payload = plan_context_payload.get("pov")
+        pov_ctx_payload = pov_ctx_payload if isinstance(pov_ctx_payload, dict) else {}
+        pov_cov_raw = _read_float(pov_ctx_payload, "coverageMean")
+        if pov_cov_raw is not None:
+            plan_pov_ctx_coverage = float(pov_cov_raw)
+        slam_ctx_payload = plan_context_payload.get("slam")
+        slam_ctx_payload = slam_ctx_payload if isinstance(slam_ctx_payload, dict) else {}
+        slam_cov_raw = _read_float(slam_ctx_payload, "coverageMean")
+        if slam_cov_raw is not None:
+            plan_slam_ctx_coverage = float(slam_cov_raw)
+        slam_hit_raw = _read_float(slam_ctx_payload, "hitRate")
+        if slam_hit_raw is not None:
+            plan_slam_ctx_hit_rate = float(slam_hit_raw)
+        slam_used_raw = _read_float(slam_ctx_payload, "contextUsedRate")
+        if slam_used_raw is not None:
+            plan_slam_ctx_used_rate = float(slam_used_raw)
+        costmap_ctx_payload = plan_context_payload.get("costmap")
+        costmap_ctx_payload = costmap_ctx_payload if isinstance(costmap_ctx_payload, dict) else {}
+        costmap_cov_raw = _read_float(costmap_ctx_payload, "coverageP90")
+        if costmap_cov_raw is None:
+            costmap_cov_raw = _read_float(costmap_ctx_payload, "coverageMean")
+        if costmap_cov_raw is not None:
+            plan_costmap_ctx_coverage_p90 = float(costmap_cov_raw)
+        costmap_used_raw = _read_float(costmap_ctx_payload, "contextUsedRate")
+        if costmap_used_raw is not None:
+            plan_costmap_ctx_used_rate = float(costmap_used_raw)
+    if isinstance(plan_context_pack_payload, dict) and bool(plan_context_pack_payload.get("present")):
+        out_payload = plan_context_pack_payload.get("out")
+        out_payload = out_payload if isinstance(out_payload, dict) else {}
+        trunc_payload = plan_context_pack_payload.get("truncation")
+        trunc_payload = trunc_payload if isinstance(trunc_payload, dict) else {}
+        chars_raw = _read_float(out_payload, "charsTotalP90")
+        if chars_raw is not None:
+            plan_ctx_chars_p90 = int(chars_raw)
+        seg_chars_raw = _read_float(out_payload, "segCharsP90")
+        if seg_chars_raw is not None:
+            plan_ctx_seg_chars_p90 = int(seg_chars_raw)
+        pov_chars_raw = _read_float(out_payload, "povCharsP90")
+        if pov_chars_raw is not None:
+            plan_ctx_pov_chars_p90 = int(pov_chars_raw)
+        risk_chars_raw = _read_float(out_payload, "riskCharsP90")
+        if risk_chars_raw is not None:
+            plan_ctx_risk_chars_p90 = int(risk_chars_raw)
+        trunc_rate_raw = _read_float(trunc_payload, "truncationRate")
+        if trunc_rate_raw is not None:
+            plan_ctx_trunc_rate = float(trunc_rate_raw)
+    if isinstance(slam_context_payload, dict) and bool(slam_context_payload.get("present")):
+        slam_ctx_present = True
+        out_payload = slam_context_payload.get("out")
+        out_payload = out_payload if isinstance(out_payload, dict) else {}
+        trunc_payload = slam_context_payload.get("truncation")
+        trunc_payload = trunc_payload if isinstance(trunc_payload, dict) else {}
+        health_payload = slam_context_payload.get("health")
+        health_payload = health_payload if isinstance(health_payload, dict) else {}
+        slam_ctx_chars_raw = _read_float(out_payload, "charsTotalP90")
+        if slam_ctx_chars_raw is not None:
+            slam_ctx_chars_p90 = int(slam_ctx_chars_raw)
+        slam_ctx_trunc_raw = _read_float(trunc_payload, "truncationRate")
+        if slam_ctx_trunc_raw is not None:
+            slam_ctx_trunc_rate = float(slam_ctx_trunc_raw)
+        slam_tracking_rate_raw = _read_float(health_payload, "trackingRateMean")
+        if slam_tracking_rate_raw is not None:
+            slam_tracking_rate_mean = float(slam_tracking_rate_raw)
+    if isinstance(frame_e2e_payload, dict) and bool(frame_e2e_payload.get("present")):
+        frame_total = frame_e2e_payload.get("totalMs")
+        frame_total = frame_total if isinstance(frame_total, dict) else {}
+        frame_parts = frame_e2e_payload.get("partsMs")
+        frame_parts = frame_parts if isinstance(frame_parts, dict) else {}
+        frame_e2e_p90_raw = _read_float(frame_total, "p90")
+        if frame_e2e_p90_raw is not None:
+            frame_e2e_p90 = int(frame_e2e_p90_raw)
+        frame_e2e_max_raw = _read_float(frame_total, "max")
+        if frame_e2e_max_raw is not None:
+            frame_e2e_max = int(frame_e2e_max_raw)
+        seg_part = frame_parts.get("segMs")
+        seg_part = seg_part if isinstance(seg_part, dict) else {}
+        frame_seg_p90_raw = _read_float(seg_part, "p90")
+        if frame_seg_p90_raw is not None:
+            frame_seg_p90 = int(frame_seg_p90_raw)
+        risk_part = frame_parts.get("riskMs")
+        risk_part = risk_part if isinstance(risk_part, dict) else {}
+        frame_risk_p90_raw = _read_float(risk_part, "p90")
+        if frame_risk_p90_raw is not None:
+            frame_risk_p90 = int(frame_risk_p90_raw)
+        plan_part = frame_parts.get("planMs")
+        plan_part = plan_part if isinstance(plan_part, dict) else {}
+        frame_plan_p90_raw = _read_float(plan_part, "p90")
+        if frame_plan_p90_raw is not None:
+            frame_plan_p90 = int(frame_plan_p90_raw)
+        execute_part = frame_parts.get("executeMs")
+        execute_part = execute_part if isinstance(execute_part, dict) else {}
+        frame_execute_p90_raw = _read_float(execute_part, "p90")
+        if frame_execute_p90_raw is not None:
+            frame_execute_p90 = int(frame_execute_p90_raw)
+    if isinstance(frame_user_e2e_payload, dict) and bool(frame_user_e2e_payload.get("present")):
+        user_total = frame_user_e2e_payload.get("totalMs")
+        user_total = user_total if isinstance(user_total, dict) else {}
+        user_cov = frame_user_e2e_payload.get("coverage")
+        user_cov = user_cov if isinstance(user_cov, dict) else {}
+        user_p90_raw = _read_float(user_total, "p90")
+        if user_p90_raw is not None:
+            frame_user_e2e_p90 = int(user_p90_raw)
+        user_max_raw = _read_float(user_total, "max")
+        if user_max_raw is not None:
+            frame_user_e2e_max = int(user_max_raw)
+        ack_cov_raw = _read_float(user_cov, "ratio")
+        if ack_cov_raw is not None:
+            ack_coverage = float(ack_cov_raw)
+        by_kind_payload = frame_user_e2e_payload.get("byKind")
+        by_kind_payload = by_kind_payload if isinstance(by_kind_payload, dict) else {}
+        ack_kind_diversity = len([key for key in by_kind_payload.keys() if str(key).strip()])
+        tts_payload = by_kind_payload.get("tts")
+        tts_payload = tts_payload if isinstance(tts_payload, dict) else {}
+        tts_total = tts_payload.get("totalMs")
+        tts_total = tts_total if isinstance(tts_total, dict) else {}
+        tts_p90_raw = _read_float(tts_total, "p90")
+        if tts_p90_raw is not None:
+            frame_user_e2e_tts_p90 = int(tts_p90_raw)
+        tts_max_raw = _read_float(tts_total, "max")
+        if tts_max_raw is not None:
+            frame_user_e2e_tts_max = int(tts_max_raw)
+        ar_payload = by_kind_payload.get("ar")
+        ar_payload = ar_payload if isinstance(ar_payload, dict) else {}
+        ar_total = ar_payload.get("totalMs")
+        ar_total = ar_total if isinstance(ar_total, dict) else {}
+        ar_p90_raw = _read_float(ar_total, "p90")
+        if ar_p90_raw is not None:
+            frame_user_e2e_ar_p90 = int(ar_p90_raw)
+        ar_max_raw = _read_float(ar_total, "max")
+        if ar_max_raw is not None:
+            frame_user_e2e_ar_max = int(ar_max_raw)
+    if isinstance(models_payload, dict) and bool(models_payload.get("present")):
+        missing_raw = _read_float(models_payload, "missingRequiredTotal")
+        if missing_raw is not None:
+            models_missing_required = int(missing_raw)
+        enabled_raw = _read_float(models_payload, "enabledTotal")
+        if enabled_raw is not None:
+            models_enabled_total = int(enabled_raw)
     if isinstance(depth_risk, dict):
         critical = depth_risk.get("critical", {})
         delay = depth_risk.get("detectionDelayFrames", {})
@@ -1581,6 +5633,232 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         raw_max = _read_float(risk_latency, "max")
         if raw_max is not None:
             risk_latency_max = int(raw_max)
+    if isinstance(ocr_quality, dict):
+        raw_cer = _read_float(ocr_quality, "cer")
+        if raw_cer is not None:
+            ocr_cer = float(raw_cer)
+        raw_exact = _read_float(ocr_quality, "exactMatchRate")
+        if raw_exact is not None:
+            ocr_exact_match_rate = float(raw_exact)
+        raw_ocr_cov = _read_float(ocr_quality, "coverage")
+        if raw_ocr_cov is not None:
+            ocr_coverage = float(raw_ocr_cov)
+        ocr_latency = ocr_quality.get("latencyMs")
+        ocr_latency = ocr_latency if isinstance(ocr_latency, dict) else {}
+        raw_ocr_p90 = _read_float(ocr_latency, "p90")
+        if raw_ocr_p90 is not None:
+            ocr_latency_p90 = int(raw_ocr_p90)
+    if isinstance(seg_quality, dict):
+        raw_f1 = _read_float(seg_quality, "f1At50")
+        if raw_f1 is not None:
+            seg_f1_50 = float(raw_f1)
+        seg_latency = seg_quality.get("latencyMs")
+        seg_latency = seg_latency if isinstance(seg_latency, dict) else {}
+        raw_seg_p90 = _read_float(seg_latency, "p90")
+        if raw_seg_p90 is not None:
+            seg_latency_p90 = int(raw_seg_p90)
+        raw_cov = _read_float(seg_quality, "coverage")
+        if raw_cov is not None:
+            seg_coverage = float(raw_cov)
+        raw_mask_f1 = _read_float(seg_quality, "maskF1_50")
+        if raw_mask_f1 is not None:
+            seg_mask_f1_50 = float(raw_mask_f1)
+        raw_mask_cov = _read_float(seg_quality, "maskCoverage")
+        if raw_mask_cov is not None:
+            seg_mask_coverage = float(raw_mask_cov)
+        raw_mask_iou = _read_float(seg_quality, "maskMeanIoU")
+        if raw_mask_iou is not None:
+            seg_mask_mean_iou = float(raw_mask_iou)
+    if isinstance(seg_tracking_quality, dict):
+        raw_track_cov = _read_float(seg_tracking_quality, "trackCoverage")
+        if raw_track_cov is not None:
+            seg_track_coverage = float(raw_track_cov)
+        raw_tracks_total = _read_float(seg_tracking_quality, "tracksTotal")
+        if raw_tracks_total is not None:
+            seg_tracks_total = int(raw_tracks_total)
+        raw_switches = _read_float(seg_tracking_quality, "idSwitchCount")
+        if raw_switches is not None:
+            seg_id_switches = int(raw_switches)
+    if isinstance(depth_quality, dict):
+        raw_absrel = _read_float(depth_quality, "absRel")
+        if raw_absrel is not None:
+            depth_absrel = float(raw_absrel)
+        raw_rmse = _read_float(depth_quality, "rmse")
+        if raw_rmse is not None:
+            depth_rmse = float(raw_rmse)
+        raw_delta1 = _read_float(depth_quality, "delta1")
+        if raw_delta1 is not None:
+            depth_delta1 = float(raw_delta1)
+        raw_depth_cov = _read_float(depth_quality, "coverage")
+        if raw_depth_cov is not None:
+            depth_coverage = float(raw_depth_cov)
+        depth_latency = depth_quality.get("latencyMs")
+        depth_latency = depth_latency if isinstance(depth_latency, dict) else {}
+        raw_depth_p90 = _read_float(depth_latency, "p90")
+        if raw_depth_p90 is not None:
+            depth_latency_p90 = int(raw_depth_p90)
+    if isinstance(depth_temporal_quality, dict):
+        jitter_payload = depth_temporal_quality.get("jitterAbs")
+        jitter_payload = jitter_payload if isinstance(jitter_payload, dict) else {}
+        raw_jitter_p90 = _read_float(jitter_payload, "p90")
+        if raw_jitter_p90 is not None:
+            depth_jitter_p90 = float(raw_jitter_p90)
+        flicker_payload = depth_temporal_quality.get("flickerRateNear")
+        flicker_payload = flicker_payload if isinstance(flicker_payload, dict) else {}
+        raw_flicker_mean = _read_float(flicker_payload, "mean")
+        if raw_flicker_mean is not None:
+            depth_flicker_mean = float(raw_flicker_mean)
+        drift_payload = depth_temporal_quality.get("scaleDriftProxy")
+        drift_payload = drift_payload if isinstance(drift_payload, dict) else {}
+        raw_drift_p90 = _read_float(drift_payload, "p90")
+        if raw_drift_p90 is not None:
+            depth_scale_drift_p90 = float(raw_drift_p90)
+        raw_diversity = _read_float(depth_temporal_quality, "refViewStrategyDiversityCount")
+        if raw_diversity is not None:
+            depth_ref_view_diversity = int(raw_diversity)
+    if isinstance(costmap_quality, dict):
+        raw_costmap_cov = _read_float(costmap_quality, "coverage")
+        if raw_costmap_cov is not None:
+            costmap_coverage = float(raw_costmap_cov)
+        costmap_latency = costmap_quality.get("latencyMs")
+        costmap_latency = costmap_latency if isinstance(costmap_latency, dict) else {}
+        raw_costmap_latency_p90 = _read_float(costmap_latency, "p90")
+        if raw_costmap_latency_p90 is not None:
+            costmap_latency_p90 = int(raw_costmap_latency_p90)
+        costmap_density = costmap_quality.get("densityMean")
+        costmap_density = costmap_density if isinstance(costmap_density, dict) else {}
+        raw_density_mean = _read_float(costmap_density, "mean")
+        if raw_density_mean is not None:
+            costmap_density_mean = float(raw_density_mean)
+        dynamic_filter = costmap_quality.get("dynamicFilteredRate")
+        dynamic_filter = dynamic_filter if isinstance(dynamic_filter, dict) else {}
+        raw_dynamic_mean = _read_float(dynamic_filter, "mean")
+        if raw_dynamic_mean is not None:
+            costmap_dynamic_filter_rate_mean = float(raw_dynamic_mean)
+        raw_dynamic_temporal_used_rate = _read_float(costmap_quality, "dynamicTemporalUsedRate")
+        if raw_dynamic_temporal_used_rate is not None:
+            costmap_dynamic_temporal_used_rate = float(raw_dynamic_temporal_used_rate)
+        dynamic_tracks_payload = costmap_quality.get("dynamicTracksUsed")
+        dynamic_tracks_payload = dynamic_tracks_payload if isinstance(dynamic_tracks_payload, dict) else {}
+        raw_dynamic_tracks_mean = _read_float(dynamic_tracks_payload, "mean")
+        if raw_dynamic_tracks_mean is not None:
+            costmap_dynamic_tracks_used_mean = float(raw_dynamic_tracks_mean)
+        raw_dynamic_mask_used_rate = _read_float(costmap_quality, "dynamicMaskUsedRate")
+        if raw_dynamic_mask_used_rate is not None:
+            costmap_dynamic_mask_used_rate = float(raw_dynamic_mask_used_rate)
+        raw_dynamic_leak_proxy_mean = _read_float(costmap_quality, "dynamicLeakProxyMean")
+        if raw_dynamic_leak_proxy_mean is not None:
+            costmap_dynamic_leak_proxy_mean = float(raw_dynamic_leak_proxy_mean)
+    if isinstance(costmap_fused_quality, dict):
+        raw_costmap_fused_cov = _read_float(costmap_fused_quality, "coverage")
+        if raw_costmap_fused_cov is not None:
+            costmap_fused_coverage = float(raw_costmap_fused_cov)
+        costmap_fused_latency = costmap_fused_quality.get("latencyMs")
+        costmap_fused_latency = costmap_fused_latency if isinstance(costmap_fused_latency, dict) else {}
+        raw_costmap_fused_latency_p90 = _read_float(costmap_fused_latency, "p90")
+        if raw_costmap_fused_latency_p90 is not None:
+            costmap_fused_latency_p90 = int(raw_costmap_fused_latency_p90)
+        fused_stability = costmap_fused_quality.get("stability")
+        fused_stability = fused_stability if isinstance(fused_stability, dict) else {}
+        raw_iou_p90 = _read_float(fused_stability, "iouPrevP90")
+        if raw_iou_p90 is None:
+            raw_iou_p90 = _read_float(fused_stability, "iouPrevMean")
+        if raw_iou_p90 is not None:
+            costmap_fused_iou_p90 = float(raw_iou_p90)
+        raw_flicker_mean = _read_float(fused_stability, "flickerRatePrevMean")
+        if raw_flicker_mean is not None:
+            costmap_fused_flicker_rate_mean = float(raw_flicker_mean)
+        raw_shift_used_rate = _read_float(costmap_fused_quality, "shiftUsedRate")
+        if raw_shift_used_rate is not None:
+            costmap_fused_shift_used_rate = float(raw_shift_used_rate)
+        raw_shift_reject_rate = _read_float(costmap_fused_quality, "shiftGateRejectRate")
+        if raw_shift_reject_rate is not None:
+            costmap_fused_shift_gate_reject_rate = float(raw_shift_reject_rate)
+        top_reasons = costmap_fused_quality.get("shiftGateTopReasons")
+        top_reasons = top_reasons if isinstance(top_reasons, list) else []
+        if top_reasons:
+            first_reason = top_reasons[0]
+            if isinstance(first_reason, dict):
+                reason_text = str(first_reason.get("reason", "")).strip()
+                if reason_text:
+                    costmap_fused_shift_gate_top_reason = reason_text
+    if isinstance(slam_quality, dict):
+        tracking_payload = slam_quality.get("tracking")
+        tracking_payload = tracking_payload if isinstance(tracking_payload, dict) else {}
+        raw_tracking_rate = _read_float(tracking_payload, "trackingRate")
+        if raw_tracking_rate is not None:
+            slam_tracking_rate = float(raw_tracking_rate)
+        raw_lost_rate = _read_float(tracking_payload, "lostRate")
+        if raw_lost_rate is not None:
+            slam_lost_rate = float(raw_lost_rate)
+        raw_relocalized = _read_float(tracking_payload, "relocalizedCount")
+        if raw_relocalized is not None:
+            slam_relocalized = int(raw_relocalized)
+        slam_latency = slam_quality.get("latencyMs")
+        slam_latency = slam_latency if isinstance(slam_latency, dict) else {}
+        raw_slam_p90 = _read_float(slam_latency, "p90")
+        if raw_slam_p90 is not None:
+            slam_latency_p90 = int(raw_slam_p90)
+        alignment_payload = slam_quality.get("alignment")
+        alignment_payload = alignment_payload if isinstance(alignment_payload, dict) else {}
+        residual_payload = alignment_payload.get("residualMs")
+        residual_payload = residual_payload if isinstance(residual_payload, dict) else {}
+        raw_slam_align_p90 = _read_float(residual_payload, "p90")
+        if raw_slam_align_p90 is not None:
+            slam_align_residual_p90 = int(raw_slam_align_p90)
+        slam_align_mode_text = str(alignment_payload.get("mode", "")).strip()
+        if slam_align_mode_text:
+            slam_align_mode = slam_align_mode_text
+    if isinstance(slam_error_payload, dict):
+        raw_slam_ate_rmse = _read_float(slam_error_payload, "ate_rmse_m")
+        if raw_slam_ate_rmse is not None:
+            slam_ate_rmse = float(raw_slam_ate_rmse)
+        raw_slam_rpe_trans = _read_float(slam_error_payload, "rpe_trans_rmse_m")
+        if raw_slam_rpe_trans is not None:
+            slam_rpe_trans_rmse = float(raw_slam_rpe_trans)
+    seg_context_stats = seg_context_payload.get("stats")
+    seg_context_stats = seg_context_stats if isinstance(seg_context_stats, dict) else {}
+    seg_context_out = seg_context_stats.get("out")
+    seg_context_out = seg_context_out if isinstance(seg_context_out, dict) else {}
+    seg_context_truncation = seg_context_stats.get("truncation")
+    seg_context_truncation = seg_context_truncation if isinstance(seg_context_truncation, dict) else {}
+    seg_ctx_chars_raw = _read_float(seg_context_out, "charsTotal")
+    if seg_ctx_chars_raw is not None:
+        seg_ctx_chars = int(seg_ctx_chars_raw)
+    seg_ctx_segments_raw = _read_float(seg_context_out, "segments")
+    if seg_ctx_segments_raw is not None:
+        seg_ctx_segments = int(seg_ctx_segments_raw)
+    seg_ctx_trunc_raw = _read_float(seg_context_truncation, "segmentsDropped")
+    if seg_ctx_trunc_raw is not None:
+        seg_ctx_trunc_dropped = int(seg_ctx_trunc_raw)
+    seg_prompt_text_raw = _read_float(seg_prompt_payload, "textCharsTotal")
+    if seg_prompt_text_raw is not None:
+        seg_prompt_text_chars_total = int(seg_prompt_text_raw)
+    seg_prompt_out = seg_prompt_payload.get("out")
+    seg_prompt_out = seg_prompt_out if isinstance(seg_prompt_out, dict) else {}
+    seg_prompt_truncation = seg_prompt_payload.get("truncation")
+    seg_prompt_truncation = seg_prompt_truncation if isinstance(seg_prompt_truncation, dict) else {}
+    seg_prompt_chars_out_raw = _read_float(seg_prompt_out, "charsTotal")
+    if seg_prompt_chars_out_raw is not None:
+        seg_prompt_chars_out = int(seg_prompt_chars_out_raw)
+    seg_prompt_targets_out_raw = _read_float(seg_prompt_out, "targetsCountTotal")
+    if seg_prompt_targets_out_raw is not None:
+        seg_prompt_targets_out = int(seg_prompt_targets_out_raw)
+    seg_prompt_targets_dropped = _read_float(seg_prompt_truncation, "targetsDropped")
+    seg_prompt_boxes_dropped = _read_float(seg_prompt_truncation, "boxesDropped")
+    seg_prompt_points_dropped = _read_float(seg_prompt_truncation, "pointsDropped")
+    seg_prompt_text_dropped = _read_float(seg_prompt_truncation, "textCharsDropped")
+    dropped_total = 0.0
+    for value in (seg_prompt_targets_dropped, seg_prompt_boxes_dropped, seg_prompt_points_dropped, seg_prompt_text_dropped):
+        if value is not None:
+            dropped_total += float(value)
+    if seg_prompt_present:
+        seg_prompt_trunc_dropped = int(max(0.0, dropped_total))
+    seg_prompt_trunc_rate_raw = _read_float(seg_prompt_payload, "truncationRate")
+    if seg_prompt_trunc_rate_raw is not None:
+        seg_prompt_trunc_rate = float(seg_prompt_trunc_rate_raw)
+    elif seg_prompt_present:
+        seg_prompt_trunc_rate = 0.0
 
     row = {
         "run_id": run_id,
@@ -1605,7 +5883,9 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "safety_score": _compute_safety_score(summary),
         "quality_has_gt": has_gt,
         "quality_score": quality_score,
-        "confirm_timeouts": confirm_timeouts,
+        "confirm_timeouts": plan_confirm_timeouts,
+        "confirm_requests": confirm_requests,
+        "plan_confirm_timeouts": plan_confirm_timeouts,
         "missCriticalCount": critical_misses,
         "critical_misses": critical_misses,
         "max_delay_frames": max_delay_frames,
@@ -1613,6 +5893,121 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "riskLatencyMax": risk_latency_max,
         "risk_latency_p90": risk_latency_p90,
         "risk_latency_max": risk_latency_max,
+        "ocr_cer": ocr_cer,
+        "ocr_exact_match_rate": ocr_exact_match_rate,
+        "ocr_coverage": ocr_coverage,
+        "ocr_latency_p90": ocr_latency_p90,
+        "seg_f1_50": seg_f1_50,
+        "seg_latency_p90": seg_latency_p90,
+        "seg_coverage": seg_coverage,
+        "seg_track_coverage": seg_track_coverage,
+        "seg_tracks_total": seg_tracks_total,
+        "seg_id_switches": seg_id_switches,
+        "depth_absrel": depth_absrel,
+        "depth_rmse": depth_rmse,
+        "depth_delta1": depth_delta1,
+        "depth_coverage": depth_coverage,
+        "depth_latency_p90": depth_latency_p90,
+        "depth_jitter_p90": depth_jitter_p90,
+        "depth_flicker_mean": depth_flicker_mean,
+        "depth_scale_drift_p90": depth_scale_drift_p90,
+        "depth_ref_view_diversity": depth_ref_view_diversity,
+        "costmap_coverage": costmap_coverage,
+        "costmap_latency_p90": costmap_latency_p90,
+        "costmap_density_mean": costmap_density_mean,
+        "costmap_dynamic_filter_rate_mean": costmap_dynamic_filter_rate_mean,
+        "costmap_dynamic_temporal_used_rate": costmap_dynamic_temporal_used_rate,
+        "costmap_dynamic_tracks_used_mean": costmap_dynamic_tracks_used_mean,
+        "costmap_dynamic_mask_used_rate": costmap_dynamic_mask_used_rate,
+        "costmap_dynamic_leak_proxy_mean": costmap_dynamic_leak_proxy_mean,
+        "costmap_fused_coverage": costmap_fused_coverage,
+        "costmap_fused_latency_p90": costmap_fused_latency_p90,
+        "costmap_fused_iou_p90": costmap_fused_iou_p90,
+        "costmap_fused_flicker_rate_mean": costmap_fused_flicker_rate_mean,
+        "costmap_fused_shift_used_rate": costmap_fused_shift_used_rate,
+        "costmap_fused_shift_gate_reject_rate": costmap_fused_shift_gate_reject_rate,
+        "costmap_fused_shift_gate_top_reason": costmap_fused_shift_gate_top_reason,
+        "slam_tracking_rate": slam_tracking_rate,
+        "slam_lost_rate": slam_lost_rate,
+        "slam_relocalized": slam_relocalized,
+        "slam_latency_p90": slam_latency_p90,
+        "slam_align_residual_p90": slam_align_residual_p90,
+        "slam_align_mode": slam_align_mode,
+        "slam_ate_rmse": slam_ate_rmse,
+        "slam_rpe_trans_rmse": slam_rpe_trans_rmse,
+        "seg_mask_f1_50": seg_mask_f1_50,
+        "seg_mask_coverage": seg_mask_coverage,
+        "seg_mask_mean_iou": seg_mask_mean_iou,
+        "seg_ctx_chars": seg_ctx_chars,
+        "seg_ctx_segments": seg_ctx_segments,
+        "seg_ctx_trunc_dropped": seg_ctx_trunc_dropped,
+        "seg_prompt_present": seg_prompt_present,
+        "seg_prompt_text_chars_total": seg_prompt_text_chars_total,
+        "seg_prompt_chars_out": seg_prompt_chars_out,
+        "seg_prompt_targets_out": seg_prompt_targets_out,
+        "seg_prompt_trunc_dropped": seg_prompt_trunc_dropped,
+        "seg_prompt_trunc_rate": seg_prompt_trunc_rate,
+        "pov_present": pov_present,
+        "pov_decisions": pov_decisions,
+        "pov_duration_ms": int(pov_duration_ms) if pov_duration_ms is not None else None,
+        "pov_token_approx": pov_token_approx,
+        "pov_decision_per_min": pov_decision_per_min,
+        "has_pov_context": has_pov_context,
+        "pov_context_token_approx": pov_context_token_approx,
+        "pov_context_chars": pov_context_chars,
+        "plan_present": plan_present,
+        "plan_risk_level": plan_risk_level,
+        "plan_actions": plan_actions,
+        "plan_guardrails": plan_guardrails,
+        "plan_has_stop": plan_has_stop,
+        "plan_has_confirm": plan_has_confirm,
+        "plan_score": plan_score,
+        "plan_fallback_used": plan_fallback_used,
+        "plan_json_valid": plan_json_valid,
+        "plan_prompt_version": plan_prompt_version,
+        "plan_latency_p90": plan_latency_p90,
+        "plan_overcautious_rate": plan_overcautious_rate,
+        "plan_guardrail_override_rate": plan_guardrail_override_rate,
+        "plan_rule_applied": plan_rule_applied,
+        "plan_rule_hint": plan_rule_hint,
+        "plan_req_seg_chars_p90": plan_req_seg_chars_p90,
+        "plan_req_seg_trunc_dropped": plan_req_seg_trunc_dropped,
+        "plan_req_pov_chars_p90": plan_req_pov_chars_p90,
+        "plan_req_fallback_used": plan_req_fallback_used,
+        "plan_ctx_used": plan_ctx_used,
+        "plan_ctx_used_rate": plan_ctx_used_rate,
+        "plan_seg_ctx_coverage": plan_seg_ctx_coverage,
+        "plan_pov_ctx_coverage": plan_pov_ctx_coverage,
+        "plan_slam_ctx_coverage": plan_slam_ctx_coverage,
+        "plan_slam_ctx_hit_rate": plan_slam_ctx_hit_rate,
+        "plan_slam_ctx_used_rate": plan_slam_ctx_used_rate,
+        "plan_costmap_ctx_coverage_p90": plan_costmap_ctx_coverage_p90,
+        "plan_costmap_ctx_used_rate": plan_costmap_ctx_used_rate,
+        "plan_ctx_chars_p90": plan_ctx_chars_p90,
+        "plan_ctx_trunc_rate": plan_ctx_trunc_rate,
+        "plan_ctx_seg_chars_p90": plan_ctx_seg_chars_p90,
+        "plan_ctx_pov_chars_p90": plan_ctx_pov_chars_p90,
+        "plan_ctx_risk_chars_p90": plan_ctx_risk_chars_p90,
+        "slam_ctx_present": slam_ctx_present,
+        "slam_ctx_chars_p90": slam_ctx_chars_p90,
+        "slam_ctx_trunc_rate": slam_ctx_trunc_rate,
+        "slam_tracking_rate_mean": slam_tracking_rate_mean,
+        "frame_e2e_p90": frame_e2e_p90,
+        "frame_e2e_max": frame_e2e_max,
+        "frame_seg_p90": frame_seg_p90,
+        "frame_risk_p90": frame_risk_p90,
+        "frame_plan_p90": frame_plan_p90,
+        "frame_execute_p90": frame_execute_p90,
+        "frame_user_e2e_p90": frame_user_e2e_p90,
+        "frame_user_e2e_max": frame_user_e2e_max,
+        "frame_user_e2e_tts_p90": frame_user_e2e_tts_p90,
+        "frame_user_e2e_tts_max": frame_user_e2e_tts_max,
+        "frame_user_e2e_ar_p90": frame_user_e2e_ar_p90,
+        "frame_user_e2e_ar_max": frame_user_e2e_ar_max,
+        "ack_kind_diversity": int(ack_kind_diversity),
+        "ack_coverage": ack_coverage,
+        "models_missing_required": models_missing_required,
+        "models_enabled_total": models_enabled_total,
         "summary": summary,
     }
     row.update(urls)
@@ -1632,6 +6027,82 @@ def _matches_run_filters(
     max_critical_misses: int | None,
     max_risk_latency_p90: int | None,
     max_risk_latency_max: int | None,
+    max_ocr_cer: float | None,
+    min_ocr_exact_match_rate: float | None,
+    min_ocr_coverage: float | None,
+    max_ocr_latency_p90: int | None,
+    min_seg_f1_50: float | None,
+    min_seg_coverage: float | None,
+    min_seg_track_coverage: float | None,
+    min_seg_tracks_total: int | None,
+    max_seg_id_switches: int | None,
+    min_depth_delta1: float | None,
+    max_depth_absrel: float | None,
+    min_depth_coverage: float | None,
+    max_depth_latency_p90: int | None,
+    max_depth_jitter_p90: float | None,
+    max_depth_flicker_mean: float | None,
+    max_depth_scale_drift_p90: float | None,
+    min_costmap_coverage: float | None = None,
+    max_costmap_latency_p90: int | None = None,
+    max_costmap_dynamic_filter_rate_mean: float | None = None,
+    min_costmap_dynamic_temporal_used_rate: float | None = None,
+    min_costmap_dynamic_mask_used_rate: float | None = None,
+    max_costmap_dynamic_tracks_used_mean: float | None = None,
+    min_costmap_fused_coverage: float | None = None,
+    max_costmap_fused_latency_p90: int | None = None,
+    min_costmap_fused_iou_p90: float | None = None,
+    max_costmap_fused_flicker_rate_mean: float | None = None,
+    max_costmap_fused_shift_gate_reject_rate: float | None = None,
+    min_costmap_fused_shift_used_rate: float | None = None,
+    min_slam_tracking_rate: float | None,
+    max_slam_lost_rate: float | None,
+    max_slam_latency_p90: int | None,
+    max_slam_align_residual_p90: int | None,
+    max_slam_ate_rmse: float | None,
+    max_slam_rpe_trans_rmse: float | None,
+    min_seg_mask_f1_50: float | None,
+    min_seg_mask_coverage: float | None,
+    max_seg_latency_p90: int | None,
+    max_frame_e2e_p90: int | None,
+    max_frame_e2e_max: int | None,
+    max_frame_user_e2e_p90: int | None,
+    max_frame_user_e2e_max: int | None,
+    max_frame_user_e2e_tts_p90: int | None,
+    max_frame_user_e2e_ar_p90: int | None,
+    min_ack_kind_diversity: int | None,
+    max_models_missing_required: int | None,
+    max_seg_ctx_chars: int | None,
+    max_seg_ctx_trunc_dropped: int | None,
+    max_plan_req_seg_chars_p90: int | None,
+    max_plan_req_seg_trunc_dropped: int | None,
+    plan_req_fallback_used: str | None,
+    min_plan_seg_ctx_coverage: float | None,
+    min_plan_pov_ctx_coverage: float | None,
+    min_plan_slam_ctx_coverage: float | None,
+    require_plan_ctx_used: str | None,
+    require_plan_slam_ctx_used: str | None,
+    require_plan_costmap_ctx_used: str | None = None,
+    max_plan_ctx_trunc_rate: float | None,
+    min_plan_ctx_chars_p90: int | None,
+    require_slam_ctx_present: str | None,
+    max_slam_ctx_trunc_rate: float | None,
+    min_slam_tracking_rate_mean: float | None,
+    min_seg_prompt_text_chars: int | None,
+    max_seg_prompt_trunc_rate: float | None,
+    max_seg_prompt_trunc_dropped: int | None,
+    has_pov: str | None,
+    min_pov_decisions: int | None,
+    has_pov_context: str | None,
+    min_pov_context_token_approx: int | None,
+    has_plan: str | None,
+    plan_fallback_used: str | None,
+    max_plan_latency_p90: int | None,
+    max_plan_overcautious_rate: float | None,
+    max_plan_guardrail_override_rate: float | None,
+    max_plan_guardrails: int | None,
+    min_plan_score: float | None,
+    plan_risk_level: str | None,
 ) -> bool:
     if scenario:
         if scenario.lower() not in str(row.get("scenarioTag", "")).lower():
@@ -1677,6 +6148,467 @@ def _matches_run_filters(
             return False
         if int(value) > int(max_risk_latency_max):
             return False
+    if max_ocr_cer is not None:
+        value = row.get("ocr_cer")
+        if value is None:
+            return False
+        if float(value) > float(max_ocr_cer):
+            return False
+    if min_ocr_exact_match_rate is not None:
+        value = row.get("ocr_exact_match_rate")
+        if value is None:
+            return False
+        if float(value) < float(min_ocr_exact_match_rate):
+            return False
+    if min_ocr_coverage is not None:
+        value = row.get("ocr_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_ocr_coverage):
+            return False
+    if max_ocr_latency_p90 is not None:
+        value = row.get("ocr_latency_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_ocr_latency_p90):
+            return False
+    if min_seg_f1_50 is not None:
+        value = row.get("seg_f1_50")
+        if value is None:
+            return False
+        if float(value) < float(min_seg_f1_50):
+            return False
+    if min_seg_coverage is not None:
+        value = row.get("seg_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_seg_coverage):
+            return False
+    if min_seg_track_coverage is not None:
+        value = row.get("seg_track_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_seg_track_coverage):
+            return False
+    if min_seg_tracks_total is not None:
+        value = row.get("seg_tracks_total")
+        if value is None:
+            return False
+        if int(value) < int(min_seg_tracks_total):
+            return False
+    if max_seg_id_switches is not None:
+        value = row.get("seg_id_switches")
+        if value is None:
+            return False
+        if int(value) > int(max_seg_id_switches):
+            return False
+    if min_depth_delta1 is not None:
+        value = row.get("depth_delta1")
+        if value is None:
+            return False
+        if float(value) < float(min_depth_delta1):
+            return False
+    if max_depth_absrel is not None:
+        value = row.get("depth_absrel")
+        if value is None:
+            return False
+        if float(value) > float(max_depth_absrel):
+            return False
+    if min_depth_coverage is not None:
+        value = row.get("depth_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_depth_coverage):
+            return False
+    if max_depth_latency_p90 is not None:
+        value = row.get("depth_latency_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_depth_latency_p90):
+            return False
+    if max_depth_jitter_p90 is not None:
+        value = row.get("depth_jitter_p90")
+        if value is None:
+            return False
+        if float(value) > float(max_depth_jitter_p90):
+            return False
+    if max_depth_flicker_mean is not None:
+        value = row.get("depth_flicker_mean")
+        if value is None:
+            return False
+        if float(value) > float(max_depth_flicker_mean):
+            return False
+    if max_depth_scale_drift_p90 is not None:
+        value = row.get("depth_scale_drift_p90")
+        if value is None:
+            return False
+        if float(value) > float(max_depth_scale_drift_p90):
+            return False
+    if min_costmap_coverage is not None:
+        value = row.get("costmap_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_costmap_coverage):
+            return False
+    if max_costmap_latency_p90 is not None:
+        value = row.get("costmap_latency_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_costmap_latency_p90):
+            return False
+    if max_costmap_dynamic_filter_rate_mean is not None:
+        value = row.get("costmap_dynamic_filter_rate_mean")
+        if value is None:
+            return False
+        if float(value) > float(max_costmap_dynamic_filter_rate_mean):
+            return False
+    if min_costmap_dynamic_temporal_used_rate is not None:
+        value = row.get("costmap_dynamic_temporal_used_rate")
+        if value is None:
+            return False
+        if float(value) < float(min_costmap_dynamic_temporal_used_rate):
+            return False
+    if min_costmap_dynamic_mask_used_rate is not None:
+        value = row.get("costmap_dynamic_mask_used_rate")
+        if value is None:
+            return False
+        if float(value) < float(min_costmap_dynamic_mask_used_rate):
+            return False
+    if max_costmap_dynamic_tracks_used_mean is not None:
+        value = row.get("costmap_dynamic_tracks_used_mean")
+        if value is None:
+            return False
+        if float(value) > float(max_costmap_dynamic_tracks_used_mean):
+            return False
+    if min_costmap_fused_coverage is not None:
+        value = row.get("costmap_fused_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_costmap_fused_coverage):
+            return False
+    if max_costmap_fused_latency_p90 is not None:
+        value = row.get("costmap_fused_latency_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_costmap_fused_latency_p90):
+            return False
+    if min_costmap_fused_iou_p90 is not None:
+        value = row.get("costmap_fused_iou_p90")
+        if value is None:
+            return False
+        if float(value) < float(min_costmap_fused_iou_p90):
+            return False
+    if max_costmap_fused_flicker_rate_mean is not None:
+        value = row.get("costmap_fused_flicker_rate_mean")
+        if value is None:
+            return False
+        if float(value) > float(max_costmap_fused_flicker_rate_mean):
+            return False
+    if max_costmap_fused_shift_gate_reject_rate is not None:
+        value = row.get("costmap_fused_shift_gate_reject_rate")
+        if value is None:
+            return False
+        if float(value) > float(max_costmap_fused_shift_gate_reject_rate):
+            return False
+    if min_costmap_fused_shift_used_rate is not None:
+        value = row.get("costmap_fused_shift_used_rate")
+        if value is None:
+            return False
+        if float(value) < float(min_costmap_fused_shift_used_rate):
+            return False
+    if min_slam_tracking_rate is not None:
+        value = row.get("slam_tracking_rate")
+        if value is None:
+            return False
+        if float(value) < float(min_slam_tracking_rate):
+            return False
+    if max_slam_lost_rate is not None:
+        value = row.get("slam_lost_rate")
+        if value is None:
+            return False
+        if float(value) > float(max_slam_lost_rate):
+            return False
+    if max_slam_latency_p90 is not None:
+        value = row.get("slam_latency_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_slam_latency_p90):
+            return False
+    if max_slam_align_residual_p90 is not None:
+        value = row.get("slam_align_residual_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_slam_align_residual_p90):
+            return False
+    if max_slam_ate_rmse is not None:
+        value = row.get("slam_ate_rmse")
+        if value is None:
+            return False
+        if float(value) > float(max_slam_ate_rmse):
+            return False
+    if max_slam_rpe_trans_rmse is not None:
+        value = row.get("slam_rpe_trans_rmse")
+        if value is None:
+            return False
+        if float(value) > float(max_slam_rpe_trans_rmse):
+            return False
+    if min_seg_mask_f1_50 is not None:
+        value = row.get("seg_mask_f1_50")
+        if value is None:
+            return False
+        if float(value) < float(min_seg_mask_f1_50):
+            return False
+    if min_seg_mask_coverage is not None:
+        value = row.get("seg_mask_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_seg_mask_coverage):
+            return False
+    if max_seg_latency_p90 is not None:
+        value = row.get("seg_latency_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_seg_latency_p90):
+            return False
+    if max_frame_e2e_p90 is not None:
+        value = row.get("frame_e2e_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_frame_e2e_p90):
+            return False
+    if max_frame_e2e_max is not None:
+        value = row.get("frame_e2e_max")
+        if value is None:
+            return False
+        if int(value) > int(max_frame_e2e_max):
+            return False
+    if max_frame_user_e2e_p90 is not None:
+        value = row.get("frame_user_e2e_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_frame_user_e2e_p90):
+            return False
+    if max_frame_user_e2e_max is not None:
+        value = row.get("frame_user_e2e_max")
+        if value is None:
+            return False
+        if int(value) > int(max_frame_user_e2e_max):
+            return False
+    if max_frame_user_e2e_tts_p90 is not None:
+        value = row.get("frame_user_e2e_tts_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_frame_user_e2e_tts_p90):
+            return False
+    if max_frame_user_e2e_ar_p90 is not None:
+        value = row.get("frame_user_e2e_ar_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_frame_user_e2e_ar_p90):
+            return False
+    if min_ack_kind_diversity is not None:
+        value = row.get("ack_kind_diversity")
+        if value is None:
+            return False
+        if int(value) < int(min_ack_kind_diversity):
+            return False
+    if max_models_missing_required is not None:
+        value = row.get("models_missing_required")
+        if value is None:
+            return False
+        if int(value) > int(max_models_missing_required):
+            return False
+    if max_seg_ctx_chars is not None:
+        value = row.get("seg_ctx_chars")
+        if value is None:
+            return False
+        if int(value) > int(max_seg_ctx_chars):
+            return False
+    if max_seg_ctx_trunc_dropped is not None:
+        value = row.get("seg_ctx_trunc_dropped")
+        if value is None:
+            return False
+        if int(value) > int(max_seg_ctx_trunc_dropped):
+            return False
+    if max_plan_req_seg_chars_p90 is not None:
+        value = row.get("plan_req_seg_chars_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_plan_req_seg_chars_p90):
+            return False
+    if max_plan_req_seg_trunc_dropped is not None:
+        value = row.get("plan_req_seg_trunc_dropped")
+        if value is None:
+            return False
+        if int(value) > int(max_plan_req_seg_trunc_dropped):
+            return False
+    if plan_req_fallback_used:
+        normalized = plan_req_fallback_used.strip().lower()
+        present = bool(row.get("plan_req_fallback_used"))
+        if normalized in {"true", "1", "yes"} and not present:
+            return False
+        if normalized in {"false", "0", "no"} and present:
+            return False
+    if min_plan_seg_ctx_coverage is not None:
+        value = row.get("plan_seg_ctx_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_plan_seg_ctx_coverage):
+            return False
+    if min_plan_pov_ctx_coverage is not None:
+        value = row.get("plan_pov_ctx_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_plan_pov_ctx_coverage):
+            return False
+    if min_plan_slam_ctx_coverage is not None:
+        value = row.get("plan_slam_ctx_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_plan_slam_ctx_coverage):
+            return False
+    if require_plan_ctx_used:
+        normalized = require_plan_ctx_used.strip().lower()
+        present = bool(row.get("plan_ctx_used"))
+        if normalized in {"true", "1", "yes"} and not present:
+            return False
+        if normalized in {"false", "0", "no"} and present:
+            return False
+    if require_plan_slam_ctx_used:
+        normalized = require_plan_slam_ctx_used.strip().lower()
+        used_rate = row.get("plan_slam_ctx_used_rate")
+        present = bool(float(used_rate)) if isinstance(used_rate, (int, float)) else False
+        if normalized in {"true", "1", "yes"} and not present:
+            return False
+        if normalized in {"false", "0", "no"} and present:
+            return False
+    if require_plan_costmap_ctx_used:
+        normalized = require_plan_costmap_ctx_used.strip().lower()
+        used_rate = row.get("plan_costmap_ctx_used_rate")
+        present = bool(float(used_rate)) if isinstance(used_rate, (int, float)) else False
+        if normalized in {"true", "1", "yes"} and not present:
+            return False
+        if normalized in {"false", "0", "no"} and present:
+            return False
+    if max_plan_ctx_trunc_rate is not None:
+        value = row.get("plan_ctx_trunc_rate")
+        if value is None:
+            return False
+        if float(value) > float(max_plan_ctx_trunc_rate):
+            return False
+    if min_plan_ctx_chars_p90 is not None:
+        value = row.get("plan_ctx_chars_p90")
+        if value is None:
+            return False
+        if int(value) < int(min_plan_ctx_chars_p90):
+            return False
+    if require_slam_ctx_present:
+        normalized = require_slam_ctx_present.strip().lower()
+        present = bool(row.get("slam_ctx_present"))
+        if normalized in {"true", "1", "yes"} and not present:
+            return False
+        if normalized in {"false", "0", "no"} and present:
+            return False
+    if max_slam_ctx_trunc_rate is not None:
+        value = row.get("slam_ctx_trunc_rate")
+        if value is None:
+            return False
+        if float(value) > float(max_slam_ctx_trunc_rate):
+            return False
+    if min_slam_tracking_rate_mean is not None:
+        value = row.get("slam_tracking_rate_mean")
+        if value is None:
+            return False
+        if float(value) < float(min_slam_tracking_rate_mean):
+            return False
+    if min_seg_prompt_text_chars is not None:
+        value = row.get("seg_prompt_text_chars_total")
+        if value is None:
+            return False
+        if int(value) < int(min_seg_prompt_text_chars):
+            return False
+    if max_seg_prompt_trunc_rate is not None:
+        value = row.get("seg_prompt_trunc_rate")
+        if value is None:
+            return False
+        if float(value) > float(max_seg_prompt_trunc_rate):
+            return False
+    if max_seg_prompt_trunc_dropped is not None:
+        value = row.get("seg_prompt_trunc_dropped")
+        if value is None:
+            return False
+        if int(value) > int(max_seg_prompt_trunc_dropped):
+            return False
+    if has_pov:
+        normalized = has_pov.strip().lower()
+        present = bool(row.get("pov_present"))
+        if normalized in {"true", "1", "yes"} and not present:
+            return False
+        if normalized in {"false", "0", "no"} and present:
+            return False
+    if min_pov_decisions is not None:
+        if int(row.get("pov_decisions", 0) or 0) < int(min_pov_decisions):
+            return False
+    if has_pov_context:
+        normalized = has_pov_context.strip().lower()
+        present = bool(row.get("has_pov_context"))
+        if normalized in {"true", "1", "yes"} and not present:
+            return False
+        if normalized in {"false", "0", "no"} and present:
+            return False
+    if min_pov_context_token_approx is not None:
+        value = row.get("pov_context_token_approx")
+        if value is None:
+            return False
+        if int(value) < int(min_pov_context_token_approx):
+            return False
+    if has_plan:
+        normalized = has_plan.strip().lower()
+        present = bool(row.get("plan_present"))
+        if normalized in {"true", "1", "yes"} and not present:
+            return False
+        if normalized in {"false", "0", "no"} and present:
+            return False
+    if plan_fallback_used:
+        normalized = plan_fallback_used.strip().lower()
+        fallback_used = bool(row.get("plan_fallback_used"))
+        if normalized in {"true", "1", "yes"} and not fallback_used:
+            return False
+        if normalized in {"false", "0", "no"} and fallback_used:
+            return False
+    if max_plan_latency_p90 is not None:
+        value = row.get("plan_latency_p90")
+        if value is None:
+            return False
+        if int(value) > int(max_plan_latency_p90):
+            return False
+    if max_plan_overcautious_rate is not None:
+        value = row.get("plan_overcautious_rate")
+        if value is None:
+            return False
+        if float(value) > float(max_plan_overcautious_rate):
+            return False
+    if max_plan_guardrail_override_rate is not None:
+        value = row.get("plan_guardrail_override_rate")
+        if value is None:
+            return False
+        if float(value) > float(max_plan_guardrail_override_rate):
+            return False
+    if max_plan_guardrails is not None:
+        value = int(row.get("plan_guardrails", 0) or 0)
+        if value > int(max_plan_guardrails):
+            return False
+    if min_plan_score is not None:
+        value = row.get("plan_score")
+        if value is None:
+            return False
+        if float(value) < float(min_plan_score):
+            return False
+    if plan_risk_level:
+        expected = str(plan_risk_level).strip().lower()
+        actual = str(row.get("plan_risk_level") or "").strip().lower()
+        if actual != expected:
+            return False
     return True
 
 
@@ -1693,6 +6625,92 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "quality",
         "quality_score",
         "risk_latency_p90",
+        "ocr_cer",
+        "ocr_exact_match_rate",
+        "ocr_coverage",
+        "ocr_latency_p90",
+        "seg_f1_50",
+        "seg_latency_p90",
+        "seg_coverage",
+        "seg_track_coverage",
+        "seg_tracks_total",
+        "seg_id_switches",
+        "depth_absrel",
+        "depth_rmse",
+        "depth_delta1",
+        "depth_coverage",
+        "depth_latency_p90",
+        "depth_jitter_p90",
+        "depth_flicker_mean",
+        "depth_scale_drift_p90",
+        "depth_ref_view_diversity",
+        "costmap_coverage",
+        "costmap_latency_p90",
+        "costmap_density_mean",
+        "costmap_dynamic_filter_rate_mean",
+        "costmap_dynamic_temporal_used_rate",
+        "costmap_dynamic_tracks_used_mean",
+        "costmap_dynamic_mask_used_rate",
+        "costmap_fused_coverage",
+        "costmap_fused_latency_p90",
+        "costmap_fused_iou_p90",
+        "costmap_fused_flicker_rate_mean",
+        "costmap_fused_shift_used_rate",
+        "costmap_fused_shift_gate_reject_rate",
+        "slam_tracking_rate",
+        "slam_lost_rate",
+        "slam_relocalized",
+        "slam_latency_p90",
+        "slam_ate_rmse",
+        "slam_rpe_trans_rmse",
+        "frame_e2e_p90",
+        "frame_e2e_max",
+        "frame_seg_p90",
+        "frame_risk_p90",
+        "frame_plan_p90",
+        "frame_execute_p90",
+        "frame_user_e2e_p90",
+        "frame_user_e2e_max",
+        "ack_coverage",
+        "seg_mask_f1_50",
+        "seg_mask_coverage",
+        "seg_mask_mean_iou",
+        "seg_ctx_chars",
+        "seg_ctx_segments",
+        "seg_ctx_trunc_dropped",
+        "plan_req_seg_chars_p90",
+        "plan_req_seg_trunc_dropped",
+        "plan_req_pov_chars_p90",
+        "plan_rule_applied",
+        "plan_seg_ctx_coverage",
+        "plan_pov_ctx_coverage",
+        "plan_slam_ctx_coverage",
+        "plan_slam_ctx_used_rate",
+        "plan_costmap_ctx_coverage_p90",
+        "plan_costmap_ctx_used_rate",
+        "plan_ctx_used_rate",
+        "plan_ctx_chars_p90",
+        "plan_ctx_trunc_rate",
+        "plan_ctx_seg_chars_p90",
+        "plan_ctx_pov_chars_p90",
+        "plan_ctx_risk_chars_p90",
+        "slam_ctx_chars_p90",
+        "slam_ctx_trunc_rate",
+        "slam_tracking_rate_mean",
+        "pov_decisions",
+        "pov_token_approx",
+        "pov_decision_per_min",
+        "pov_context_token_approx",
+        "seg_prompt_text_chars_total",
+        "seg_prompt_chars_out",
+        "seg_prompt_targets_out",
+        "seg_prompt_trunc_dropped",
+        "seg_prompt_trunc_rate",
+        "plan_actions",
+        "plan_guardrails",
+        "plan_latency_p90",
+        "confirm_timeouts",
+        "plan_score",
         "safemode_enter",
         "throttle_enter",
         "preempt_enter",
@@ -1728,6 +6746,82 @@ async def _query_run_package_rows(
     max_critical_misses: int | None,
     max_risk_latency_p90: int | None,
     max_risk_latency_max: int | None,
+    max_ocr_cer: float | None,
+    min_ocr_exact_match_rate: float | None,
+    min_ocr_coverage: float | None,
+    max_ocr_latency_p90: int | None,
+    min_seg_f1_50: float | None,
+    min_seg_coverage: float | None,
+    min_seg_track_coverage: float | None,
+    min_seg_tracks_total: int | None,
+    max_seg_id_switches: int | None,
+    min_depth_delta1: float | None,
+    max_depth_absrel: float | None,
+    min_depth_coverage: float | None,
+    max_depth_latency_p90: int | None,
+    max_depth_jitter_p90: float | None,
+    max_depth_flicker_mean: float | None,
+    max_depth_scale_drift_p90: float | None,
+    min_costmap_coverage: float | None,
+    max_costmap_latency_p90: int | None,
+    max_costmap_dynamic_filter_rate_mean: float | None,
+    min_costmap_dynamic_temporal_used_rate: float | None,
+    min_costmap_dynamic_mask_used_rate: float | None,
+    max_costmap_dynamic_tracks_used_mean: float | None,
+    min_costmap_fused_coverage: float | None,
+    max_costmap_fused_latency_p90: int | None,
+    min_costmap_fused_iou_p90: float | None,
+    max_costmap_fused_flicker_rate_mean: float | None,
+    max_costmap_fused_shift_gate_reject_rate: float | None,
+    min_costmap_fused_shift_used_rate: float | None,
+    min_slam_tracking_rate: float | None,
+    max_slam_lost_rate: float | None,
+    max_slam_latency_p90: int | None,
+    max_slam_align_residual_p90: int | None,
+    max_slam_ate_rmse: float | None,
+    max_slam_rpe_trans_rmse: float | None,
+    min_seg_mask_f1_50: float | None,
+    min_seg_mask_coverage: float | None,
+    max_seg_latency_p90: int | None,
+    max_frame_e2e_p90: int | None,
+    max_frame_e2e_max: int | None,
+    max_frame_user_e2e_p90: int | None,
+    max_frame_user_e2e_max: int | None,
+    max_frame_user_e2e_tts_p90: int | None,
+    max_frame_user_e2e_ar_p90: int | None,
+    min_ack_kind_diversity: int | None,
+    max_models_missing_required: int | None,
+    max_seg_ctx_chars: int | None,
+    max_seg_ctx_trunc_dropped: int | None,
+    max_plan_req_seg_chars_p90: int | None,
+    max_plan_req_seg_trunc_dropped: int | None,
+    plan_req_fallback_used: str | None,
+    min_plan_seg_ctx_coverage: float | None,
+    min_plan_pov_ctx_coverage: float | None,
+    min_plan_slam_ctx_coverage: float | None,
+    require_plan_ctx_used: str | None,
+    require_plan_slam_ctx_used: str | None,
+    require_plan_costmap_ctx_used: str | None,
+    max_plan_ctx_trunc_rate: float | None,
+    min_plan_ctx_chars_p90: int | None,
+    require_slam_ctx_present: str | None,
+    max_slam_ctx_trunc_rate: float | None,
+    min_slam_tracking_rate_mean: float | None,
+    min_seg_prompt_text_chars: int | None,
+    max_seg_prompt_trunc_rate: float | None,
+    max_seg_prompt_trunc_dropped: int | None,
+    has_pov: str | None,
+    min_pov_decisions: int | None,
+    has_pov_context: str | None,
+    min_pov_context_token_approx: int | None,
+    has_plan: str | None,
+    plan_fallback_used: str | None,
+    max_plan_latency_p90: int | None,
+    max_plan_overcautious_rate: float | None,
+    max_plan_guardrail_override_rate: float | None,
+    max_plan_guardrails: int | None,
+    min_plan_score: float | None,
+    plan_risk_level: str | None,
     sort: str,
     order: str,
 ) -> list[dict[str, Any]]:
@@ -1750,6 +6844,82 @@ async def _query_run_package_rows(
             max_critical_misses=max_critical_misses,
             max_risk_latency_p90=max_risk_latency_p90,
             max_risk_latency_max=max_risk_latency_max,
+            max_ocr_cer=max_ocr_cer,
+            min_ocr_exact_match_rate=min_ocr_exact_match_rate,
+            min_ocr_coverage=min_ocr_coverage,
+            max_ocr_latency_p90=max_ocr_latency_p90,
+            min_seg_f1_50=min_seg_f1_50,
+            min_seg_coverage=min_seg_coverage,
+            min_seg_track_coverage=min_seg_track_coverage,
+            min_seg_tracks_total=min_seg_tracks_total,
+            max_seg_id_switches=max_seg_id_switches,
+            min_depth_delta1=min_depth_delta1,
+            max_depth_absrel=max_depth_absrel,
+            min_depth_coverage=min_depth_coverage,
+            max_depth_latency_p90=max_depth_latency_p90,
+            max_depth_jitter_p90=max_depth_jitter_p90,
+            max_depth_flicker_mean=max_depth_flicker_mean,
+            max_depth_scale_drift_p90=max_depth_scale_drift_p90,
+            min_costmap_coverage=min_costmap_coverage,
+            max_costmap_latency_p90=max_costmap_latency_p90,
+            max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+            min_costmap_dynamic_temporal_used_rate=min_costmap_dynamic_temporal_used_rate,
+            min_costmap_dynamic_mask_used_rate=min_costmap_dynamic_mask_used_rate,
+            max_costmap_dynamic_tracks_used_mean=max_costmap_dynamic_tracks_used_mean,
+            min_costmap_fused_coverage=min_costmap_fused_coverage,
+            max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
+            min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
+            max_costmap_fused_flicker_rate_mean=max_costmap_fused_flicker_rate_mean,
+            max_costmap_fused_shift_gate_reject_rate=max_costmap_fused_shift_gate_reject_rate,
+            min_costmap_fused_shift_used_rate=min_costmap_fused_shift_used_rate,
+            min_slam_tracking_rate=min_slam_tracking_rate,
+            max_slam_lost_rate=max_slam_lost_rate,
+            max_slam_latency_p90=max_slam_latency_p90,
+            max_slam_align_residual_p90=max_slam_align_residual_p90,
+            max_slam_ate_rmse=max_slam_ate_rmse,
+            max_slam_rpe_trans_rmse=max_slam_rpe_trans_rmse,
+            min_seg_mask_f1_50=min_seg_mask_f1_50,
+            min_seg_mask_coverage=min_seg_mask_coverage,
+            max_seg_latency_p90=max_seg_latency_p90,
+            max_frame_e2e_p90=max_frame_e2e_p90,
+            max_frame_e2e_max=max_frame_e2e_max,
+            max_frame_user_e2e_p90=max_frame_user_e2e_p90,
+            max_frame_user_e2e_max=max_frame_user_e2e_max,
+            max_frame_user_e2e_tts_p90=max_frame_user_e2e_tts_p90,
+            max_frame_user_e2e_ar_p90=max_frame_user_e2e_ar_p90,
+            min_ack_kind_diversity=min_ack_kind_diversity,
+            max_models_missing_required=max_models_missing_required,
+            max_seg_ctx_chars=max_seg_ctx_chars,
+            max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
+            max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
+            max_plan_req_seg_trunc_dropped=max_plan_req_seg_trunc_dropped,
+            plan_req_fallback_used=plan_req_fallback_used,
+            min_plan_seg_ctx_coverage=min_plan_seg_ctx_coverage,
+            min_plan_pov_ctx_coverage=min_plan_pov_ctx_coverage,
+            min_plan_slam_ctx_coverage=min_plan_slam_ctx_coverage,
+            require_plan_ctx_used=require_plan_ctx_used,
+            require_plan_slam_ctx_used=require_plan_slam_ctx_used,
+            require_plan_costmap_ctx_used=require_plan_costmap_ctx_used,
+            max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
+            min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
+            require_slam_ctx_present=require_slam_ctx_present,
+            max_slam_ctx_trunc_rate=max_slam_ctx_trunc_rate,
+            min_slam_tracking_rate_mean=min_slam_tracking_rate_mean,
+            min_seg_prompt_text_chars=min_seg_prompt_text_chars,
+            max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
+            max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
+            has_pov=has_pov,
+            min_pov_decisions=min_pov_decisions,
+            has_pov_context=has_pov_context,
+            min_pov_context_token_approx=min_pov_context_token_approx,
+            has_plan=has_plan,
+            plan_fallback_used=plan_fallback_used,
+            max_plan_latency_p90=max_plan_latency_p90,
+            max_plan_overcautious_rate=max_plan_overcautious_rate,
+            max_plan_guardrail_override_rate=max_plan_guardrail_override_rate,
+            max_plan_guardrails=max_plan_guardrails,
+            min_plan_score=min_plan_score,
+            plan_risk_level=plan_risk_level,
         ):
             continue
         rows.append(row)
@@ -1800,6 +6970,82 @@ async def runs_dashboard(
     max_critical_misses: int | None = None,
     max_risk_latency_p90: int | None = None,
     max_risk_latency_max: int | None = None,
+    max_ocr_cer: float | None = None,
+    min_ocr_exact_match_rate: float | None = None,
+    min_ocr_coverage: float | None = None,
+    max_ocr_latency_p90: int | None = None,
+    min_seg_f1_50: float | None = None,
+    min_seg_coverage: float | None = None,
+    min_seg_track_coverage: float | None = None,
+    min_seg_tracks_total: int | None = None,
+    max_seg_id_switches: int | None = None,
+    min_depth_delta1: float | None = None,
+    max_depth_absrel: float | None = None,
+    min_depth_coverage: float | None = None,
+    max_depth_latency_p90: int | None = None,
+    max_depth_jitter_p90: float | None = None,
+    max_depth_flicker_mean: float | None = None,
+    max_depth_scale_drift_p90: float | None = None,
+    min_costmap_coverage: float | None = None,
+    max_costmap_latency_p90: int | None = None,
+    max_costmap_dynamic_filter_rate_mean: float | None = None,
+    min_costmap_dynamic_temporal_used_rate: float | None = None,
+    min_costmap_dynamic_mask_used_rate: float | None = None,
+    max_costmap_dynamic_tracks_used_mean: float | None = None,
+    min_costmap_fused_coverage: float | None = None,
+    max_costmap_fused_latency_p90: int | None = None,
+    min_costmap_fused_iou_p90: float | None = None,
+    max_costmap_fused_flicker_rate_mean: float | None = None,
+    max_costmap_fused_shift_gate_reject_rate: float | None = None,
+    min_costmap_fused_shift_used_rate: float | None = None,
+    min_slam_tracking_rate: float | None = None,
+    max_slam_lost_rate: float | None = None,
+    max_slam_latency_p90: int | None = None,
+    max_slam_align_residual_p90: int | None = None,
+    max_slam_ate_rmse: float | None = None,
+    max_slam_rpe_trans_rmse: float | None = None,
+    min_seg_mask_f1_50: float | None = None,
+    min_seg_mask_coverage: float | None = None,
+    max_seg_latency_p90: int | None = None,
+    max_frame_e2e_p90: int | None = None,
+    max_frame_e2e_max: int | None = None,
+    max_frame_user_e2e_p90: int | None = None,
+    max_frame_user_e2e_max: int | None = None,
+    max_frame_user_e2e_tts_p90: int | None = None,
+    max_frame_user_e2e_ar_p90: int | None = None,
+    min_ack_kind_diversity: int | None = None,
+    max_models_missing_required: int | None = None,
+    max_seg_ctx_chars: int | None = None,
+    max_seg_ctx_trunc_dropped: int | None = None,
+    max_plan_req_seg_chars_p90: int | None = None,
+    max_plan_req_seg_trunc_dropped: int | None = None,
+    plan_req_fallback_used: str = "any",
+    min_plan_seg_ctx_coverage: float | None = None,
+    min_plan_pov_ctx_coverage: float | None = None,
+    min_plan_slam_ctx_coverage: float | None = None,
+    require_plan_ctx_used: str = "any",
+    require_plan_slam_ctx_used: str = "any",
+    max_plan_ctx_trunc_rate: float | None = None,
+    min_plan_ctx_chars_p90: int | None = None,
+    require_slam_ctx_present: str = "any",
+    max_slam_ctx_trunc_rate: float | None = None,
+    min_slam_tracking_rate_mean: float | None = None,
+    min_seg_prompt_text_chars: int | None = None,
+    max_seg_prompt_trunc_rate: float | None = None,
+    max_seg_prompt_trunc_dropped: int | None = None,
+    has_pov: str = "any",
+    min_pov_decisions: int | None = None,
+    has_pov_context: str = "any",
+    min_pov_context_token_approx: int | None = None,
+    has_plan: str = "any",
+    plan_fallback_used: str = "any",
+    max_plan_latency_p90: int | None = None,
+    max_plan_overcautious_rate: float | None = None,
+    max_plan_guardrail_override_rate: float | None = None,
+    require_plan_costmap_ctx_used: str = "any",
+    max_plan_guardrails: int | None = None,
+    min_plan_score: float | None = None,
+    plan_risk_level: str | None = None,
     sort: str = "createdAtMs",
     order: str = "desc",
 ) -> HTMLResponse:
@@ -1817,6 +7063,82 @@ async def runs_dashboard(
         max_critical_misses=max_critical_misses,
         max_risk_latency_p90=max_risk_latency_p90,
         max_risk_latency_max=max_risk_latency_max,
+        max_ocr_cer=max_ocr_cer,
+        min_ocr_exact_match_rate=min_ocr_exact_match_rate,
+        min_ocr_coverage=min_ocr_coverage,
+        max_ocr_latency_p90=max_ocr_latency_p90,
+        min_seg_f1_50=min_seg_f1_50,
+        min_seg_coverage=min_seg_coverage,
+        min_seg_track_coverage=min_seg_track_coverage,
+        min_seg_tracks_total=min_seg_tracks_total,
+        max_seg_id_switches=max_seg_id_switches,
+        min_depth_delta1=min_depth_delta1,
+        max_depth_absrel=max_depth_absrel,
+        min_depth_coverage=min_depth_coverage,
+        max_depth_latency_p90=max_depth_latency_p90,
+        max_depth_jitter_p90=max_depth_jitter_p90,
+        max_depth_flicker_mean=max_depth_flicker_mean,
+        max_depth_scale_drift_p90=max_depth_scale_drift_p90,
+        min_costmap_coverage=min_costmap_coverage,
+        max_costmap_latency_p90=max_costmap_latency_p90,
+        max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+        min_costmap_dynamic_temporal_used_rate=min_costmap_dynamic_temporal_used_rate,
+        min_costmap_dynamic_mask_used_rate=min_costmap_dynamic_mask_used_rate,
+        max_costmap_dynamic_tracks_used_mean=max_costmap_dynamic_tracks_used_mean,
+        min_costmap_fused_coverage=min_costmap_fused_coverage,
+        max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
+        min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
+        max_costmap_fused_flicker_rate_mean=max_costmap_fused_flicker_rate_mean,
+        max_costmap_fused_shift_gate_reject_rate=max_costmap_fused_shift_gate_reject_rate,
+        min_costmap_fused_shift_used_rate=min_costmap_fused_shift_used_rate,
+        min_slam_tracking_rate=min_slam_tracking_rate,
+        max_slam_lost_rate=max_slam_lost_rate,
+        max_slam_latency_p90=max_slam_latency_p90,
+        max_slam_align_residual_p90=max_slam_align_residual_p90,
+        max_slam_ate_rmse=max_slam_ate_rmse,
+        max_slam_rpe_trans_rmse=max_slam_rpe_trans_rmse,
+        min_seg_mask_f1_50=min_seg_mask_f1_50,
+        min_seg_mask_coverage=min_seg_mask_coverage,
+        max_seg_latency_p90=max_seg_latency_p90,
+        max_frame_e2e_p90=max_frame_e2e_p90,
+        max_frame_e2e_max=max_frame_e2e_max,
+        max_frame_user_e2e_p90=max_frame_user_e2e_p90,
+        max_frame_user_e2e_max=max_frame_user_e2e_max,
+        max_frame_user_e2e_tts_p90=max_frame_user_e2e_tts_p90,
+        max_frame_user_e2e_ar_p90=max_frame_user_e2e_ar_p90,
+        min_ack_kind_diversity=min_ack_kind_diversity,
+        max_models_missing_required=max_models_missing_required,
+        max_seg_ctx_chars=max_seg_ctx_chars,
+        max_seg_ctx_trunc_dropped=max_seg_ctx_trunc_dropped,
+        max_plan_req_seg_chars_p90=max_plan_req_seg_chars_p90,
+        max_plan_req_seg_trunc_dropped=max_plan_req_seg_trunc_dropped,
+        plan_req_fallback_used=plan_req_fallback_used,
+        min_plan_seg_ctx_coverage=min_plan_seg_ctx_coverage,
+        min_plan_pov_ctx_coverage=min_plan_pov_ctx_coverage,
+        min_plan_slam_ctx_coverage=min_plan_slam_ctx_coverage,
+        require_plan_ctx_used=require_plan_ctx_used,
+        require_plan_slam_ctx_used=require_plan_slam_ctx_used,
+        max_plan_ctx_trunc_rate=max_plan_ctx_trunc_rate,
+        min_plan_ctx_chars_p90=min_plan_ctx_chars_p90,
+        require_slam_ctx_present=require_slam_ctx_present,
+        max_slam_ctx_trunc_rate=max_slam_ctx_trunc_rate,
+        min_slam_tracking_rate_mean=min_slam_tracking_rate_mean,
+        min_seg_prompt_text_chars=min_seg_prompt_text_chars,
+        max_seg_prompt_trunc_rate=max_seg_prompt_trunc_rate,
+        max_seg_prompt_trunc_dropped=max_seg_prompt_trunc_dropped,
+        has_pov=has_pov,
+        min_pov_decisions=min_pov_decisions,
+        has_pov_context=has_pov_context,
+        min_pov_context_token_approx=min_pov_context_token_approx,
+        has_plan=has_plan,
+        plan_fallback_used=plan_fallback_used,
+        max_plan_latency_p90=max_plan_latency_p90,
+        max_plan_overcautious_rate=max_plan_overcautious_rate,
+        max_plan_guardrail_override_rate=max_plan_guardrail_override_rate,
+        require_plan_costmap_ctx_used=require_plan_costmap_ctx_used,
+        max_plan_guardrails=max_plan_guardrails,
+        min_plan_score=min_plan_score,
+        plan_risk_level=plan_risk_level,
         sort=sort,
         order=order,
     )
@@ -1839,6 +7161,163 @@ async def runs_dashboard(
         max_delay = "—" if max_delay_raw is None else str(max_delay_raw)
         risk_p90_raw = row.get("risk_latency_p90")
         risk_p90 = "—" if risk_p90_raw is None else str(risk_p90_raw)
+        ocr_cer_raw = row.get("ocr_cer")
+        ocr_cer = "—" if ocr_cer_raw is None else f"{float(ocr_cer_raw):.4f}"
+        ocr_exact_raw = row.get("ocr_exact_match_rate")
+        ocr_exact = "—" if ocr_exact_raw is None else f"{float(ocr_exact_raw):.4f}"
+        ocr_cov_raw = row.get("ocr_coverage")
+        ocr_cov = "—" if ocr_cov_raw is None else f"{float(ocr_cov_raw):.4f}"
+        ocr_p90_raw = row.get("ocr_latency_p90")
+        ocr_p90 = "—" if ocr_p90_raw is None else str(int(ocr_p90_raw))
+        frame_user_e2e_p90_raw = row.get("frame_user_e2e_p90")
+        frame_user_e2e_p90 = "—" if frame_user_e2e_p90_raw is None else str(int(frame_user_e2e_p90_raw))
+        frame_user_e2e_max_raw = row.get("frame_user_e2e_max")
+        frame_user_e2e_max = "—" if frame_user_e2e_max_raw is None else str(int(frame_user_e2e_max_raw))
+        frame_user_e2e_tts_p90_raw = row.get("frame_user_e2e_tts_p90")
+        frame_user_e2e_tts_p90 = "—" if frame_user_e2e_tts_p90_raw is None else str(int(frame_user_e2e_tts_p90_raw))
+        frame_user_e2e_tts_max_raw = row.get("frame_user_e2e_tts_max")
+        frame_user_e2e_tts_max = "—" if frame_user_e2e_tts_max_raw is None else str(int(frame_user_e2e_tts_max_raw))
+        frame_user_e2e_ar_p90_raw = row.get("frame_user_e2e_ar_p90")
+        frame_user_e2e_ar_p90 = "—" if frame_user_e2e_ar_p90_raw is None else str(int(frame_user_e2e_ar_p90_raw))
+        frame_user_e2e_ar_max_raw = row.get("frame_user_e2e_ar_max")
+        frame_user_e2e_ar_max = "—" if frame_user_e2e_ar_max_raw is None else str(int(frame_user_e2e_ar_max_raw))
+        ack_kind_diversity_raw = row.get("ack_kind_diversity")
+        ack_kind_diversity = "—" if ack_kind_diversity_raw is None else str(int(ack_kind_diversity_raw))
+        ack_coverage_raw = row.get("ack_coverage")
+        ack_coverage = "—" if ack_coverage_raw is None else f"{float(ack_coverage_raw):.4f}"
+        models_missing_required_raw = row.get("models_missing_required")
+        models_missing_required = "—" if models_missing_required_raw is None else str(int(models_missing_required_raw))
+        models_enabled_total_raw = row.get("models_enabled_total")
+        models_enabled_total = "—" if models_enabled_total_raw is None else str(int(models_enabled_total_raw))
+        seg_f1_raw = row.get("seg_f1_50")
+        seg_f1 = "—" if seg_f1_raw is None else f"{float(seg_f1_raw):.4f}"
+        seg_cov_raw = row.get("seg_coverage")
+        seg_cov = "—" if seg_cov_raw is None else f"{float(seg_cov_raw):.4f}"
+        seg_track_cov_raw = row.get("seg_track_coverage")
+        seg_track_cov = "—" if seg_track_cov_raw is None else f"{float(seg_track_cov_raw):.4f}"
+        seg_tracks_total_raw = row.get("seg_tracks_total")
+        seg_tracks_total = "—" if seg_tracks_total_raw is None else str(int(seg_tracks_total_raw))
+        seg_id_switches_raw = row.get("seg_id_switches")
+        seg_id_switches = "—" if seg_id_switches_raw is None else str(int(seg_id_switches_raw))
+        seg_mask_f1_raw = row.get("seg_mask_f1_50")
+        seg_mask_f1 = "—" if seg_mask_f1_raw is None else f"{float(seg_mask_f1_raw):.4f}"
+        seg_mask_cov_raw = row.get("seg_mask_coverage")
+        seg_mask_cov = "—" if seg_mask_cov_raw is None else f"{float(seg_mask_cov_raw):.4f}"
+        seg_mask_iou_raw = row.get("seg_mask_mean_iou")
+        seg_mask_iou = "—" if seg_mask_iou_raw is None else f"{float(seg_mask_iou_raw):.4f}"
+        seg_p90_raw = row.get("seg_latency_p90")
+        seg_p90 = "—" if seg_p90_raw is None else str(int(seg_p90_raw))
+        depth_absrel_raw = row.get("depth_absrel")
+        depth_absrel = "—" if depth_absrel_raw is None else f"{float(depth_absrel_raw):.4f}"
+        depth_rmse_raw = row.get("depth_rmse")
+        depth_rmse = "—" if depth_rmse_raw is None else f"{float(depth_rmse_raw):.2f}"
+        depth_delta1_raw = row.get("depth_delta1")
+        depth_delta1 = "—" if depth_delta1_raw is None else f"{float(depth_delta1_raw):.4f}"
+        depth_cov_raw = row.get("depth_coverage")
+        depth_cov = "—" if depth_cov_raw is None else f"{float(depth_cov_raw):.4f}"
+        depth_p90_raw = row.get("depth_latency_p90")
+        depth_p90 = "—" if depth_p90_raw is None else str(int(depth_p90_raw))
+        depth_jitter_p90_raw = row.get("depth_jitter_p90")
+        depth_jitter_p90 = "—" if depth_jitter_p90_raw is None else f"{float(depth_jitter_p90_raw):.6f}"
+        depth_flicker_mean_raw = row.get("depth_flicker_mean")
+        depth_flicker_mean = "—" if depth_flicker_mean_raw is None else f"{float(depth_flicker_mean_raw):.6f}"
+        depth_scale_drift_p90_raw = row.get("depth_scale_drift_p90")
+        depth_scale_drift_p90 = (
+            "—" if depth_scale_drift_p90_raw is None else f"{float(depth_scale_drift_p90_raw):.6f}"
+        )
+        depth_ref_view_diversity_raw = row.get("depth_ref_view_diversity")
+        depth_ref_view_diversity = (
+            "—" if depth_ref_view_diversity_raw is None else str(int(depth_ref_view_diversity_raw))
+        )
+        costmap_cov_raw = row.get("costmap_coverage")
+        costmap_cov = "—" if costmap_cov_raw is None else f"{float(costmap_cov_raw):.4f}"
+        costmap_p90_raw = row.get("costmap_latency_p90")
+        costmap_p90 = "—" if costmap_p90_raw is None else str(int(costmap_p90_raw))
+        costmap_density_raw = row.get("costmap_density_mean")
+        costmap_density = "—" if costmap_density_raw is None else f"{float(costmap_density_raw):.4f}"
+        costmap_dynamic_raw = row.get("costmap_dynamic_filter_rate_mean")
+        costmap_dynamic = "—" if costmap_dynamic_raw is None else f"{float(costmap_dynamic_raw):.4f}"
+        costmap_fused_cov_raw = row.get("costmap_fused_coverage")
+        costmap_fused_cov = "—" if costmap_fused_cov_raw is None else f"{float(costmap_fused_cov_raw):.4f}"
+        costmap_fused_latency_raw = row.get("costmap_fused_latency_p90")
+        costmap_fused_latency = "—" if costmap_fused_latency_raw is None else str(int(costmap_fused_latency_raw))
+        costmap_fused_iou_raw = row.get("costmap_fused_iou_p90")
+        costmap_fused_iou = "—" if costmap_fused_iou_raw is None else f"{float(costmap_fused_iou_raw):.4f}"
+        costmap_fused_flicker_raw = row.get("costmap_fused_flicker_rate_mean")
+        costmap_fused_flicker = "—" if costmap_fused_flicker_raw is None else f"{float(costmap_fused_flicker_raw):.4f}"
+        costmap_fused_shift_raw = row.get("costmap_fused_shift_used_rate")
+        costmap_fused_shift = "—" if costmap_fused_shift_raw is None else f"{float(costmap_fused_shift_raw):.4f}"
+        costmap_fused_shift_reject_raw = row.get("costmap_fused_shift_gate_reject_rate")
+        costmap_fused_shift_reject = (
+            "—" if costmap_fused_shift_reject_raw is None else f"{float(costmap_fused_shift_reject_raw):.4f}"
+        )
+        costmap_fused_shift_reason_raw = row.get("costmap_fused_shift_gate_top_reason")
+        costmap_fused_shift_reason = "—" if costmap_fused_shift_reason_raw in {None, ""} else str(costmap_fused_shift_reason_raw)
+        slam_tracking_rate_raw = row.get("slam_tracking_rate")
+        slam_tracking_rate = "—" if slam_tracking_rate_raw is None else f"{float(slam_tracking_rate_raw):.4f}"
+        slam_lost_rate_raw = row.get("slam_lost_rate")
+        slam_lost_rate = "—" if slam_lost_rate_raw is None else f"{float(slam_lost_rate_raw):.4f}"
+        slam_relocalized_raw = row.get("slam_relocalized")
+        slam_relocalized = "—" if slam_relocalized_raw is None else str(int(slam_relocalized_raw))
+        slam_p90_raw = row.get("slam_latency_p90")
+        slam_p90 = "—" if slam_p90_raw is None else str(int(slam_p90_raw))
+        slam_align_p90_raw = row.get("slam_align_residual_p90")
+        slam_align_p90 = "—" if slam_align_p90_raw is None else str(int(slam_align_p90_raw))
+        slam_align_mode_raw = row.get("slam_align_mode")
+        slam_align_mode = "—" if slam_align_mode_raw in {None, ""} else str(slam_align_mode_raw)
+        slam_ate_rmse_raw = row.get("slam_ate_rmse")
+        slam_ate_rmse = "—" if slam_ate_rmse_raw is None else f"{float(slam_ate_rmse_raw):.4f}"
+        slam_rpe_trans_rmse_raw = row.get("slam_rpe_trans_rmse")
+        slam_rpe_trans_rmse = "—" if slam_rpe_trans_rmse_raw is None else f"{float(slam_rpe_trans_rmse_raw):.4f}"
+        seg_ctx_chars_raw = row.get("seg_ctx_chars")
+        seg_ctx_chars = "—" if seg_ctx_chars_raw is None else str(int(seg_ctx_chars_raw))
+        seg_ctx_segments_raw = row.get("seg_ctx_segments")
+        seg_ctx_segments = "—" if seg_ctx_segments_raw is None else str(int(seg_ctx_segments_raw))
+        seg_ctx_trunc_raw = row.get("seg_ctx_trunc_dropped")
+        seg_ctx_trunc = "—" if seg_ctx_trunc_raw is None else str(int(seg_ctx_trunc_raw))
+        seg_prompt_present = "yes" if bool(row.get("seg_prompt_present")) else "no"
+        seg_prompt_chars_raw = row.get("seg_prompt_text_chars_total")
+        seg_prompt_chars = "—" if seg_prompt_chars_raw is None else str(int(seg_prompt_chars_raw))
+        seg_prompt_chars_out_raw = row.get("seg_prompt_chars_out")
+        seg_prompt_chars_out = "—" if seg_prompt_chars_out_raw is None else str(int(seg_prompt_chars_out_raw))
+        seg_prompt_targets_out_raw = row.get("seg_prompt_targets_out")
+        seg_prompt_targets_out = "—" if seg_prompt_targets_out_raw is None else str(int(seg_prompt_targets_out_raw))
+        seg_prompt_trunc_dropped_raw = row.get("seg_prompt_trunc_dropped")
+        seg_prompt_trunc_dropped = "—" if seg_prompt_trunc_dropped_raw is None else str(int(seg_prompt_trunc_dropped_raw))
+        seg_prompt_trunc_rate_raw = row.get("seg_prompt_trunc_rate")
+        seg_prompt_trunc_rate = "—" if seg_prompt_trunc_rate_raw is None else f"{float(seg_prompt_trunc_rate_raw):.4f}"
+        pov_present = "yes" if bool(row.get("pov_present")) else "no"
+        pov_decisions = str(int(row.get("pov_decisions", 0) or 0))
+        pov_token_approx = str(int(row.get("pov_token_approx", 0) or 0))
+        pov_dpm_raw = row.get("pov_decision_per_min")
+        pov_dpm = "—" if pov_dpm_raw is None else f"{float(pov_dpm_raw):.3f}"
+        pov_ctx_token_raw = row.get("pov_context_token_approx")
+        pov_ctx_token = "—" if pov_ctx_token_raw is None else str(int(pov_ctx_token_raw))
+        pov_ctx_chars_raw = row.get("pov_context_chars")
+        pov_ctx_chars = "—" if pov_ctx_chars_raw is None else str(int(pov_ctx_chars_raw))
+        plan_present = "yes" if bool(row.get("plan_present")) else "no"
+        plan_risk_level = str(row.get("plan_risk_level") or "—")
+        plan_actions = str(int(row.get("plan_actions", 0) or 0))
+        plan_guardrails = str(int(row.get("plan_guardrails", 0) or 0))
+        plan_has_stop = "yes" if bool(row.get("plan_has_stop")) else "no"
+        plan_has_confirm = "yes" if bool(row.get("plan_has_confirm")) else "no"
+        plan_score_raw = row.get("plan_score")
+        plan_score = "—" if plan_score_raw is None else f"{float(plan_score_raw):.2f}"
+        plan_fallback_used = "yes" if bool(row.get("plan_fallback_used")) else "no"
+        plan_json_valid_raw = row.get("plan_json_valid")
+        plan_json_valid = "—" if plan_json_valid_raw is None else ("true" if bool(plan_json_valid_raw) else "false")
+        plan_prompt_version = str(row.get("plan_prompt_version") or "—")
+        plan_latency_raw = row.get("plan_latency_p90")
+        plan_latency = "—" if plan_latency_raw is None else str(int(plan_latency_raw))
+        confirm_requests = str(int(row.get("confirm_requests", 0) or 0))
+        overcautious_raw = row.get("plan_overcautious_rate")
+        overcautious_rate = "—" if overcautious_raw is None else f"{float(overcautious_raw):.4f}"
+        guardrail_override_raw = row.get("plan_guardrail_override_rate")
+        guardrail_override_rate = "—" if guardrail_override_raw is None else f"{float(guardrail_override_raw):.4f}"
+        plan_costmap_used_rate_raw = row.get("plan_costmap_ctx_used_rate")
+        plan_costmap_used_rate = "—" if plan_costmap_used_rate_raw is None else f"{float(plan_costmap_used_rate_raw):.4f}"
+        plan_costmap_coverage_raw = row.get("plan_costmap_ctx_coverage_p90")
+        plan_costmap_coverage = "—" if plan_costmap_coverage_raw is None else f"{float(plan_costmap_coverage_raw):.4f}"
         rows_html += (
             "<tr>"
             f"<td><input type='checkbox' data-run-id='{run_val}' /></td>"
@@ -1851,10 +7330,92 @@ async def runs_dashboard(
             f"<td>{html.escape(critical_misses)}</td>"
             f"<td>{html.escape(max_delay)}</td>"
             f"<td>{html.escape(risk_p90)}</td>"
+            f"<td>{html.escape(ocr_cer)}</td>"
+            f"<td>{html.escape(ocr_exact)}</td>"
+            f"<td>{html.escape(ocr_cov)}</td>"
+            f"<td>{html.escape(ocr_p90)}</td>"
+            f"<td>{html.escape(frame_user_e2e_p90)}</td>"
+            f"<td>{html.escape(frame_user_e2e_max)}</td>"
+            f"<td>{html.escape(frame_user_e2e_tts_p90)}</td>"
+            f"<td>{html.escape(frame_user_e2e_tts_max)}</td>"
+            f"<td>{html.escape(frame_user_e2e_ar_p90)}</td>"
+            f"<td>{html.escape(frame_user_e2e_ar_max)}</td>"
+            f"<td>{html.escape(ack_kind_diversity)}</td>"
+            f"<td>{html.escape(ack_coverage)}</td>"
+            f"<td>{html.escape(models_missing_required)}</td>"
+            f"<td>{html.escape(models_enabled_total)}</td>"
+            f"<td>{html.escape(seg_f1)}</td>"
+            f"<td>{html.escape(seg_cov)}</td>"
+            f"<td>{html.escape(seg_track_cov)}</td>"
+            f"<td>{html.escape(seg_tracks_total)}</td>"
+            f"<td>{html.escape(seg_id_switches)}</td>"
+            f"<td>{html.escape(seg_mask_f1)}</td>"
+            f"<td>{html.escape(seg_mask_cov)}</td>"
+            f"<td>{html.escape(seg_mask_iou)}</td>"
+            f"<td>{html.escape(seg_p90)}</td>"
+            f"<td>{html.escape(depth_absrel)}</td>"
+            f"<td>{html.escape(depth_rmse)}</td>"
+            f"<td>{html.escape(depth_delta1)}</td>"
+            f"<td>{html.escape(depth_cov)}</td>"
+            f"<td>{html.escape(depth_p90)}</td>"
+            f"<td>{html.escape(depth_jitter_p90)}</td>"
+            f"<td>{html.escape(depth_flicker_mean)}</td>"
+            f"<td>{html.escape(depth_scale_drift_p90)}</td>"
+            f"<td>{html.escape(depth_ref_view_diversity)}</td>"
+            f"<td>{html.escape(costmap_cov)}</td>"
+            f"<td>{html.escape(costmap_p90)}</td>"
+            f"<td>{html.escape(costmap_density)}</td>"
+            f"<td>{html.escape(costmap_dynamic)}</td>"
+            f"<td>{html.escape(costmap_fused_cov)}</td>"
+            f"<td>{html.escape(costmap_fused_latency)}</td>"
+            f"<td>{html.escape(costmap_fused_iou)}</td>"
+            f"<td>{html.escape(costmap_fused_flicker)}</td>"
+            f"<td>{html.escape(costmap_fused_shift)}</td>"
+            f"<td>{html.escape(costmap_fused_shift_reject)}</td>"
+            f"<td>{html.escape(costmap_fused_shift_reason)}</td>"
+            f"<td>{html.escape(slam_tracking_rate)}</td>"
+            f"<td>{html.escape(slam_lost_rate)}</td>"
+            f"<td>{html.escape(slam_relocalized)}</td>"
+            f"<td>{html.escape(slam_p90)}</td>"
+            f"<td>{html.escape(slam_align_p90)}</td>"
+            f"<td>{html.escape(slam_align_mode)}</td>"
+            f"<td>{html.escape(slam_ate_rmse)}</td>"
+            f"<td>{html.escape(slam_rpe_trans_rmse)}</td>"
+            f"<td>{html.escape(seg_ctx_chars)}</td>"
+            f"<td>{html.escape(seg_ctx_segments)}</td>"
+            f"<td>{html.escape(seg_ctx_trunc)}</td>"
+            f"<td>{html.escape(seg_prompt_present)}</td>"
+            f"<td>{html.escape(seg_prompt_chars)}</td>"
+            f"<td>{html.escape(seg_prompt_chars_out)}</td>"
+            f"<td>{html.escape(seg_prompt_targets_out)}</td>"
+            f"<td>{html.escape(seg_prompt_trunc_dropped)}</td>"
+            f"<td>{html.escape(seg_prompt_trunc_rate)}</td>"
+            f"<td>{html.escape(pov_present)}</td>"
+            f"<td>{html.escape(pov_decisions)}</td>"
+            f"<td>{html.escape(pov_token_approx)}</td>"
+            f"<td>{html.escape(pov_dpm)}</td>"
+            f"<td>{html.escape(pov_ctx_token)}</td>"
+            f"<td>{html.escape(pov_ctx_chars)}</td>"
+            f"<td>{html.escape(plan_present)}</td>"
+            f"<td>{html.escape(plan_risk_level)}</td>"
+            f"<td>{html.escape(plan_actions)}</td>"
+            f"<td>{html.escape(plan_guardrails)}</td>"
+            f"<td>{html.escape(plan_has_stop)}</td>"
+            f"<td>{html.escape(plan_has_confirm)}</td>"
+            f"<td>{html.escape(plan_score)}</td>"
+            f"<td>{html.escape(plan_fallback_used)}</td>"
+            f"<td>{html.escape(plan_json_valid)}</td>"
+            f"<td>{html.escape(plan_prompt_version)}</td>"
+            f"<td>{html.escape(plan_latency)}</td>"
+            f"<td>{html.escape(confirm_requests)}</td>"
+            f"<td>{html.escape(overcautious_rate)}</td>"
+            f"<td>{html.escape(guardrail_override_rate)}</td>"
+            f"<td>{html.escape(plan_costmap_coverage)}</td>"
+            f"<td>{html.escape(plan_costmap_used_rate)}</td>"
             "</tr>"
         )
     if not rows_html:
-        rows_html = "<tr><td colspan='10' class='muted'>no runs</td></tr>"
+        rows_html = "<tr><td colspan='99' class='muted'>no runs</td></tr>"
 
     scenario_value = html.escape(scenario or "")
     run_id_value = html.escape(run_id or "")
@@ -1867,6 +7428,115 @@ async def runs_dashboard(
     max_critical_misses_value = html.escape("" if max_critical_misses is None else str(max_critical_misses))
     max_risk_latency_p90_value = html.escape("" if max_risk_latency_p90 is None else str(max_risk_latency_p90))
     max_risk_latency_max_value = html.escape("" if max_risk_latency_max is None else str(max_risk_latency_max))
+    max_ocr_cer_value = html.escape("" if max_ocr_cer is None else str(max_ocr_cer))
+    min_ocr_exact_match_rate_value = html.escape("" if min_ocr_exact_match_rate is None else str(min_ocr_exact_match_rate))
+    min_ocr_coverage_value = html.escape("" if min_ocr_coverage is None else str(min_ocr_coverage))
+    max_ocr_latency_p90_value = html.escape("" if max_ocr_latency_p90 is None else str(max_ocr_latency_p90))
+    min_seg_f1_50_value = html.escape("" if min_seg_f1_50 is None else str(min_seg_f1_50))
+    min_seg_coverage_value = html.escape("" if min_seg_coverage is None else str(min_seg_coverage))
+    min_seg_track_coverage_value = html.escape("" if min_seg_track_coverage is None else str(min_seg_track_coverage))
+    min_seg_tracks_total_value = html.escape("" if min_seg_tracks_total is None else str(min_seg_tracks_total))
+    max_seg_id_switches_value = html.escape("" if max_seg_id_switches is None else str(max_seg_id_switches))
+    min_depth_delta1_value = html.escape("" if min_depth_delta1 is None else str(min_depth_delta1))
+    max_depth_absrel_value = html.escape("" if max_depth_absrel is None else str(max_depth_absrel))
+    min_depth_coverage_value = html.escape("" if min_depth_coverage is None else str(min_depth_coverage))
+    max_depth_latency_p90_value = html.escape("" if max_depth_latency_p90 is None else str(max_depth_latency_p90))
+    max_depth_jitter_p90_value = html.escape("" if max_depth_jitter_p90 is None else str(max_depth_jitter_p90))
+    max_depth_flicker_mean_value = html.escape("" if max_depth_flicker_mean is None else str(max_depth_flicker_mean))
+    max_depth_scale_drift_p90_value = html.escape(
+        "" if max_depth_scale_drift_p90 is None else str(max_depth_scale_drift_p90)
+    )
+    min_costmap_coverage_value = html.escape("" if min_costmap_coverage is None else str(min_costmap_coverage))
+    max_costmap_latency_p90_value = html.escape("" if max_costmap_latency_p90 is None else str(max_costmap_latency_p90))
+    max_costmap_dynamic_filter_rate_mean_value = html.escape(
+        "" if max_costmap_dynamic_filter_rate_mean is None else str(max_costmap_dynamic_filter_rate_mean)
+    )
+    min_costmap_dynamic_temporal_used_rate_value = html.escape(
+        "" if min_costmap_dynamic_temporal_used_rate is None else str(min_costmap_dynamic_temporal_used_rate)
+    )
+    min_costmap_dynamic_mask_used_rate_value = html.escape(
+        "" if min_costmap_dynamic_mask_used_rate is None else str(min_costmap_dynamic_mask_used_rate)
+    )
+    max_costmap_dynamic_tracks_used_mean_value = html.escape(
+        "" if max_costmap_dynamic_tracks_used_mean is None else str(max_costmap_dynamic_tracks_used_mean)
+    )
+    min_costmap_fused_coverage_value = html.escape(
+        "" if min_costmap_fused_coverage is None else str(min_costmap_fused_coverage)
+    )
+    max_costmap_fused_latency_p90_value = html.escape(
+        "" if max_costmap_fused_latency_p90 is None else str(max_costmap_fused_latency_p90)
+    )
+    min_costmap_fused_iou_p90_value = html.escape(
+        "" if min_costmap_fused_iou_p90 is None else str(min_costmap_fused_iou_p90)
+    )
+    max_costmap_fused_flicker_rate_mean_value = html.escape(
+        "" if max_costmap_fused_flicker_rate_mean is None else str(max_costmap_fused_flicker_rate_mean)
+    )
+    max_costmap_fused_shift_gate_reject_rate_value = html.escape(
+        "" if max_costmap_fused_shift_gate_reject_rate is None else str(max_costmap_fused_shift_gate_reject_rate)
+    )
+    min_costmap_fused_shift_used_rate_value = html.escape(
+        "" if min_costmap_fused_shift_used_rate is None else str(min_costmap_fused_shift_used_rate)
+    )
+    min_slam_tracking_rate_value = html.escape("" if min_slam_tracking_rate is None else str(min_slam_tracking_rate))
+    max_slam_lost_rate_value = html.escape("" if max_slam_lost_rate is None else str(max_slam_lost_rate))
+    max_slam_latency_p90_value = html.escape("" if max_slam_latency_p90 is None else str(max_slam_latency_p90))
+    max_slam_align_residual_p90_value = html.escape(
+        "" if max_slam_align_residual_p90 is None else str(max_slam_align_residual_p90)
+    )
+    max_slam_ate_rmse_value = html.escape("" if max_slam_ate_rmse is None else str(max_slam_ate_rmse))
+    max_slam_rpe_trans_rmse_value = html.escape("" if max_slam_rpe_trans_rmse is None else str(max_slam_rpe_trans_rmse))
+    min_seg_mask_f1_50_value = html.escape("" if min_seg_mask_f1_50 is None else str(min_seg_mask_f1_50))
+    min_seg_mask_coverage_value = html.escape("" if min_seg_mask_coverage is None else str(min_seg_mask_coverage))
+    max_seg_latency_p90_value = html.escape("" if max_seg_latency_p90 is None else str(max_seg_latency_p90))
+    max_frame_user_e2e_p90_value = html.escape("" if max_frame_user_e2e_p90 is None else str(max_frame_user_e2e_p90))
+    max_frame_user_e2e_max_value = html.escape("" if max_frame_user_e2e_max is None else str(max_frame_user_e2e_max))
+    max_frame_user_e2e_tts_p90_value = html.escape(
+        "" if max_frame_user_e2e_tts_p90 is None else str(max_frame_user_e2e_tts_p90)
+    )
+    max_frame_user_e2e_ar_p90_value = html.escape(
+        "" if max_frame_user_e2e_ar_p90 is None else str(max_frame_user_e2e_ar_p90)
+    )
+    min_ack_kind_diversity_value = html.escape(
+        "" if min_ack_kind_diversity is None else str(min_ack_kind_diversity)
+    )
+    max_models_missing_required_value = html.escape(
+        "" if max_models_missing_required is None else str(max_models_missing_required)
+    )
+    max_seg_ctx_chars_value = html.escape("" if max_seg_ctx_chars is None else str(max_seg_ctx_chars))
+    max_seg_ctx_trunc_dropped_value = html.escape(
+        "" if max_seg_ctx_trunc_dropped is None else str(max_seg_ctx_trunc_dropped)
+    )
+    max_plan_ctx_trunc_rate_value = html.escape(
+        "" if max_plan_ctx_trunc_rate is None else str(max_plan_ctx_trunc_rate)
+    )
+    min_plan_ctx_chars_p90_value = html.escape("" if min_plan_ctx_chars_p90 is None else str(min_plan_ctx_chars_p90))
+    min_seg_prompt_text_chars_value = html.escape("" if min_seg_prompt_text_chars is None else str(min_seg_prompt_text_chars))
+    max_seg_prompt_trunc_rate_value = html.escape(
+        "" if max_seg_prompt_trunc_rate is None else str(max_seg_prompt_trunc_rate)
+    )
+    max_seg_prompt_trunc_dropped_value = html.escape(
+        "" if max_seg_prompt_trunc_dropped is None else str(max_seg_prompt_trunc_dropped)
+    )
+    has_pov_value = html.escape(has_pov or "any")
+    min_pov_decisions_value = html.escape("" if min_pov_decisions is None else str(min_pov_decisions))
+    has_pov_context_value = html.escape(has_pov_context or "any")
+    min_pov_context_token_approx_value = html.escape(
+        "" if min_pov_context_token_approx is None else str(min_pov_context_token_approx)
+    )
+    has_plan_value = html.escape(has_plan or "any")
+    plan_fallback_used_value = html.escape(plan_fallback_used or "any")
+    max_plan_latency_p90_value = html.escape("" if max_plan_latency_p90 is None else str(max_plan_latency_p90))
+    max_plan_overcautious_rate_value = html.escape(
+        "" if max_plan_overcautious_rate is None else str(max_plan_overcautious_rate)
+    )
+    max_plan_guardrail_override_rate_value = html.escape(
+        "" if max_plan_guardrail_override_rate is None else str(max_plan_guardrail_override_rate)
+    )
+    require_plan_costmap_ctx_used_value = html.escape(require_plan_costmap_ctx_used or "any")
+    max_plan_guardrails_value = html.escape("" if max_plan_guardrails is None else str(max_plan_guardrails))
+    min_plan_score_value = html.escape("" if min_plan_score is None else str(min_plan_score))
+    plan_risk_level_value = html.escape(plan_risk_level or "")
     html_page = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1899,17 +7569,189 @@ async def runs_dashboard(
           <option value="false" {"selected" if has_gt_value == "false" else ""}>false</option>
         </select>
       </label>
+      <label>has_pov:
+        <select name="has_pov">
+          <option value="any" {"selected" if has_pov_value == "any" else ""}>any</option>
+          <option value="true" {"selected" if has_pov_value == "true" else ""}>true</option>
+          <option value="false" {"selected" if has_pov_value == "false" else ""}>false</option>
+        </select>
+      </label>
+      <label>has_pov_context:
+        <select name="has_pov_context">
+          <option value="any" {"selected" if has_pov_context_value == "any" else ""}>any</option>
+          <option value="true" {"selected" if has_pov_context_value == "true" else ""}>true</option>
+          <option value="false" {"selected" if has_pov_context_value == "false" else ""}>false</option>
+        </select>
+      </label>
+      <label>has_plan:
+        <select name="has_plan">
+          <option value="any" {"selected" if has_plan_value == "any" else ""}>any</option>
+          <option value="true" {"selected" if has_plan_value == "true" else ""}>true</option>
+          <option value="false" {"selected" if has_plan_value == "false" else ""}>false</option>
+        </select>
+      </label>
+      <label>plan_fallback_used:
+        <select name="plan_fallback_used">
+          <option value="any" {"selected" if plan_fallback_used_value == "any" else ""}>any</option>
+          <option value="true" {"selected" if plan_fallback_used_value == "true" else ""}>true</option>
+          <option value="false" {"selected" if plan_fallback_used_value == "false" else ""}>false</option>
+        </select>
+      </label>
       <label>min_quality: <input type="number" step="0.01" name="min_quality" value="{min_quality_value}" /></label>
+      <label>min_pov_decisions: <input type="number" min="0" name="min_pov_decisions" value="{min_pov_decisions_value}" /></label>
+      <label>min_pov_context_token_approx: <input type="number" min="0" name="min_pov_context_token_approx" value="{min_pov_context_token_approx_value}" /></label>
       <label>max_confirm_timeouts: <input type="number" min="0" name="max_confirm_timeouts" value="{max_confirm_timeouts_value}" /></label>
       <label>max_critical_misses: <input type="number" min="0" name="max_critical_misses" value="{max_critical_misses_value}" /></label>
       <label>max_risk_latency_p90: <input type="number" min="0" name="max_risk_latency_p90" value="{max_risk_latency_p90_value}" /></label>
       <label>max_risk_latency_max: <input type="number" min="0" name="max_risk_latency_max" value="{max_risk_latency_max_value}" /></label>
+      <label>max_ocr_cer: <input type="number" step="0.0001" min="0" name="max_ocr_cer" value="{max_ocr_cer_value}" /></label>
+      <label>min_ocr_exact_match_rate: <input type="number" step="0.0001" min="0" max="1" name="min_ocr_exact_match_rate" value="{min_ocr_exact_match_rate_value}" /></label>
+      <label>min_ocr_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_ocr_coverage" value="{min_ocr_coverage_value}" /></label>
+      <label>max_ocr_latency_p90: <input type="number" min="0" name="max_ocr_latency_p90" value="{max_ocr_latency_p90_value}" /></label>
+      <label>max_frame_user_e2e_p90: <input type="number" min="0" name="max_frame_user_e2e_p90" value="{max_frame_user_e2e_p90_value}" /></label>
+      <label>max_frame_user_e2e_max: <input type="number" min="0" name="max_frame_user_e2e_max" value="{max_frame_user_e2e_max_value}" /></label>
+      <label>max_frame_user_e2e_tts_p90: <input type="number" min="0" name="max_frame_user_e2e_tts_p90" value="{max_frame_user_e2e_tts_p90_value}" /></label>
+      <label>max_frame_user_e2e_ar_p90: <input type="number" min="0" name="max_frame_user_e2e_ar_p90" value="{max_frame_user_e2e_ar_p90_value}" /></label>
+      <label>min_ack_kind_diversity: <input type="number" min="0" name="min_ack_kind_diversity" value="{min_ack_kind_diversity_value}" /></label>
+      <label>max_models_missing_required: <input type="number" min="0" name="max_models_missing_required" value="{max_models_missing_required_value}" /></label>
+      <label>min_seg_f1_50: <input type="number" step="0.0001" min="0" max="1" name="min_seg_f1_50" value="{min_seg_f1_50_value}" /></label>
+      <label>min_seg_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_seg_coverage" value="{min_seg_coverage_value}" /></label>
+      <label>min_seg_track_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_seg_track_coverage" value="{min_seg_track_coverage_value}" /></label>
+      <label>min_seg_tracks_total: <input type="number" step="1" min="0" name="min_seg_tracks_total" value="{min_seg_tracks_total_value}" /></label>
+      <label>max_seg_id_switches: <input type="number" step="1" min="0" name="max_seg_id_switches" value="{max_seg_id_switches_value}" /></label>
+      <label>min_depth_delta1: <input type="number" step="0.0001" min="0" max="1" name="min_depth_delta1" value="{min_depth_delta1_value}" /></label>
+      <label>max_depth_absrel: <input type="number" step="0.0001" min="0" name="max_depth_absrel" value="{max_depth_absrel_value}" /></label>
+      <label>min_depth_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_depth_coverage" value="{min_depth_coverage_value}" /></label>
+      <label>max_depth_latency_p90: <input type="number" min="0" name="max_depth_latency_p90" value="{max_depth_latency_p90_value}" /></label>
+      <label>max_depth_jitter_p90: <input type="number" step="0.000001" min="0" name="max_depth_jitter_p90" value="{max_depth_jitter_p90_value}" /></label>
+      <label>max_depth_flicker_mean: <input type="number" step="0.000001" min="0" max="1" name="max_depth_flicker_mean" value="{max_depth_flicker_mean_value}" /></label>
+      <label>max_depth_scale_drift_p90: <input type="number" step="0.000001" min="0" name="max_depth_scale_drift_p90" value="{max_depth_scale_drift_p90_value}" /></label>
+      <label>min_costmap_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_coverage" value="{min_costmap_coverage_value}" /></label>
+      <label>max_costmap_latency_p90: <input type="number" min="0" name="max_costmap_latency_p90" value="{max_costmap_latency_p90_value}" /></label>
+      <label>max_costmap_dynamic_filter_rate_mean: <input type="number" step="0.0001" min="0" max="1" name="max_costmap_dynamic_filter_rate_mean" value="{max_costmap_dynamic_filter_rate_mean_value}" /></label>
+      <label>min_costmap_dynamic_temporal_used_rate: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_dynamic_temporal_used_rate" value="{min_costmap_dynamic_temporal_used_rate_value}" /></label>
+      <label>min_costmap_dynamic_mask_used_rate: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_dynamic_mask_used_rate" value="{min_costmap_dynamic_mask_used_rate_value}" /></label>
+      <label>max_costmap_dynamic_tracks_used_mean: <input type="number" step="0.0001" min="0" name="max_costmap_dynamic_tracks_used_mean" value="{max_costmap_dynamic_tracks_used_mean_value}" /></label>
+      <label>min_costmap_fused_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_fused_coverage" value="{min_costmap_fused_coverage_value}" /></label>
+      <label>max_costmap_fused_latency_p90: <input type="number" min="0" name="max_costmap_fused_latency_p90" value="{max_costmap_fused_latency_p90_value}" /></label>
+      <label>min_costmap_fused_iou_p90: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_fused_iou_p90" value="{min_costmap_fused_iou_p90_value}" /></label>
+      <label>max_costmap_fused_flicker_rate_mean: <input type="number" step="0.0001" min="0" max="1" name="max_costmap_fused_flicker_rate_mean" value="{max_costmap_fused_flicker_rate_mean_value}" /></label>
+      <label>max_costmap_fused_shift_gate_reject_rate: <input type="number" step="0.0001" min="0" max="1" name="max_costmap_fused_shift_gate_reject_rate" value="{max_costmap_fused_shift_gate_reject_rate_value}" /></label>
+      <label>min_costmap_fused_shift_used_rate: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_fused_shift_used_rate" value="{min_costmap_fused_shift_used_rate_value}" /></label>
+      <label>min_slam_tracking_rate: <input type="number" step="0.0001" min="0" max="1" name="min_slam_tracking_rate" value="{min_slam_tracking_rate_value}" /></label>
+      <label>max_slam_lost_rate: <input type="number" step="0.0001" min="0" max="1" name="max_slam_lost_rate" value="{max_slam_lost_rate_value}" /></label>
+      <label>max_slam_latency_p90: <input type="number" min="0" name="max_slam_latency_p90" value="{max_slam_latency_p90_value}" /></label>
+      <label>max_slam_align_residual_p90: <input type="number" min="0" name="max_slam_align_residual_p90" value="{max_slam_align_residual_p90_value}" /></label>
+      <label>max_slam_ate_rmse: <input type="number" step="0.0001" min="0" name="max_slam_ate_rmse" value="{max_slam_ate_rmse_value}" /></label>
+      <label>max_slam_rpe_trans_rmse: <input type="number" step="0.0001" min="0" name="max_slam_rpe_trans_rmse" value="{max_slam_rpe_trans_rmse_value}" /></label>
+      <label>min_seg_mask_f1_50: <input type="number" step="0.0001" min="0" max="1" name="min_seg_mask_f1_50" value="{min_seg_mask_f1_50_value}" /></label>
+      <label>min_seg_mask_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_seg_mask_coverage" value="{min_seg_mask_coverage_value}" /></label>
+      <label>max_seg_latency_p90: <input type="number" min="0" name="max_seg_latency_p90" value="{max_seg_latency_p90_value}" /></label>
+      <label>max_seg_ctx_chars: <input type="number" min="0" name="max_seg_ctx_chars" value="{max_seg_ctx_chars_value}" /></label>
+      <label>max_seg_ctx_trunc_dropped: <input type="number" min="0" name="max_seg_ctx_trunc_dropped" value="{max_seg_ctx_trunc_dropped_value}" /></label>
+      <label>max_plan_ctx_trunc_rate: <input type="number" step="0.0001" min="0" max="1" name="max_plan_ctx_trunc_rate" value="{max_plan_ctx_trunc_rate_value}" /></label>
+      <label>min_plan_ctx_chars_p90: <input type="number" min="0" name="min_plan_ctx_chars_p90" value="{min_plan_ctx_chars_p90_value}" /></label>
+      <label>min_seg_prompt_text_chars: <input type="number" min="0" name="min_seg_prompt_text_chars" value="{min_seg_prompt_text_chars_value}" /></label>
+      <label>max_seg_prompt_trunc_rate: <input type="number" step="0.0001" min="0" max="1" name="max_seg_prompt_trunc_rate" value="{max_seg_prompt_trunc_rate_value}" /></label>
+      <label>max_seg_prompt_trunc_dropped: <input type="number" min="0" name="max_seg_prompt_trunc_dropped" value="{max_seg_prompt_trunc_dropped_value}" /></label>
+      <label>max_plan_guardrails: <input type="number" min="0" name="max_plan_guardrails" value="{max_plan_guardrails_value}" /></label>
+      <label>max_plan_latency_p90: <input type="number" min="0" name="max_plan_latency_p90" value="{max_plan_latency_p90_value}" /></label>
+      <label>max_plan_overcautious_rate: <input type="number" step="0.0001" min="0" max="1" name="max_plan_overcautious_rate" value="{max_plan_overcautious_rate_value}" /></label>
+      <label>max_plan_guardrail_override_rate: <input type="number" step="0.0001" min="0" max="1" name="max_plan_guardrail_override_rate" value="{max_plan_guardrail_override_rate_value}" /></label>
+      <label>require_plan_costmap_ctx_used:
+        <select name="require_plan_costmap_ctx_used">
+          <option value="any" {"selected" if require_plan_costmap_ctx_used_value == "any" else ""}>any</option>
+          <option value="true" {"selected" if require_plan_costmap_ctx_used_value == "true" else ""}>true</option>
+          <option value="false" {"selected" if require_plan_costmap_ctx_used_value == "false" else ""}>false</option>
+        </select>
+      </label>
+      <label>min_plan_score: <input type="number" step="0.01" min="0" max="100" name="min_plan_score" value="{min_plan_score_value}" /></label>
+      <label>plan_risk_level:
+        <select name="plan_risk_level">
+          <option value="" {"selected" if plan_risk_level_value == "" else ""}>any</option>
+          <option value="low" {"selected" if plan_risk_level_value == "low" else ""}>low</option>
+          <option value="medium" {"selected" if plan_risk_level_value == "medium" else ""}>medium</option>
+          <option value="high" {"selected" if plan_risk_level_value == "high" else ""}>high</option>
+          <option value="critical" {"selected" if plan_risk_level_value == "critical" else ""}>critical</option>
+        </select>
+      </label>
       <label>sort:
         <select name="sort">
           <option value="createdAtMs" {"selected" if sort_value == "createdAtMs" else ""}>createdAtMs</option>
           <option value="safety_score" {"selected" if sort_value == "safety_score" else ""}>safety_score</option>
           <option value="quality" {"selected" if sort_value == "quality" else ""}>quality</option>
           <option value="risk_latency_p90" {"selected" if sort_value == "risk_latency_p90" else ""}>risk_latency_p90</option>
+          <option value="ocr_cer" {"selected" if sort_value == "ocr_cer" else ""}>ocr_cer</option>
+          <option value="ocr_exact_match_rate" {"selected" if sort_value == "ocr_exact_match_rate" else ""}>ocr_exact_match_rate</option>
+          <option value="ocr_coverage" {"selected" if sort_value == "ocr_coverage" else ""}>ocr_coverage</option>
+          <option value="ocr_latency_p90" {"selected" if sort_value == "ocr_latency_p90" else ""}>ocr_latency_p90</option>
+          <option value="frame_user_e2e_p90" {"selected" if sort_value == "frame_user_e2e_p90" else ""}>frame_user_e2e_p90</option>
+          <option value="frame_user_e2e_max" {"selected" if sort_value == "frame_user_e2e_max" else ""}>frame_user_e2e_max</option>
+          <option value="frame_user_e2e_tts_p90" {"selected" if sort_value == "frame_user_e2e_tts_p90" else ""}>frame_user_e2e_tts_p90</option>
+          <option value="frame_user_e2e_ar_p90" {"selected" if sort_value == "frame_user_e2e_ar_p90" else ""}>frame_user_e2e_ar_p90</option>
+          <option value="ack_kind_diversity" {"selected" if sort_value == "ack_kind_diversity" else ""}>ack_kind_diversity</option>
+          <option value="ack_coverage" {"selected" if sort_value == "ack_coverage" else ""}>ack_coverage</option>
+          <option value="models_missing_required" {"selected" if sort_value == "models_missing_required" else ""}>models_missing_required</option>
+          <option value="models_enabled_total" {"selected" if sort_value == "models_enabled_total" else ""}>models_enabled_total</option>
+          <option value="seg_f1_50" {"selected" if sort_value == "seg_f1_50" else ""}>seg_f1_50</option>
+          <option value="seg_coverage" {"selected" if sort_value == "seg_coverage" else ""}>seg_coverage</option>
+          <option value="seg_track_coverage" {"selected" if sort_value == "seg_track_coverage" else ""}>seg_track_coverage</option>
+          <option value="seg_tracks_total" {"selected" if sort_value == "seg_tracks_total" else ""}>seg_tracks_total</option>
+          <option value="seg_id_switches" {"selected" if sort_value == "seg_id_switches" else ""}>seg_id_switches</option>
+          <option value="depth_absrel" {"selected" if sort_value == "depth_absrel" else ""}>depth_absrel</option>
+          <option value="depth_rmse" {"selected" if sort_value == "depth_rmse" else ""}>depth_rmse</option>
+          <option value="depth_delta1" {"selected" if sort_value == "depth_delta1" else ""}>depth_delta1</option>
+          <option value="depth_coverage" {"selected" if sort_value == "depth_coverage" else ""}>depth_coverage</option>
+          <option value="depth_latency_p90" {"selected" if sort_value == "depth_latency_p90" else ""}>depth_latency_p90</option>
+          <option value="depth_jitter_p90" {"selected" if sort_value == "depth_jitter_p90" else ""}>depth_jitter_p90</option>
+          <option value="depth_flicker_mean" {"selected" if sort_value == "depth_flicker_mean" else ""}>depth_flicker_mean</option>
+          <option value="depth_scale_drift_p90" {"selected" if sort_value == "depth_scale_drift_p90" else ""}>depth_scale_drift_p90</option>
+          <option value="depth_ref_view_diversity" {"selected" if sort_value == "depth_ref_view_diversity" else ""}>depth_ref_view_diversity</option>
+          <option value="costmap_coverage" {"selected" if sort_value == "costmap_coverage" else ""}>costmap_coverage</option>
+          <option value="costmap_latency_p90" {"selected" if sort_value == "costmap_latency_p90" else ""}>costmap_latency_p90</option>
+          <option value="costmap_density_mean" {"selected" if sort_value == "costmap_density_mean" else ""}>costmap_density_mean</option>
+          <option value="costmap_dynamic_filter_rate_mean" {"selected" if sort_value == "costmap_dynamic_filter_rate_mean" else ""}>costmap_dynamic_filter_rate_mean</option>
+          <option value="costmap_dynamic_temporal_used_rate" {"selected" if sort_value == "costmap_dynamic_temporal_used_rate" else ""}>costmap_dynamic_temporal_used_rate</option>
+          <option value="costmap_dynamic_tracks_used_mean" {"selected" if sort_value == "costmap_dynamic_tracks_used_mean" else ""}>costmap_dynamic_tracks_used_mean</option>
+          <option value="costmap_dynamic_mask_used_rate" {"selected" if sort_value == "costmap_dynamic_mask_used_rate" else ""}>costmap_dynamic_mask_used_rate</option>
+          <option value="costmap_fused_coverage" {"selected" if sort_value == "costmap_fused_coverage" else ""}>costmap_fused_coverage</option>
+          <option value="costmap_fused_latency_p90" {"selected" if sort_value == "costmap_fused_latency_p90" else ""}>costmap_fused_latency_p90</option>
+          <option value="costmap_fused_iou_p90" {"selected" if sort_value == "costmap_fused_iou_p90" else ""}>costmap_fused_iou_p90</option>
+          <option value="costmap_fused_flicker_rate_mean" {"selected" if sort_value == "costmap_fused_flicker_rate_mean" else ""}>costmap_fused_flicker_rate_mean</option>
+          <option value="costmap_fused_shift_used_rate" {"selected" if sort_value == "costmap_fused_shift_used_rate" else ""}>costmap_fused_shift_used_rate</option>
+          <option value="costmap_fused_shift_gate_reject_rate" {"selected" if sort_value == "costmap_fused_shift_gate_reject_rate" else ""}>costmap_fused_shift_gate_reject_rate</option>
+          <option value="slam_tracking_rate" {"selected" if sort_value == "slam_tracking_rate" else ""}>slam_tracking_rate</option>
+          <option value="slam_lost_rate" {"selected" if sort_value == "slam_lost_rate" else ""}>slam_lost_rate</option>
+          <option value="slam_latency_p90" {"selected" if sort_value == "slam_latency_p90" else ""}>slam_latency_p90</option>
+          <option value="slam_align_residual_p90" {"selected" if sort_value == "slam_align_residual_p90" else ""}>slam_align_residual_p90</option>
+          <option value="slam_ate_rmse" {"selected" if sort_value == "slam_ate_rmse" else ""}>slam_ate_rmse</option>
+          <option value="slam_rpe_trans_rmse" {"selected" if sort_value == "slam_rpe_trans_rmse" else ""}>slam_rpe_trans_rmse</option>
+          <option value="slam_align_mode" {"selected" if sort_value == "slam_align_mode" else ""}>slam_align_mode</option>
+          <option value="seg_mask_f1_50" {"selected" if sort_value == "seg_mask_f1_50" else ""}>seg_mask_f1_50</option>
+          <option value="seg_mask_coverage" {"selected" if sort_value == "seg_mask_coverage" else ""}>seg_mask_coverage</option>
+          <option value="seg_mask_mean_iou" {"selected" if sort_value == "seg_mask_mean_iou" else ""}>seg_mask_mean_iou</option>
+          <option value="seg_latency_p90" {"selected" if sort_value == "seg_latency_p90" else ""}>seg_latency_p90</option>
+          <option value="seg_ctx_chars" {"selected" if sort_value == "seg_ctx_chars" else ""}>seg_ctx_chars</option>
+          <option value="seg_ctx_segments" {"selected" if sort_value == "seg_ctx_segments" else ""}>seg_ctx_segments</option>
+          <option value="seg_ctx_trunc_dropped" {"selected" if sort_value == "seg_ctx_trunc_dropped" else ""}>seg_ctx_trunc_dropped</option>
+          <option value="plan_ctx_chars_p90" {"selected" if sort_value == "plan_ctx_chars_p90" else ""}>plan_ctx_chars_p90</option>
+          <option value="plan_ctx_trunc_rate" {"selected" if sort_value == "plan_ctx_trunc_rate" else ""}>plan_ctx_trunc_rate</option>
+          <option value="seg_prompt_text_chars_total" {"selected" if sort_value == "seg_prompt_text_chars_total" else ""}>seg_prompt_text_chars_total</option>
+          <option value="seg_prompt_chars_out" {"selected" if sort_value == "seg_prompt_chars_out" else ""}>seg_prompt_chars_out</option>
+          <option value="seg_prompt_targets_out" {"selected" if sort_value == "seg_prompt_targets_out" else ""}>seg_prompt_targets_out</option>
+          <option value="seg_prompt_trunc_dropped" {"selected" if sort_value == "seg_prompt_trunc_dropped" else ""}>seg_prompt_trunc_dropped</option>
+          <option value="seg_prompt_trunc_rate" {"selected" if sort_value == "seg_prompt_trunc_rate" else ""}>seg_prompt_trunc_rate</option>
+          <option value="pov_decisions" {"selected" if sort_value == "pov_decisions" else ""}>pov_decisions</option>
+          <option value="pov_token_approx" {"selected" if sort_value == "pov_token_approx" else ""}>pov_token_approx</option>
+          <option value="pov_decision_per_min" {"selected" if sort_value == "pov_decision_per_min" else ""}>pov_decision_per_min</option>
+          <option value="pov_context_token_approx" {"selected" if sort_value == "pov_context_token_approx" else ""}>pov_context_token_approx</option>
+          <option value="plan_actions" {"selected" if sort_value == "plan_actions" else ""}>plan_actions</option>
+          <option value="plan_guardrails" {"selected" if sort_value == "plan_guardrails" else ""}>plan_guardrails</option>
+          <option value="plan_latency_p90" {"selected" if sort_value == "plan_latency_p90" else ""}>plan_latency_p90</option>
+          <option value="confirm_timeouts" {"selected" if sort_value == "confirm_timeouts" else ""}>confirm_timeouts</option>
+          <option value="plan_costmap_ctx_coverage_p90" {"selected" if sort_value == "plan_costmap_ctx_coverage_p90" else ""}>plan_costmap_ctx_coverage_p90</option>
+          <option value="plan_costmap_ctx_used_rate" {"selected" if sort_value == "plan_costmap_ctx_used_rate" else ""}>plan_costmap_ctx_used_rate</option>
+          <option value="plan_score" {"selected" if sort_value == "plan_score" else ""}>plan_score</option>
           <option value="e2e_count" {"selected" if sort_value == "e2e_count" else ""}>e2e_count</option>
           <option value="ttfa_count" {"selected" if sort_value == "ttfa_count" else ""}>ttfa_count</option>
           <option value="frameCountSent" {"selected" if sort_value == "frameCountSent" else ""}>frameCountSent</option>
@@ -1923,8 +7765,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&min_quality={min_quality_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&min_quality={min_quality_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&max_depth_jitter_p90={max_depth_jitter_p90_value}&max_depth_flicker_mean={max_depth_flicker_mean_value}&max_depth_scale_drift_p90={max_depth_scale_drift_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&min_costmap_fused_coverage={min_costmap_fused_coverage_value}&max_costmap_fused_latency_p90={max_costmap_fused_latency_p90_value}&min_costmap_fused_iou_p90={min_costmap_fused_iou_p90_value}&max_costmap_fused_flicker_rate_mean={max_costmap_fused_flicker_rate_mean_value}&max_costmap_fused_shift_gate_reject_rate={max_costmap_fused_shift_gate_reject_rate_value}&min_costmap_fused_shift_used_rate={min_costmap_fused_shift_used_rate_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_track_coverage={min_seg_track_coverage_value}&min_seg_tracks_total={min_seg_tracks_total_value}&max_seg_id_switches={max_seg_id_switches_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&max_depth_jitter_p90={max_depth_jitter_p90_value}&max_depth_flicker_mean={max_depth_flicker_mean_value}&max_depth_scale_drift_p90={max_depth_scale_drift_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&min_costmap_fused_coverage={min_costmap_fused_coverage_value}&max_costmap_fused_latency_p90={max_costmap_fused_latency_p90_value}&min_costmap_fused_iou_p90={min_costmap_fused_iou_p90_value}&max_costmap_fused_flicker_rate_mean={max_costmap_fused_flicker_rate_mean_value}&max_costmap_fused_shift_gate_reject_rate={max_costmap_fused_shift_gate_reject_rate_value}&min_costmap_fused_shift_used_rate={min_costmap_fused_shift_used_rate_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_track_coverage={min_seg_track_coverage_value}&min_seg_tracks_total={min_seg_tracks_total_value}&max_seg_id_switches={max_seg_id_switches_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -1940,6 +7782,88 @@ async def runs_dashboard(
           <th>Critical FN</th>
           <th>MaxDelay(fr)</th>
           <th>Risk p90(ms)</th>
+          <th>OCR CER</th>
+          <th>OCR Exact</th>
+          <th>OCR Coverage</th>
+          <th>OCR p90(ms)</th>
+          <th>User E2E p90(ms)</th>
+          <th>User E2E max(ms)</th>
+          <th>User E2E tts p90(ms)</th>
+          <th>User E2E tts max(ms)</th>
+          <th>User E2E ar p90(ms)</th>
+          <th>User E2E ar max(ms)</th>
+          <th>ACK Kind Diversity</th>
+          <th>ACK Coverage</th>
+          <th>Models Missing</th>
+          <th>Models Enabled</th>
+          <th>Seg F1@0.5</th>
+          <th>Seg Coverage</th>
+          <th>Seg Track Coverage</th>
+          <th>Seg Tracks Total</th>
+          <th>Seg ID Switches</th>
+          <th>Seg Mask F1@0.5</th>
+          <th>Seg Mask Coverage</th>
+          <th>Seg Mask mIoU</th>
+          <th>Seg p90(ms)</th>
+          <th>Depth AbsRel</th>
+          <th>Depth RMSE</th>
+          <th>Depth Delta1</th>
+          <th>Depth Coverage</th>
+          <th>Depth p90(ms)</th>
+          <th>Depth Jitter p90(m)</th>
+          <th>Depth Flicker Mean</th>
+          <th>Depth ScaleDrift p90(m)</th>
+          <th>Depth RefView Diversity</th>
+          <th>Costmap Coverage</th>
+          <th>Costmap p90(ms)</th>
+          <th>Costmap DensityMean</th>
+          <th>Costmap DynamicFilterMean</th>
+          <th>Costmap Fused Coverage</th>
+          <th>Costmap Fused p90(ms)</th>
+          <th>Costmap Fused IoU p90</th>
+          <th>Costmap Fused Flicker Mean</th>
+          <th>Costmap Fused ShiftUsed Rate</th>
+          <th>Costmap Fused ShiftReject Rate</th>
+          <th>Costmap Fused ShiftReject TopReason</th>
+          <th>SLAM Tracking</th>
+          <th>SLAM Lost</th>
+          <th>SLAM Relocalized</th>
+          <th>SLAM p90(ms)</th>
+          <th>SLAM Align p90(ms)</th>
+          <th>SLAM Align Mode</th>
+          <th>SLAM ATE RMSE(m)</th>
+          <th>SLAM RPE RMSE(m)</th>
+          <th>SegCtx Chars</th>
+          <th>SegCtx Segments</th>
+          <th>SegCtx DropSeg</th>
+          <th>Seg Prompt</th>
+          <th>Seg Prompt Chars</th>
+          <th>Seg Prompt Chars Out</th>
+          <th>Seg Prompt Targets Out</th>
+          <th>Seg Prompt Dropped</th>
+          <th>Seg Prompt TruncRate</th>
+          <th>POV</th>
+          <th>POV Decisions</th>
+          <th>POV Token~</th>
+          <th>POV DPM</th>
+          <th>POV Ctx Token~</th>
+          <th>POV Ctx Chars</th>
+          <th>Plan</th>
+          <th>Plan Risk</th>
+          <th>Plan Actions</th>
+          <th>Plan Guardrails</th>
+          <th>Plan Stop</th>
+          <th>Plan Confirm</th>
+          <th>Plan Score</th>
+          <th>Plan Fallback</th>
+          <th>Plan JSON</th>
+          <th>Plan Prompt</th>
+          <th>Plan p90(ms)</th>
+          <th>Confirm Req</th>
+          <th>Overcautious</th>
+          <th>Guardrail Override</th>
+          <th>Plan Costmap Ctx Coverage</th>
+          <th>Plan Costmap Ctx Used</th>
         </tr>
       </thead>
       <tbody id="runs">{rows_html}</tbody>
@@ -2182,3 +8106,9 @@ async def ws_events(websocket: WebSocket) -> None:
             trace_id="0" * 32,
             span_id="0" * 16,
         )
+
+
+
+
+
+

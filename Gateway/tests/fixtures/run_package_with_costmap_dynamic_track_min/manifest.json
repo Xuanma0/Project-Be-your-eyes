@@ -1,0 +1,15 @@
+﻿{
+  "runId": "fixture-costmap-dynamic-track-min",
+  "scenarioTag": "fixture_with_costmap_dynamic_track_min",
+  "startMs": 1713200000000,
+  "endMs": 1713200004000,
+  "wsJsonl": "events/events_v1.jsonl",
+  "eventsV1Jsonl": "events/events_v1.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "framesDir": "frames",
+  "framesMetaJsonl": "frames_meta.jsonl",
+  "frameCountSent": 4,
+  "eventCountAccepted": 12,
+  "errors": []
+}

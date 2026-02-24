@@ -1,0 +1,19 @@
+{
+  "runId": "fixture-pyslam-dir-min",
+  "scenarioTag": "fixture_with_pyslam_dir_min",
+  "startMs": 1702500000000,
+  "endMs": 1702500000600,
+  "eventsV1Jsonl": "events/events_v1.jsonl",
+  "wsJsonl": "events/events_v1.jsonl",
+  "framesDir": "frames",
+  "framesMetaJsonl": "frames_meta.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "frameCountSent": 3,
+  "eventCountAccepted": 0,
+  "groundTruth": {
+    "version": 1,
+    "slamJson": "gt/slam_pose_gt_v1.json"
+  },
+  "errors": []
+}

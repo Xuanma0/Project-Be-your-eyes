@@ -1,7 +1,9 @@
 ﻿from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
+from typing import Any
 
 
 def _env_int(name: str, default: int) -> int:
@@ -29,6 +31,134 @@ def _env_bool(name: str, default: bool) -> bool:
     if not raw:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_string_list(csv_name: str, json_name: str) -> tuple[str, ...]:
+    values: list[str] = []
+    seen: set[str] = set()
+
+    raw_json = str(os.getenv(json_name, "")).strip()
+    if raw_json:
+        try:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    text = str(item or "").strip()
+                    normalized = text.lower()
+                    if text and normalized not in seen:
+                        seen.add(normalized)
+                        values.append(text)
+        except Exception:
+            pass
+
+    raw_csv = str(os.getenv(csv_name, "")).strip()
+    if raw_csv:
+        for item in raw_csv.split(","):
+            text = str(item or "").strip()
+            normalized = text.lower()
+            if text and normalized not in seen:
+                seen.add(normalized)
+                values.append(text)
+
+    return tuple(values)
+
+
+def _env_seg_prompt() -> dict[str, Any] | None:
+    raw_json = str(os.getenv("BYES_SEG_PROMPT_JSON", "")).strip()
+    if raw_json:
+        try:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    prompt: dict[str, Any] = {}
+
+    raw_targets_json = str(os.getenv("BYES_SEG_PROMPT_TARGETS_JSON", "")).strip()
+    if raw_targets_json:
+        try:
+            parsed = json.loads(raw_targets_json)
+            if isinstance(parsed, list):
+                targets: list[str] = []
+                seen: set[str] = set()
+                for item in parsed:
+                    text = str(item or "").strip()
+                    key = text.lower()
+                    if text and key not in seen:
+                        seen.add(key)
+                        targets.append(text)
+                if targets:
+                    prompt["targets"] = targets
+        except Exception:
+            pass
+
+    raw_targets_csv = str(os.getenv("BYES_SEG_PROMPT_TARGETS", "")).strip()
+    if raw_targets_csv:
+        existing = prompt.get("targets")
+        merged: list[str] = [str(item).strip() for item in existing if str(item).strip()] if isinstance(existing, list) else []
+        seen = {item.lower() for item in merged}
+        for item in raw_targets_csv.split(","):
+            text = str(item or "").strip()
+            key = text.lower()
+            if text and key not in seen:
+                seen.add(key)
+                merged.append(text)
+        if merged:
+            prompt["targets"] = merged
+
+    raw_boxes_json = str(os.getenv("BYES_SEG_PROMPT_BOXES_JSON", "")).strip()
+    if raw_boxes_json:
+        try:
+            parsed = json.loads(raw_boxes_json)
+            if isinstance(parsed, list):
+                boxes: list[list[float]] = []
+                for item in parsed:
+                    if not isinstance(item, list) or len(item) != 4:
+                        continue
+                    try:
+                        boxes.append([float(item[0]), float(item[1]), float(item[2]), float(item[3])])
+                    except Exception:
+                        continue
+                if boxes:
+                    prompt["boxes"] = boxes
+        except Exception:
+            pass
+
+    raw_points_json = str(os.getenv("BYES_SEG_PROMPT_POINTS_JSON", "")).strip()
+    if raw_points_json:
+        try:
+            parsed = json.loads(raw_points_json)
+            if isinstance(parsed, list):
+                points: list[dict[str, float | int]] = []
+                for item in parsed:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        x = float(item.get("x"))
+                        y = float(item.get("y"))
+                        label = int(item.get("label"))
+                    except Exception:
+                        continue
+                    if label not in {0, 1}:
+                        continue
+                    points.append({"x": x, "y": y, "label": label})
+                if points:
+                    prompt["points"] = points
+        except Exception:
+            pass
+
+    raw_version = str(os.getenv("BYES_SEG_PROMPT_VERSION", "")).strip()
+    if raw_version:
+        meta = prompt.get("meta")
+        meta_obj = dict(meta) if isinstance(meta, dict) else {}
+        meta_obj["promptVersion"] = raw_version
+        prompt["meta"] = meta_obj
+
+    raw_text = str(os.getenv("BYES_SEG_PROMPT_TEXT", "")).strip()
+    if raw_text:
+        prompt["text"] = raw_text
+
+    return prompt or None
 
 
 @dataclass(frozen=True)
@@ -142,16 +272,68 @@ class GatewayConfig:
     critical_latch_ms: int = 1500
     critical_near_m: float = 1.0
     critical_from_crosscheck_kinds_csv: str = "vision_without_depth,depth_without_vision,transparent_obstacle,dropoff"
-    inference_enable_ocr: bool = True
+    inference_enable_ocr: bool = False
     inference_enable_risk: bool = True
+    inference_enable_seg: bool = False
+    inference_enable_depth: bool = False
+    inference_enable_slam: bool = False
+    inference_enable_costmap: bool = False
+    inference_enable_costmap_fused: bool = False
     inference_ocr_backend: str = "mock"
     inference_risk_backend: str = "mock"
+    inference_seg_backend: str = "mock"
+    inference_depth_backend: str = "mock"
+    inference_slam_backend: str = "mock"
     inference_ocr_http_url: str = "http://127.0.0.1:9001/ocr"
     inference_risk_http_url: str = "http://127.0.0.1:9002/risk"
+    inference_seg_http_url: str = "http://127.0.0.1:9003/seg"
+    inference_depth_http_url: str = "http://127.0.0.1:9004/depth"
+    inference_slam_http_url: str = "http://127.0.0.1:9005/slam/pose"
+    inference_seg_targets: tuple[str, ...] = ()
+    inference_seg_prompt: dict[str, Any] | None = None
+    inference_seg_tracking: bool = False
+    inference_seg_prompt_max_chars: int = 256
+    inference_seg_prompt_max_targets: int = 8
+    inference_seg_prompt_max_boxes: int = 4
+    inference_seg_prompt_max_points: int = 8
+    inference_seg_prompt_budget_mode: str = "targets_text_boxes_points"
     inference_ocr_timeout_ms: int = 1500
     inference_risk_timeout_ms: int = 1200
+    inference_seg_timeout_ms: int = 1200
+    inference_depth_timeout_ms: int = 1200
+    inference_slam_timeout_ms: int = 1200
     inference_ocr_model_id: str = "mock-ocr"
     inference_risk_model_id: str = "mock-risk"
+    inference_seg_model_id: str = "mock-seg"
+    inference_depth_model_id: str = "mock-depth"
+    inference_slam_model_id: str = "mock-slam"
+    inference_depth_http_ref_view_strategy: str = ""
+    inference_depth_temporal_roi: str = "bottom_center"
+    inference_depth_temporal_near_thresh_m: float = 1.0
+    inference_depth_temporal_require_same_size: bool = True
+    inference_slam_traj_preferred: str = "auto"
+    inference_slam_traj_allowed: tuple[str, ...] = ("online", "final")
+    inference_costmap_grid_h: int = 32
+    inference_costmap_grid_w: int = 32
+    inference_costmap_resolution_m: float = 0.1
+    inference_costmap_depth_thresh_m: float = 1.0
+    inference_costmap_dynamic_labels: tuple[str, ...] = ("person", "car")
+    inference_costmap_dynamic_track: bool = False
+    inference_costmap_dynamic_track_ttl_frames: int = 5
+    inference_costmap_fused_alpha: float = 0.6
+    inference_costmap_fused_decay: float = 0.95
+    inference_costmap_fused_window: int = 10
+    inference_costmap_fused_shift: bool = True
+    inference_costmap_fused_shift_gate: bool = True
+    inference_costmap_fused_min_tracking_rate: float = 0.6
+    inference_costmap_fused_max_lost_streak: int = 2
+    inference_costmap_fused_max_align_residual_p90_ms: int = 80
+    inference_costmap_fused_max_ate_rmse_m: float = 0.25
+    inference_costmap_fused_max_rpe_trans_rmse_m: float = 0.1
+    inference_costmap_occupied_thresh: int = 200
+    inference_costmap_context_max_chars: int = 512
+    inference_costmap_context_mode: str = "topk_hotspots"
+    inference_costmap_context_source: str = "auto"
     inference_emit_ws_events_v1: bool = False
     inference_event_component: str = "gateway"
 
@@ -277,16 +459,103 @@ def load_config() -> GatewayConfig:
             "BYES_CRITICAL_FROM_CROSSCHECK_KINDS",
             "vision_without_depth,depth_without_vision,transparent_obstacle,dropoff",
         ),
-        inference_enable_ocr=_env_bool("BYES_ENABLE_OCR", True),
+        inference_enable_ocr=_env_bool("BYES_ENABLE_OCR", False),
         inference_enable_risk=_env_bool("BYES_ENABLE_RISK", True),
-        inference_ocr_backend=os.getenv("BYES_OCR_BACKEND", "mock"),
+        inference_enable_seg=_env_bool("BYES_ENABLE_SEG", False),
+        inference_enable_depth=_env_bool("BYES_ENABLE_DEPTH", False),
+        inference_enable_slam=_env_bool("BYES_ENABLE_SLAM", False),
+        inference_enable_costmap=_env_bool("BYES_ENABLE_COSTMAP", False),
+        inference_enable_costmap_fused=_env_bool("BYES_ENABLE_COSTMAP_FUSED", False),
+        inference_ocr_backend=os.getenv("BYES_OCR_BACKEND", os.getenv("BYES_SERVICE_OCR_PROVIDER", "mock")),
         inference_risk_backend=os.getenv("BYES_RISK_BACKEND", "mock"),
-        inference_ocr_http_url=os.getenv("BYES_OCR_HTTP_URL", "http://127.0.0.1:9001/ocr"),
+        inference_seg_backend=os.getenv("BYES_SEG_BACKEND", "mock"),
+        inference_depth_backend=os.getenv("BYES_DEPTH_BACKEND", "mock"),
+        inference_slam_backend=os.getenv("BYES_SLAM_BACKEND", "mock"),
+        inference_ocr_http_url=os.getenv(
+            "BYES_OCR_HTTP_URL",
+            os.getenv("BYES_SERVICE_OCR_ENDPOINT", "http://127.0.0.1:9001/ocr"),
+        ),
         inference_risk_http_url=os.getenv("BYES_RISK_HTTP_URL", "http://127.0.0.1:9002/risk"),
-        inference_ocr_timeout_ms=_env_int("BYES_OCR_HTTP_TIMEOUT_MS", 1500),
+        inference_seg_http_url=os.getenv("BYES_SEG_HTTP_URL", "http://127.0.0.1:9003/seg"),
+        inference_depth_http_url=os.getenv("BYES_DEPTH_HTTP_URL", "http://127.0.0.1:9004/depth"),
+        inference_slam_http_url=os.getenv("BYES_SLAM_HTTP_URL", "http://127.0.0.1:9005/slam/pose"),
+        inference_seg_targets=_env_string_list("BYES_SEG_TARGETS", "BYES_SEG_TARGETS_JSON"),
+        inference_seg_prompt=_env_seg_prompt(),
+        inference_seg_tracking=_env_bool("BYES_SEG_TRACKING", False),
+        inference_seg_prompt_max_chars=_env_int("BYES_SEG_PROMPT_MAX_CHARS", 256),
+        inference_seg_prompt_max_targets=_env_int("BYES_SEG_PROMPT_MAX_TARGETS", 8),
+        inference_seg_prompt_max_boxes=_env_int("BYES_SEG_PROMPT_MAX_BOXES", 4),
+        inference_seg_prompt_max_points=_env_int("BYES_SEG_PROMPT_MAX_POINTS", 8),
+        inference_seg_prompt_budget_mode=(
+            str(os.getenv("BYES_SEG_PROMPT_BUDGET_MODE", "targets_text_boxes_points")).strip()
+            or "targets_text_boxes_points"
+        ),
+        inference_ocr_timeout_ms=_env_int(
+            "BYES_OCR_HTTP_TIMEOUT_MS",
+            _env_int("BYES_SERVICE_OCR_TIMEOUT_MS", 1500),
+        ),
         inference_risk_timeout_ms=_env_int("BYES_RISK_HTTP_TIMEOUT_MS", 1200),
-        inference_ocr_model_id=os.getenv("BYES_OCR_MODEL_ID", "mock-ocr"),
+        inference_seg_timeout_ms=_env_int("BYES_SEG_HTTP_TIMEOUT_MS", 1200),
+        inference_depth_timeout_ms=_env_int("BYES_DEPTH_HTTP_TIMEOUT_MS", 1200),
+        inference_slam_timeout_ms=_env_int(
+            "BYES_SLAM_HTTP_TIMEOUT_MS",
+            _env_int("BYES_SERVICE_SLAM_TIMEOUT_MS", 1200),
+        ),
+        inference_ocr_model_id=os.getenv("BYES_OCR_MODEL_ID", os.getenv("BYES_SERVICE_OCR_MODEL_ID", "mock-ocr")),
         inference_risk_model_id=os.getenv("BYES_RISK_MODEL_ID", "mock-risk"),
+        inference_seg_model_id=os.getenv("BYES_SEG_MODEL_ID", "mock-seg"),
+        inference_depth_model_id=os.getenv("BYES_DEPTH_MODEL_ID", "mock-depth"),
+        inference_slam_model_id=os.getenv("BYES_SLAM_MODEL_ID", os.getenv("BYES_SERVICE_SLAM_MODEL_ID", "mock-slam")),
+        inference_depth_http_ref_view_strategy=(
+            str(
+                os.getenv(
+                    "BYES_DEPTH_HTTP_REF_VIEW_STRATEGY",
+                    os.getenv("BYES_SERVICE_DEPTH_HTTP_REF_VIEW_STRATEGY", ""),
+                )
+            ).strip()
+        ),
+        inference_depth_temporal_roi=(
+            str(os.getenv("BYES_DEPTH_TEMPORAL_ROI", "bottom_center")).strip().lower() or "bottom_center"
+        ),
+        inference_depth_temporal_near_thresh_m=_env_float("BYES_DEPTH_TEMPORAL_NEAR_THRESH_M", 1.0),
+        inference_depth_temporal_require_same_size=_env_bool("BYES_DEPTH_TEMPORAL_REQUIRE_SAME_SIZE", True),
+        inference_slam_traj_preferred=(str(os.getenv("BYES_SLAM_TRAJ_PREFERRED", "auto")).strip().lower() or "auto"),
+        inference_slam_traj_allowed=(
+            _env_string_list("BYES_SLAM_TRAJ_ALLOWED", "BYES_SLAM_TRAJ_ALLOWED_JSON")
+            or ("online", "final")
+        ),
+        inference_costmap_grid_h=_env_int("BYES_COSTMAP_GRID_H", 32),
+        inference_costmap_grid_w=_env_int("BYES_COSTMAP_GRID_W", 32),
+        inference_costmap_resolution_m=_env_float("BYES_COSTMAP_RES_M", 0.1),
+        inference_costmap_depth_thresh_m=_env_float("BYES_COSTMAP_DEPTH_THRESH_M", 1.0),
+        inference_costmap_dynamic_labels=(
+            _env_string_list("BYES_COSTMAP_DYNAMIC_LABELS", "BYES_COSTMAP_DYNAMIC_LABELS_JSON")
+            or ("person", "car")
+        ),
+        inference_costmap_dynamic_track=_env_bool("BYES_ENABLE_COSTMAP_DYNAMIC_TRACK", False),
+        inference_costmap_dynamic_track_ttl_frames=_env_int("BYES_COSTMAP_DYNAMIC_TRACK_TTL_FRAMES", 5),
+        inference_costmap_fused_alpha=_env_float("BYES_COSTMAP_FUSED_ALPHA", 0.6),
+        inference_costmap_fused_decay=_env_float("BYES_COSTMAP_FUSED_DECAY", 0.95),
+        inference_costmap_fused_window=_env_int("BYES_COSTMAP_FUSED_WINDOW", 10),
+        inference_costmap_fused_shift=_env_bool("BYES_COSTMAP_FUSED_SHIFT", True),
+        inference_costmap_fused_shift_gate=_env_bool("BYES_COSTMAP_FUSED_SHIFT_GATE", True),
+        inference_costmap_fused_min_tracking_rate=_env_float("BYES_COSTMAP_FUSED_MIN_TRACKING_RATE", 0.6),
+        inference_costmap_fused_max_lost_streak=_env_int("BYES_COSTMAP_FUSED_MAX_LOST_STREAK", 2),
+        inference_costmap_fused_max_align_residual_p90_ms=_env_int(
+            "BYES_COSTMAP_FUSED_MAX_ALIGN_RESIDUAL_P90_MS",
+            80,
+        ),
+        inference_costmap_fused_max_ate_rmse_m=_env_float("BYES_COSTMAP_FUSED_MAX_ATE_RMSE_M", 0.25),
+        inference_costmap_fused_max_rpe_trans_rmse_m=_env_float("BYES_COSTMAP_FUSED_MAX_RPE_TRANS_RMSE_M", 0.1),
+        inference_costmap_occupied_thresh=_env_int("BYES_COSTMAP_OCCUPIED_THRESH", 200),
+        inference_costmap_context_max_chars=_env_int("BYES_COSTMAP_CONTEXT_MAX_CHARS", 512),
+        inference_costmap_context_mode=(
+            str(os.getenv("BYES_COSTMAP_CONTEXT_MODE", "topk_hotspots")).strip()
+            or "topk_hotspots"
+        ),
+        inference_costmap_context_source=(
+            str(os.getenv("BYES_COSTMAP_CONTEXT_SOURCE", "auto")).strip().lower() or "auto"
+        ),
         inference_emit_ws_events_v1=_env_bool("BYES_INFERENCE_EMIT_WS_V1", False),
         inference_event_component=os.getenv("BYES_INFERENCE_EVENT_COMPONENT", "gateway"),
     )

@@ -1,0 +1,3 @@
+{"frameSeq": 1, "hazards": [{"hazardKind": "obstacle_close", "severity": "warning"}]}
+{"frameSeq": 2, "hazards": [{"hazardKind": "dropoff", "severity": "critical"}]}
+{"frameSeq": 3, "hazards": []}

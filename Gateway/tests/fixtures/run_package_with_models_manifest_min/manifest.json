@@ -1,0 +1,14 @@
+{
+  "runId": "fixture-models-manifest-min",
+  "scenarioTag": "fixture_with_models_manifest_min",
+  "startMs": 1712400000000,
+  "endMs": 1712400000200,
+  "wsJsonl": "events/events_v1.jsonl",
+  "eventsV1Jsonl": "events/events_v1.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "framesDir": "frames",
+  "frameCountSent": 0,
+  "eventCountAccepted": 1,
+  "errors": []
+}

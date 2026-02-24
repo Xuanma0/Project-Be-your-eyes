@@ -1,5 +1,7 @@
 # Project-Be-your-eyes
 
+[中文说明 / Chinese Version](docs/Chinese/README.md)
+
 Project-Be-your-eyes (Be Your Eyes) is an event-driven assistive perception system for Unity + Gateway + pluggable inference, with replayable evaluation and safety gating for `risk + ocr` pipelines.
 
 ## Why This Project
@@ -13,30 +15,67 @@ Project-Be-your-eyes (Be Your Eyes) is an event-driven assistive perception syst
 
 ## Quick Start (PowerShell)
 
-### 1) Run Gateway tests only
+### 1) Prepare Python environment (required for Gateway)
+
+Option A: `venv`
+
+```powershell
+cd Gateway
+python -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+```
+
+Option B: conda
+
+```powershell
+cd Gateway
+conda create -n byes python=3.11 -y
+conda activate byes
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+```
+
+### 2) Run Gateway tests only
 
 ```powershell
 cd Gateway
 python -m pytest -q
 ```
 
-### 2) Minimal replay
+### 3) Minimal replay
 
 ```powershell
 cd ..
 python Gateway/scripts/replay_run_package.py --run-package Gateway/tests/fixtures/run_package_with_risk_gt_min --reset
 ```
 
-### 3) Generate report
+### 4) Generate report
 
 ```powershell
 python Gateway/scripts/report_run.py --run-package Gateway/tests/fixtures/run_package_with_risk_gt_min
 ```
 
-### 4) Run regression
+### 5) Run regression
 
 ```powershell
 python Gateway/scripts/run_regression_suite.py --suite Gateway/regression/suites/baseline_suite.json --baseline Gateway/regression/baselines/baseline.json --fail-on-drop --fail-on-critical-fn
+```
+
+## POV-compiler -> BYE Contract
+
+- Single source schema: `schemas/pov_ir_v1.schema.json`
+- Ingest POV IR to BYES events v1:
+
+```powershell
+python Gateway/scripts/ingest_pov_ir.py --run-package <run_package_dir> --pov-ir <pov_ir.json> --strict 1
+```
+
+- Run contract regression suite:
+
+```powershell
+python Gateway/scripts/run_regression_suite.py --suite Gateway/regression/suites/contract_suite.json --baseline Gateway/regression/baselines/baseline.json --fail-on-drop
 ```
 
 ## Optional: Real ONNX Depth (Depth Anything V2 Small)
@@ -137,3 +176,72 @@ Assets/                               # Unity client and scene integration
 - 5-minute demo script: `docs/QUICK_DEMO.md`
 - Terms: `docs/GLOSSARY.md`
 - Command index: `docs/COMMANDS.md`
+
+## Documentation Index
+
+### Root
+
+- [README.md](README.md)
+
+### docs/English
+
+- [docs/English/ARCHITECTURE.md](docs/English/ARCHITECTURE.md)
+- [docs/English/COMMANDS.md](docs/English/COMMANDS.md)
+- [docs/English/contracts.md](docs/English/contracts.md)
+- [docs/English/event_schema_v1.md](docs/English/event_schema_v1.md)
+- [docs/English/GLOSSARY.md](docs/English/GLOSSARY.md)
+- [docs/English/hazard_taxonomy_v1.md](docs/English/hazard_taxonomy_v1.md)
+- [docs/English/pov_planner_adapter.md](docs/English/pov_planner_adapter.md)
+- [docs/English/QUICK_DEMO.md](docs/English/QUICK_DEMO.md)
+
+### docs/Chinese
+
+- [docs/Chinese/README.md](docs/Chinese/README.md)
+- [docs/Chinese/ARCHITECTURE.md](docs/Chinese/ARCHITECTURE.md)
+- [docs/Chinese/COMMANDS.md](docs/Chinese/COMMANDS.md)
+- [docs/Chinese/contracts.md](docs/Chinese/contracts.md)
+- [docs/Chinese/event_schema_v1.md](docs/Chinese/event_schema_v1.md)
+- [docs/Chinese/GLOSSARY.md](docs/Chinese/GLOSSARY.md)
+- [docs/Chinese/hazard_taxonomy_v1.md](docs/Chinese/hazard_taxonomy_v1.md)
+- [docs/Chinese/pov_planner_adapter.md](docs/Chinese/pov_planner_adapter.md)
+- [docs/Chinese/QUICK_DEMO.md](docs/Chinese/QUICK_DEMO.md)
+
+### Gateway Core
+
+- [Gateway/README.md](Gateway/README.md)
+- [Gateway/docs/Chinese/README.md](Gateway/docs/Chinese/README.md)
+- [Gateway/regression/README.md](Gateway/regression/README.md)
+
+### Gateway Services
+
+- [Gateway/services/inference_service/README.md](Gateway/services/inference_service/README.md)
+- [Gateway/services/planner_service/README.md](Gateway/services/planner_service/README.md)
+- [Gateway/services/reference_depth_service/README.md](Gateway/services/reference_depth_service/README.md)
+- [Gateway/services/reference_seg_service/README.md](Gateway/services/reference_seg_service/README.md)
+
+### Gateway Service Prompts
+
+- [Gateway/services/planner_service/prompts/planner_system.md](Gateway/services/planner_service/prompts/planner_system.md)
+- [Gateway/services/planner_service/prompts/planner_user.md](Gateway/services/planner_service/prompts/planner_user.md)
+
+### Gateway External Services
+
+- [Gateway/external/real_depth_service/README.md](Gateway/external/real_depth_service/README.md)
+- [Gateway/external/real_ocr_service/README.md](Gateway/external/real_ocr_service/README.md)
+- [Gateway/external/real_vlm_service/README.md](Gateway/external/real_vlm_service/README.md)
+
+### Gateway Test Fixtures
+
+- [Gateway/tests/fixtures/pov_ir_v1_min/README.md](Gateway/tests/fixtures/pov_ir_v1_min/README.md)
+- [Gateway/tests/fixtures/pov_plan_min/README.md](Gateway/tests/fixtures/pov_plan_min/README.md)
+- [Gateway/tests/fixtures/run_package_with_plan_http_min/README.md](Gateway/tests/fixtures/run_package_with_plan_http_min/README.md)
+- [Gateway/tests/fixtures/run_package_with_plan_llm_stub_min/README.md](Gateway/tests/fixtures/run_package_with_plan_llm_stub_min/README.md)
+- [Gateway/tests/fixtures/run_package_with_risk_gt_and_pov_min/README.md](Gateway/tests/fixtures/run_package_with_risk_gt_and_pov_min/README.md)
+- [Gateway/tests/fixtures/run_package_with_events_v1_min/report.md](Gateway/tests/fixtures/run_package_with_events_v1_min/report.md)
+- [Gateway/tests/fixtures/run_package_with_schema_v1_events_min/report.md](Gateway/tests/fixtures/run_package_with_schema_v1_events_min/report.md)
+
+### Unity / Assets Docs
+
+- [Assets/BeYourEyes/Docs/architecture.md](Assets/BeYourEyes/Docs/architecture.md)
+- [Assets/BeYourEyes/Docs/Spatial Audio Demo.md](Assets/BeYourEyes/Docs/Spatial%20Audio%20Demo.md)
+- [Assets/Samples/XR Hands/1.7.1/HandVisualizer/README.md](Assets/Samples/XR%20Hands/1.7.1/HandVisualizer/README.md)

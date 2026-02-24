@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "frame.ack.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "frameSeq",
+    "feedbackTsMs",
+    "kind",
+    "accepted"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "frame.ack.v1"
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "frameSeq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "feedbackTsMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "tts",
+        "overlay",
+        "haptic",
+        "any"
+      ]
+    },
+    "accepted": {
+      "type": "boolean"
+    }
+  }
+}

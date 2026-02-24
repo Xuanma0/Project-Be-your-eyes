@@ -1,0 +1,132 @@
+{
+  "schemaVersion": "byes.contract.lock.v1",
+  "generatedAtMs": 1771923540905,
+  "versions": {
+    "byes.action_plan.v1": {
+      "version": "byes.action_plan.v1",
+      "path": "Gateway/contracts/byes.action_plan.v1.json",
+      "sha256": "5e328f86d74fcd4875a1021dae53349de413ea89ca2328462a29c828ab4bd99c",
+      "updatedAtMs": 1771052835631
+    },
+    "byes.costmap.v1": {
+      "version": "byes.costmap.v1",
+      "path": "Gateway/contracts/byes.costmap.v1.json",
+      "sha256": "708bade93a1cebfb7b6197898b95b9f1a940ebb4362ea344f5e264bf10dc5a5a",
+      "updatedAtMs": 1771914975358
+    },
+    "byes.costmap_fused.v1": {
+      "version": "byes.costmap_fused.v1",
+      "path": "Gateway/contracts/byes.costmap_fused.v1.json",
+      "sha256": "c90355fd92b10b73d13d0bd3513ca13715cabda5b767dd1093041006ca357cb4",
+      "updatedAtMs": 1771914982045
+    },
+    "byes.depth.v1": {
+      "version": "byes.depth.v1",
+      "path": "Gateway/contracts/byes.depth.v1.json",
+      "sha256": "0d9fcc344d9775a7751e2bcabc9942a48bf23cad9209841699707940ad303c47",
+      "updatedAtMs": 1771921168370
+    },
+    "byes.event.v1": {
+      "version": "byes.event.v1",
+      "path": "Gateway/contracts/byes.event.v1.json",
+      "sha256": "1edf945d0f26102bf22d5a304a1fbe3783bda5ffb746ad477d042b9b804b70a5",
+      "updatedAtMs": 1771052701191
+    },
+    "byes.models.v1": {
+      "version": "byes.models.v1",
+      "path": "Gateway/contracts/byes.models.v1.json",
+      "sha256": "f08e45d6f99d7e8e338e039d4406615d601129a5ebc90e17085e0610d28de449",
+      "updatedAtMs": 1771169275454
+    },
+    "byes.ocr.v1": {
+      "version": "byes.ocr.v1",
+      "path": "Gateway/contracts/byes.ocr.v1.json",
+      "sha256": "23ee452f984fb200780c9359aaff151a8426b5747186a0ade3391aa49aaa3fc9",
+      "updatedAtMs": 1771681704763
+    },
+    "byes.plan_request.v1": {
+      "version": "byes.plan_request.v1",
+      "path": "Gateway/contracts/byes.plan_request.v1.json",
+      "sha256": "857d24b53212928ec8f5153397bb20df3e8cda710309bc5528eaa40f2049ce14",
+      "updatedAtMs": 1771844340941
+    },
+    "byes.seg.v1": {
+      "version": "byes.seg.v1",
+      "path": "Gateway/contracts/byes.seg.v1.json",
+      "sha256": "40fcd84eb1edfd685dab157bc210b838872b2370dec32c943ea7624eca20affb",
+      "updatedAtMs": 1771890976078
+    },
+    "byes.seg_request.v1": {
+      "version": "byes.seg_request.v1",
+      "path": "Gateway/contracts/byes.seg_request.v1.json",
+      "sha256": "0c11710bca0f76d765aabe991298dc71c05cdf8a1ab61dbd590e203bec70deb7",
+      "updatedAtMs": 1771071358532
+    },
+    "byes.slam_pose.v1": {
+      "version": "byes.slam_pose.v1",
+      "path": "Gateway/contracts/byes.slam_pose.v1.json",
+      "sha256": "bd4907dbfab29acefbdace0e479184775a461c085549d99a52f82cfe4450f2f9",
+      "updatedAtMs": 1771717198088
+    },
+    "costmap.context.v1": {
+      "version": "costmap.context.v1",
+      "path": "Gateway/contracts/costmap.context.v1.json",
+      "sha256": "b1d19ff582de1d4a2dc20f40aa77f06e2bb5631ebf2a525063b5637e5e37de17",
+      "updatedAtMs": 1771844194496
+    },
+    "frame.ack.v1": {
+      "version": "frame.ack.v1",
+      "path": "Gateway/contracts/frame.ack.v1.json",
+      "sha256": "ee40fb811327d15252e67aa860d6661271d5fbcd1b4c42eb46152da4743a6bd4",
+      "updatedAtMs": 1771158745797
+    },
+    "frame.e2e.v1": {
+      "version": "frame.e2e.v1",
+      "path": "Gateway/contracts/frame.e2e.v1.json",
+      "sha256": "7e1d0f8b86db47a65b5e9fc2ada0f448d0f59ce3bbf6c45a64aa12dc7c1a6ddd",
+      "updatedAtMs": 1771152741774
+    },
+    "frame.input.v1": {
+      "version": "frame.input.v1",
+      "path": "Gateway/contracts/frame.input.v1.json",
+      "sha256": "dc87dadad1b4596847ccccb6d0bbf841d76894408045e0f987c158fffdc2bfa1",
+      "updatedAtMs": 1771158738422
+    },
+    "plan.context_alignment.v1": {
+      "version": "plan.context_alignment.v1",
+      "path": "Gateway/contracts/plan.context_alignment.v1.json",
+      "sha256": "d09caabcc17a61724642291a4f191b348fb6c03cd5a7848fc160c276afcc4877",
+      "updatedAtMs": 1771844351870
+    },
+    "plan.context_pack.v1": {
+      "version": "plan.context_pack.v1",
+      "path": "Gateway/contracts/plan.context_pack.v1.json",
+      "sha256": "3c74c73d6fc17b837e83566edd7e123cb6d9419376900f5090f67a18a214ab4e",
+      "updatedAtMs": 1771149306648
+    },
+    "pov.context.v1": {
+      "version": "pov.context.v1",
+      "path": "Gateway/contracts/pov.context.v1.json",
+      "sha256": "9dd22d8b8b9d4c6e07bdbd5a3c973dedcdbbe6fc0d6459c4b3d6d151d99fa6c8",
+      "updatedAtMs": 1771052846510
+    },
+    "pov.ir.v1": {
+      "version": "pov.ir.v1",
+      "path": "Gateway/contracts/pov.ir.v1.json",
+      "sha256": "e030d83d6c319ad3f6c84106b2bc9c322122b7c1bbcecf7fbf38269c918718e1",
+      "updatedAtMs": 1771052841590
+    },
+    "seg.context.v1": {
+      "version": "seg.context.v1",
+      "path": "Gateway/contracts/seg.context.v1.json",
+      "sha256": "d94df64cc6370a7b4c27dad7726521ec5441cbf504778976e7dfe86ee0bb46d7",
+      "updatedAtMs": 1771094322805
+    },
+    "slam.context.v1": {
+      "version": "slam.context.v1",
+      "path": "Gateway/contracts/slam.context.v1.json",
+      "sha256": "7f78b0fd433b6ef62d2295d46772daccac3a305ae1e29afd3b3b1f306a37a704",
+      "updatedAtMs": 1771835030947
+    }
+  }
+}

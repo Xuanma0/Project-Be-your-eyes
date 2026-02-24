@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "byes.depth_gt.v1",
+  "runId": "fixture-da3-depth",
+  "frames": [
+    {
+      "frameSeq": 1,
+      "grid": {
+        "format": "grid_u16_mm_v1",
+        "size": [4, 4],
+        "unit": "mm",
+        "values": [1000,1020,1040,1060,1080,1100,1120,1140,1160,1180,1200,1220,1240,1260,1280,1300]
+      },
+      "imageWidth": 16,
+      "imageHeight": 16
+    },
+    {
+      "frameSeq": 2,
+      "grid": {
+        "format": "grid_u16_mm_v1",
+        "size": [4, 4],
+        "unit": "mm",
+        "values": [900,920,940,960,980,1000,1020,1040,1060,1080,1100,1120,1140,1160,1180,1200]
+      },
+      "imageWidth": 16,
+      "imageHeight": 16
+    }
+  ]
+}

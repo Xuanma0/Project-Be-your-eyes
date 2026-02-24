@@ -1,101 +1,14 @@
-﻿# BYES Event Schema v1
+# BYES Event Schema v1
 
-`schemaVersion`: `byes.event.v1`
+Canonical references:
+- English: `docs/English/event_schema_v1.md`
+- Chinese: `docs/Chinese/event_schema_v1.md`
 
-## Fields
-- `tsMs`: event timestamp in ms.
-- `runId`: optional run id.
-- `frameSeq`: optional frame sequence id.
-- `component`: `unity|gateway|cloud|sim|unknown`.
-- `category`: `tool|safety|system|scenario|metric|unknown`.
-- `name`: normalized event name (`ocr.scan_text`, `risk.hazards`, `safety.confirm`, etc.).
-- `phase`: optional lifecycle stage (`start|result|error|info`).
-- `status`: optional normalized status (`ok|timeout|cancel|error`).
-- `latencyMs`: optional latency in ms.
-- `payload`: normalized payload object.
-  - recommended tool metadata keys inside payload:
-    - `backend`: `mock|http|local`
-    - `model`: model identifier (optional)
-    - `endpoint`: sanitized endpoint URL/path (optional)
-- `raw`: optional raw event (debug use only).
+Name catalog highlights (tool events):
+- `ocr.read`
+- `risk.hazards`
+- `seg.segment`
+- `depth.estimate`
+- `slam.pose`
 
-## Examples
-
-### 1) OCR intent (start)
-```json
-{
-  "schemaVersion": "byes.event.v1",
-  "tsMs": 1704000000120,
-  "frameSeq": 1,
-  "component": "gateway",
-  "category": "tool",
-  "name": "ocr.scan_text",
-  "phase": "start",
-  "status": "ok",
-  "latencyMs": null,
-  "payload": {"requestId": "ocr-1"}
-}
-```
-
-### 2) OCR result (text)
-```json
-{
-  "schemaVersion": "byes.event.v1",
-  "tsMs": 1704000000180,
-  "frameSeq": 1,
-  "component": "gateway",
-  "category": "tool",
-  "name": "ocr.scan_text",
-  "phase": "result",
-  "status": "ok",
-  "latencyMs": 110,
-  "payload": {"text": "EXIT", "backend": "http", "model": "paddleocr-v4", "endpoint": "http://127.0.0.1:9001/ocr"}
-}
-```
-
-### 3) Risk hazards result
-```json
-{
-  "schemaVersion": "byes.event.v1",
-  "tsMs": 1704000000900,
-  "frameSeq": 1,
-  "component": "gateway",
-  "category": "tool",
-  "name": "risk.hazards",
-  "phase": "result",
-  "status": "ok",
-  "latencyMs": 88,
-  "payload": {"hazards": [{"hazardKind": "stair_down", "severity": "critical"}], "backend": "http", "model": "depth-anything-v2-small", "endpoint": "http://127.0.0.1:9002/risk"}
-}
-```
-
-### 4) Safety confirm timeout / latch
-```json
-{
-  "schemaVersion": "byes.event.v1",
-  "tsMs": 1704000000600,
-  "frameSeq": 1,
-  "component": "gateway",
-  "category": "safety",
-  "name": "safety.confirm",
-  "phase": "error",
-  "status": "timeout",
-  "latencyMs": null,
-  "payload": {"reason": "timeout", "requestId": "conf-1"}
-}
-```
-
-```json
-{
-  "schemaVersion": "byes.event.v1",
-  "tsMs": 1704000000820,
-  "frameSeq": 1,
-  "component": "gateway",
-  "category": "safety",
-  "name": "safety.latch",
-  "phase": "info",
-  "status": "ok",
-  "latencyMs": 300,
-  "payload": {"reason": "critical_latch"}
-}
-```
+This page is a lightweight index so links to `docs/event_schema_v1.md` stay stable.

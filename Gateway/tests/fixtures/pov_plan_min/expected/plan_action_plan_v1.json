@@ -1,0 +1,79 @@
+{
+  "schemaVersion": "byes.action_plan.v1",
+  "runId": "fixture-pov-plan-min",
+  "frameSeq": 1,
+  "generatedAtMs": 0,
+  "intent": "pov_compiler_adapter",
+  "riskLevel": "critical",
+  "ttlMs": 2000,
+  "actions": [
+    {
+      "type": "stop",
+      "priority": 0,
+      "payload": {
+        "reason": "pov_decision_stop",
+        "text": "crosswalk_pause -> stop -> safe",
+        "source": "pov",
+        "sourceDecisionIds": [
+          "dp-stop"
+        ]
+      },
+      "requiresConfirm": false,
+      "blocking": true
+    },
+    {
+      "type": "confirm",
+      "priority": 1,
+      "payload": {
+        "text": "obstacle_near -> ask_confirm -> detour_left",
+        "confirmId": "confirm-fixture-pov-plan-min-dp-confirm",
+        "timeoutMs": 3000,
+        "source": "pov",
+        "sourceDecisionIds": [
+          "dp-confirm"
+        ]
+      },
+      "requiresConfirm": false,
+      "blocking": true
+    },
+    {
+      "type": "speak",
+      "priority": 2,
+      "payload": {
+        "text": "detour left and keep railing side",
+        "source": "pov",
+        "sourceDecisionIds": [
+          "dp-confirm"
+        ]
+      },
+      "requiresConfirm": true,
+      "blocking": false
+    }
+  ],
+  "meta": {
+    "planner": {
+      "backend": "pov",
+      "model": "pov-ir-v1",
+      "endpoint": null,
+      "plannerProvider": "pov",
+      "promptVersion": "n/a",
+      "fallbackUsed": false,
+      "fallbackReason": null,
+      "jsonValid": true
+    },
+    "budget": {
+      "contextMaxTokensApprox": 0,
+      "contextMaxChars": 0,
+      "mode": "decisions_plus_highlights"
+    },
+    "contextUsedDetail": {
+      "seg": false,
+      "pov": false,
+      "slam": false,
+      "costmap": false
+    },
+    "safety": {
+      "guardrailsApplied": []
+    }
+  }
+}

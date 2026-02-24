@@ -1,0 +1,158 @@
+﻿{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-be-your-eyes/contracts/plan.context_pack.v1.json",
+  "title": "Plan Context Pack v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "budget",
+    "parts",
+    "stats",
+    "text"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "plan.context_pack.v1"
+    },
+    "runId": {
+      "type": "string"
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "maxChars",
+        "mode"
+      ],
+      "properties": {
+        "maxChars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "seg_plus_pov_plus_risk",
+            "seg_plus_pov",
+            "pov_plus_risk",
+            "seg_only",
+            "pov_only",
+            "risk_only"
+          ]
+        }
+      }
+    },
+    "parts": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "seg",
+        "pov",
+        "risk"
+      ],
+      "properties": {
+        "seg": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "pov": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "risk": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      }
+    },
+    "stats": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "out",
+        "truncation"
+      ],
+      "properties": {
+        "out": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "charsTotal",
+            "tokenApprox"
+          ],
+          "properties": {
+            "charsTotal": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tokenApprox": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "segChars": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "povChars": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "riskChars": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "truncation": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "charsDropped"
+          ],
+          "properties": {
+            "charsDropped": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "segCharsDropped": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "povCharsDropped": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "riskCharsDropped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "text": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "summary",
+        "prompt"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

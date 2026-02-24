@@ -1,0 +1,253 @@
+﻿{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-be-your-eyes/contracts/byes.plan_request.v1.json",
+  "title": "BYES Plan Request v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "contexts",
+    "meta"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "byes.plan_request.v1"
+    },
+    "runId": {
+      "type": "string"
+    },
+    "frameSeq": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "risk": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "riskLevel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hazardsCount": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "backend": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "contexts": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "pov",
+        "seg"
+      ],
+      "properties": {
+        "pov": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "included",
+            "chars",
+            "truncation"
+          ],
+          "properties": {
+            "included": {
+              "type": "boolean"
+            },
+            "promptFragment": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "chars": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tokenApprox": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "truncation": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "dropped": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        },
+        "seg": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "included",
+            "chars",
+            "truncation"
+          ],
+          "properties": {
+            "included": {
+              "type": "boolean"
+            },
+            "promptFragment": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "chars": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tokenApprox": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "truncation": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "segmentsDropped": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "charsDropped": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        },
+        "slam": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "present",
+            "chars",
+            "promptFragment"
+          ],
+          "properties": {
+            "present": {
+              "type": "boolean"
+            },
+            "chars": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "promptFragment": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "costmap": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "present",
+            "chars",
+            "promptFragment"
+          ],
+          "properties": {
+            "present": {
+              "type": "boolean"
+            },
+            "chars": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "promptFragment": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "provider",
+        "promptVersion"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "promptVersion": {
+          "type": "string"
+        },
+        "createdAtMs": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "slamIncluded": {
+          "type": "boolean"
+        },
+        "slamChars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "costmapIncluded": {
+          "type": "boolean"
+        },
+        "costmapChars": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

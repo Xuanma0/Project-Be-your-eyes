@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from byes.event_normalizer import collect_normalized_ws_events
 from byes.hazards.taxonomy_v1 import normalize_hazard_kind, normalize_hazards
@@ -16,13 +16,33 @@ _FRAME_RE = re.compile(r"(?:frame[_-]?|seq[_-]?)(\d+)", re.IGNORECASE)
 
 def load_gt_ocr_jsonl(path: Path) -> dict[int, str]:
     rows: dict[int, str] = {}
+    if path.suffix.lower() == ".json":
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            return rows
+        frames: list[dict[str, Any]] = []
+        if isinstance(payload, dict):
+            raw_frames = payload.get("frames")
+            if isinstance(raw_frames, list):
+                frames = [item for item in raw_frames if isinstance(item, dict)]
+        elif isinstance(payload, list):
+            frames = [item for item in payload if isinstance(item, dict)]
+        for item in frames:
+            seq = _extract_frame_seq(item)
+            if seq is None:
+                continue
+            text = _extract_ocr_text(item)
+            rows[seq] = text
+        return rows
+
     for item in _iter_jsonl(path):
         if not isinstance(item, dict):
             continue
         seq = _extract_frame_seq(item)
         if seq is None:
             continue
-        text = _read_text(item)
+        text = _extract_ocr_text(item)
         rows[seq] = text
     return rows
 
@@ -48,6 +68,373 @@ def load_gt_risk_jsonl(
     return rows
 
 
+def load_gt_seg_v1(path: Path) -> dict[int, list[dict[str, Any]]]:
+    records: dict[int, list[dict[str, Any]]] = {}
+    suffix = path.suffix.lower()
+    if suffix == ".jsonl":
+        for item in _iter_jsonl(path):
+            if not isinstance(item, dict):
+                continue
+            seq = _extract_frame_seq(item)
+            if seq is None:
+                continue
+            objects = item.get("objects")
+            if not isinstance(objects, list):
+                continue
+            normalized = [_normalize_seg_object(obj) for obj in objects]
+            records[seq] = [obj for obj in normalized if isinstance(obj, dict)]
+        return records
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return records
+
+    frames: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        rows = payload.get("frames")
+        if isinstance(rows, list):
+            frames = [row for row in rows if isinstance(row, dict)]
+    elif isinstance(payload, list):
+        frames = [row for row in payload if isinstance(row, dict)]
+
+    for row in frames:
+        seq = _extract_frame_seq(row)
+        if seq is None:
+            continue
+        objects = row.get("objects")
+        if not isinstance(objects, list):
+            continue
+        normalized = [_normalize_seg_object(obj) for obj in objects]
+        records[seq] = [obj for obj in normalized if isinstance(obj, dict)]
+    return records
+
+
+def load_gt_depth_v1(path: Path) -> dict[int, dict[str, Any]]:
+    records: dict[int, dict[str, Any]] = {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return records
+
+    frames: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        rows = payload.get("frames")
+        if isinstance(rows, list):
+            frames = [row for row in rows if isinstance(row, dict)]
+    elif isinstance(payload, list):
+        frames = [row for row in payload if isinstance(row, dict)]
+
+    for row in frames:
+        seq = _extract_frame_seq(row)
+        if seq is None:
+            continue
+        grid = _normalize_depth_grid_object(row.get("grid"))
+        if not isinstance(grid, dict):
+            continue
+        record: dict[str, Any] = {"grid": grid}
+        width = _parse_int(row.get("imageWidth"))
+        height = _parse_int(row.get("imageHeight"))
+        if width is not None and width > 0:
+            record["imageWidth"] = width
+        if height is not None and height > 0:
+            record["imageHeight"] = height
+        records[seq] = record
+    return records
+
+
+def load_gt_slam_pose_v1(path: Path) -> dict[int, dict[str, Any]]:
+    records: dict[int, dict[str, Any]] = {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return records
+
+    frames: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        rows = payload.get("frames")
+        if isinstance(rows, list):
+            frames = [row for row in rows if isinstance(row, dict)]
+    elif isinstance(payload, list):
+        frames = [row for row in payload if isinstance(row, dict)]
+
+    for row in frames:
+        seq = _extract_frame_seq(row)
+        if seq is None:
+            continue
+        pose = _normalize_slam_pose_object(row.get("pose"))
+        if not isinstance(pose, dict):
+            continue
+        tracking_state = _normalize_slam_tracking_state(row.get("trackingState"))
+        if not tracking_state:
+            continue
+        out: dict[str, Any] = {"trackingState": tracking_state, "pose": pose}
+        map_id = row.get("mapId")
+        map_id_text = str(map_id).strip() if map_id is not None else ""
+        if map_id_text:
+            out["mapId"] = map_id_text
+        records[seq] = out
+    return records
+
+
+def load_gt_slam_tum(path: Path) -> dict[int, dict[str, Any]]:
+    records: dict[int, dict[str, Any]] = {}
+    if not path.exists() or not path.is_file():
+        return records
+    index = 0
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except Exception:
+        return records
+    for raw_line in text.splitlines():
+        parsed = _parse_tum_line(raw_line)
+        if not isinstance(parsed, dict):
+            continue
+        index += 1
+        records[index] = {
+            "timestampSec": float(parsed["timestampSec"]),
+            "trackingState": "tracking",
+            "pose": {
+                "t": [float(parsed["tx"]), float(parsed["ty"]), float(parsed["tz"])],
+                "q": [float(parsed["qx"]), float(parsed["qy"]), float(parsed["qz"]), float(parsed["qw"])],
+            },
+        }
+    return records
+
+
+def load_slam_tum_pose_map(path: Path) -> dict[int, dict[str, Any]]:
+    return load_gt_slam_tum(path)
+
+
+def extract_pred_seg_from_ws_events(
+    ws_events_jsonl_path: Path,
+) -> tuple[dict[int, list[dict[str, Any]]], set[int], list[int]]:
+    pred_map: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    pred_event_frames: set[int] = set()
+    latencies: list[int] = []
+
+    normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
+    normalized_events = normalized_summary.get("events", [])
+    for event in normalized_events:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "seg.segment":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        seq = _parse_int(event.get("frameSeq"))
+        if seq is None:
+            continue
+        pred_event_frames.add(seq)
+        latency = _parse_int(event.get("latencyMs"))
+        if latency is not None and latency >= 0:
+            latencies.append(latency)
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        segments = payload.get("segments")
+        if not isinstance(segments, list):
+            continue
+        for raw in segments:
+            item = _normalize_seg_object(raw)
+            if item is not None:
+                pred_map[seq].append(item)
+
+    if normalized_events:
+        compact = {seq: rows for seq, rows in pred_map.items()}
+        return compact, pred_event_frames, latencies
+
+    for row in _iter_jsonl(ws_events_jsonl_path):
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        name = str(event.get("name", "")).strip().lower()
+        phase = str(event.get("phase", "")).strip().lower()
+        status = str(event.get("status", "")).strip().lower()
+        if name != "seg.segment" or (phase and phase != "result") or (status and status != "ok"):
+            continue
+        seq = _extract_frame_seq(event)
+        if seq is None:
+            continue
+        pred_event_frames.add(seq)
+        latency = _extract_latency_ms(event)
+        if latency is not None and latency >= 0:
+            latencies.append(latency)
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        segments = payload.get("segments")
+        if not isinstance(segments, list):
+            continue
+        for raw in segments:
+            item = _normalize_seg_object(raw)
+            if item is not None:
+                pred_map[seq].append(item)
+
+    compact = {seq: rows for seq, rows in pred_map.items()}
+    return compact, pred_event_frames, latencies
+
+
+def extract_pred_depth_from_ws_events(
+    ws_events_jsonl_path: Path,
+) -> tuple[dict[int, dict[str, Any]], set[int], list[int]]:
+    pred_map: dict[int, dict[str, Any]] = {}
+    pred_event_frames: set[int] = set()
+    latencies: list[int] = []
+
+    normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
+    normalized_events = normalized_summary.get("events", [])
+    for event in normalized_events:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "depth.estimate":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        seq = _parse_int(event.get("frameSeq"))
+        if seq is None:
+            continue
+        pred_event_frames.add(seq)
+        latency = _parse_int(event.get("latencyMs"))
+        if latency is not None and latency >= 0:
+            latencies.append(latency)
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        grid = _normalize_depth_grid_object(payload.get("grid"))
+        if not isinstance(grid, dict):
+            continue
+        row: dict[str, Any] = {"grid": grid}
+        width = _parse_int(payload.get("imageWidth"))
+        height = _parse_int(payload.get("imageHeight"))
+        if width is not None and width > 0:
+            row["imageWidth"] = width
+        if height is not None and height > 0:
+            row["imageHeight"] = height
+        pred_map[seq] = row
+
+    if normalized_events:
+        return pred_map, pred_event_frames, latencies
+
+    for row in _iter_jsonl(ws_events_jsonl_path):
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "depth.estimate":
+            continue
+        if str(event.get("phase", "")).strip().lower() not in {"", "result"}:
+            continue
+        if str(event.get("status", "")).strip().lower() not in {"", "ok"}:
+            continue
+        seq = _extract_frame_seq(event)
+        if seq is None:
+            continue
+        pred_event_frames.add(seq)
+        latency = _extract_latency_ms(event)
+        if latency is not None and latency >= 0:
+            latencies.append(latency)
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        grid = _normalize_depth_grid_object(payload.get("grid"))
+        if not isinstance(grid, dict):
+            continue
+        out: dict[str, Any] = {"grid": grid}
+        width = _parse_int(payload.get("imageWidth"))
+        height = _parse_int(payload.get("imageHeight"))
+        if width is not None and width > 0:
+            out["imageWidth"] = width
+        if height is not None and height > 0:
+            out["imageHeight"] = height
+        pred_map[seq] = out
+
+    return pred_map, pred_event_frames, latencies
+
+
+def extract_pred_slam_from_ws_events(
+    ws_events_jsonl_path: Path,
+) -> tuple[dict[int, dict[str, Any]], set[int], list[int]]:
+    pred_map: dict[int, dict[str, Any]] = {}
+    pred_event_frames: set[int] = set()
+    latencies: list[int] = []
+
+    normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
+    normalized_events = normalized_summary.get("events", [])
+    for event in normalized_events:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "slam.pose":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        seq = _parse_int(event.get("frameSeq"))
+        if seq is None:
+            continue
+        pred_event_frames.add(seq)
+        latency = _parse_int(event.get("latencyMs"))
+        if latency is not None and latency >= 0:
+            latencies.append(latency)
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        pose = _normalize_slam_pose_object(payload.get("pose"))
+        if not isinstance(pose, dict):
+            continue
+        tracking_state = _normalize_slam_tracking_state(payload.get("trackingState"))
+        if not tracking_state:
+            continue
+        row: dict[str, Any] = {"trackingState": tracking_state, "pose": pose}
+        map_id = payload.get("mapId")
+        map_id_text = str(map_id).strip() if map_id is not None else ""
+        if map_id_text:
+            row["mapId"] = map_id_text
+        pred_map[seq] = row
+
+    if normalized_events:
+        return pred_map, pred_event_frames, latencies
+
+    for row in _iter_jsonl(ws_events_jsonl_path):
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "slam.pose":
+            continue
+        if str(event.get("phase", "")).strip().lower() not in {"", "result"}:
+            continue
+        if str(event.get("status", "")).strip().lower() not in {"", "ok"}:
+            continue
+        seq = _extract_frame_seq(event)
+        if seq is None:
+            continue
+        pred_event_frames.add(seq)
+        latency = _extract_latency_ms(event)
+        if latency is not None and latency >= 0:
+            latencies.append(latency)
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        pose = _normalize_slam_pose_object(payload.get("pose"))
+        if not isinstance(pose, dict):
+            continue
+        tracking_state = _normalize_slam_tracking_state(payload.get("trackingState"))
+        if not tracking_state:
+            continue
+        out: dict[str, Any] = {"trackingState": tracking_state, "pose": pose}
+        map_id = payload.get("mapId")
+        map_id_text = str(map_id).strip() if map_id is not None else ""
+        if map_id_text:
+            out["mapId"] = map_id_text
+        pred_map[seq] = out
+
+    return pred_map, pred_event_frames, latencies
+
+
 def extract_pred_ocr_from_ws_events(ws_events_jsonl_path: Path) -> dict[int, dict[str, Any]]:
     normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
     normalized_events = normalized_summary.get("events", [])
@@ -55,21 +442,14 @@ def extract_pred_ocr_from_ws_events(ws_events_jsonl_path: Path) -> dict[int, dic
     for event in normalized_events:
         name = str(event.get("name", "")).strip().lower()
         phase = str(event.get("phase", "")).strip().lower()
-        if name != "ocr.scan_text":
+        if name not in {"ocr.scan_text", "ocr.read"}:
             continue
         if phase and phase not in {"result", "info"}:
             continue
         seq = _parse_int(event.get("frameSeq"))
         if seq is None:
             continue
-        payload = event.get("payload")
-        text = ""
-        if isinstance(payload, dict):
-            text = str(payload.get("text", "")).strip()
-            if not text:
-                text = str(payload.get("summary", "")).strip()
-        if not text:
-            text = str(event.get("name", "")).strip() if False else ""
+        text = _extract_ocr_text(event)
         if not text:
             continue
         latency_ms = _parse_int(event.get("latencyMs"))
@@ -200,7 +580,7 @@ def extract_ocr_intent_frames_from_ws_events(ws_events_jsonl_path: Path) -> set[
     for event in normalized_events:
         name = str(event.get("name", "")).strip().lower()
         phase = str(event.get("phase", "")).strip().lower()
-        if name == "ocr.scan_text" and phase == "start":
+        if name in {"ocr.scan_text", "ocr.read"} and phase == "start":
             seq = _parse_int(event.get("frameSeq"))
             if seq is not None:
                 intent_frames.add(seq)
@@ -278,7 +658,7 @@ def _extract_safety_behavior_from_normalized(
         if not request_id:
             request_id = str(payload.get("confirmId", "")).strip() if isinstance(payload, dict) else ""
 
-        if name == "safety.confirm":
+        if name in {"safety.confirm", "ui.confirm_request", "ui.confirm_response"}:
             timeout_reason = ""
             if isinstance(payload, dict):
                 timeout_reason = str(payload.get("reason", "")).strip().lower()
@@ -286,10 +666,14 @@ def _extract_safety_behavior_from_normalized(
             if isinstance(payload, dict):
                 has_choice_payload = any(key in payload for key in ("choice", "confirmed", "answer", "yes", "no"))
 
+            is_ui_request = name == "ui.confirm_request"
+            is_ui_response = name == "ui.confirm_response"
             is_timeout = status == "timeout" or phase == "error" or "timeout" in timeout_reason or "expired" in timeout_reason
-            is_response = (phase == "result" or has_choice_payload) and not is_timeout
+            is_response = (is_ui_response or ((not is_ui_request) and (phase == "result" or has_choice_payload))) and not is_timeout
             # Older events sometimes normalize to safety.confirm without an explicit phase.
-            is_request = not is_response and not is_timeout and (phase == "start" or not phase)
+            is_request = is_ui_request or (
+                not is_response and not is_timeout and (phase == "start" or not phase)
+            )
             if is_request:
                 if seq is not None:
                     frames_with_intent.add(seq)
@@ -309,6 +693,10 @@ def _extract_safety_behavior_from_normalized(
                     start_ms = _parse_int(matched.get("timeMs"))
                     if start_ms is not None:
                         latency = max(0, ts_ms - start_ms)
+                if latency is None and isinstance(payload, dict):
+                    payload_latency = _parse_int(payload.get("latencyMs"))
+                    if payload_latency is not None and payload_latency >= 0:
+                        latency = payload_latency
                 if latency is not None and latency >= 0:
                     response_latencies.append(int(latency))
                 if matched is not None:
@@ -888,6 +1276,956 @@ def compute_depth_risk_metrics(
     }
 
 
+def compute_seg_metrics(
+    gt_map: dict[int, list[dict[str, Any]]],
+    pred_map: dict[int, list[dict[str, Any]]],
+    pred_event_frames: set[int],
+    latencies: list[int],
+    frames_total: int,
+    *,
+    iou_threshold: float = 0.5,
+) -> dict[str, Any]:
+    frames_total_safe = max(0, int(frames_total))
+    frames_with_gt = len([seq for seq, rows in gt_map.items() if isinstance(rows, list) and rows])
+    frames_with_pred = len({seq for seq in pred_event_frames if isinstance(seq, int)})
+    coverage = _safe_ratio(frames_with_pred, frames_with_gt)
+
+    tp = 0
+    fp = 0
+    fn = 0
+    iou_hits: list[float] = []
+    top_misses: list[dict[str, Any]] = []
+    top_fp: list[dict[str, Any]] = []
+    mask_tp = 0
+    mask_fp = 0
+    mask_fn = 0
+    mask_iou_hits: list[float] = []
+    mask_top_misses: list[dict[str, Any]] = []
+    mask_top_fp: list[dict[str, Any]] = []
+    has_any_mask = False
+
+    all_frames = sorted(set(gt_map.keys()) | set(pred_map.keys()) | set(pred_event_frames))
+    threshold = max(0.0, min(1.0, float(iou_threshold)))
+
+    for frame_seq in all_frames:
+        gt_rows = [_normalize_seg_object(item) for item in gt_map.get(frame_seq, [])]
+        gt_rows = [item for item in gt_rows if isinstance(item, dict)]
+        pred_rows = [_normalize_seg_object(item) for item in pred_map.get(frame_seq, [])]
+        pred_rows = [item for item in pred_rows if isinstance(item, dict)]
+        if any(isinstance(item.get("mask"), dict) for item in gt_rows) or any(
+            isinstance(item.get("mask"), dict) for item in pred_rows
+        ):
+            has_any_mask = True
+
+        matched, unmatched_gt, unmatched_pred = _match_seg_pairs(gt_rows, pred_rows, iou_fn=_seg_pair_bbox_iou)
+        for pair in matched:
+            iou = float(pair.get("iou", 0.0) or 0.0)
+            gt_item = pair.get("gt")
+            gt_item = gt_item if isinstance(gt_item, dict) else {}
+            pred_item = pair.get("pred")
+            pred_item = pred_item if isinstance(pred_item, dict) else {}
+            if iou >= threshold:
+                tp += 1
+                iou_hits.append(iou)
+            else:
+                fn += 1
+                fp += 1
+                if len(top_misses) < 5:
+                    top_misses.append(
+                        {
+                            "frameSeq": int(frame_seq),
+                            "label": str(gt_item.get("label", "")).strip(),
+                            "bbox": gt_item.get("bbox"),
+                            "bestIoU": round(iou, 4),
+                            "note": "predicted_but_iou_below_threshold",
+                        }
+                    )
+                if len(top_fp) < 5:
+                    top_fp.append(
+                        {
+                            "frameSeq": int(frame_seq),
+                            "label": str(pred_item.get("label", "")).strip(),
+                            "bbox": pred_item.get("bbox"),
+                            "score": pred_item.get("score"),
+                            "bestIoU": round(iou, 4),
+                            "note": "fp_iou_below_threshold",
+                        }
+                    )
+
+        mask_matched, mask_unmatched_gt, mask_unmatched_pred = _match_seg_pairs(
+            gt_rows,
+            pred_rows,
+            iou_fn=_seg_pair_mask_or_bbox_iou,
+        )
+        for pair in mask_matched:
+            iou = float(pair.get("iou", 0.0) or 0.0)
+            gt_item = pair.get("gt")
+            gt_item = gt_item if isinstance(gt_item, dict) else {}
+            pred_item = pair.get("pred")
+            pred_item = pred_item if isinstance(pred_item, dict) else {}
+            if iou >= threshold:
+                mask_tp += 1
+                mask_iou_hits.append(iou)
+            else:
+                mask_fn += 1
+                mask_fp += 1
+                if len(mask_top_misses) < 5:
+                    mask_top_misses.append(
+                        {
+                            "frameSeq": int(frame_seq),
+                            "label": str(gt_item.get("label", "")).strip(),
+                            "bbox": gt_item.get("bbox"),
+                            "bestIoU": round(iou, 4),
+                            "metric": "maskIoU",
+                            "note": "predicted_but_iou_below_threshold",
+                        }
+                    )
+                if len(mask_top_fp) < 5:
+                    mask_top_fp.append(
+                        {
+                            "frameSeq": int(frame_seq),
+                            "label": str(pred_item.get("label", "")).strip(),
+                            "bbox": pred_item.get("bbox"),
+                            "score": pred_item.get("score"),
+                            "bestIoU": round(iou, 4),
+                            "metric": "maskIoU",
+                            "note": "fp_iou_below_threshold",
+                        }
+                    )
+
+        for idx in mask_unmatched_gt:
+            mask_fn += 1
+            if len(mask_top_misses) < 5:
+                gt_item = gt_rows[idx]
+                mask_top_misses.append(
+                    {
+                        "frameSeq": int(frame_seq),
+                        "label": str(gt_item.get("label", "")).strip(),
+                        "bbox": gt_item.get("bbox"),
+                        "metric": "maskIoU",
+                        "note": "no_prediction_for_gt",
+                    }
+                )
+
+        for idx in mask_unmatched_pred:
+            mask_fp += 1
+            if len(mask_top_fp) < 5:
+                pred_item = pred_rows[idx]
+                mask_top_fp.append(
+                    {
+                        "frameSeq": int(frame_seq),
+                        "label": str(pred_item.get("label", "")).strip(),
+                        "bbox": pred_item.get("bbox"),
+                        "score": pred_item.get("score"),
+                        "metric": "maskIoU",
+                        "note": "no_gt_match",
+                    }
+                )
+
+        for idx in unmatched_gt:
+            fn += 1
+            if len(top_misses) < 5:
+                gt_item = gt_rows[idx]
+                top_misses.append(
+                    {
+                        "frameSeq": int(frame_seq),
+                        "label": str(gt_item.get("label", "")).strip(),
+                        "bbox": gt_item.get("bbox"),
+                        "note": "no_prediction_for_gt",
+                    }
+                )
+
+        for idx in unmatched_pred:
+            fp += 1
+            if len(top_fp) < 5:
+                pred_item = pred_rows[idx]
+                top_fp.append(
+                    {
+                        "frameSeq": int(frame_seq),
+                        "label": str(pred_item.get("label", "")).strip(),
+                        "bbox": pred_item.get("bbox"),
+                        "score": pred_item.get("score"),
+                        "note": "no_gt_match",
+                    }
+                )
+
+    precision = _safe_ratio(tp, tp + fp)
+    recall = _safe_ratio(tp, tp + fn)
+    f1 = _f1(tp, fp, fn)
+    mean_iou = _safe_ratio(sum(iou_hits), len(iou_hits))
+    latency_stats = summarize_latency(latencies)
+    mask_precision = _safe_ratio(mask_tp, mask_tp + mask_fp)
+    mask_recall = _safe_ratio(mask_tp, mask_tp + mask_fn)
+    mask_f1 = _f1(mask_tp, mask_fp, mask_fn)
+    mask_mean_iou = _safe_ratio(sum(mask_iou_hits), len(mask_iou_hits))
+
+    payload = {
+        "present": bool(gt_map or pred_event_frames),
+        "framesTotal": frames_total_safe,
+        "framesWithGt": frames_with_gt,
+        "framesWithPred": frames_with_pred,
+        "coverage": coverage,
+        "iouThreshold": threshold,
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "precision": precision,
+        "recall": recall,
+        "f1At50": f1,
+        "meanIoU": mean_iou,
+        "latencyMs": {
+            "count": int(latency_stats.get("count", 0) or 0),
+            "p50": int(latency_stats.get("p50", 0) or 0),
+            "p90": int(latency_stats.get("p90", 0) or 0),
+            "max": int(latency_stats.get("max", 0) or 0),
+        },
+        "topMisses": top_misses[:5],
+        "topFP": top_fp[:5],
+    }
+    if has_any_mask:
+        payload.update(
+            {
+                "maskMeanIoU": mask_mean_iou,
+                "maskPrecision50": mask_precision,
+                "maskRecall50": mask_recall,
+                "maskF1_50": mask_f1,
+                "maskFramesWithGt": frames_with_gt,
+                "maskFramesWithPred": frames_with_pred,
+                "maskCoverage": coverage,
+                "maskTopMisses": mask_top_misses[:5],
+                "maskTopFP": mask_top_fp[:5],
+            }
+        )
+    else:
+        payload.update(
+            {
+                "maskMeanIoU": None,
+                "maskPrecision50": None,
+                "maskRecall50": None,
+                "maskF1_50": None,
+                "maskFramesWithGt": None,
+                "maskFramesWithPred": None,
+                "maskCoverage": None,
+                "maskTopMisses": [],
+                "maskTopFP": [],
+            }
+        )
+    return payload
+
+
+def compute_seg_tracking_metrics(
+    events: Iterable[dict[str, Any]],
+    *,
+    frames_total: int | None = None,
+) -> dict[str, Any]:
+    frames_with_seg: set[tuple[str, int]] = set()
+    frames_with_track: set[tuple[str, int]] = set()
+    track_frames: defaultdict[str, set[tuple[str, int]]] = defaultdict(set)
+    track_last_label: dict[str, str] = {}
+    id_switch_count = 0
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "seg.segment":
+            continue
+        phase = str(event.get("phase", "")).strip().lower()
+        if phase and phase != "result":
+            continue
+        status = str(event.get("status", "")).strip().lower()
+        if status and status != "ok":
+            continue
+
+        frame_seq = _parse_int(event.get("frameSeq"))
+        if frame_seq is None or frame_seq <= 0:
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        frame_key = (run_id, int(frame_seq))
+
+        segments = payload.get("segments")
+        if not isinstance(segments, list):
+            continue
+        frames_with_seg.add(frame_key)
+
+        label_to_ids: defaultdict[str, set[str]] = defaultdict(set)
+        for segment in segments:
+            if not isinstance(segment, dict):
+                continue
+            label = str(segment.get("label", "")).strip().lower()
+            track_id_raw = segment.get("trackId")
+            track_id = str(track_id_raw).strip() if isinstance(track_id_raw, str) else ""
+            if not track_id:
+                continue
+            frames_with_track.add(frame_key)
+            track_frames[track_id].add(frame_key)
+            if label:
+                label_to_ids[label].add(track_id)
+                previous_label = track_last_label.get(track_id)
+                if previous_label is not None and previous_label != label:
+                    id_switch_count += 1
+                track_last_label[track_id] = label
+
+        for ids in label_to_ids.values():
+            if len(ids) > 1:
+                id_switch_count += 1
+
+    frames_with_seg_count = len(frames_with_seg)
+    frames_with_track_count = len(frames_with_track)
+    frames_total_safe = max(0, int(frames_total or 0))
+    if frames_total_safe <= 0:
+        frames_total_safe = frames_with_seg_count
+    track_lengths = [len(frame_keys) for frame_keys in track_frames.values()]
+    avg_track_len = _mean_float([float(value) for value in track_lengths]) if track_lengths else 0.0
+    track_len_p90 = float(_percentile(track_lengths, 90)) if track_lengths else 0.0
+
+    return {
+        "present": bool(frames_with_track_count > 0),
+        "framesTotal": int(frames_total_safe),
+        "framesWithSeg": int(frames_with_seg_count),
+        "framesWithTrackId": int(frames_with_track_count),
+        "trackCoverage": round(_safe_ratio(frames_with_track_count, frames_with_seg_count), 6),
+        "tracksTotal": int(len(track_frames)),
+        "avgTrackLen": round(float(avg_track_len), 6),
+        "trackLenP90": round(float(track_len_p90), 6),
+        "idSwitchCount": int(max(0, id_switch_count)),
+        "idSwitchDefinition": "per-frame same-label multi-track + per-track label change",
+    }
+
+
+def compute_depth_metrics(
+    gt_map: dict[int, dict[str, Any]],
+    pred_map: dict[int, dict[str, Any]],
+    pred_event_frames: set[int],
+    latencies: list[int],
+    frames_total: int,
+) -> dict[str, Any]:
+    frames_total_safe = max(0, int(frames_total))
+    frames_with_gt = len([seq for seq, row in gt_map.items() if isinstance(row, dict) and isinstance(row.get("grid"), dict)])
+    frames_with_pred = len({seq for seq in pred_event_frames if isinstance(seq, int)})
+    coverage = _safe_ratio(frames_with_pred, frames_with_gt)
+
+    abs_rel_values: list[float] = []
+    sq_err_values: list[float] = []
+    delta1_hits = 0
+    delta1_total = 0
+    top_bad_cells: list[dict[str, Any]] = []
+    valid_frames = 0
+    all_frames = sorted(set(gt_map.keys()) | set(pred_map.keys()) | set(pred_event_frames))
+
+    for frame_seq in all_frames:
+        gt_row = gt_map.get(frame_seq)
+        gt_row = gt_row if isinstance(gt_row, dict) else {}
+        pred_row = pred_map.get(frame_seq)
+        pred_row = pred_row if isinstance(pred_row, dict) else {}
+        gt_grid = _normalize_depth_grid_object(gt_row.get("grid"))
+        pred_grid = _normalize_depth_grid_object(pred_row.get("grid"))
+        if not isinstance(gt_grid, dict) or not isinstance(pred_grid, dict):
+            continue
+        gt_size = gt_grid.get("size")
+        pred_size = pred_grid.get("size")
+        if not isinstance(gt_size, list) or not isinstance(pred_size, list):
+            continue
+        if len(gt_size) != 2 or len(pred_size) != 2:
+            continue
+        if int(gt_size[0]) != int(pred_size[0]) or int(gt_size[1]) != int(pred_size[1]):
+            continue
+        gt_values = gt_grid.get("values")
+        pred_values = pred_grid.get("values")
+        if not isinstance(gt_values, list) or not isinstance(pred_values, list):
+            continue
+        if len(gt_values) != len(pred_values):
+            continue
+
+        valid_frames += 1
+        gw = int(gt_size[0])
+        valid_index_count = 0
+        for idx, (gt_raw, pred_raw) in enumerate(zip(gt_values, pred_values)):
+            try:
+                gt_val = float(gt_raw)
+                pred_val = float(pred_raw)
+            except Exception:
+                continue
+            if gt_val <= 0.0:
+                continue
+            valid_index_count += 1
+            abs_rel = abs(pred_val - gt_val) / gt_val
+            sq_err = (pred_val - gt_val) ** 2
+            abs_rel_values.append(abs_rel)
+            sq_err_values.append(sq_err)
+            ratio = max((pred_val / gt_val) if gt_val > 0 else float("inf"), (gt_val / pred_val) if pred_val > 0 else float("inf"))
+            delta1_total += 1
+            if ratio < 1.25:
+                delta1_hits += 1
+            if len(top_bad_cells) < 8:
+                top_bad_cells.append(
+                    {
+                        "frameSeq": int(frame_seq),
+                        "index": int(idx),
+                        "x": int(idx % max(1, gw)),
+                        "y": int(idx // max(1, gw)),
+                        "gt": int(round(gt_val)),
+                        "pred": int(round(pred_val)),
+                        "absRel": round(abs_rel, 6),
+                    }
+                )
+            else:
+                worst_index = min(range(len(top_bad_cells)), key=lambda i: float(top_bad_cells[i].get("absRel", 0.0)))
+                if abs_rel > float(top_bad_cells[worst_index].get("absRel", 0.0)):
+                    top_bad_cells[worst_index] = {
+                        "frameSeq": int(frame_seq),
+                        "index": int(idx),
+                        "x": int(idx % max(1, gw)),
+                        "y": int(idx // max(1, gw)),
+                        "gt": int(round(gt_val)),
+                        "pred": int(round(pred_val)),
+                        "absRel": round(abs_rel, 6),
+                    }
+        if valid_index_count <= 0:
+            valid_frames = max(0, valid_frames - 1)
+
+    top_bad_cells = sorted(top_bad_cells, key=lambda row: -float(row.get("absRel", 0.0)))[:5]
+    latency_stats = summarize_latency(latencies)
+    rmse = math.sqrt(_safe_ratio(sum(sq_err_values), len(sq_err_values))) if sq_err_values else 0.0
+
+    return {
+        "present": bool(gt_map or pred_event_frames),
+        "framesTotal": frames_total_safe,
+        "framesWithGt": int(frames_with_gt),
+        "framesWithPred": int(frames_with_pred),
+        "coverage": float(coverage),
+        "absRel": float(_safe_ratio(sum(abs_rel_values), len(abs_rel_values))),
+        "rmse": float(rmse),
+        "delta1": float(_safe_ratio(delta1_hits, delta1_total)),
+        "validFrames": int(valid_frames),
+        "latencyMs": {
+            "count": int(latency_stats.get("count", 0) or 0),
+            "p50": int(latency_stats.get("p50", 0) or 0),
+            "p90": int(latency_stats.get("p90", 0) or 0),
+            "max": int(latency_stats.get("max", 0) or 0),
+        },
+        "topBadCells": top_bad_cells,
+    }
+
+
+def extract_depth_temporal_metrics_from_events_v1(
+    events: Iterable[dict[str, Any]],
+    *,
+    frames_total_declared: int | None = None,
+    roi_mode: str = "bottom_center",
+    near_thresh_m: float = 1.0,
+    require_same_size: bool = True,
+) -> dict[str, Any]:
+    deduped: dict[tuple[str, int], tuple[int, int, dict[str, Any], dict[str, Any]]] = {}
+    latency_values: list[int] = []
+    ref_view_strategies: set[str] = set()
+
+    for index, row in enumerate(events):
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "depth.estimate":
+            continue
+        if str(event.get("phase", "")).strip().lower() not in {"", "result"}:
+            continue
+        if str(event.get("status", "")).strip().lower() not in {"", "ok"}:
+            continue
+
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        grid = _normalize_depth_grid_object(payload.get("grid"))
+        if not isinstance(grid, dict):
+            continue
+
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        frame_seq = _parse_int(payload.get("frameSeq"))
+        if frame_seq is None:
+            frame_seq = _parse_int(event.get("frameSeq"))
+        if frame_seq is None or frame_seq <= 0:
+            continue
+
+        meta = payload.get("meta")
+        meta = meta if isinstance(meta, dict) else {}
+        ref_view = str(meta.get("refViewStrategy", "")).strip()
+        if ref_view:
+            ref_view_strategies.add(ref_view)
+
+        latency = _parse_int(event.get("latencyMs"))
+        if latency is not None and latency >= 0:
+            latency_values.append(int(latency))
+
+        ts_ms = _parse_int(event.get("tsMs"))
+        if ts_ms is None:
+            ts_ms = _parse_int(payload.get("tsMs"))
+        if ts_ms is None:
+            ts_ms = _parse_int(event.get("timestampMs"))
+        if ts_ms is None:
+            ts_ms = index
+
+        key = (run_id, int(frame_seq))
+        previous = deduped.get(key)
+        if previous is None or (int(ts_ms), int(index)) >= (previous[0], previous[1]):
+            deduped[key] = (int(ts_ms), int(index), event, payload)
+
+    frames_with_depth = len(deduped)
+    frames_total = int(max(frames_with_depth, int(frames_total_declared or 0))) if frames_total_declared is not None else int(frames_with_depth)
+    coverage = _safe_ratio(frames_with_depth, frames_total) if frames_total > 0 else None
+
+    grouped: dict[str, list[tuple[int, dict[str, Any], dict[str, Any]]]] = defaultdict(list)
+    for (run_id, frame_seq), (_ts, _idx, event, payload) in deduped.items():
+        grouped[run_id].append((int(frame_seq), event, payload))
+    for items in grouped.values():
+        items.sort(key=lambda item: item[0])
+
+    jitter_values: list[float] = []
+    flicker_values: list[float] = []
+    drift_values: list[float] = []
+    same_size_pairs_count = 0
+    size_mismatch_pairs_count = 0
+
+    for items in grouped.values():
+        previous_grid: dict[str, Any] | None = None
+        for _frame_seq, event, payload in items:
+            payload = payload if isinstance(payload, dict) else {}
+            current_grid = _normalize_depth_grid_object(payload.get("grid"))
+            if not isinstance(current_grid, dict):
+                continue
+            if previous_grid is None:
+                previous_grid = current_grid
+                continue
+
+            prev_size = previous_grid.get("size")
+            curr_size = current_grid.get("size")
+            if not isinstance(prev_size, list) or not isinstance(curr_size, list) or len(prev_size) != 2 or len(curr_size) != 2:
+                previous_grid = current_grid
+                continue
+            prev_w = max(1, int(prev_size[0]))
+            prev_h = max(1, int(prev_size[1]))
+            curr_w = max(1, int(curr_size[0]))
+            curr_h = max(1, int(curr_size[1]))
+            if (prev_w != curr_w or prev_h != curr_h) and bool(require_same_size):
+                size_mismatch_pairs_count += 1
+                previous_grid = current_grid
+                continue
+            if prev_w != curr_w or prev_h != curr_h:
+                size_mismatch_pairs_count += 1
+                previous_grid = current_grid
+                continue
+
+            prev_values = previous_grid.get("values")
+            curr_values = current_grid.get("values")
+            if not isinstance(prev_values, list) or not isinstance(curr_values, list):
+                previous_grid = current_grid
+                continue
+            if len(prev_values) != len(curr_values) or len(prev_values) != int(prev_w * prev_h):
+                previous_grid = current_grid
+                continue
+
+            same_size_pairs_count += 1
+            roi_indices = _depth_temporal_roi_indices(prev_w, prev_h, roi_mode)
+            if not roi_indices:
+                roi_indices = list(range(len(prev_values)))
+            diffs: list[float] = []
+            near_xor = 0
+            near_total = 0
+            prev_roi_values: list[float] = []
+            curr_roi_values: list[float] = []
+            for idx in roi_indices:
+                try:
+                    prev_m = float(prev_values[idx]) / 1000.0
+                    curr_m = float(curr_values[idx]) / 1000.0
+                except Exception:
+                    continue
+                diffs.append(abs(curr_m - prev_m))
+                prev_roi_values.append(prev_m)
+                curr_roi_values.append(curr_m)
+                prev_near = prev_m > 0.0 and prev_m < float(max(0.0, near_thresh_m))
+                curr_near = curr_m > 0.0 and curr_m < float(max(0.0, near_thresh_m))
+                if bool(prev_near) ^ bool(curr_near):
+                    near_xor += 1
+                near_total += 1
+
+            if diffs:
+                jitter_values.append(float(_mean_float(diffs)))
+            if near_total > 0:
+                flicker_values.append(float(near_xor) / float(near_total))
+            if prev_roi_values and curr_roi_values:
+                drift_values.append(abs(_median_float(curr_roi_values) - _median_float(prev_roi_values)))
+
+            previous_grid = current_grid
+
+    latency_stats = summarize_latency(latency_values)
+    jitter_present = bool(jitter_values or flicker_values or drift_values)
+    present = bool(frames_with_depth >= 2 and jitter_present)
+
+    return {
+        "present": bool(present),
+        "framesTotal": int(frames_total),
+        "framesWithDepth": int(frames_with_depth),
+        "coverage": round(float(coverage), 6) if coverage is not None else None,
+        "jitterAbs": {
+            "count": int(len(jitter_values)),
+            "p50": round(_percentile_float(jitter_values, 50), 6) if jitter_values else 0.0,
+            "p90": round(_percentile_float(jitter_values, 90), 6) if jitter_values else 0.0,
+            "max": round(max(jitter_values), 6) if jitter_values else 0.0,
+            "valuesSample": [round(float(item), 6) for item in jitter_values[:10]],
+        },
+        "flickerRateNear": {
+            "count": int(len(flicker_values)),
+            "mean": round(_mean_float(flicker_values), 6),
+            "p90": round(_percentile_float(flicker_values, 90), 6) if flicker_values else 0.0,
+            "max": round(max(flicker_values), 6) if flicker_values else 0.0,
+        },
+        "scaleDriftProxy": {
+            "count": int(len(drift_values)),
+            "p90": round(_percentile_float(drift_values, 90), 6) if drift_values else 0.0,
+            "max": round(max(drift_values), 6) if drift_values else 0.0,
+        },
+        "latencyMs": {
+            "count": int(latency_stats.get("count", 0) or 0),
+            "p50": int(latency_stats.get("p50", 0) or 0),
+            "p90": int(latency_stats.get("p90", 0) or 0),
+            "max": int(latency_stats.get("max", 0) or 0),
+        },
+        "refViewStrategyDiversityCount": int(len(ref_view_strategies)),
+        "sameSizePairsCount": int(same_size_pairs_count),
+        "sizeMismatchPairsCount": int(size_mismatch_pairs_count),
+        "notes": {
+            "roi": str(roi_mode).strip() or "bottom_center",
+            "depthThreshM": float(max(0.0, near_thresh_m)),
+            "requireSameSize": bool(require_same_size),
+        },
+    }
+
+
+def compute_slam_metrics(
+    gt_map: dict[int, dict[str, Any]],
+    pred_map: dict[int, dict[str, Any]],
+    pred_event_frames: set[int],
+    latencies: list[int],
+    frames_total: int,
+    alignment: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    frames_total_safe = max(0, int(frames_total))
+    frames_with_gt = len([seq for seq, row in gt_map.items() if isinstance(row, dict)])
+    frames_with_pred = len({seq for seq in pred_event_frames if isinstance(seq, int)})
+    coverage_denom = frames_with_gt if frames_with_gt > 0 else frames_total_safe
+    coverage = _safe_ratio(frames_with_pred, coverage_denom)
+
+    all_frames = sorted(set(gt_map.keys()) | set(pred_map.keys()) | set(pred_event_frames))
+    tracking_count = 0
+    lost_count = 0
+    relocalized_count = 0
+    longest_lost_streak = 0
+    current_lost_streak = 0
+    top_lost_frames: list[int] = []
+
+    for frame_seq in all_frames:
+        pred_row = pred_map.get(frame_seq)
+        pred_row = pred_row if isinstance(pred_row, dict) else {}
+        state = _normalize_slam_tracking_state(pred_row.get("trackingState"))
+        if not state:
+            continue
+        if state == "tracking":
+            tracking_count += 1
+            current_lost_streak = 0
+        elif state == "lost":
+            lost_count += 1
+            current_lost_streak += 1
+            longest_lost_streak = max(longest_lost_streak, current_lost_streak)
+            if len(top_lost_frames) < 10:
+                top_lost_frames.append(int(frame_seq))
+        elif state == "relocalized":
+            relocalized_count += 1
+            current_lost_streak = 0
+        else:
+            current_lost_streak = 0
+
+    latency_stats = summarize_latency(latencies)
+    denom = max(1, frames_with_pred)
+    alignment_payload = alignment if isinstance(alignment, dict) else {"present": False}
+    if "present" not in alignment_payload:
+        alignment_payload = {"present": bool(alignment_payload), **alignment_payload}
+    return {
+        "present": bool(gt_map or pred_event_frames),
+        "framesTotal": frames_total_safe,
+        "framesWithGt": int(frames_with_gt),
+        "framesWithPred": int(frames_with_pred),
+        "coverage": float(coverage),
+        "tracking": {
+            "trackingRate": float(_safe_ratio(tracking_count, denom)),
+            "lostRate": float(_safe_ratio(lost_count, denom)),
+            "relocalizedCount": int(relocalized_count),
+            "longestLostStreak": int(longest_lost_streak),
+            "topLostFrames": top_lost_frames[:5],
+        },
+        "latencyMs": {
+            "count": int(latency_stats.get("count", 0) or 0),
+            "p50": int(latency_stats.get("p50", 0) or 0),
+            "p90": int(latency_stats.get("p90", 0) or 0),
+            "max": int(latency_stats.get("max", 0) or 0),
+        },
+        "alignment": alignment_payload,
+    }
+
+
+def compute_slam_metrics_by_model_from_events(
+    events: Iterable[dict[str, Any]],
+    *,
+    gt_map: dict[int, dict[str, Any]] | None = None,
+    frames_total: int = 0,
+    slam_error_gt_map: dict[int, dict[str, Any]] | None = None,
+    alignment: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "slam.pose":
+            continue
+        if str(event.get("phase", "")).strip().lower() not in {"", "result"}:
+            continue
+        if str(event.get("status", "")).strip().lower() not in {"", "ok"}:
+            continue
+        seq = _extract_frame_seq(event)
+        if seq is None:
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        pose = _normalize_slam_pose_object(payload.get("pose"))
+        if not isinstance(pose, dict):
+            continue
+        tracking_state = _normalize_slam_tracking_state(payload.get("trackingState")) or "tracking"
+        model_name = str(payload.get("model", "")).strip() or "unknown"
+        bucket = grouped.setdefault(
+            model_name,
+            {"pred_map": {}, "event_frames": set(), "latencies": []},
+        )
+        pred_map = bucket["pred_map"]
+        pred_map = pred_map if isinstance(pred_map, dict) else {}
+        event_frames = bucket["event_frames"]
+        event_frames = event_frames if isinstance(event_frames, set) else set()
+        latencies = bucket["latencies"]
+        latencies = latencies if isinstance(latencies, list) else []
+        pred_map[int(seq)] = {"trackingState": tracking_state, "pose": pose}
+        event_frames.add(int(seq))
+        latency = _extract_latency_ms(event)
+        if latency is not None and latency >= 0:
+            latencies.append(int(latency))
+        bucket["pred_map"] = pred_map
+        bucket["event_frames"] = event_frames
+        bucket["latencies"] = latencies
+        grouped[model_name] = bucket
+
+    out: dict[str, dict[str, Any]] = {}
+    gt_map = gt_map if isinstance(gt_map, dict) else {}
+    slam_error_gt_map = slam_error_gt_map if isinstance(slam_error_gt_map, dict) else {}
+    for model_name, bucket in grouped.items():
+        pred_map = bucket.get("pred_map")
+        pred_map = pred_map if isinstance(pred_map, dict) else {}
+        event_frames = bucket.get("event_frames")
+        event_frames = event_frames if isinstance(event_frames, set) else set()
+        latencies = bucket.get("latencies")
+        latencies = latencies if isinstance(latencies, list) else []
+        metrics = compute_slam_metrics(
+            gt_map,
+            pred_map,
+            event_frames,
+            latencies,
+            int(max(0, int(frames_total))),
+            alignment=alignment,
+        )
+        tracking_payload = metrics.get("tracking")
+        tracking_payload = tracking_payload if isinstance(tracking_payload, dict) else {}
+        alignment_payload = metrics.get("alignment")
+        alignment_payload = alignment_payload if isinstance(alignment_payload, dict) else {}
+        residual_payload = alignment_payload.get("residualMs")
+        residual_payload = residual_payload if isinstance(residual_payload, dict) else {}
+        row: dict[str, Any] = {
+            "coverage": _to_float(metrics.get("coverage")),
+            "trackingRate": _to_float(tracking_payload.get("trackingRate")),
+            "lostRate": _to_float(tracking_payload.get("lostRate")),
+            "ate_rmse_m": None,
+            "rpe_trans_rmse_m": None,
+            "align_residual_p90_ms": _to_float(residual_payload.get("p90")),
+        }
+        if slam_error_gt_map:
+            error_metrics = compute_slam_error_metrics(
+                slam_error_gt_map,
+                pred_map,
+                traj_label=_infer_slam_traj_label_from_model(model_name),
+                align_mode="se3",
+                source=None,
+                delta_frames=1,
+            )
+            row["ate_rmse_m"] = _to_float(error_metrics.get("ate_rmse_m"))
+            row["rpe_trans_rmse_m"] = _to_float(error_metrics.get("rpe_trans_rmse_m"))
+        out[model_name] = row
+    return out
+
+
+def _infer_slam_traj_label_from_model(model_name: str | None) -> str | None:
+    text = str(model_name or "").strip().lower()
+    if not text:
+        return None
+    if "final" in text:
+        return "final"
+    if "online" in text:
+        return "online"
+    return None
+
+
+def compute_slam_error_metrics(
+    gt_map: dict[int, dict[str, Any]],
+    pred_map: dict[int, dict[str, Any]],
+    *,
+    traj_label: str | None = None,
+    align_mode: str = "se3",
+    source: str | None = None,
+    delta_frames: int = 1,
+) -> dict[str, Any]:
+    normalized_mode = str(align_mode or "se3").strip().lower()
+    if normalized_mode not in {"none", "se3", "sim3"}:
+        normalized_mode = "se3"
+
+    total_gt = len([seq for seq, row in gt_map.items() if isinstance(seq, int) and isinstance(row, dict)])
+    total_pred = len([seq for seq, row in pred_map.items() if isinstance(seq, int) and isinstance(row, dict)])
+
+    matched_sequences = sorted(set(gt_map.keys()) & set(pred_map.keys()))
+    gt_positions: list[list[float]] = []
+    pred_positions: list[list[float]] = []
+    for seq in matched_sequences:
+        gt_row = gt_map.get(seq)
+        gt_row = gt_row if isinstance(gt_row, dict) else {}
+        pred_row = pred_map.get(seq)
+        pred_row = pred_row if isinstance(pred_row, dict) else {}
+        gt_pose = _normalize_slam_pose_object(gt_row.get("pose"))
+        pred_pose = _normalize_slam_pose_object(pred_row.get("pose"))
+        if not isinstance(gt_pose, dict) or not isinstance(pred_pose, dict):
+            continue
+        gt_t = gt_pose.get("t")
+        pred_t = pred_pose.get("t")
+        if not isinstance(gt_t, list) or not isinstance(pred_t, list):
+            continue
+        if len(gt_t) != 3 or len(pred_t) != 3:
+            continue
+        gt_positions.append([float(gt_t[0]), float(gt_t[1]), float(gt_t[2])])
+        pred_positions.append([float(pred_t[0]), float(pred_t[1]), float(pred_t[2])])
+
+    matched_pairs = len(gt_positions)
+    coverage_ratio = _safe_ratio(matched_pairs, total_gt if total_gt > 0 else matched_pairs)
+    source_text = str(source or "").strip() or None
+    traj_label_text = str(traj_label or "").strip() or None
+    if matched_pairs <= 0:
+        return {
+            "present": False,
+            "trajLabel": traj_label_text,
+            "alignMode": normalized_mode,
+            "ate_rmse_m": None,
+            "ate_mean_m": None,
+            "rpe_trans_rmse_m": None,
+            "rpe_rot_rmse_deg": None,
+            "coverage": {
+                "pairsMatched": 0,
+                "totalGt": int(total_gt),
+                "totalPred": int(total_pred),
+                "ratio": float(coverage_ratio),
+            },
+            "source": source_text,
+            "align": {
+                "mode": normalized_mode,
+                "scaleUsed": 1.0,
+                "residualM": {"p50": None, "p90": None, "max": None},
+            },
+        }
+
+    scale_used, translation = _fit_scale_translation(
+        gt_positions,
+        pred_positions,
+        allow_scale=normalized_mode == "sim3",
+        apply_alignment=normalized_mode in {"se3", "sim3"},
+    )
+    aligned_positions = [_apply_scale_translation(vec, scale_used, translation) for vec in pred_positions]
+
+    ate_errors: list[float] = []
+    for gt_vec, pred_vec in zip(gt_positions, aligned_positions):
+        ate_errors.append(_vec_distance(gt_vec, pred_vec))
+
+    ate_rmse = math.sqrt(_safe_ratio(sum(err * err for err in ate_errors), len(ate_errors))) if ate_errors else None
+    ate_mean = (sum(ate_errors) / float(len(ate_errors))) if ate_errors else None
+
+    rpe_errors: list[float] = []
+    delta = max(1, int(delta_frames or 1))
+    for idx in range(0, max(0, len(gt_positions) - delta)):
+        gt_rel = _vec_sub(gt_positions[idx + delta], gt_positions[idx])
+        pred_rel = _vec_sub(aligned_positions[idx + delta], aligned_positions[idx])
+        rpe_errors.append(_vec_norm(_vec_sub(pred_rel, gt_rel)))
+    rpe_trans_rmse = math.sqrt(_safe_ratio(sum(err * err for err in rpe_errors), len(rpe_errors))) if rpe_errors else None
+
+    return {
+        "present": True,
+        "trajLabel": traj_label_text,
+        "alignMode": normalized_mode,
+        "ate_rmse_m": float(ate_rmse) if ate_rmse is not None else None,
+        "ate_mean_m": float(ate_mean) if ate_mean is not None else None,
+        "rpe_trans_rmse_m": float(rpe_trans_rmse) if rpe_trans_rmse is not None else None,
+        "rpe_rot_rmse_deg": None,
+        "coverage": {
+            "pairsMatched": int(matched_pairs),
+            "totalGt": int(total_gt),
+            "totalPred": int(total_pred),
+            "ratio": float(coverage_ratio),
+        },
+        "source": source_text,
+        "align": {
+            "mode": normalized_mode,
+            "scaleUsed": float(scale_used),
+            "residualM": {
+                "p50": float(_percentile_float(ate_errors, 50)) if ate_errors else None,
+                "p90": float(_percentile_float(ate_errors, 90)) if ate_errors else None,
+                "max": float(max(ate_errors)) if ate_errors else None,
+            },
+        },
+    }
+
+
+def load_slam_alignment_summary(path: Path) -> dict[str, Any]:
+    if not path.exists() or not path.is_file():
+        return {"present": False}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {"present": False}
+    if not isinstance(payload, dict):
+        return {"present": False}
+
+    residual = payload.get("residualMs")
+    residual = residual if isinstance(residual, dict) else {}
+    out: dict[str, Any] = {
+        "present": True,
+        "mode": str(payload.get("alignModeUsed", "")).strip() or None,
+        "matched": _to_nonnegative_int(payload.get("matched")),
+        "unmatched": _to_nonnegative_int(payload.get("unmatched")),
+        "a": _to_float(payload.get("a")),
+        "b": _to_float(payload.get("b")),
+        "residualMs": {
+            "p50": _to_nonnegative_int(residual.get("p50")),
+            "p90": _to_nonnegative_int(residual.get("p90")),
+            "max": _to_nonnegative_int(residual.get("max")),
+        },
+    }
+    return out
+
+
 def compute_quality_score(
     safety_score: float,
     ocr_metrics: dict[str, Any] | None,
@@ -1161,6 +2499,387 @@ def _merge_line_text(lines: list[Any]) -> str:
     return " ".join(parts).strip()
 
 
+def _normalize_seg_object(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    label = str(item.get("label", "")).strip()
+    if not label:
+        return None
+    bbox = item.get("bbox")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return None
+    try:
+        x0, y0, x1, y1 = [float(value) for value in bbox]
+    except Exception:
+        return None
+    if x1 <= x0 or y1 <= y0:
+        return None
+    score_raw = item.get("score")
+    score: float | None = None
+    try:
+        if score_raw is not None:
+            score = float(score_raw)
+    except Exception:
+        score = None
+    row: dict[str, Any] = {"label": label, "bbox": [x0, y0, x1, y1]}
+    if score is not None:
+        row["score"] = score
+    mask = _normalize_seg_mask_object(item.get("mask"))
+    if isinstance(mask, dict):
+        row["mask"] = mask
+    return row
+
+
+def _normalize_depth_grid_object(grid_raw: Any) -> dict[str, Any] | None:
+    if not isinstance(grid_raw, dict):
+        return None
+    fmt = str(grid_raw.get("format", "")).strip()
+    if fmt != "grid_u16_mm_v1":
+        return None
+    unit = str(grid_raw.get("unit", "")).strip().lower()
+    if unit != "mm":
+        return None
+    size_raw = grid_raw.get("size")
+    if not isinstance(size_raw, list) or len(size_raw) != 2:
+        return None
+    try:
+        gw = int(size_raw[0])
+        gh = int(size_raw[1])
+    except Exception:
+        return None
+    if gw <= 0 or gh <= 0:
+        return None
+    values_raw = grid_raw.get("values")
+    if not isinstance(values_raw, list):
+        return None
+    values: list[int] = []
+    for item in values_raw:
+        try:
+            parsed = int(item)
+        except Exception:
+            return None
+        values.append(max(0, min(65535, parsed)))
+    if len(values) != gw * gh:
+        return None
+    return {"format": "grid_u16_mm_v1", "size": [gw, gh], "unit": "mm", "values": values}
+
+
+def _normalize_slam_tracking_state(raw: Any) -> str:
+    value = str(raw or "").strip().lower()
+    if value in {"tracking", "lost", "relocalized", "initializing"}:
+        return value
+    if value:
+        return "unknown"
+    return ""
+
+
+def _normalize_slam_pose_object(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    t_raw = raw.get("t")
+    q_raw = raw.get("q")
+    if not isinstance(t_raw, list) or len(t_raw) != 3:
+        return None
+    if not isinstance(q_raw, list) or len(q_raw) != 4:
+        return None
+    try:
+        t = [float(t_raw[0]), float(t_raw[1]), float(t_raw[2])]
+        q = [float(q_raw[0]), float(q_raw[1]), float(q_raw[2]), float(q_raw[3])]
+    except Exception:
+        return None
+    return {"t": t, "q": q}
+
+
+def _parse_tum_line(raw_line: str) -> dict[str, float] | None:
+    line = str(raw_line or "").strip()
+    if not line or line.startswith("#"):
+        return None
+    parts = line.split()
+    if len(parts) < 8:
+        return None
+    try:
+        ts = float(parts[0])
+        tx = float(parts[1])
+        ty = float(parts[2])
+        tz = float(parts[3])
+        qx = float(parts[4])
+        qy = float(parts[5])
+        qz = float(parts[6])
+        qw = float(parts[7])
+    except Exception:
+        return None
+    return {
+        "timestampSec": ts,
+        "tx": tx,
+        "ty": ty,
+        "tz": tz,
+        "qx": qx,
+        "qy": qy,
+        "qz": qz,
+        "qw": qw,
+    }
+
+
+def _vec_sub(left: list[float], right: list[float]) -> list[float]:
+    return [float(left[0]) - float(right[0]), float(left[1]) - float(right[1]), float(left[2]) - float(right[2])]
+
+
+def _vec_norm(vec: list[float]) -> float:
+    return math.sqrt(float(vec[0]) ** 2 + float(vec[1]) ** 2 + float(vec[2]) ** 2)
+
+
+def _vec_distance(left: list[float], right: list[float]) -> float:
+    return _vec_norm(_vec_sub(left, right))
+
+
+def _fit_scale_translation(
+    gt_positions: list[list[float]],
+    pred_positions: list[list[float]],
+    *,
+    allow_scale: bool,
+    apply_alignment: bool,
+) -> tuple[float, list[float]]:
+    if not apply_alignment or not gt_positions or not pred_positions or len(gt_positions) != len(pred_positions):
+        return 1.0, [0.0, 0.0, 0.0]
+    count = float(len(gt_positions))
+    gt_mean = [
+        sum(float(row[i]) for row in gt_positions) / count for i in range(3)
+    ]
+    pred_mean = [
+        sum(float(row[i]) for row in pred_positions) / count for i in range(3)
+    ]
+    scale = 1.0
+    if allow_scale:
+        pred_var = 0.0
+        cov = 0.0
+        for gt_vec, pred_vec in zip(gt_positions, pred_positions):
+            gt_centered = _vec_sub(gt_vec, gt_mean)
+            pred_centered = _vec_sub(pred_vec, pred_mean)
+            pred_var += float(pred_centered[0]) ** 2 + float(pred_centered[1]) ** 2 + float(pred_centered[2]) ** 2
+            cov += (
+                float(gt_centered[0]) * float(pred_centered[0])
+                + float(gt_centered[1]) * float(pred_centered[1])
+                + float(gt_centered[2]) * float(pred_centered[2])
+            )
+        if pred_var > 1e-9:
+            scale = cov / pred_var
+            if not math.isfinite(scale) or scale <= 0.0:
+                scale = 1.0
+    translation = [
+        float(gt_mean[0]) - float(scale) * float(pred_mean[0]),
+        float(gt_mean[1]) - float(scale) * float(pred_mean[1]),
+        float(gt_mean[2]) - float(scale) * float(pred_mean[2]),
+    ]
+    return float(scale), translation
+
+
+def _apply_scale_translation(point: list[float], scale: float, translation: list[float]) -> list[float]:
+    return [
+        float(scale) * float(point[0]) + float(translation[0]),
+        float(scale) * float(point[1]) + float(translation[1]),
+        float(scale) * float(point[2]) + float(translation[2]),
+    ]
+
+
+def _bbox_iou(a: list[float], b: list[float]) -> float:
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    ix0 = max(ax0, bx0)
+    iy0 = max(ay0, by0)
+    ix1 = min(ax1, bx1)
+    iy1 = min(ay1, by1)
+    iw = max(0.0, ix1 - ix0)
+    ih = max(0.0, iy1 - iy0)
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0
+    area_a = max(0.0, ax1 - ax0) * max(0.0, ay1 - ay0)
+    area_b = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
+    denom = area_a + area_b - inter
+    if denom <= 0.0:
+        return 0.0
+    return inter / denom
+
+
+def _match_seg_pairs(
+    gt_rows: list[dict[str, Any]],
+    pred_rows: list[dict[str, Any]],
+    *,
+    iou_fn: Callable[[dict[str, Any], dict[str, Any]], float] | None = None,
+) -> tuple[list[dict[str, Any]], set[int], set[int]]:
+    remaining_gt = set(range(len(gt_rows)))
+    remaining_pred = set(range(len(pred_rows)))
+    matched: list[dict[str, Any]] = []
+    iou_resolver = iou_fn if callable(iou_fn) else _seg_pair_bbox_iou
+
+    def _take_best(*, label_only: bool) -> tuple[int, int, float] | None:
+        best: tuple[int, int, float] | None = None
+        for gi in remaining_gt:
+            g = gt_rows[gi]
+            g_label = str(g.get("label", "")).strip().lower()
+            g_bbox = g.get("bbox")
+            if not isinstance(g_bbox, list) or len(g_bbox) != 4:
+                continue
+            for pi in remaining_pred:
+                p = pred_rows[pi]
+                p_label = str(p.get("label", "")).strip().lower()
+                if label_only and g_label != p_label:
+                    continue
+                p_bbox = p.get("bbox")
+                if not isinstance(p_bbox, list) or len(p_bbox) != 4:
+                    continue
+                iou = float(iou_resolver(g, p))
+                if best is None or iou > best[2]:
+                    best = (gi, pi, iou)
+        return best
+
+    while True:
+        best = _take_best(label_only=True)
+        if best is None:
+            break
+        gi, pi, iou = best
+        matched.append({"gt": gt_rows[gi], "pred": pred_rows[pi], "iou": iou})
+        remaining_gt.discard(gi)
+        remaining_pred.discard(pi)
+
+    while True:
+        best = _take_best(label_only=False)
+        if best is None:
+            break
+        gi, pi, iou = best
+        matched.append({"gt": gt_rows[gi], "pred": pred_rows[pi], "iou": iou})
+        remaining_gt.discard(gi)
+        remaining_pred.discard(pi)
+
+    return matched, remaining_gt, remaining_pred
+
+
+def _seg_pair_bbox_iou(gt_row: dict[str, Any], pred_row: dict[str, Any]) -> float:
+    gt_bbox = gt_row.get("bbox")
+    pred_bbox = pred_row.get("bbox")
+    if not isinstance(gt_bbox, list) or len(gt_bbox) != 4:
+        return 0.0
+    if not isinstance(pred_bbox, list) or len(pred_bbox) != 4:
+        return 0.0
+    try:
+        return _bbox_iou([float(v) for v in gt_bbox], [float(v) for v in pred_bbox])
+    except Exception:
+        return 0.0
+
+
+def _seg_pair_mask_or_bbox_iou(gt_row: dict[str, Any], pred_row: dict[str, Any]) -> float:
+    gt_mask = gt_row.get("mask")
+    pred_mask = pred_row.get("mask")
+    if isinstance(gt_mask, dict) and isinstance(pred_mask, dict):
+        mask_iou = _mask_iou(gt_mask, pred_mask)
+        if mask_iou is not None:
+            return mask_iou
+    return _seg_pair_bbox_iou(gt_row, pred_row)
+
+
+def _normalize_seg_mask_object(mask_raw: Any) -> dict[str, Any] | None:
+    if not isinstance(mask_raw, dict):
+        return None
+    fmt = str(mask_raw.get("format", "")).strip()
+    if fmt != "rle_v1":
+        return None
+    size_raw = mask_raw.get("size")
+    if not isinstance(size_raw, list) or len(size_raw) != 2:
+        return None
+    try:
+        h = int(size_raw[0])
+        w = int(size_raw[1])
+    except Exception:
+        return None
+    if h <= 0 or w <= 0:
+        return None
+    counts_raw = mask_raw.get("counts")
+    if not isinstance(counts_raw, list):
+        return None
+    counts: list[int] = []
+    total = 0
+    for value in counts_raw:
+        try:
+            parsed = int(value)
+        except Exception:
+            return None
+        if parsed < 0:
+            return None
+        counts.append(parsed)
+        total += parsed
+    if total != h * w:
+        return None
+    return {"format": "rle_v1", "size": [h, w], "counts": counts}
+
+
+def _decode_rle_bits(mask: dict[str, Any]) -> list[int] | None:
+    size = mask.get("size")
+    counts = mask.get("counts")
+    if not isinstance(size, list) or len(size) != 2:
+        return None
+    if not isinstance(counts, list):
+        return None
+    try:
+        h = int(size[0])
+        w = int(size[1])
+    except Exception:
+        return None
+    if h <= 0 or w <= 0:
+        return None
+    total = h * w
+    bits: list[int] = []
+    fill = 0
+    for value in counts:
+        try:
+            run_len = int(value)
+        except Exception:
+            return None
+        if run_len < 0:
+            return None
+        if run_len > 0:
+            bits.extend([fill] * run_len)
+        fill = 1 - fill
+        if len(bits) > total:
+            return None
+    if len(bits) != total:
+        return None
+    return bits
+
+
+def _mask_iou(gt_mask: dict[str, Any], pred_mask: dict[str, Any]) -> float | None:
+    gt_size = gt_mask.get("size")
+    pred_size = pred_mask.get("size")
+    if not isinstance(gt_size, list) or not isinstance(pred_size, list):
+        return None
+    if len(gt_size) != 2 or len(pred_size) != 2:
+        return None
+    try:
+        if int(gt_size[0]) != int(pred_size[0]) or int(gt_size[1]) != int(pred_size[1]):
+            return None
+    except Exception:
+        return None
+
+    gt_bits = _decode_rle_bits(gt_mask)
+    pred_bits = _decode_rle_bits(pred_mask)
+    if gt_bits is None or pred_bits is None:
+        return None
+    if len(gt_bits) != len(pred_bits):
+        return None
+
+    inter = 0
+    union = 0
+    for g_bit, p_bit in zip(gt_bits, pred_bits):
+        g_on = int(g_bit) != 0
+        p_on = int(p_bit) != 0
+        if g_on and p_on:
+            inter += 1
+        if g_on or p_on:
+            union += 1
+    if union <= 0:
+        return 0.0
+    return float(inter) / float(union)
+
+
 def _new_hazard_norm_meta() -> dict[str, Any]:
     return {
         "warnings": [],
@@ -1306,6 +3025,69 @@ def _safe_ratio(num: int, den: int) -> float:
     if den <= 0:
         return 0.0
     return num / den
+
+
+def _to_unit_float(value: Any) -> float:
+    try:
+        if value is None or isinstance(value, bool):
+            return 0.0
+        parsed = float(value)
+    except Exception:
+        return 0.0
+    if parsed < 0.0:
+        return 0.0
+    if parsed > 1.0:
+        return 1.0
+    return parsed
+
+
+def _mean_float(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values)) / float(len(values))
+
+
+def _percentile_float(values: list[float], p: int) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(item) for item in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = max(0.0, min(1.0, p / 100.0))
+    idx = int(math.ceil(rank * len(ordered)) - 1)
+    idx = max(0, min(len(ordered) - 1, idx))
+    return float(ordered[idx])
+
+
+def _median_float(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(item) for item in values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return float(ordered[mid])
+    return float((ordered[mid - 1] + ordered[mid]) / 2.0)
+
+
+def _depth_temporal_roi_indices(width: int, height: int, mode: str) -> list[int]:
+    w = max(1, int(width))
+    h = max(1, int(height))
+    normalized = str(mode or "").strip().lower() or "bottom_center"
+
+    if normalized == "full":
+        return list(range(w * h))
+
+    if normalized == "bottom":
+        y0 = int((2 * h) // 3)
+        y0 = max(0, min(h - 1, y0))
+        return [int(y * w + x) for y in range(y0, h) for x in range(0, w)]
+
+    center_width = max(1, int(round(w * 0.5)))
+    x0 = max(0, int((w - center_width) // 2))
+    x1 = min(w, x0 + center_width)
+    y0 = int((2 * h) // 3)
+    y0 = max(0, min(h - 1, y0))
+    return [int(y * w + x) for y in range(y0, h) for x in range(x0, x1)]
 
 
 def _f1(tp: int, fp: int, fn: int) -> float:
@@ -1472,10 +3254,13 @@ def extract_event_schema_stats(ws_events_jsonl_path: Path) -> dict[str, Any]:
     }
 
 
-def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict[str, dict[str, str | None]]:
-    summary: dict[str, dict[str, str | None]] = {
+def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict[str, dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {
         "ocr": {"backend": None, "model": None, "endpoint": None},
         "risk": {"backend": None, "model": None, "endpoint": None},
+        "seg": {"backend": None, "model": None, "endpoint": None},
+        "depth": {"backend": None, "model": None, "endpoint": None},
+        "slam": {"backend": None, "model": None, "endpoint": None},
     }
 
     normalized_summary = collect_normalized_ws_events(ws_events_jsonl_path)
@@ -1484,16 +3269,28 @@ def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict
         if not isinstance(event, dict):
             continue
         name = str(event.get("name", "")).strip().lower()
-        if name == "ocr.scan_text":
+        if name in {"ocr.scan_text", "ocr.read"}:
             bucket = summary["ocr"]
         elif name in {"risk.hazards", "risk.depth"}:
             bucket = summary["risk"]
+        elif name == "seg.segment":
+            bucket = summary["seg"]
+        elif name == "depth.estimate":
+            bucket = summary["depth"]
+        elif name == "slam.pose":
+            bucket = summary["slam"]
+        elif name == "seg.prompt":
+            payload = event.get("payload")
+            if isinstance(payload, dict):
+                _merge_seg_prompt_fields(summary["seg"], payload)
+            continue
         else:
             continue
         payload = event.get("payload")
         if not isinstance(payload, dict):
             continue
         _merge_inference_fields(bucket, payload)
+    _finalize_seg_prompt_bucket(summary["seg"])
 
     if _has_any_inference(summary):
         return summary
@@ -1510,14 +3307,26 @@ def extract_inference_summary_from_ws_events(ws_events_jsonl_path: Path) -> dict
             _merge_inference_fields(summary["ocr"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
         if "risk" in blob or "hazard" in blob or "depth" in blob:
             _merge_inference_fields(summary["risk"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
+        if "seg.prompt" in blob and isinstance(event.get("payload"), dict):
+            _merge_seg_prompt_fields(summary["seg"], event.get("payload"))
+        if "seg" in blob or "segment" in blob:
+            _merge_inference_fields(summary["seg"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
+        if "depth" in blob and "risk.depth" not in blob:
+            _merge_inference_fields(summary["depth"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
+        if "slam.pose" in blob:
+            _merge_inference_fields(summary["slam"], event.get("payload") if isinstance(event.get("payload"), dict) else event)
 
+    _finalize_seg_prompt_bucket(summary["seg"])
     return summary
 
 
-def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, dict[str, str | None]]:
-    summary: dict[str, dict[str, str | None]] = {
+def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    summary: dict[str, dict[str, Any]] = {
         "ocr": {"backend": None, "model": None, "endpoint": None},
         "risk": {"backend": None, "model": None, "endpoint": None},
+        "seg": {"backend": None, "model": None, "endpoint": None},
+        "depth": {"backend": None, "model": None, "endpoint": None},
+        "slam": {"backend": None, "model": None, "endpoint": None},
     }
     for row in events:
         if not isinstance(row, dict):
@@ -1533,10 +3342,21 @@ def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> 
             continue
 
         name = str(event.get("name", "")).strip().lower()
-        if name == "ocr.scan_text":
+        if name in {"ocr.scan_text", "ocr.read"}:
             bucket = summary["ocr"]
         elif name == "risk.hazards":
             bucket = summary["risk"]
+        elif name == "seg.segment":
+            bucket = summary["seg"]
+        elif name == "depth.estimate":
+            bucket = summary["depth"]
+        elif name == "slam.pose":
+            bucket = summary["slam"]
+        elif name == "seg.prompt":
+            payload = event.get("payload")
+            if isinstance(payload, dict):
+                _merge_seg_prompt_fields(summary["seg"], payload)
+            continue
         else:
             continue
 
@@ -1544,7 +3364,1240 @@ def infer_inference_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> 
         if not isinstance(payload, dict):
             continue
         _merge_inference_fields(bucket, payload)
+    _finalize_seg_prompt_bucket(summary["seg"])
     return summary
+
+
+def extract_seg_prompt_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    summary = infer_inference_summary_from_events_v1(events).get("seg", {})
+    summary = summary if isinstance(summary, dict) else {}
+    present = bool(summary.get("promptPresent"))
+    total_items_in = int(summary.get("promptTargetsInTotal", 0) or 0) + int(summary.get("promptBoxesInTotal", 0) or 0) + int(
+        summary.get("promptPointsInTotal", 0) or 0
+    )
+    total_items_dropped = int(summary.get("promptTargetsDroppedTotal", 0) or 0) + int(
+        summary.get("promptBoxesDroppedTotal", 0) or 0
+    ) + int(summary.get("promptPointsDroppedTotal", 0) or 0)
+    text_in_total = int(summary.get("promptTextInCharsTotal", 0) or 0)
+    text_dropped_total = int(summary.get("promptTextCharsDroppedTotal", 0) or 0)
+    truncation_rate = 0.0
+    if total_items_in > 0:
+        truncation_rate = float(total_items_dropped) / float(total_items_in)
+    elif text_in_total > 0:
+        truncation_rate = float(text_dropped_total) / float(text_in_total)
+    if not present:
+        return {
+            "present": False,
+            "events": 0,
+            "targetsCountTotal": 0,
+            "textCharsTotal": 0,
+            "boxesTotal": 0,
+            "pointsTotal": 0,
+            "promptVersion": None,
+            "promptVersionDiversityCount": 0,
+            "budget": {
+                "maxChars": 0,
+                "maxTargets": 0,
+                "maxBoxes": 0,
+                "maxPoints": 0,
+                "mode": None,
+                "textCharsTotal": 0,
+                "boxesTotal": 0,
+                "pointsTotal": 0,
+            },
+            "out": {
+                "targetsCountTotal": 0,
+                "textCharsTotal": 0,
+                "boxesTotal": 0,
+                "pointsTotal": 0,
+                "charsTotal": 0,
+            },
+            "truncation": {
+                "targetsDropped": 0,
+                "boxesDropped": 0,
+                "pointsDropped": 0,
+                "textCharsDropped": 0,
+            },
+            "complexity": {
+                "eventsWithTargets": 0,
+                "eventsWithText": 0,
+                "eventsWithBoxes": 0,
+                "eventsWithPoints": 0,
+                "scoreMean": 0.0,
+            },
+            "packed": {"trueCount": 0, "falseCount": 0},
+            "warningsCount": 0,
+            "truncationRate": 0.0,
+        }
+    text_chars = int(summary.get("promptTextCharsTotal", 0) or 0)
+    boxes_total = int(summary.get("promptBoxesTotal", 0) or 0)
+    points_total = int(summary.get("promptPointsTotal", 0) or 0)
+    return {
+        "present": True,
+        "events": int(summary.get("promptEventCount", 0) or 0),
+        "targetsCountTotal": int(summary.get("promptTargetsTotal", 0) or 0),
+        "textCharsTotal": text_chars,
+        "boxesTotal": boxes_total,
+        "pointsTotal": points_total,
+        "promptVersion": summary.get("promptVersion"),
+        "promptVersionDiversityCount": int(summary.get("promptVersionDiversityCount", 0) or 0),
+        "budget": {
+            "maxChars": int(summary.get("promptBudgetMaxChars", 0) or 0),
+            "maxTargets": int(summary.get("promptBudgetMaxTargets", 0) or 0),
+            "maxBoxes": int(summary.get("promptBudgetMaxBoxes", 0) or 0),
+            "maxPoints": int(summary.get("promptBudgetMaxPoints", 0) or 0),
+            "mode": summary.get("promptBudgetMode"),
+            "textCharsTotal": text_chars,
+            "boxesTotal": boxes_total,
+            "pointsTotal": points_total,
+        },
+        "out": {
+            "targetsCountTotal": int(summary.get("promptTargetsOutTotal", summary.get("promptTargetsTotal", 0)) or 0),
+            "textCharsTotal": int(summary.get("promptTextOutCharsTotal", summary.get("promptTextCharsTotal", 0)) or 0),
+            "boxesTotal": int(summary.get("promptBoxesOutTotal", summary.get("promptBoxesTotal", 0)) or 0),
+            "pointsTotal": int(summary.get("promptPointsOutTotal", summary.get("promptPointsTotal", 0)) or 0),
+            "charsTotal": int(summary.get("promptCharsOutTotal", 0) or 0),
+        },
+        "truncation": {
+            "targetsDropped": int(summary.get("promptTargetsDroppedTotal", 0) or 0),
+            "boxesDropped": int(summary.get("promptBoxesDroppedTotal", 0) or 0),
+            "pointsDropped": int(summary.get("promptPointsDroppedTotal", 0) or 0),
+            "textCharsDropped": int(summary.get("promptTextCharsDroppedTotal", 0) or 0),
+        },
+        "complexity": {
+            "eventsWithTargets": int(summary.get("promptComplexityHasTargetsCount", 0) or 0),
+            "eventsWithText": int(summary.get("promptComplexityHasTextCount", 0) or 0),
+            "eventsWithBoxes": int(summary.get("promptComplexityHasBoxesCount", 0) or 0),
+            "eventsWithPoints": int(summary.get("promptComplexityHasPointsCount", 0) or 0),
+            "scoreMean": float(summary.get("promptComplexityScoreMean", 0.0) or 0.0),
+        },
+        "packed": {
+            "trueCount": int(summary.get("promptPackedTrueCount", 0) or 0),
+            "falseCount": int(summary.get("promptPackedFalseCount", 0) or 0),
+        },
+        "warningsCount": int(summary.get("promptWarningsCountTotal", 0) or 0),
+        "truncationRate": round(max(0.0, min(1.0, truncation_rate)), 6),
+    }
+
+
+def extract_plan_request_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    event_count = 0
+    seg_included_count = 0
+    pov_included_count = 0
+    slam_included_count = 0
+    costmap_included_count = 0
+    fallback_used_count = 0
+    seg_chars_values: list[int] = []
+    pov_chars_values: list[int] = []
+    slam_chars_values: list[int] = []
+    costmap_chars_values: list[int] = []
+    seg_trunc_segments_dropped_total = 0
+    costmap_trunc_hotspots_dropped_total = 0
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "plan.request":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        event_count += 1
+        if bool(payload.get("segIncluded")):
+            seg_included_count += 1
+        if bool(payload.get("povIncluded")):
+            pov_included_count += 1
+        if bool(payload.get("slamIncluded")):
+            slam_included_count += 1
+        if bool(payload.get("costmapIncluded")):
+            costmap_included_count += 1
+        if isinstance(payload.get("fallbackUsed"), bool) and bool(payload.get("fallbackUsed")):
+            fallback_used_count += 1
+        seg_chars = _to_nonnegative_int(payload.get("segChars"))
+        pov_chars = _to_nonnegative_int(payload.get("povChars"))
+        slam_chars = _to_nonnegative_int(payload.get("slamChars"))
+        costmap_chars = _to_nonnegative_int(payload.get("costmapChars"))
+        seg_chars_values.append(seg_chars)
+        pov_chars_values.append(pov_chars)
+        slam_chars_values.append(slam_chars)
+        costmap_chars_values.append(costmap_chars)
+        seg_trunc_segments_dropped_total += _to_nonnegative_int(payload.get("segTruncSegmentsDropped"))
+        costmap_trunc_hotspots_dropped_total += _to_nonnegative_int(payload.get("costmapTruncHotspotsDropped"))
+
+    seg_stats = summarize_latency(seg_chars_values)
+    pov_stats = summarize_latency(pov_chars_values)
+    slam_stats = summarize_latency(slam_chars_values)
+    costmap_stats = summarize_latency(costmap_chars_values)
+    present = event_count > 0
+    return {
+        "present": present,
+        "events": int(event_count),
+        "segIncludedCount": int(seg_included_count),
+        "povIncludedCount": int(pov_included_count),
+        "slamIncludedCount": int(slam_included_count),
+        "costmapIncludedCount": int(costmap_included_count),
+        "segCharsTotal": int(sum(seg_chars_values)),
+        "segCharsP90": int(seg_stats.get("p90", 0) or 0),
+        "segTruncSegmentsDroppedTotal": int(seg_trunc_segments_dropped_total),
+        "povCharsTotal": int(sum(pov_chars_values)),
+        "povCharsP90": int(pov_stats.get("p90", 0) or 0),
+        "slamCharsTotal": int(sum(slam_chars_values)),
+        "slamCharsP90": int(slam_stats.get("p90", 0) or 0),
+        "costmapCharsTotal": int(sum(costmap_chars_values)),
+        "costmapCharsP90": int(costmap_stats.get("p90", 0) or 0),
+        "costmapTruncHotspotsDroppedTotal": int(costmap_trunc_hotspots_dropped_total),
+        "fallbackUsedCount": int(fallback_used_count),
+    }
+
+
+def extract_plan_rule_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    count = 0
+    hints: Counter[str] = Counter()
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "plan.rule_applied":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        hint = str(payload.get("hazardHint", "")).strip().lower()
+        count += 1
+        if hint:
+            hints[hint] += 1
+    top_hint = hints.most_common(1)[0][0] if hints else None
+    return {
+        "present": count > 0,
+        "ruleAppliedCount": int(count),
+        "ruleHazardHintTop": top_hint,
+    }
+
+
+def extract_plan_context_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    event_count = 0
+    context_used_count = 0
+    seg_hit_count = 0
+    pov_hit_count = 0
+    slam_hit_count = 0
+    costmap_hit_count = 0
+    slam_used_count = 0
+    costmap_used_count = 0
+    seg_coverages: list[float] = []
+    pov_coverages: list[float] = []
+    slam_coverages: list[float] = []
+    costmap_coverages: list[float] = []
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "plan.context_alignment":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        seg = payload.get("seg")
+        seg = seg if isinstance(seg, dict) else {}
+        pov = payload.get("pov")
+        pov = pov if isinstance(pov, dict) else {}
+        slam = payload.get("slam")
+        slam = slam if isinstance(slam, dict) else {}
+        costmap = payload.get("costmap")
+        costmap = costmap if isinstance(costmap, dict) else {}
+        context_detail = payload.get("contextUsedDetail")
+        context_detail = context_detail if isinstance(context_detail, dict) else {}
+
+        event_count += 1
+        if bool(payload.get("contextUsed")):
+            context_used_count += 1
+        if bool(seg.get("hit")):
+            seg_hit_count += 1
+        if bool(pov.get("hit")):
+            pov_hit_count += 1
+        if bool(slam.get("hit")):
+            slam_hit_count += 1
+        if bool(costmap.get("hit")):
+            costmap_hit_count += 1
+        if bool(context_detail.get("slam")):
+            slam_used_count += 1
+        elif bool(slam.get("present")) and bool(slam.get("hit")):
+            slam_used_count += 1
+        if bool(context_detail.get("costmap")):
+            costmap_used_count += 1
+        elif bool(costmap.get("present")) and bool(costmap.get("hit")):
+            costmap_used_count += 1
+        seg_coverages.append(_to_unit_float(seg.get("coverage")))
+        pov_coverages.append(_to_unit_float(pov.get("coverage")))
+        slam_coverages.append(_to_unit_float(slam.get("coverage")))
+        costmap_coverages.append(_to_unit_float(costmap.get("coverage")))
+
+    if event_count <= 0:
+        return {
+            "present": False,
+            "events": 0,
+            "contextUsedRate": 0.0,
+            "seg": {"hitRate": 0.0, "coverageMean": 0.0, "coverageP90": 0.0},
+            "pov": {"hitRate": 0.0, "coverageMean": 0.0, "coverageP90": 0.0},
+            "slam": {"hitRate": 0.0, "coverageMean": 0.0, "coverageP90": 0.0, "contextUsedRate": 0.0},
+            "costmap": {"hitRate": 0.0, "coverageMean": 0.0, "coverageP90": 0.0, "contextUsedRate": 0.0},
+        }
+
+    return {
+        "present": True,
+        "events": int(event_count),
+        "contextUsedRate": round(_safe_ratio(context_used_count, event_count), 6),
+        "seg": {
+            "hitRate": round(_safe_ratio(seg_hit_count, event_count), 6),
+            "coverageMean": round(_mean_float(seg_coverages), 6),
+            "coverageP90": round(_percentile_float(seg_coverages, 90), 6),
+        },
+        "pov": {
+            "hitRate": round(_safe_ratio(pov_hit_count, event_count), 6),
+            "coverageMean": round(_mean_float(pov_coverages), 6),
+            "coverageP90": round(_percentile_float(pov_coverages, 90), 6),
+        },
+        "slam": {
+            "hitRate": round(_safe_ratio(slam_hit_count, event_count), 6),
+            "coverageMean": round(_mean_float(slam_coverages), 6),
+            "coverageP90": round(_percentile_float(slam_coverages, 90), 6),
+            "contextUsedRate": round(_safe_ratio(slam_used_count, event_count), 6),
+        },
+        "costmap": {
+            "hitRate": round(_safe_ratio(costmap_hit_count, event_count), 6),
+            "coverageMean": round(_mean_float(costmap_coverages), 6),
+            "coverageP90": round(_percentile_float(costmap_coverages, 90), 6),
+            "contextUsedRate": round(_safe_ratio(costmap_used_count, event_count), 6),
+        },
+    }
+
+
+def extract_costmap_metrics_from_events_v1(
+    events: Iterable[dict[str, Any]],
+    *,
+    frames_total_declared: int | None = None,
+) -> dict[str, Any]:
+    frame_keys: set[tuple[str, int]] = set()
+    latencies: list[int] = []
+    dynamic_rates: list[float] = []
+    dynamic_temporal_used_flags: list[float] = []
+    dynamic_tracks_used_values: list[float] = []
+    dynamic_mask_used_flags: list[float] = []
+    dynamic_ttl_counter: Counter[int] = Counter()
+    density_values: list[float] = []
+    event_count = 0
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "map.costmap":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        if str(payload.get("schemaVersion", "")).strip() != "byes.costmap.v1":
+            continue
+
+        event_count += 1
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        frame_seq = _parse_int(payload.get("frameSeq"))
+        if frame_seq is None:
+            frame_seq = _parse_int(event.get("frameSeq"))
+        if frame_seq is not None and frame_seq > 0:
+            frame_keys.add((run_id, int(frame_seq)))
+
+        latency = _parse_int(event.get("latencyMs"))
+        if latency is not None:
+            latencies.append(max(0, int(latency)))
+
+        stats = payload.get("stats")
+        stats = stats if isinstance(stats, dict) else {}
+        dynamic_rates.append(_to_unit_float(stats.get("dynamicFilteredRate")))
+        dynamic_temporal_used_flags.append(1.0 if bool(stats.get("dynamicTemporalUsed")) else 0.0)
+        dynamic_tracks_used_values.append(float(max(0, _to_nonnegative_int(stats.get("dynamicTracksUsed")))))
+        dynamic_mask_used_flags.append(1.0 if bool(stats.get("dynamicMaskUsed")) else 0.0)
+        ttl_frames = max(0, _to_nonnegative_int(stats.get("dynamicTtlFrames")))
+        if ttl_frames > 0:
+            dynamic_ttl_counter[ttl_frames] += 1
+        occupied = max(0, _to_nonnegative_int(stats.get("occupiedCells")))
+        grid = payload.get("grid")
+        grid = grid if isinstance(grid, dict) else {}
+        size = grid.get("size")
+        size = size if isinstance(size, list) else []
+        grid_h = max(0, _to_nonnegative_int(size[0])) if len(size) > 0 else 0
+        grid_w = max(0, _to_nonnegative_int(size[1])) if len(size) > 1 else 0
+        grid_cells = int(max(1, int(grid_h) * int(grid_w)))
+        density_values.append(float(occupied) / float(grid_cells))
+
+    if event_count <= 0:
+        return {
+            "present": False,
+            "framesTotal": int(max(0, int(frames_total_declared or 0))) if frames_total_declared is not None else 0,
+            "framesWithCostmap": 0,
+            "coverage": 0.0 if frames_total_declared is not None else None,
+            "latencyMs": summarize_latency([]),
+            "dynamicFilteredRate": {"mean": 0.0, "p90": 0.0},
+            "dynamicTemporalUsedRate": 0.0,
+            "dynamicTracksUsed": {"mean": 0.0, "p90": 0.0},
+            "dynamicMaskUsedRate": 0.0,
+            "dynamicTtlFrames": 0,
+            "dynamicLeakProxyMean": 1.0,
+            "densityMean": {"mean": 0.0, "p90": 0.0},
+        }
+
+    frames_with_costmap = len(frame_keys) if frame_keys else int(event_count)
+    frames_total = int(max(frames_with_costmap, int(frames_total_declared or 0))) if frames_total_declared is not None else int(
+        frames_with_costmap
+    )
+    coverage = _safe_ratio(frames_with_costmap, frames_total) if frames_total > 0 else None
+    return {
+        "present": True,
+        "framesTotal": int(frames_total),
+        "framesWithCostmap": int(frames_with_costmap),
+        "coverage": round(coverage, 6) if coverage is not None else None,
+        "latencyMs": summarize_latency(latencies),
+        "dynamicFilteredRate": {
+            "mean": round(_mean_float(dynamic_rates), 6),
+            "p90": round(_percentile_float(dynamic_rates, 90), 6),
+        },
+        "dynamicTemporalUsedRate": round(_mean_float(dynamic_temporal_used_flags), 6),
+        "dynamicTracksUsed": {
+            "mean": round(_mean_float(dynamic_tracks_used_values), 6),
+            "p90": round(_percentile_float(dynamic_tracks_used_values, 90), 6),
+        },
+        "dynamicMaskUsedRate": round(_mean_float(dynamic_mask_used_flags), 6),
+        "dynamicTtlFrames": int(dynamic_ttl_counter.most_common(1)[0][0]) if dynamic_ttl_counter else 0,
+        "dynamicLeakProxyMean": round(1.0 - _mean_float(dynamic_rates), 6),
+        "densityMean": {
+            "mean": round(_mean_float(density_values), 6),
+            "p90": round(_percentile_float(density_values, 90), 6),
+        },
+    }
+
+
+def extract_costmap_fused_metrics_from_events_v1(
+    events: Iterable[dict[str, Any]],
+    *,
+    frames_total_declared: int | None = None,
+) -> dict[str, Any]:
+    frame_keys: set[tuple[str, int]] = set()
+    latencies: list[int] = []
+    dynamic_rates: list[float] = []
+    dynamic_temporal_used_flags: list[float] = []
+    dynamic_tracks_used_values: list[float] = []
+    dynamic_mask_used_rate_window_values: list[float] = []
+    density_values: list[float] = []
+    iou_prev_values: list[float] = []
+    flicker_prev_values: list[float] = []
+    hotspot_values: list[int] = []
+    shift_used_count = 0
+    shift_gate_reject_count = 0
+    shift_gate_reason_counter: Counter[str] = Counter()
+    shift_gate_slam_model_counter: Counter[str] = Counter()
+    event_count = 0
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "map.costmap_fused":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        if str(payload.get("schemaVersion", "")).strip() != "byes.costmap_fused.v1":
+            continue
+
+        event_count += 1
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        frame_seq = _parse_int(payload.get("frameSeq"))
+        if frame_seq is None:
+            frame_seq = _parse_int(event.get("frameSeq"))
+        if frame_seq is not None and frame_seq > 0:
+            frame_keys.add((run_id, int(frame_seq)))
+
+        latency = _parse_int(event.get("latencyMs"))
+        if latency is not None:
+            latencies.append(max(0, int(latency)))
+
+        stats = payload.get("stats")
+        stats = stats if isinstance(stats, dict) else {}
+        dynamic_rates.append(_to_unit_float(stats.get("dynamicFilteredRate")))
+        dynamic_temporal_used_flags.append(1.0 if bool(stats.get("dynamicTemporalUsed")) else 0.0)
+        dynamic_tracks_used_values.append(float(max(0, _to_nonnegative_int(stats.get("dynamicTracksUsed")))))
+        dynamic_mask_used_rate_window_values.append(_to_unit_float(stats.get("dynamicMaskUsedRateWindow")))
+        occupied = max(0, _to_nonnegative_int(stats.get("occupiedCells")))
+
+        grid = payload.get("grid")
+        grid = grid if isinstance(grid, dict) else {}
+        size = grid.get("size")
+        size = size if isinstance(size, list) else []
+        grid_h = max(0, _to_nonnegative_int(size[0])) if len(size) > 0 else 0
+        grid_w = max(0, _to_nonnegative_int(size[1])) if len(size) > 1 else 0
+        grid_cells = int(max(1, int(grid_h) * int(grid_w)))
+        density_values.append(float(occupied) / float(grid_cells))
+
+        stability = stats.get("stability")
+        stability = stability if isinstance(stability, dict) else {}
+        iou_prev = stability.get("iouPrev")
+        if iou_prev is not None:
+            iou_prev_values.append(_to_unit_float(iou_prev))
+        flicker_prev = stability.get("flickerRatePrev")
+        if flicker_prev is not None:
+            flicker_prev_values.append(_to_unit_float(flicker_prev))
+        hotspot_values.append(max(0, _to_nonnegative_int(stability.get("hotspotCount"))))
+
+        fuse = payload.get("fuse")
+        fuse = fuse if isinstance(fuse, dict) else {}
+        if bool(fuse.get("shiftUsed")):
+            shift_used_count += 1
+        gate = fuse.get("gate")
+        gate = gate if isinstance(gate, dict) else {}
+        if gate:
+            if gate.get("allowed") is False:
+                shift_gate_reject_count += 1
+            reasons = gate.get("reasons")
+            reasons = reasons if isinstance(reasons, list) else []
+            for item in reasons:
+                text = str(item or "").strip()
+                if text:
+                    shift_gate_reason_counter[text] += 1
+            slam_model_text = str(gate.get("slamModel", "")).strip()
+            if slam_model_text:
+                shift_gate_slam_model_counter[slam_model_text] += 1
+
+    if event_count <= 0:
+        return {
+            "present": False,
+            "framesTotal": int(max(0, int(frames_total_declared or 0))) if frames_total_declared is not None else 0,
+            "framesWithFused": 0,
+            "coverage": 0.0 if frames_total_declared is not None else None,
+            "latencyMs": summarize_latency([]),
+            "dynamicFilteredRate": {"mean": 0.0, "p90": 0.0},
+            "dynamicTemporalUsedRate": 0.0,
+            "dynamicTracksUsed": {"mean": 0.0, "p90": 0.0},
+            "dynamicMaskUsedRateWindow": {"mean": 0.0, "p90": 0.0},
+            "densityMean": {"mean": 0.0, "p90": 0.0},
+            "stability": {
+                "iouPrevMean": 0.0,
+                "iouPrevP90": 0.0,
+                "flickerRatePrevMean": 0.0,
+                "flickerRatePrevP90": 0.0,
+                "hotspotCountMean": 0.0,
+                "hotspotCountP90": 0.0,
+            },
+            "shiftUsedRate": 0.0,
+            "shiftGateRejectRate": 0.0,
+            "shiftGateTopReasons": [],
+            "shiftGateSlamModelDiversity": 0,
+            "slamModelPreferred": None,
+        }
+
+    frames_with_fused = len(frame_keys) if frame_keys else int(event_count)
+    frames_total = int(max(frames_with_fused, int(frames_total_declared or 0))) if frames_total_declared is not None else int(
+        frames_with_fused
+    )
+    coverage = _safe_ratio(frames_with_fused, frames_total) if frames_total > 0 else None
+    return {
+        "present": True,
+        "framesTotal": int(frames_total),
+        "framesWithFused": int(frames_with_fused),
+        "coverage": round(coverage, 6) if coverage is not None else None,
+        "latencyMs": summarize_latency(latencies),
+        "dynamicFilteredRate": {
+            "mean": round(_mean_float(dynamic_rates), 6),
+            "p90": round(_percentile_float(dynamic_rates, 90), 6),
+        },
+        "dynamicTemporalUsedRate": round(_mean_float(dynamic_temporal_used_flags), 6),
+        "dynamicTracksUsed": {
+            "mean": round(_mean_float(dynamic_tracks_used_values), 6),
+            "p90": round(_percentile_float(dynamic_tracks_used_values, 90), 6),
+        },
+        "dynamicMaskUsedRateWindow": {
+            "mean": round(_mean_float(dynamic_mask_used_rate_window_values), 6),
+            "p90": round(_percentile_float(dynamic_mask_used_rate_window_values, 90), 6),
+        },
+        "densityMean": {
+            "mean": round(_mean_float(density_values), 6),
+            "p90": round(_percentile_float(density_values, 90), 6),
+        },
+        "stability": {
+            "iouPrevMean": round(_mean_float(iou_prev_values), 6),
+            "iouPrevP90": round(_percentile_float(iou_prev_values, 90), 6),
+            "flickerRatePrevMean": round(_mean_float(flicker_prev_values), 6),
+            "flickerRatePrevP90": round(_percentile_float(flicker_prev_values, 90), 6),
+            "hotspotCountMean": round(_mean_float([float(v) for v in hotspot_values]), 6),
+            "hotspotCountP90": round(_percentile_float([float(v) for v in hotspot_values], 90), 6),
+        },
+        "shiftUsedRate": round(_safe_ratio(shift_used_count, event_count), 6),
+        "shiftGateRejectRate": round(_safe_ratio(shift_gate_reject_count, event_count), 6),
+        "shiftGateTopReasons": [
+            {"reason": str(reason), "count": int(count)}
+            for reason, count in shift_gate_reason_counter.most_common(5)
+        ],
+        "shiftGateSlamModelDiversity": int(len(shift_gate_slam_model_counter)),
+        "slamModelPreferred": (
+            shift_gate_slam_model_counter.most_common(1)[0][0] if shift_gate_slam_model_counter else None
+        ),
+    }
+
+
+def extract_costmap_context_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    event_count = 0
+    chars_values: list[int] = []
+    token_values: list[int] = []
+    hotspots_values: list[int] = []
+    chars_dropped_total = 0
+    hotspots_dropped_total = 0
+    mode_counter: Counter[str] = Counter()
+    budget_chars_counter: Counter[int] = Counter()
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "map.costmap_context":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        if str(payload.get("schemaVersion", "")).strip() != "costmap.context.v1":
+            continue
+
+        stats = payload.get("stats")
+        stats = stats if isinstance(stats, dict) else {}
+        out_stats = stats.get("out")
+        out_stats = out_stats if isinstance(out_stats, dict) else {}
+        truncation = stats.get("truncation")
+        truncation = truncation if isinstance(truncation, dict) else {}
+        budget = payload.get("budget")
+        budget = budget if isinstance(budget, dict) else {}
+
+        event_count += 1
+        chars_values.append(_to_nonnegative_int(out_stats.get("charsTotal")))
+        token_values.append(_to_nonnegative_int(out_stats.get("tokenApprox")))
+        hotspots_values.append(_to_nonnegative_int(out_stats.get("hotspots")))
+        chars_dropped_total += _to_nonnegative_int(truncation.get("charsDropped"))
+        hotspots_dropped_total += _to_nonnegative_int(truncation.get("hotspotsDropped"))
+
+        mode_text = str(budget.get("mode", "")).strip()
+        if mode_text:
+            mode_counter[mode_text] += 1
+        budget_chars = _to_nonnegative_int(budget.get("maxChars"))
+        if budget_chars > 0:
+            budget_chars_counter[budget_chars] += 1
+
+    if event_count <= 0:
+        return {
+            "present": False,
+            "events": 0,
+            "budgetDefault": {"maxChars": 0, "mode": None},
+            "out": {"charsTotalP90": 0, "tokenApproxP90": 0, "hotspotsP90": 0},
+            "truncation": {"hotspotsDroppedTotal": 0, "charsDroppedTotal": 0, "truncationRate": 0.0},
+        }
+
+    chars_stats = summarize_latency(chars_values)
+    token_stats = summarize_latency(token_values)
+    hotspots_stats = summarize_latency(hotspots_values)
+    top_mode = mode_counter.most_common(1)[0][0] if mode_counter else None
+    top_budget_chars = budget_chars_counter.most_common(1)[0][0] if budget_chars_counter else 0
+    truncation_rate = _safe_ratio(chars_dropped_total, max(1, sum(chars_values) + chars_dropped_total))
+    return {
+        "present": True,
+        "events": int(event_count),
+        "budgetDefault": {"maxChars": int(top_budget_chars), "mode": top_mode},
+        "out": {
+            "charsTotalP90": int(chars_stats.get("p90", 0) or 0),
+            "tokenApproxP90": int(token_stats.get("p90", 0) or 0),
+            "hotspotsP90": int(hotspots_stats.get("p90", 0) or 0),
+        },
+        "truncation": {
+            "hotspotsDroppedTotal": int(hotspots_dropped_total),
+            "charsDroppedTotal": int(chars_dropped_total),
+            "truncationRate": round(max(0.0, min(1.0, truncation_rate)), 6),
+        },
+    }
+
+
+def extract_plan_context_pack_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    event_count = 0
+    chars_values: list[int] = []
+    seg_chars_values: list[int] = []
+    pov_chars_values: list[int] = []
+    risk_chars_values: list[int] = []
+    chars_dropped_total = 0
+    mode_counter: Counter[str] = Counter()
+    budget_chars_counter: Counter[int] = Counter()
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "plan.context_pack":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        stats = payload.get("stats")
+        stats = stats if isinstance(stats, dict) else {}
+        out_stats = stats.get("out")
+        out_stats = out_stats if isinstance(out_stats, dict) else {}
+        truncation = stats.get("truncation")
+        truncation = truncation if isinstance(truncation, dict) else {}
+        budget = payload.get("budget")
+        budget = budget if isinstance(budget, dict) else {}
+
+        event_count += 1
+        chars_values.append(_to_nonnegative_int(out_stats.get("charsTotal")))
+        seg_chars_values.append(_to_nonnegative_int(out_stats.get("segChars")))
+        pov_chars_values.append(_to_nonnegative_int(out_stats.get("povChars")))
+        risk_chars_values.append(_to_nonnegative_int(out_stats.get("riskChars")))
+        chars_dropped_total += _to_nonnegative_int(truncation.get("charsDropped"))
+        mode = str(budget.get("mode", "")).strip()
+        if mode:
+            mode_counter[mode] += 1
+        budget_chars = _to_nonnegative_int(budget.get("maxChars"))
+        if budget_chars > 0:
+            budget_chars_counter[budget_chars] += 1
+
+    if event_count <= 0:
+        return {
+            "present": False,
+            "events": 0,
+            "budgetDefault": {"maxChars": 0, "mode": None},
+            "out": {
+                "charsTotalP90": 0,
+                "segCharsP90": 0,
+                "povCharsP90": 0,
+                "riskCharsP90": 0,
+            },
+            "truncation": {
+                "charsDroppedTotal": 0,
+                "truncationRate": 0.0,
+            },
+            "modeDiversityCount": 0,
+        }
+
+    chars_stats = summarize_latency(chars_values)
+    seg_stats = summarize_latency(seg_chars_values)
+    pov_stats = summarize_latency(pov_chars_values)
+    risk_stats = summarize_latency(risk_chars_values)
+    truncation_rate = _safe_ratio(chars_dropped_total, max(1, sum(chars_values) + chars_dropped_total))
+    top_mode = mode_counter.most_common(1)[0][0] if mode_counter else None
+    top_budget_chars = budget_chars_counter.most_common(1)[0][0] if budget_chars_counter else 0
+    return {
+        "present": True,
+        "events": int(event_count),
+        "budgetDefault": {
+            "maxChars": int(top_budget_chars),
+            "mode": top_mode,
+        },
+        "out": {
+            "charsTotalP90": int(chars_stats.get("p90", 0) or 0),
+            "segCharsP90": int(seg_stats.get("p90", 0) or 0),
+            "povCharsP90": int(pov_stats.get("p90", 0) or 0),
+            "riskCharsP90": int(risk_stats.get("p90", 0) or 0),
+        },
+        "truncation": {
+            "charsDroppedTotal": int(chars_dropped_total),
+            "truncationRate": round(max(0.0, min(1.0, truncation_rate)), 6),
+        },
+        "modeDiversityCount": int(len(mode_counter)),
+    }
+
+
+def extract_slam_context_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    event_count = 0
+    chars_values: list[int] = []
+    token_values: list[int] = []
+    chars_dropped_total = 0
+    poses_dropped_total = 0
+    tracking_rate_values: list[float] = []
+    lost_streak_values: list[int] = []
+    ate_values: list[float] = []
+    mode_counter: Counter[str] = Counter()
+    budget_chars_counter: Counter[int] = Counter()
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "slam.context":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        if str(payload.get("schemaVersion", "")).strip() != "slam.context.v1":
+            continue
+
+        stats = payload.get("stats")
+        stats = stats if isinstance(stats, dict) else {}
+        out_stats = stats.get("out")
+        out_stats = out_stats if isinstance(out_stats, dict) else {}
+        truncation = stats.get("truncation")
+        truncation = truncation if isinstance(truncation, dict) else {}
+        budget = payload.get("budget")
+        budget = budget if isinstance(budget, dict) else {}
+        health = payload.get("health")
+        health = health if isinstance(health, dict) else {}
+        quality = payload.get("quality")
+        quality = quality if isinstance(quality, dict) else {}
+
+        event_count += 1
+        chars_values.append(_to_nonnegative_int(out_stats.get("charsTotal")))
+        token_values.append(_to_nonnegative_int(out_stats.get("tokenApprox")))
+        chars_dropped_total += _to_nonnegative_int(truncation.get("charsDropped"))
+        poses_dropped_total += _to_nonnegative_int(truncation.get("posesDropped"))
+        tracking_rate_values.append(_to_unit_float(health.get("trackingRateWindow")))
+        lost_streak_values.append(_to_nonnegative_int(health.get("longestLostStreak")))
+
+        ate_value = _try_float(quality.get("ateRmseM"))
+        if ate_value is not None:
+            ate_values.append(max(0.0, float(ate_value)))
+
+        mode_text = str(budget.get("mode", "")).strip()
+        if mode_text:
+            mode_counter[mode_text] += 1
+        budget_chars = _to_nonnegative_int(budget.get("maxChars"))
+        if budget_chars > 0:
+            budget_chars_counter[budget_chars] += 1
+
+    if event_count <= 0:
+        return {
+            "present": False,
+            "events": 0,
+            "budgetDefault": {"maxChars": 0, "mode": None},
+            "out": {"charsTotalP90": 0, "tokenApproxP90": 0},
+            "truncation": {"posesDroppedTotal": 0, "charsDroppedTotal": 0, "truncationRate": 0.0},
+            "health": {"trackingRateMean": 0.0, "lostStreakMax": 0},
+            "quality": {"ateRmseMMean": None, "ateRmseMP90": None},
+        }
+
+    chars_stats = summarize_latency(chars_values)
+    token_stats = summarize_latency(token_values)
+    truncation_rate = _safe_ratio(chars_dropped_total, max(1, sum(chars_values) + chars_dropped_total))
+    top_mode = mode_counter.most_common(1)[0][0] if mode_counter else None
+    top_budget_chars = budget_chars_counter.most_common(1)[0][0] if budget_chars_counter else 0
+
+    return {
+        "present": True,
+        "events": int(event_count),
+        "budgetDefault": {"maxChars": int(top_budget_chars), "mode": top_mode},
+        "out": {
+            "charsTotalP90": int(chars_stats.get("p90", 0) or 0),
+            "tokenApproxP90": int(token_stats.get("p90", 0) or 0),
+        },
+        "truncation": {
+            "posesDroppedTotal": int(poses_dropped_total),
+            "charsDroppedTotal": int(chars_dropped_total),
+            "truncationRate": round(max(0.0, min(1.0, truncation_rate)), 6),
+        },
+        "health": {
+            "trackingRateMean": round(_mean_float(tracking_rate_values), 6),
+            "lostStreakMax": int(max(lost_streak_values) if lost_streak_values else 0),
+        },
+        "quality": {
+            "ateRmseMMean": round(_mean_float(ate_values), 6) if ate_values else None,
+            "ateRmseMP90": round(_percentile_float(ate_values, 90), 6) if ate_values else None,
+        },
+    }
+
+
+def extract_models_summary_from_events_v1(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    latest_payload: dict[str, Any] | None = None
+    latest_ts = -1
+    latest_idx = -1
+    for idx, row in enumerate(events):
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "models.manifest":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        ts = _to_nonnegative_int(event.get("tsMs"))
+        if ts > latest_ts or (ts == latest_ts and idx > latest_idx):
+            latest_payload = payload
+            latest_ts = ts
+            latest_idx = idx
+
+    if not isinstance(latest_payload, dict):
+        return {
+            "present": False,
+            "componentsTotal": 0,
+            "enabledTotal": 0,
+            "missingRequiredTotal": 0,
+            "missingRequiredTop": [],
+        }
+
+    summary = latest_payload.get("summary")
+    summary = summary if isinstance(summary, dict) else {}
+    components = latest_payload.get("components")
+    components = components if isinstance(components, list) else []
+
+    missing_top: list[dict[str, Any]] = []
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        if not bool(component.get("enabled")):
+            continue
+        name = str(component.get("name", "")).strip()
+        required = component.get("required")
+        required = required if isinstance(required, list) else []
+        for req in required:
+            if not isinstance(req, dict):
+                continue
+            if bool(req.get("exists")):
+                continue
+            missing_top.append(
+                {
+                    "component": name or None,
+                    "id": str(req.get("id", "")).strip() or None,
+                    "envVar": str(req.get("envVar", "")).strip() or None,
+                    "kind": str(req.get("kind", "")).strip() or None,
+                }
+            )
+            if len(missing_top) >= 5:
+                break
+        if len(missing_top) >= 5:
+            break
+
+    return {
+        "present": True,
+        "componentsTotal": _to_nonnegative_int(summary.get("componentsTotal")),
+        "enabledTotal": _to_nonnegative_int(summary.get("enabledTotal")),
+        "missingRequiredTotal": _to_nonnegative_int(summary.get("missingRequiredTotal")),
+        "missingRequiredTop": missing_top,
+    }
+
+
+def extract_frame_e2e_summary_from_events_v1(
+    events: Iterable[dict[str, Any]],
+    *,
+    frames_total_declared: int | None = None,
+) -> dict[str, Any]:
+    deduped_by_key: dict[tuple[str, int], tuple[int, int, dict[str, Any], dict[str, Any]]] = {}
+    raw_event_count = 0
+    total_ms_values: list[int] = []
+    part_values: dict[str, list[int]] = {
+        "segMs": [],
+        "riskMs": [],
+        "planMs": [],
+        "executeMs": [],
+        "confirmMs": [],
+    }
+    for index, row in enumerate(events):
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "frame.e2e":
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        raw_event_count += 1
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        seq = _to_nonnegative_int(payload.get("frameSeq"))
+        if seq is None:
+            seq = _to_nonnegative_int(event.get("frameSeq"))
+        if seq is None or seq <= 0:
+            continue
+        ts_ms = _to_nonnegative_int(event.get("tsMs"))
+        if ts_ms is None:
+            ts_ms = _to_nonnegative_int(payload.get("t1Ms"))
+        if ts_ms is None:
+            ts_ms = index
+        key = (run_id, int(seq))
+        previous = deduped_by_key.get(key)
+        if previous is None or (ts_ms, index) >= (previous[0], previous[1]):
+            deduped_by_key[key] = (int(ts_ms), int(index), event, payload)
+
+    deduped_events = list(deduped_by_key.values())
+    event_count = len(deduped_events)
+    duplicates_dropped = int(max(0, raw_event_count - event_count))
+    frame_seq_set: set[tuple[str, int]] = set()
+    parts_sum_gt_total_count = 0
+    for _ts_ms, _idx, event, payload in deduped_events:
+        seq = _to_nonnegative_int(payload.get("frameSeq"))
+        if seq is None:
+            seq = _to_nonnegative_int(event.get("frameSeq"))
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        if seq is not None and seq > 0:
+            frame_seq_set.add((run_id, int(seq)))
+        total_ms = _to_nonnegative_int(payload.get("totalMs"))
+        if total_ms is not None:
+            total_ms_values.append(int(total_ms))
+        parts = payload.get("partsMs")
+        parts = parts if isinstance(parts, dict) else {}
+        parts_sum = 0
+        parts_non_null = 0
+        for key in ("segMs", "riskMs", "planMs", "executeMs", "confirmMs"):
+            value = _to_nonnegative_int(parts.get(key))
+            if value is not None:
+                part_values[key].append(int(value))
+                parts_sum += int(value)
+                parts_non_null += 1
+        if total_ms is not None and parts_non_null > 0 and parts_sum > int(total_ms):
+            parts_sum_gt_total_count += 1
+
+    if event_count <= 0:
+        return {
+            "present": False,
+            "events": 0,
+            "duplicatesDropped": 0,
+            "partsSumGtTotalCount": 0,
+            "coverage": {
+                "framesWithE2E": 0,
+                "framesTotalDeclared": int(max(0, int(frames_total_declared or 0))) if frames_total_declared is not None else None,
+                "ratio": 0.0 if frames_total_declared is not None and int(frames_total_declared or 0) > 0 else None,
+            },
+            "totalMs": summarize_latency([]),
+            "partsMs": {
+                key: summarize_latency([])
+                for key in ("segMs", "riskMs", "planMs", "executeMs", "confirmMs")
+            },
+        }
+
+    frames_with_e2e = len(frame_seq_set) if frame_seq_set else int(event_count)
+    total_declared = None
+    coverage_ratio = None
+    if frames_total_declared is not None:
+        total_declared = int(max(0, int(frames_total_declared or 0)))
+        if total_declared > 0:
+            coverage_ratio = round(_safe_ratio(frames_with_e2e, total_declared), 6)
+
+    return {
+        "present": True,
+        "events": int(event_count),
+        "duplicatesDropped": int(duplicates_dropped),
+        "partsSumGtTotalCount": int(parts_sum_gt_total_count),
+        "coverage": {
+            "framesWithE2E": int(frames_with_e2e),
+            "framesTotalDeclared": total_declared,
+            "ratio": coverage_ratio,
+        },
+        "totalMs": summarize_latency(total_ms_values),
+        "partsMs": {
+            key: summarize_latency(values)
+            for key, values in part_values.items()
+        },
+    }
+
+
+def extract_frame_user_e2e_summary_from_events_v1(
+    events: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    input_frames: set[tuple[str, int]] = set()
+    ack_frames: set[tuple[str, int]] = set()
+    ack_frames_by_kind: defaultdict[str, set[tuple[str, int]]] = defaultdict(set)
+    ack_kind_latest: dict[tuple[str, int, str], tuple[int, int]] = {}
+    deduped_by_key: dict[tuple[str, int], tuple[int, int, dict[str, Any], dict[str, Any]]] = {}
+    raw_event_count = 0
+
+    for index, row in enumerate(events):
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        name = str(event.get("name", "")).strip().lower()
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        seq = _to_nonnegative_int(payload.get("frameSeq"))
+        if seq is None:
+            seq = _to_nonnegative_int(event.get("frameSeq"))
+        if seq is None or seq <= 0:
+            continue
+        key = (run_id, int(seq))
+        if name == "frame.input":
+            input_frames.add(key)
+            continue
+        if name == "frame.ack":
+            ack_frames.add(key)
+            ack_kind = _normalize_frame_ack_kind(payload.get("kind"))
+            ack_key = (run_id, int(seq), ack_kind)
+            ts_ms = _to_nonnegative_int(event.get("tsMs"))
+            if ts_ms is None:
+                ts_ms = _to_nonnegative_int(payload.get("feedbackTsMs"))
+            if ts_ms is None:
+                ts_ms = index
+            previous_ack = ack_kind_latest.get(ack_key)
+            if previous_ack is None or (int(ts_ms), int(index)) >= (previous_ack[0], previous_ack[1]):
+                ack_kind_latest[ack_key] = (int(ts_ms), int(index))
+            continue
+        if name != "frame.user_e2e":
+            continue
+        raw_event_count += 1
+        ts_ms = _to_nonnegative_int(event.get("tsMs"))
+        if ts_ms is None:
+            ts_ms = _to_nonnegative_int(payload.get("t1Ms"))
+        if ts_ms is None:
+            ts_ms = index
+        previous = deduped_by_key.get(key)
+        if previous is None or (ts_ms, index) >= (previous[0], previous[1]):
+            deduped_by_key[key] = (int(ts_ms), int(index), event, payload)
+
+    deduped_events = list(deduped_by_key.values())
+    event_count = len(deduped_events)
+    duplicates_dropped = int(max(0, raw_event_count - event_count))
+    total_values: list[int] = []
+    totals_by_frame: dict[tuple[str, int], int] = {}
+    for _ts_ms, _idx, _event, payload in deduped_events:
+        total_ms = _to_nonnegative_int(payload.get("totalMs"))
+        if total_ms is not None:
+            total_values.append(int(total_ms))
+            frame_run_id = str(payload.get("runId", "")).strip() or str(_event.get("runId", "")).strip() or "unknown-run"
+            frame_seq = _to_nonnegative_int(payload.get("frameSeq"))
+            if frame_seq is None:
+                frame_seq = _to_nonnegative_int(_event.get("frameSeq"))
+            if frame_seq is not None and frame_seq > 0:
+                totals_by_frame[(frame_run_id, int(frame_seq))] = int(total_ms)
+
+    for run_id, frame_seq, ack_kind in ack_kind_latest.keys():
+        ack_frames_by_kind[ack_kind].add((run_id, frame_seq))
+
+    frames_with_input = len(input_frames)
+    frames_with_ack = len(ack_frames)
+    coverage_ratio = None
+    if frames_with_input > 0:
+        coverage_ratio = round(_safe_ratio(frames_with_ack, frames_with_input), 6)
+
+    if event_count <= 0:
+        return {
+            "present": False,
+            "events": 0,
+            "duplicatesDropped": 0,
+            "coverage": {
+                "framesWithInputDeclared": int(frames_with_input),
+                "framesWithAck": int(frames_with_ack),
+                "ratio": coverage_ratio,
+            },
+            "totalMs": summarize_latency([]),
+            "byKind": {},
+            "tts": {
+                "count": 0,
+                "coverageRatio": 0.0 if frames_with_input > 0 else None,
+                "p50": 0,
+                "p90": 0,
+                "max": 0,
+            },
+        }
+
+    by_kind: dict[str, Any] = {}
+    for kind, frames in sorted(ack_frames_by_kind.items()):
+        kind_values = [totals_by_frame[key] for key in sorted(frames) if key in totals_by_frame]
+        kind_cov = None
+        if frames_with_input > 0:
+            kind_cov = round(_safe_ratio(len(frames), frames_with_input), 6)
+        by_kind[kind] = {
+            "count": int(len(kind_values)),
+            "coverageRatio": kind_cov,
+            "totalMs": summarize_latency(kind_values),
+        }
+
+    tts_bucket = by_kind.get("tts")
+    if isinstance(tts_bucket, dict):
+        tts_total = tts_bucket.get("totalMs")
+        tts_total = tts_total if isinstance(tts_total, dict) else {}
+        tts_summary = {
+            "count": int(tts_total.get("count", 0) or 0),
+            "coverageRatio": tts_bucket.get("coverageRatio"),
+            "p50": int(tts_total.get("p50", 0) or 0),
+            "p90": int(tts_total.get("p90", 0) or 0),
+            "max": int(tts_total.get("max", 0) or 0),
+        }
+    else:
+        tts_summary = {
+            "count": 0,
+            "coverageRatio": 0.0 if frames_with_input > 0 else None,
+            "p50": 0,
+            "p90": 0,
+            "max": 0,
+        }
+
+    return {
+        "present": True,
+        "events": int(event_count),
+        "duplicatesDropped": int(duplicates_dropped),
+        "coverage": {
+            "framesWithInputDeclared": int(frames_with_input),
+            "framesWithAck": int(frames_with_ack),
+            "ratio": coverage_ratio,
+        },
+        "totalMs": summarize_latency(total_values),
+        "byKind": by_kind,
+        "tts": tts_summary,
+    }
+
+
+def _normalize_frame_ack_kind(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"tts"}:
+        return "tts"
+    if raw in {"overlay", "ar"}:
+        return "ar"
+    if raw in {"haptic"}:
+        return "haptic"
+    return "other"
 
 
 def extract_risk_latency_metrics_from_events_v1(
@@ -1599,7 +4652,7 @@ def extract_risk_latency_metrics_from_events_v1(
     return latency_stats, timings_summary or None
 
 
-def _merge_inference_fields(target: dict[str, str | None], payload: dict[str, Any]) -> None:
+def _merge_inference_fields(target: dict[str, Any], payload: dict[str, Any]) -> None:
     backend_value = payload.get("backend")
     model_value = payload.get("model")
     endpoint_value = payload.get("endpoint")
@@ -1614,11 +4667,162 @@ def _merge_inference_fields(target: dict[str, str | None], payload: dict[str, An
         target["endpoint"] = endpoint
 
 
-def _has_any_inference(summary: dict[str, dict[str, str | None]]) -> bool:
-    for tool in ("ocr", "risk"):
+def _merge_seg_prompt_fields(target: dict[str, Any], payload: dict[str, Any]) -> None:
+    target["promptPresent"] = True
+    out_payload = payload.get("out")
+    out_payload = out_payload if isinstance(out_payload, dict) else {}
+    truncation_payload = payload.get("truncation")
+    truncation_payload = truncation_payload if isinstance(truncation_payload, dict) else {}
+    budget_payload = payload.get("budget")
+    budget_payload = budget_payload if isinstance(budget_payload, dict) else {}
+    complexity_payload = payload.get("complexity")
+    complexity_payload = complexity_payload if isinstance(complexity_payload, dict) else {}
+
+    in_targets = _to_nonnegative_int(payload.get("targetsCount"))
+    in_text_chars = _to_nonnegative_int(payload.get("textChars"))
+    in_boxes = _to_nonnegative_int(payload.get("boxesCount"))
+    in_points = _to_nonnegative_int(payload.get("pointsCount"))
+
+    out_targets = _to_nonnegative_int(out_payload.get("targetsCount", payload.get("targetsCount")))
+    out_text_chars = _to_nonnegative_int(out_payload.get("textChars", payload.get("textChars")))
+    out_boxes = _to_nonnegative_int(out_payload.get("boxesCount", payload.get("boxesCount")))
+    out_points = _to_nonnegative_int(out_payload.get("pointsCount", payload.get("pointsCount")))
+    out_chars_total = _to_nonnegative_int(out_payload.get("charsTotal"))
+
+    target["promptTextCharsTotal"] = int(target.get("promptTextCharsTotal", 0) or 0) + out_text_chars
+    target["promptBoxesTotal"] = int(target.get("promptBoxesTotal", 0) or 0) + out_boxes
+    target["promptPointsTotal"] = int(target.get("promptPointsTotal", 0) or 0) + out_points
+    target["promptTargetsTotal"] = int(target.get("promptTargetsTotal", 0) or 0) + out_targets
+
+    target["promptTargetsInTotal"] = int(target.get("promptTargetsInTotal", 0) or 0) + in_targets
+    target["promptTextInCharsTotal"] = int(target.get("promptTextInCharsTotal", 0) or 0) + in_text_chars
+    target["promptBoxesInTotal"] = int(target.get("promptBoxesInTotal", 0) or 0) + in_boxes
+    target["promptPointsInTotal"] = int(target.get("promptPointsInTotal", 0) or 0) + in_points
+
+    target["promptTargetsOutTotal"] = int(target.get("promptTargetsOutTotal", 0) or 0) + out_targets
+    target["promptTextOutCharsTotal"] = int(target.get("promptTextOutCharsTotal", 0) or 0) + out_text_chars
+    target["promptBoxesOutTotal"] = int(target.get("promptBoxesOutTotal", 0) or 0) + out_boxes
+    target["promptPointsOutTotal"] = int(target.get("promptPointsOutTotal", 0) or 0) + out_points
+    target["promptCharsOutTotal"] = int(target.get("promptCharsOutTotal", 0) or 0) + out_chars_total
+
+    target["promptTargetsDroppedTotal"] = int(target.get("promptTargetsDroppedTotal", 0) or 0) + _to_nonnegative_int(
+        truncation_payload.get("targetsDropped")
+    )
+    target["promptBoxesDroppedTotal"] = int(target.get("promptBoxesDroppedTotal", 0) or 0) + _to_nonnegative_int(
+        truncation_payload.get("boxesDropped")
+    )
+    target["promptPointsDroppedTotal"] = int(target.get("promptPointsDroppedTotal", 0) or 0) + _to_nonnegative_int(
+        truncation_payload.get("pointsDropped")
+    )
+    target["promptTextCharsDroppedTotal"] = int(target.get("promptTextCharsDroppedTotal", 0) or 0) + _to_nonnegative_int(
+        truncation_payload.get("textCharsDropped")
+    )
+
+    target["promptWarningsCountTotal"] = int(target.get("promptWarningsCountTotal", 0) or 0) + _to_nonnegative_int(
+        payload.get("warningsCount")
+    )
+    packed = payload.get("packed")
+    if isinstance(packed, bool):
+        if packed:
+            target["promptPackedTrueCount"] = int(target.get("promptPackedTrueCount", 0) or 0) + 1
+        else:
+            target["promptPackedFalseCount"] = int(target.get("promptPackedFalseCount", 0) or 0) + 1
+
+    if _to_bool(complexity_payload.get("hasTargets")):
+        target["promptComplexityHasTargetsCount"] = int(target.get("promptComplexityHasTargetsCount", 0) or 0) + 1
+    if _to_bool(complexity_payload.get("hasText")):
+        target["promptComplexityHasTextCount"] = int(target.get("promptComplexityHasTextCount", 0) or 0) + 1
+    if _to_bool(complexity_payload.get("hasBoxes")):
+        target["promptComplexityHasBoxesCount"] = int(target.get("promptComplexityHasBoxesCount", 0) or 0) + 1
+    if _to_bool(complexity_payload.get("hasPoints")):
+        target["promptComplexityHasPointsCount"] = int(target.get("promptComplexityHasPointsCount", 0) or 0) + 1
+    target["promptComplexityScoreTotal"] = float(target.get("promptComplexityScoreTotal", 0.0) or 0.0) + _to_nonnegative_float(
+        complexity_payload.get("score")
+    )
+
+    budget_max_chars = _to_nonnegative_int(budget_payload.get("maxChars"))
+    if budget_max_chars > 0:
+        target["promptBudgetMaxChars"] = budget_max_chars
+    budget_max_targets = _to_nonnegative_int(budget_payload.get("maxTargets"))
+    if budget_max_targets > 0:
+        target["promptBudgetMaxTargets"] = budget_max_targets
+    budget_max_boxes = _to_nonnegative_int(budget_payload.get("maxBoxes"))
+    if budget_max_boxes > 0:
+        target["promptBudgetMaxBoxes"] = budget_max_boxes
+    budget_max_points = _to_nonnegative_int(budget_payload.get("maxPoints"))
+    if budget_max_points > 0:
+        target["promptBudgetMaxPoints"] = budget_max_points
+    budget_mode = str(budget_payload.get("mode", "")).strip()
+    if budget_mode:
+        target["promptBudgetMode"] = budget_mode
+
+    target["promptEventCount"] = int(target.get("promptEventCount", 0) or 0) + 1
+    prompt_version = payload.get("promptVersion")
+    version_text = "" if prompt_version is None else str(prompt_version).strip()
+    if version_text:
+        versions = target.get("_promptVersionCounts")
+        if not isinstance(versions, Counter):
+            versions = Counter()
+        versions[version_text] += 1
+        target["_promptVersionCounts"] = versions
+        target["promptVersion"] = version_text
+
+
+def _finalize_seg_prompt_bucket(target: dict[str, Any]) -> None:
+    versions = target.pop("_promptVersionCounts", None)
+    if isinstance(versions, Counter) and versions:
+        most_common = versions.most_common(1)[0][0]
+        target["promptVersion"] = most_common
+        target["promptVersionDiversityCount"] = len(versions)
+    elif bool(target.get("promptPresent")):
+        if "promptVersion" not in target:
+            target["promptVersion"] = None
+        target["promptVersionDiversityCount"] = 0
+    event_count = int(target.get("promptEventCount", 0) or 0)
+    if event_count > 0:
+        score_total = float(target.get("promptComplexityScoreTotal", 0.0) or 0.0)
+        target["promptComplexityScoreMean"] = round(score_total / float(event_count), 6)
+    elif "promptComplexityScoreMean" not in target:
+        target["promptComplexityScoreMean"] = 0.0
+
+
+def _to_nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except Exception:
+        return 0
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _to_nonnegative_float(value: Any) -> float:
+    try:
+        return max(0.0, float(value))
+    except Exception:
+        return 0.0
+
+
+def _to_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "on"}
+
+
+def _has_any_inference(summary: dict[str, dict[str, Any]]) -> bool:
+    for tool in ("ocr", "risk", "seg", "depth", "slam"):
         bucket = summary.get(tool, {})
         if not isinstance(bucket, dict):
             continue
+        if tool == "seg" and bool(bucket.get("promptPresent")):
+            return True
         if any(str(bucket.get(key, "")).strip() for key in ("backend", "model", "endpoint")):
             return True
     return False

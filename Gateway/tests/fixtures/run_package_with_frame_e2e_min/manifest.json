@@ -1,0 +1,15 @@
+﻿{
+  "runId": "fixture-frame-e2e-min",
+  "scenarioTag": "fixture_with_frame_e2e_min",
+  "startMs": 1713001000000,
+  "endMs": 1713001001200,
+  "wsJsonl": "events/events_v1.jsonl",
+  "eventsV1Jsonl": "events/events_v1.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "framesDir": "frames",
+  "framesMetaJsonl": "frames_meta.jsonl",
+  "frameCountSent": 2,
+  "eventCountAccepted": 2,
+  "errors": []
+}
