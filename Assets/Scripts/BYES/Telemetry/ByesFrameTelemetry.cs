@@ -177,7 +177,7 @@ namespace BYES.Telemetry
             }
             if (raw == "ar" || raw == "overlay")
             {
-                return "overlay";
+                return "ar";
             }
             if (raw == "haptic")
             {

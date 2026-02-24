@@ -169,7 +169,7 @@ namespace BYES.Plan
                         }
                     }
                     Executor.SetExecutionContext(_lastRunId, Mathf.Max(1, _lastFrameSeq));
-                    Executor.ExecuteSummary(summary, OnConfirmDecision);
+                    Executor.ExecuteSummary(summary, null);
                 }
                 else if (ActionExecutor != null)
                 {

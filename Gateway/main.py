@@ -3745,6 +3745,10 @@ async def run_packages_export_csv(
         "frame_user_e2e_ar_max",
         "ack_kind_diversity",
         "ack_coverage",
+        "tts_ack_rate",
+        "ar_ack_rate",
+        "confirm_responses",
+        "confirm_response_p90",
         "models_missing_required",
         "models_enabled_total",
         "seg_mask_f1_50",
@@ -5381,6 +5385,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     ack_kind_diversity: int = 0
     tts_ack_rate: float | None = None
     ar_ack_rate: float | None = None
+    confirm_responses: int = 0
+    confirm_response_p90: int | None = None
     models_missing_required: int | None = None
     models_enabled_total: int | None = None
     plan_actions_payload = plan_payload.get("actions")
@@ -5619,6 +5625,14 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         ar_ack_rate_raw = _read_float(plan_ack_payload, "arAckRate")
         if ar_ack_rate_raw is not None:
             ar_ack_rate = float(ar_ack_rate_raw)
+        confirm_responses_raw = _read_float(plan_ack_payload, "confirmResponsesFromUnity")
+        if confirm_responses_raw is not None:
+            confirm_responses = int(confirm_responses_raw)
+        confirm_latency_payload = plan_ack_payload.get("confirmResponseLatencyMs")
+        confirm_latency_payload = confirm_latency_payload if isinstance(confirm_latency_payload, dict) else {}
+        confirm_p90_raw = _read_float(confirm_latency_payload, "p90")
+        if confirm_p90_raw is not None:
+            confirm_response_p90 = int(confirm_p90_raw)
     if isinstance(models_payload, dict) and bool(models_payload.get("present")):
         missing_raw = _read_float(models_payload, "missingRequiredTotal")
         if missing_raw is not None:
@@ -6019,6 +6033,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "ack_coverage": ack_coverage,
         "tts_ack_rate": tts_ack_rate,
         "ar_ack_rate": ar_ack_rate,
+        "confirm_responses": int(confirm_responses),
+        "confirm_response_p90": confirm_response_p90,
         "models_missing_required": models_missing_required,
         "models_enabled_total": models_enabled_total,
         "summary": summary,
@@ -7202,6 +7218,10 @@ async def runs_dashboard(
         tts_ack_rate = "—" if tts_ack_rate_raw is None else f"{float(tts_ack_rate_raw):.4f}"
         ar_ack_rate_raw = row.get("ar_ack_rate")
         ar_ack_rate = "—" if ar_ack_rate_raw is None else f"{float(ar_ack_rate_raw):.4f}"
+        confirm_responses_raw = row.get("confirm_responses")
+        confirm_responses = "—" if confirm_responses_raw is None else str(int(confirm_responses_raw))
+        confirm_response_p90_raw = row.get("confirm_response_p90")
+        confirm_response_p90 = "—" if confirm_response_p90_raw is None else str(int(confirm_response_p90_raw))
         models_missing_required_raw = row.get("models_missing_required")
         models_missing_required = "—" if models_missing_required_raw is None else str(int(models_missing_required_raw))
         models_enabled_total_raw = row.get("models_enabled_total")
@@ -7361,6 +7381,8 @@ async def runs_dashboard(
             f"<td>{html.escape(ack_coverage)}</td>"
             f"<td>{html.escape(tts_ack_rate)}</td>"
             f"<td>{html.escape(ar_ack_rate)}</td>"
+            f"<td>{html.escape(confirm_responses)}</td>"
+            f"<td>{html.escape(confirm_response_p90)}</td>"
             f"<td>{html.escape(models_missing_required)}</td>"
             f"<td>{html.escape(models_enabled_total)}</td>"
             f"<td>{html.escape(seg_f1)}</td>"
@@ -7815,6 +7837,8 @@ async def runs_dashboard(
           <th>ACK Coverage</th>
           <th>TTS ACK Rate</th>
           <th>AR ACK Rate</th>
+          <th>Confirm Responses</th>
+          <th>Confirm Response p90(ms)</th>
           <th>Models Missing</th>
           <th>Models Enabled</th>
           <th>Seg F1@0.5</th>

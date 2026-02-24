@@ -1,5 +1,6 @@
 using BYES.Core;
 using BYES.Telemetry;
+using BYES.UI;
 using UnityEngine;
 
 namespace BYES.Plan
@@ -9,9 +10,6 @@ namespace BYES.Plan
         [Header("Audio (placeholder TTS)")]
         public AudioSource TtsAudioSource;
         public AudioClip PlaceholderTtsClip;
-
-        [Header("Behavior")]
-        public bool AutoAcknowledgeConfirm = true;
 
         private string _runId = "unknown-run";
         private int _frameSeq = 1;
@@ -50,8 +48,8 @@ namespace BYES.Plan
                 state.RecordActionPlan(plan);
             }
 
-            int pendingConfirm = 0;
-            string lastConfirmId = string.Empty;
+            var pendingConfirm = 0;
+            var lastConfirmId = string.Empty;
 
             if (plan.actions == null || plan.actions.Length == 0)
             {
@@ -76,18 +74,14 @@ namespace BYES.Plan
                         ExecuteOverlay(action);
                         break;
                     case "haptic":
-                        ExecuteHaptic(action);
+                        ExecuteHaptic();
                         break;
                     case "confirm":
                         pendingConfirm += 1;
-                        lastConfirmId = action.payload != null ? action.payload.confirmId : string.Empty;
-                        if (AutoAcknowledgeConfirm)
-                        {
-                            ByesFrameTelemetry.AckFeedback(_runId, _frameSeq, "tts", true, ByesFrameTelemetry.NowUnixMs());
-                        }
+                        lastConfirmId = ExecuteConfirm(action);
                         break;
                     case "stop":
-                        Debug.Log("[ActionPlanExecutor] STOP command received");
+                        ExecuteStop(action);
                         break;
                     default:
                         Debug.LogWarning("[ActionPlanExecutor] unknown action type=" + kind);
@@ -114,15 +108,62 @@ namespace BYES.Plan
 
         private void ExecuteOverlay(ActionPlanAction action)
         {
+            var label = action != null && action.payload != null ? action.payload.label : string.Empty;
             var text = action != null && action.payload != null ? action.payload.text : string.Empty;
-            Debug.Log("[ActionPlanExecutor] OVERLAY: " + text);
-            ByesFrameTelemetry.AckFeedback(_runId, _frameSeq, "ar", true, ByesFrameTelemetry.NowUnixMs());
+            ByesOverlayRenderer.EnsureExists().RenderOverlayCommand(_runId, _frameSeq, "overlay", label, text, action != null ? action.reason : string.Empty);
         }
 
-        private void ExecuteHaptic(ActionPlanAction action)
+        private static void ExecuteHaptic()
         {
-            Debug.Log("[ActionPlanExecutor] HAPTIC unsupported on current runtime, ack accepted=false");
-            ByesFrameTelemetry.AckFeedback(_runId, _frameSeq, "haptic", false, ByesFrameTelemetry.NowUnixMs());
+            Debug.Log("[ActionPlanExecutor] HAPTIC unsupported on current runtime");
+        }
+
+        private string ExecuteConfirm(ActionPlanAction action)
+        {
+            var payload = action != null ? action.payload : null;
+            var confirmId = payload != null ? payload.confirmId : string.Empty;
+            if (string.IsNullOrWhiteSpace(confirmId))
+            {
+                confirmId = !string.IsNullOrWhiteSpace(action?.actionId) ? action.actionId : $"confirm-{Time.frameCount}";
+            }
+            var prompt = payload != null ? payload.text : string.Empty;
+            if (string.IsNullOrWhiteSpace(prompt))
+            {
+                prompt = "Please confirm.";
+            }
+            var timeoutMs = payload != null ? payload.timeoutMs : 0;
+            if (timeoutMs <= 0)
+            {
+                timeoutMs = 5000;
+            }
+
+            ByesConfirmPanel.EnsureExists().ShowConfirm(
+                _runId,
+                _frameSeq,
+                confirmId,
+                prompt,
+                timeoutMs,
+                onDecision: (id, _accepted) =>
+                {
+                    var state = ByesSystemState.Instance;
+                    if (state != null)
+                    {
+                        state.SetPendingConfirm(0, id);
+                    }
+                }
+            );
+            return confirmId;
+        }
+
+        private void ExecuteStop(ActionPlanAction action)
+        {
+            var text = action != null && action.payload != null ? action.payload.text : string.Empty;
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                text = "STOP";
+            }
+            ByesOverlayRenderer.EnsureExists().RenderStop(_runId, _frameSeq, text);
+            Debug.Log("[ActionPlanExecutor] STOP command received");
         }
     }
 }

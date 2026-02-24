@@ -4595,6 +4595,8 @@ def extract_plan_ack_summary_from_events_v1(
     plan_frames: set[tuple[str, int]] = set()
     ack_frames: set[tuple[str, int]] = set()
     ack_frames_by_kind: defaultdict[str, set[tuple[str, int]]] = defaultdict(set)
+    confirm_responses_from_unity = 0
+    confirm_response_latencies: list[int] = []
 
     for row in events:
         if not isinstance(row, dict):
@@ -4610,9 +4612,9 @@ def extract_plan_ack_summary_from_events_v1(
         payload = event.get("payload")
         payload = payload if isinstance(payload, dict) else {}
         run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
-        seq = _to_nonnegative_int(payload.get("frameSeq"))
-        if seq is None:
-            seq = _to_nonnegative_int(event.get("frameSeq"))
+        seq = _parse_int(payload.get("frameSeq"))
+        if seq is None or seq <= 0:
+            seq = _parse_int(event.get("frameSeq"))
         if seq is None or seq <= 0:
             continue
         key = (run_id, int(seq))
@@ -4620,6 +4622,14 @@ def extract_plan_ack_summary_from_events_v1(
         name = str(event.get("name", "")).strip().lower()
         if name == "plan.generate":
             plan_frames.add(key)
+            continue
+        if name == "ui.confirm_response":
+            confirm_responses_from_unity += 1
+            latency_ms = _parse_int(event.get("latencyMs"))
+            if latency_ms is None and isinstance(payload, dict):
+                latency_ms = _parse_int(payload.get("latencyMs"))
+            if latency_ms is not None and latency_ms >= 0:
+                confirm_response_latencies.append(int(latency_ms))
             continue
         if name != "frame.ack":
             continue
@@ -4639,7 +4649,7 @@ def extract_plan_ack_summary_from_events_v1(
         ar_ack_rate = round(_safe_ratio(ar_ack_frames, frames_with_plan), 6)
 
     return {
-        "present": bool(frames_with_plan > 0 or frames_with_ack > 0),
+        "present": bool(frames_with_plan > 0 or frames_with_ack > 0 or confirm_responses_from_unity > 0),
         "framesWithPlan": int(frames_with_plan),
         "framesWithAck": int(frames_with_ack),
         "ackKindDiversity": int(len([key for key in ack_frames_by_kind.keys() if str(key).strip()])),
@@ -4647,6 +4657,8 @@ def extract_plan_ack_summary_from_events_v1(
         "arAckFrames": int(ar_ack_frames),
         "ttsAckRate": tts_ack_rate,
         "arAckRate": ar_ack_rate,
+        "confirmResponsesFromUnity": int(confirm_responses_from_unity),
+        "confirmResponseLatencyMs": summarize_latency(confirm_response_latencies),
         "byKindCounts": {kind: int(len(frames)) for kind, frames in sorted(ack_frames_by_kind.items())},
     }
 

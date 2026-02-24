@@ -1,5 +1,6 @@
 using BYES.Plan;
 using BYES.Telemetry;
+using BYES.UI;
 using BeYourEyes.Adapters.Networking;
 using UnityEngine;
 
@@ -44,11 +45,19 @@ namespace BYES.Core
 
             // Triggers telemetry singleton creation.
             _ = ByesFrameTelemetry.DeviceId;
+            _ = ByesOverlayAckThrottler.EnsureExists();
+            _ = ByesOverlayRenderer.EnsureExists();
+            _ = ByesConfirmPanel.EnsureExists();
 
             var gatewayClient = FindFirstObjectByType<GatewayClient>();
             var planClient = FindFirstObjectByType<PlanClient>();
             var legacyExecutor = FindFirstObjectByType<PlanExecutor>();
             var actionExecutor = FindFirstObjectByType<ActionPlanExecutor>();
+            var modeHotkeys = FindFirstObjectByType<ByesModeHotkeys>();
+            if (modeHotkeys == null)
+            {
+                gameObject.AddComponent<ByesModeHotkeys>();
+            }
 
             if (planClient != null)
             {

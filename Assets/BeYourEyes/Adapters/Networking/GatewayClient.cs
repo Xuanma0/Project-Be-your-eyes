@@ -351,6 +351,62 @@ namespace BeYourEyes.Adapters.Networking
             ));
         }
 
+        public void SendConfirmResponseV1(
+            string runId,
+            int frameSeq,
+            string confirmId,
+            bool accepted,
+            string runPackage = null,
+            string source = "unity_ui_confirm_v1",
+            Action<bool, string> onDone = null
+        )
+        {
+            if (replayMode)
+            {
+                OnReplayBlockedNetworkAction?.Invoke("confirm_response");
+                onDone?.Invoke(false, "replay_mode");
+                return;
+            }
+
+            var safeRunId = string.IsNullOrWhiteSpace(runId) ? SessionId : runId.Trim();
+            var safeFrameSeq = Math.Max(1, frameSeq);
+            if (string.IsNullOrWhiteSpace(confirmId))
+            {
+                onDone?.Invoke(false, "empty_confirm_id");
+                return;
+            }
+
+            var payload = new JObject
+            {
+                ["runId"] = safeRunId,
+                ["frameSeq"] = safeFrameSeq,
+                ["confirmId"] = confirmId.Trim(),
+                ["accepted"] = accepted,
+            };
+            if (!string.IsNullOrWhiteSpace(runPackage))
+            {
+                payload["runPackage"] = runPackage.Trim();
+            }
+            if (!string.IsNullOrWhiteSpace(source))
+            {
+                payload["source"] = source.Trim();
+            }
+
+            StartCoroutine(PostJsonRoutine(
+                BuildApiUrl("/api/confirm/response"),
+                payload.ToString(Formatting.None),
+                success =>
+                {
+                    var status = success ? "ok" : "error";
+                    if (!success)
+                    {
+                        Debug.LogWarning($"[GatewayClient] confirm_response failed id={confirmId} runId={safeRunId} frameSeq={safeFrameSeq}");
+                    }
+                    onDone?.Invoke(success, status);
+                }
+            ));
+        }
+
         public void SetIntentScanText(bool enabled, Action<bool, string> onDone = null)
         {
             var target = enabled ? "scan_text" : "none";
