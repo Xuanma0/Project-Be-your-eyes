@@ -46,7 +46,14 @@ def create_seg_provider(name: str | None = None) -> SegProvider:
         endpoint = str(os.getenv("BYES_SERVICE_SEG_ENDPOINT", "")).strip()
         timeout_ms = int(str(os.getenv("BYES_SERVICE_SEG_TIMEOUT_MS", "1200")).strip() or "1200")
         downstream = str(os.getenv("BYES_SERVICE_SEG_HTTP_DOWNSTREAM", "reference")).strip().lower() or "reference"
-        return HttpSegProvider(endpoint=endpoint, model_id=model_id, timeout_ms=timeout_ms, downstream=downstream)
+        tracking = str(os.getenv("BYES_SERVICE_SEG_HTTP_TRACKING", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        return HttpSegProvider(
+            endpoint=endpoint,
+            model_id=model_id,
+            timeout_ms=timeout_ms,
+            downstream=downstream,
+            tracking=tracking,
+        )
     return MockSegProvider(model_id=model_id)
 
 

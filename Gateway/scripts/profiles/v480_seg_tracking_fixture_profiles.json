@@ -1,0 +1,24 @@
+{
+  "profiles": [
+    {
+      "name": "baseline_reference",
+      "services": {"seg": "reference", "depth": "reference", "ocr": "reference"},
+      "env": {
+        "BYES_ENABLE_SEG": "1",
+        "BYES_ENABLE_DEPTH": "1",
+        "BYES_ENABLE_OCR": "1"
+      }
+    },
+    {
+      "name": "sam3_tracking_fixture",
+      "services": {"seg": "sam3", "depth": "reference", "ocr": "reference"},
+      "env": {
+        "BYES_ENABLE_SEG": "1",
+        "BYES_SERVICE_SEG_HTTP_DOWNSTREAM": "sam3",
+        "BYES_SERVICE_SEG_HTTP_TRACKING": "1",
+        "BYES_SEG_TRACKING": "1",
+        "BYES_SAM3_MODE": "fixture"
+      }
+    }
+  ]
+}

@@ -19,6 +19,7 @@ class MockSegProvider:
         run_id: str | None = None,
         targets: list[str] | None = None,
         prompt: dict[str, Any] | None = None,
+        tracking: bool | None = None,
     ) -> dict[str, Any]:
         del image, frame_seq, run_id
         targets_used = [str(item).strip() for item in (targets or []) if str(item).strip()]
@@ -28,4 +29,5 @@ class MockSegProvider:
             "model": self.model,
             "targetsCount": len(targets_used),
             "targetsUsed": targets_used,
+            "trackingUsed": bool(tracking),
         }

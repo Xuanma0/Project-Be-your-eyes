@@ -37,6 +37,7 @@ class InferenceRequest(BaseModel):
     runId: str | None = None
     targets: list[str] | None = None
     prompt: dict[str, Any] | None = None
+    tracking: bool | None = None
     riskThresholds: dict[str, float] | None = None
 
 
@@ -349,11 +350,28 @@ def infer_seg(request: InferenceRequest) -> dict[str, Any]:
     provider = get_seg_provider()
     targets = [str(item).strip() for item in (request.targets or []) if str(item).strip()]
     prompt = dict(request.prompt) if isinstance(request.prompt, dict) else None
+    tracking = bool(request.tracking) if isinstance(request.tracking, bool) else None
     try:
         try:
-            result = provider.infer(image, request.frameSeq, request.runId, targets=targets or None, prompt=prompt)
+            result = provider.infer(
+                image,
+                request.frameSeq,
+                request.runId,
+                targets=targets or None,
+                prompt=prompt,
+                tracking=tracking,
+            )
         except TypeError:
-            result = provider.infer(image, request.frameSeq, request.runId, targets=targets or None)
+            try:
+                result = provider.infer(
+                    image,
+                    request.frameSeq,
+                    request.runId,
+                    targets=targets or None,
+                    prompt=prompt,
+                )
+            except TypeError:
+                result = provider.infer(image, request.frameSeq, request.runId, targets=targets or None)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -379,6 +397,18 @@ def infer_seg(request: InferenceRequest) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             continue
         segment: dict[str, Any] = {"label": label, "score": score, "bbox": normalized_bbox}
+        track_id_raw = item.get("trackId")
+        if isinstance(track_id_raw, str):
+            track_id = track_id_raw.strip()
+            if track_id:
+                segment["trackId"] = track_id
+        track_state_raw = item.get("trackState")
+        if track_state_raw is None:
+            segment["trackState"] = None
+        elif isinstance(track_state_raw, str):
+            track_state = track_state_raw.strip().lower()
+            if track_state in {"init", "track", "lost"}:
+                segment["trackState"] = track_state
         mask = _normalize_seg_mask(item.get("mask"))
         if isinstance(mask, dict):
             segment["mask"] = mask
@@ -411,6 +441,11 @@ def infer_seg(request: InferenceRequest) -> dict[str, Any]:
     downstream_value = result.get("downstream")
     if isinstance(downstream_value, str) and downstream_value.strip():
         response["downstream"] = downstream_value.strip().lower()
+    tracking_used = result.get("trackingUsed")
+    if isinstance(tracking_used, bool):
+        response["trackingUsed"] = tracking_used
+    elif isinstance(request.tracking, bool):
+        response["trackingUsed"] = bool(request.tracking)
     return response
 
 

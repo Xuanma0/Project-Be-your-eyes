@@ -23,6 +23,7 @@ class HttpSegProvider:
         model_id: str | None = None,
         timeout_ms: int = 1200,
         downstream: str | None = None,
+        tracking: bool = False,
     ) -> None:
         endpoint_text = str(endpoint or "").strip()
         if not endpoint_text:
@@ -35,6 +36,7 @@ class HttpSegProvider:
         if downstream_value not in {"reference", "sam3"}:
             downstream_value = "reference"
         self.downstream = downstream_value
+        self.tracking = bool(tracking)
 
     def infer(
         self,
@@ -43,11 +45,14 @@ class HttpSegProvider:
         run_id: str | None = None,
         targets: list[str] | None = None,
         prompt: dict[str, Any] | None = None,
+        tracking: bool | None = None,
     ) -> dict[str, Any]:
         started = _now_ms()
+        tracking_used = self.tracking if tracking is None else bool(tracking)
         payload = {
             "frameSeq": frame_seq,
             "image_b64": _encode_image_b64(image),
+            "tracking": tracking_used,
         }
         run_id_text = str(run_id or "").strip()
         if run_id_text:
@@ -92,6 +97,7 @@ class HttpSegProvider:
             "targetsCount": int(body.get("targetsCount", len(targets_used)) or 0),
             "targetsUsed": body.get("targetsUsed", targets_used),
             "downstream": self.downstream,
+            "trackingUsed": bool(body.get("trackingUsed", tracking_used)),
         }
 
 
@@ -121,6 +127,18 @@ def _normalize_segment(item: Any) -> dict[str, Any] | None:
         except Exception:  # noqa: BLE001
             return None
     out: dict[str, Any] = {"label": label, "score": score, "bbox": normalized_bbox}
+    track_id = item.get("trackId")
+    if isinstance(track_id, str):
+        track_id_text = track_id.strip()
+        if track_id_text:
+            out["trackId"] = track_id_text
+    track_state = item.get("trackState")
+    if track_state is None:
+        out["trackState"] = None
+    elif isinstance(track_state, str):
+        track_state_text = track_state.strip().lower()
+        if track_state_text in {"init", "track", "lost"}:
+            out["trackState"] = track_state_text
     mask = _normalize_mask(item.get("mask"))
     if isinstance(mask, dict):
         out["mask"] = mask

@@ -55,6 +55,9 @@ METRIC_FIELDS = [
     "frame_user_e2e_ar_p90",
     "seg_f1_50",
     "seg_mask_f1_50",
+    "seg_track_coverage",
+    "seg_tracks_total",
+    "seg_id_switch_count",
     "depth_absRel",
     "ocr_cer",
     "slam_tracking_rate",
@@ -383,6 +386,8 @@ def _collect_summary_fields(*, run_package: Path, manifest: dict[str, Any], repo
     quality = quality if isinstance(quality, dict) else {}
     seg = quality.get("seg")
     seg = seg if isinstance(seg, dict) else {}
+    seg_tracking = quality.get("segTracking")
+    seg_tracking = seg_tracking if isinstance(seg_tracking, dict) else {}
     depth = quality.get("depth")
     depth = depth if isinstance(depth, dict) else {}
     ocr = quality.get("ocr")
@@ -447,6 +452,9 @@ def _collect_summary_fields(*, run_package: Path, manifest: dict[str, Any], repo
         "frame_user_e2e_ar_p90": _to_int(ar_total.get("p90")),
         "seg_f1_50": _to_float(seg.get("f1At50")),
         "seg_mask_f1_50": _to_float(seg.get("maskF1_50")),
+        "seg_track_coverage": _to_float(seg_tracking.get("trackCoverage")),
+        "seg_tracks_total": _to_int(seg_tracking.get("tracksTotal")),
+        "seg_id_switch_count": _to_int(seg_tracking.get("idSwitchCount")),
         "depth_absRel": _to_float(depth.get("absRel")),
         "ocr_cer": _to_float(ocr.get("cer")),
         "slam_tracking_rate": _to_float(_nested_get(slam, ["tracking", "trackingRate"])),
@@ -486,6 +494,9 @@ def _summary_to_csv_row(row: dict[str, Any]) -> dict[str, Any]:
         "frame_user_e2e_ar_p90": row.get("frame_user_e2e_ar_p90"),
         "seg_f1_50": row.get("seg_f1_50"),
         "seg_mask_f1_50": row.get("seg_mask_f1_50"),
+        "seg_track_coverage": row.get("seg_track_coverage"),
+        "seg_tracks_total": row.get("seg_tracks_total"),
+        "seg_id_switch_count": row.get("seg_id_switch_count"),
         "depth_absRel": row.get("depth_absRel"),
         "ocr_cer": row.get("ocr_cer"),
         "slam_tracking_rate": row.get("slam_tracking_rate"),
@@ -528,6 +539,9 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "frame_user_e2e_ar_p90",
         "seg_f1_50",
         "seg_mask_f1_50",
+        "seg_track_coverage",
+        "seg_tracks_total",
+        "seg_id_switch_count",
         "depth_absRel",
         "ocr_cer",
         "slam_tracking_rate",
@@ -568,12 +582,12 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]], payload: dict[str, A
     lines.append(f"- failures: `{payload.get('failures', 0)}`")
     lines.append("")
     lines.append(
-        "| profile | runId | frames | qualityScore | critical_fn | riskP90 | e2eP90 | ttsP90 | arP90 | segF1 | depthAbsRel | ocrCER | slamTrack | slamCoverage | slamAlignP90 | slamATE | slamRPE | costmapCoverage | costmapP90 | costmapFusedCoverage | costmapFusedIoUP90 | costmapFusedFlickerMean | costmapFusedShiftUsedRate | costmapFusedShiftRejectRate | slamModelPreferred | planCostmapUsed | status |"
+        "| profile | runId | frames | qualityScore | critical_fn | riskP90 | e2eP90 | ttsP90 | arP90 | segF1 | segTrackCoverage | segTracksTotal | segIdSwitchCount | depthAbsRel | ocrCER | slamTrack | slamCoverage | slamAlignP90 | slamATE | slamRPE | costmapCoverage | costmapP90 | costmapFusedCoverage | costmapFusedIoUP90 | costmapFusedFlickerMean | costmapFusedShiftUsedRate | costmapFusedShiftRejectRate | slamModelPreferred | planCostmapUsed | status |"
     )
-    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---|")
     for row in rows:
         lines.append(
-            "| {profile} | {run_id} | {frames} | {quality} | {critical_fn} | {risk} | {e2e} | {tts} | {ar} | {seg} | {depth} | {ocr} | {slam} | {slam_cov} | {slam_align} | {slam_ate} | {slam_rpe} | {costmap_cov} | {costmap_p90} | {costmap_fused_cov} | {costmap_fused_iou} | {costmap_fused_flicker} | {costmap_fused_shift_used} | {costmap_fused_shift_reject} | {slam_model_preferred} | {plan_costmap_used} | {status} |".format(
+            "| {profile} | {run_id} | {frames} | {quality} | {critical_fn} | {risk} | {e2e} | {tts} | {ar} | {seg} | {seg_track_cov} | {seg_tracks_total} | {seg_id_switch} | {depth} | {ocr} | {slam} | {slam_cov} | {slam_align} | {slam_ate} | {slam_rpe} | {costmap_cov} | {costmap_p90} | {costmap_fused_cov} | {costmap_fused_iou} | {costmap_fused_flicker} | {costmap_fused_shift_used} | {costmap_fused_shift_reject} | {slam_model_preferred} | {plan_costmap_used} | {status} |".format(
                 profile=row.get("profile"),
                 run_id=row.get("runId"),
                 frames=row.get("framesCount"),
@@ -584,6 +598,9 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]], payload: dict[str, A
                 tts=row.get("frame_user_e2e_tts_p90"),
                 ar=row.get("frame_user_e2e_ar_p90"),
                 seg=row.get("seg_f1_50"),
+                seg_track_cov=row.get("seg_track_coverage"),
+                seg_tracks_total=row.get("seg_tracks_total"),
+                seg_id_switch=row.get("seg_id_switch_count"),
                 depth=row.get("depth_absRel"),
                 ocr=row.get("ocr_cer"),
                 slam=row.get("slam_tracking_rate"),
@@ -1279,8 +1296,8 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
     lines.append(f"- processed: `{payload.get('processed', 0)}`")
     lines.append(f"- failures: `{payload.get('failures', 0)}`")
     lines.append("")
-    lines.append("| profile | services | discovered | processed | failures | quality(mean) | riskP90(p90) | frameUserTtsP90(p90) | slamCoverage(mean) | slamAlignP90(p90) | slamATE(mean) | slamRPE(mean) | costmapCoverage(mean) | costmapLatencyP90(p90) | costmapFusedCoverage(mean) | costmapFusedIouP90(p90) | costmapFusedFlickerMean(mean) | costmapFusedShiftUsedRate(mean) | costmapFusedShiftRejectRate(mean) | slamModelPreferred(mode) | planCostmapUsedRate(mean) |")
-    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|")
+    lines.append("| profile | services | discovered | processed | failures | quality(mean) | riskP90(p90) | frameUserTtsP90(p90) | segTrackCoverage(mean) | segTracksTotal(mean) | segIdSwitchCount(mean) | slamCoverage(mean) | slamAlignP90(p90) | slamATE(mean) | slamRPE(mean) | costmapCoverage(mean) | costmapLatencyP90(p90) | costmapFusedCoverage(mean) | costmapFusedIouP90(p90) | costmapFusedFlickerMean(mean) | costmapFusedShiftUsedRate(mean) | costmapFusedShiftRejectRate(mean) | slamModelPreferred(mode) | planCostmapUsedRate(mean) |")
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|")
     profiles = payload.get("profiles")
     profiles = profiles if isinstance(profiles, list) else []
     for entry in profiles:
@@ -1292,6 +1309,12 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
         risk = risk if isinstance(risk, dict) else {}
         tts = metrics.get("frame_user_e2e_tts_p90")
         tts = tts if isinstance(tts, dict) else {}
+        seg_track_cov = metrics.get("seg_track_coverage")
+        seg_track_cov = seg_track_cov if isinstance(seg_track_cov, dict) else {}
+        seg_tracks_total = metrics.get("seg_tracks_total")
+        seg_tracks_total = seg_tracks_total if isinstance(seg_tracks_total, dict) else {}
+        seg_id_switch = metrics.get("seg_id_switch_count")
+        seg_id_switch = seg_id_switch if isinstance(seg_id_switch, dict) else {}
         slam_cov = metrics.get("slam_coverage")
         slam_cov = slam_cov if isinstance(slam_cov, dict) else {}
         slam_align = metrics.get("slam_align_residual_p90")
@@ -1319,7 +1342,7 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
         plan_costmap_used = metrics.get("plan_costmap_ctx_used_rate")
         plan_costmap_used = plan_costmap_used if isinstance(plan_costmap_used, dict) else {}
         lines.append(
-            "| {name} | {services} | {d} | {p} | {f} | {quality} | {risk} | {tts} | {slam_cov} | {slam_align} | {slam_ate} | {slam_rpe} | {costmap_cov} | {costmap_p90} | {costmap_fused_cov} | {costmap_fused_iou} | {costmap_fused_flicker} | {costmap_fused_shift_used} | {costmap_fused_shift_reject} | {slam_model_preferred} | {plan_costmap_used} |".format(
+            "| {name} | {services} | {d} | {p} | {f} | {quality} | {risk} | {tts} | {seg_track_cov} | {seg_tracks_total} | {seg_id_switch} | {slam_cov} | {slam_align} | {slam_ate} | {slam_rpe} | {costmap_cov} | {costmap_p90} | {costmap_fused_cov} | {costmap_fused_iou} | {costmap_fused_flicker} | {costmap_fused_shift_used} | {costmap_fused_shift_reject} | {slam_model_preferred} | {plan_costmap_used} |".format(
                 name=entry.get("name"),
                 services=entry.get("services"),
                 d=entry.get("discovered"),
@@ -1328,6 +1351,9 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
                 quality=quality.get("mean"),
                 risk=risk.get("p90"),
                 tts=tts.get("p90"),
+                seg_track_cov=seg_track_cov.get("mean"),
+                seg_tracks_total=seg_tracks_total.get("mean"),
+                seg_id_switch=seg_id_switch.get("mean"),
                 slam_cov=slam_cov.get("mean"),
                 slam_align=slam_align.get("p90"),
                 slam_ate=slam_ate.get("mean"),
@@ -1350,18 +1376,21 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
         lines.append("")
         lines.append("## Deltas vs baseline")
         lines.append("")
-        lines.append("| profile | delta_qualityScore | delta_riskLatencyP90 | delta_frame_user_e2e_tts_p90 | delta_slam_coverage | delta_slam_align_residual_p90 | delta_slam_ate_rmse | delta_slam_rpe_trans_rmse | delta_costmap_coverage | delta_costmap_latency_p90 | delta_costmap_fused_coverage | delta_costmap_fused_iou_p90 | delta_costmap_fused_flicker_rate_mean | delta_costmap_fused_shift_used_rate | delta_costmap_fused_shift_gate_reject_rate | delta_plan_costmap_ctx_used_rate |")
-        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+        lines.append("| profile | delta_qualityScore | delta_riskLatencyP90 | delta_frame_user_e2e_tts_p90 | delta_seg_track_coverage | delta_seg_tracks_total | delta_seg_id_switch_count | delta_slam_coverage | delta_slam_align_residual_p90 | delta_slam_ate_rmse | delta_slam_rpe_trans_rmse | delta_costmap_coverage | delta_costmap_latency_p90 | delta_costmap_fused_coverage | delta_costmap_fused_iou_p90 | delta_costmap_fused_flicker_rate_mean | delta_costmap_fused_shift_used_rate | delta_costmap_fused_shift_gate_reject_rate | delta_plan_costmap_ctx_used_rate |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         for name, value in deltas.items():
             block = value if isinstance(value, dict) else {}
             flat = block.get("deltaFlat")
             flat = flat if isinstance(flat, dict) else {}
             lines.append(
-                "| {name} | {dq} | {dr} | {dt} | {ds} | {da} | {dsa} | {dsr} | {dcc} | {dcl} | {dcfc} | {dcfi} | {dcff} | {dcfsu} | {dcfsr} | {dpcu} |".format(
+                "| {name} | {dq} | {dr} | {dt} | {dstc} | {dstt} | {dsis} | {ds} | {da} | {dsa} | {dsr} | {dcc} | {dcl} | {dcfc} | {dcfi} | {dcff} | {dcfsu} | {dcfsr} | {dpcu} |".format(
                     name=name,
                     dq=flat.get("delta_qualityScore"),
                     dr=flat.get("delta_riskLatencyP90"),
                     dt=flat.get("delta_frame_user_e2e_tts_p90"),
+                    dstc=flat.get("delta_seg_track_coverage"),
+                    dstt=flat.get("delta_seg_tracks_total"),
+                    dsis=flat.get("delta_seg_id_switch_count"),
                     ds=flat.get("delta_slam_coverage"),
                     da=flat.get("delta_slam_align_residual_p90"),
                     dsa=flat.get("delta_slam_ate_rmse"),

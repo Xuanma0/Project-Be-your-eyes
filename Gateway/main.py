@@ -1032,6 +1032,7 @@ class GatewayApp:
                     run_id=run_id,
                     targets=seg_targets or None,
                     prompt=packed_seg_prompt,
+                    tracking=bool(self.config.inference_seg_tracking),
                 )
             except Exception as exc:  # noqa: BLE001
                 seg_result = SegResult(
@@ -3017,6 +3018,9 @@ async def run_packages_list(
     max_ocr_latency_p90: int | None = None,
     min_seg_f1_50: float | None = None,
     min_seg_coverage: float | None = None,
+    min_seg_track_coverage: float | None = None,
+    min_seg_tracks_total: int | None = None,
+    max_seg_id_switches: int | None = None,
     min_depth_delta1: float | None = None,
     max_depth_absrel: float | None = None,
     min_depth_coverage: float | None = None,
@@ -3100,6 +3104,9 @@ async def run_packages_list(
         max_ocr_latency_p90=max_ocr_latency_p90,
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
+        min_seg_track_coverage=min_seg_track_coverage,
+        min_seg_tracks_total=min_seg_tracks_total,
+        max_seg_id_switches=max_seg_id_switches,
         min_depth_delta1=min_depth_delta1,
         max_depth_absrel=max_depth_absrel,
         min_depth_coverage=min_depth_coverage,
@@ -3184,6 +3191,9 @@ async def run_packages_list(
             "max_ocr_latency_p90": max_ocr_latency_p90,
             "min_seg_f1_50": min_seg_f1_50,
             "min_seg_coverage": min_seg_coverage,
+            "min_seg_track_coverage": min_seg_track_coverage,
+            "min_seg_tracks_total": min_seg_tracks_total,
+            "max_seg_id_switches": max_seg_id_switches,
             "min_depth_delta1": min_depth_delta1,
             "max_depth_absrel": max_depth_absrel,
             "min_depth_coverage": min_depth_coverage,
@@ -3272,6 +3282,9 @@ async def run_packages_export_json(
     max_ocr_latency_p90: int | None = None,
     min_seg_f1_50: float | None = None,
     min_seg_coverage: float | None = None,
+    min_seg_track_coverage: float | None = None,
+    min_seg_tracks_total: int | None = None,
+    max_seg_id_switches: int | None = None,
     min_depth_delta1: float | None = None,
     max_depth_absrel: float | None = None,
     min_depth_coverage: float | None = None,
@@ -3355,6 +3368,9 @@ async def run_packages_export_json(
         max_ocr_latency_p90=max_ocr_latency_p90,
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
+        min_seg_track_coverage=min_seg_track_coverage,
+        min_seg_tracks_total=min_seg_tracks_total,
+        max_seg_id_switches=max_seg_id_switches,
             min_depth_delta1=min_depth_delta1,
             max_depth_absrel=max_depth_absrel,
             min_depth_coverage=min_depth_coverage,
@@ -3445,6 +3461,9 @@ async def run_packages_export_csv(
     max_ocr_latency_p90: int | None = None,
     min_seg_f1_50: float | None = None,
     min_seg_coverage: float | None = None,
+    min_seg_track_coverage: float | None = None,
+    min_seg_tracks_total: int | None = None,
+    max_seg_id_switches: int | None = None,
     min_depth_delta1: float | None = None,
     max_depth_absrel: float | None = None,
     min_depth_coverage: float | None = None,
@@ -3528,6 +3547,9 @@ async def run_packages_export_csv(
         max_ocr_latency_p90=max_ocr_latency_p90,
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
+        min_seg_track_coverage=min_seg_track_coverage,
+        min_seg_tracks_total=min_seg_tracks_total,
+        max_seg_id_switches=max_seg_id_switches,
         min_depth_delta1=min_depth_delta1,
         max_depth_absrel=max_depth_absrel,
         min_depth_coverage=min_depth_coverage,
@@ -3624,6 +3646,9 @@ async def run_packages_export_csv(
         "seg_f1_50",
         "seg_latency_p90",
         "seg_coverage",
+        "seg_track_coverage",
+        "seg_tracks_total",
+        "seg_id_switches",
         "depth_absrel",
         "depth_rmse",
         "depth_delta1",
@@ -5131,6 +5156,7 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     risk_latency = quality_payload.get("riskLatencyMs", {}) if isinstance(quality_payload, dict) else {}
     ocr_quality = quality_payload.get("ocr", {}) if isinstance(quality_payload, dict) else {}
     seg_quality = quality_payload.get("seg", {}) if isinstance(quality_payload, dict) else {}
+    seg_tracking_quality = quality_payload.get("segTracking", {}) if isinstance(quality_payload, dict) else {}
     depth_quality = quality_payload.get("depth", {}) if isinstance(quality_payload, dict) else {}
     slam_quality = quality_payload.get("slam", {}) if isinstance(quality_payload, dict) else {}
     costmap_quality = quality_payload.get("costmap", {}) if isinstance(quality_payload, dict) else {}
@@ -5177,6 +5203,9 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     seg_f1_50: float | None = None
     seg_latency_p90: int | None = None
     seg_coverage: float | None = None
+    seg_track_coverage: float | None = None
+    seg_tracks_total: int | None = None
+    seg_id_switches: int | None = None
     depth_absrel: float | None = None
     depth_rmse: float | None = None
     depth_delta1: float | None = None
@@ -5571,6 +5600,16 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         raw_mask_iou = _read_float(seg_quality, "maskMeanIoU")
         if raw_mask_iou is not None:
             seg_mask_mean_iou = float(raw_mask_iou)
+    if isinstance(seg_tracking_quality, dict):
+        raw_track_cov = _read_float(seg_tracking_quality, "trackCoverage")
+        if raw_track_cov is not None:
+            seg_track_coverage = float(raw_track_cov)
+        raw_tracks_total = _read_float(seg_tracking_quality, "tracksTotal")
+        if raw_tracks_total is not None:
+            seg_tracks_total = int(raw_tracks_total)
+        raw_switches = _read_float(seg_tracking_quality, "idSwitchCount")
+        if raw_switches is not None:
+            seg_id_switches = int(raw_switches)
     if isinstance(depth_quality, dict):
         raw_absrel = _read_float(depth_quality, "absRel")
         if raw_absrel is not None:
@@ -5759,6 +5798,9 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "seg_f1_50": seg_f1_50,
         "seg_latency_p90": seg_latency_p90,
         "seg_coverage": seg_coverage,
+        "seg_track_coverage": seg_track_coverage,
+        "seg_tracks_total": seg_tracks_total,
+        "seg_id_switches": seg_id_switches,
         "depth_absrel": depth_absrel,
         "depth_rmse": depth_rmse,
         "depth_delta1": depth_delta1,
@@ -5881,6 +5923,9 @@ def _matches_run_filters(
     max_ocr_latency_p90: int | None,
     min_seg_f1_50: float | None,
     min_seg_coverage: float | None,
+    min_seg_track_coverage: float | None,
+    min_seg_tracks_total: int | None,
+    max_seg_id_switches: int | None,
     min_depth_delta1: float | None,
     max_depth_absrel: float | None,
     min_depth_coverage: float | None,
@@ -6022,6 +6067,24 @@ def _matches_run_filters(
         if value is None:
             return False
         if float(value) < float(min_seg_coverage):
+            return False
+    if min_seg_track_coverage is not None:
+        value = row.get("seg_track_coverage")
+        if value is None:
+            return False
+        if float(value) < float(min_seg_track_coverage):
+            return False
+    if min_seg_tracks_total is not None:
+        value = row.get("seg_tracks_total")
+        if value is None:
+            return False
+        if int(value) < int(min_seg_tracks_total):
+            return False
+    if max_seg_id_switches is not None:
+        value = row.get("seg_id_switches")
+        if value is None:
+            return False
+        if int(value) > int(max_seg_id_switches):
             return False
     if min_depth_delta1 is not None:
         value = row.get("depth_delta1")
@@ -6417,6 +6480,9 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "seg_f1_50",
         "seg_latency_p90",
         "seg_coverage",
+        "seg_track_coverage",
+        "seg_tracks_total",
+        "seg_id_switches",
         "depth_absrel",
         "depth_rmse",
         "depth_delta1",
@@ -6527,6 +6593,9 @@ async def _query_run_package_rows(
     max_ocr_latency_p90: int | None,
     min_seg_f1_50: float | None,
     min_seg_coverage: float | None,
+    min_seg_track_coverage: float | None,
+    min_seg_tracks_total: int | None,
+    max_seg_id_switches: int | None,
     min_depth_delta1: float | None,
     max_depth_absrel: float | None,
     min_depth_coverage: float | None,
@@ -6616,6 +6685,9 @@ async def _query_run_package_rows(
             max_ocr_latency_p90=max_ocr_latency_p90,
             min_seg_f1_50=min_seg_f1_50,
             min_seg_coverage=min_seg_coverage,
+            min_seg_track_coverage=min_seg_track_coverage,
+            min_seg_tracks_total=min_seg_tracks_total,
+            max_seg_id_switches=max_seg_id_switches,
             min_depth_delta1=min_depth_delta1,
             max_depth_absrel=max_depth_absrel,
             min_depth_coverage=min_depth_coverage,
@@ -6733,6 +6805,9 @@ async def runs_dashboard(
     max_ocr_latency_p90: int | None = None,
     min_seg_f1_50: float | None = None,
     min_seg_coverage: float | None = None,
+    min_seg_track_coverage: float | None = None,
+    min_seg_tracks_total: int | None = None,
+    max_seg_id_switches: int | None = None,
     min_depth_delta1: float | None = None,
     max_depth_absrel: float | None = None,
     min_depth_coverage: float | None = None,
@@ -6817,6 +6892,9 @@ async def runs_dashboard(
         max_ocr_latency_p90=max_ocr_latency_p90,
         min_seg_f1_50=min_seg_f1_50,
         min_seg_coverage=min_seg_coverage,
+        min_seg_track_coverage=min_seg_track_coverage,
+        min_seg_tracks_total=min_seg_tracks_total,
+        max_seg_id_switches=max_seg_id_switches,
         min_depth_delta1=min_depth_delta1,
         max_depth_absrel=max_depth_absrel,
         min_depth_coverage=min_depth_coverage,
@@ -6932,6 +7010,12 @@ async def runs_dashboard(
         seg_f1 = "—" if seg_f1_raw is None else f"{float(seg_f1_raw):.4f}"
         seg_cov_raw = row.get("seg_coverage")
         seg_cov = "—" if seg_cov_raw is None else f"{float(seg_cov_raw):.4f}"
+        seg_track_cov_raw = row.get("seg_track_coverage")
+        seg_track_cov = "—" if seg_track_cov_raw is None else f"{float(seg_track_cov_raw):.4f}"
+        seg_tracks_total_raw = row.get("seg_tracks_total")
+        seg_tracks_total = "—" if seg_tracks_total_raw is None else str(int(seg_tracks_total_raw))
+        seg_id_switches_raw = row.get("seg_id_switches")
+        seg_id_switches = "—" if seg_id_switches_raw is None else str(int(seg_id_switches_raw))
         seg_mask_f1_raw = row.get("seg_mask_f1_50")
         seg_mask_f1 = "—" if seg_mask_f1_raw is None else f"{float(seg_mask_f1_raw):.4f}"
         seg_mask_cov_raw = row.get("seg_mask_coverage")
@@ -7067,6 +7151,9 @@ async def runs_dashboard(
             f"<td>{html.escape(models_enabled_total)}</td>"
             f"<td>{html.escape(seg_f1)}</td>"
             f"<td>{html.escape(seg_cov)}</td>"
+            f"<td>{html.escape(seg_track_cov)}</td>"
+            f"<td>{html.escape(seg_tracks_total)}</td>"
+            f"<td>{html.escape(seg_id_switches)}</td>"
             f"<td>{html.escape(seg_mask_f1)}</td>"
             f"<td>{html.escape(seg_mask_cov)}</td>"
             f"<td>{html.escape(seg_mask_iou)}</td>"
@@ -7148,6 +7235,9 @@ async def runs_dashboard(
     max_ocr_latency_p90_value = html.escape("" if max_ocr_latency_p90 is None else str(max_ocr_latency_p90))
     min_seg_f1_50_value = html.escape("" if min_seg_f1_50 is None else str(min_seg_f1_50))
     min_seg_coverage_value = html.escape("" if min_seg_coverage is None else str(min_seg_coverage))
+    min_seg_track_coverage_value = html.escape("" if min_seg_track_coverage is None else str(min_seg_track_coverage))
+    min_seg_tracks_total_value = html.escape("" if min_seg_tracks_total is None else str(min_seg_tracks_total))
+    max_seg_id_switches_value = html.escape("" if max_seg_id_switches is None else str(max_seg_id_switches))
     min_depth_delta1_value = html.escape("" if min_depth_delta1 is None else str(min_depth_delta1))
     max_depth_absrel_value = html.escape("" if max_depth_absrel is None else str(max_depth_absrel))
     min_depth_coverage_value = html.escape("" if min_depth_coverage is None else str(min_depth_coverage))
@@ -7313,6 +7403,9 @@ async def runs_dashboard(
       <label>max_models_missing_required: <input type="number" min="0" name="max_models_missing_required" value="{max_models_missing_required_value}" /></label>
       <label>min_seg_f1_50: <input type="number" step="0.0001" min="0" max="1" name="min_seg_f1_50" value="{min_seg_f1_50_value}" /></label>
       <label>min_seg_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_seg_coverage" value="{min_seg_coverage_value}" /></label>
+      <label>min_seg_track_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_seg_track_coverage" value="{min_seg_track_coverage_value}" /></label>
+      <label>min_seg_tracks_total: <input type="number" step="1" min="0" name="min_seg_tracks_total" value="{min_seg_tracks_total_value}" /></label>
+      <label>max_seg_id_switches: <input type="number" step="1" min="0" name="max_seg_id_switches" value="{max_seg_id_switches_value}" /></label>
       <label>min_depth_delta1: <input type="number" step="0.0001" min="0" max="1" name="min_depth_delta1" value="{min_depth_delta1_value}" /></label>
       <label>max_depth_absrel: <input type="number" step="0.0001" min="0" name="max_depth_absrel" value="{max_depth_absrel_value}" /></label>
       <label>min_depth_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_depth_coverage" value="{min_depth_coverage_value}" /></label>
@@ -7383,6 +7476,9 @@ async def runs_dashboard(
           <option value="models_enabled_total" {"selected" if sort_value == "models_enabled_total" else ""}>models_enabled_total</option>
           <option value="seg_f1_50" {"selected" if sort_value == "seg_f1_50" else ""}>seg_f1_50</option>
           <option value="seg_coverage" {"selected" if sort_value == "seg_coverage" else ""}>seg_coverage</option>
+          <option value="seg_track_coverage" {"selected" if sort_value == "seg_track_coverage" else ""}>seg_track_coverage</option>
+          <option value="seg_tracks_total" {"selected" if sort_value == "seg_tracks_total" else ""}>seg_tracks_total</option>
+          <option value="seg_id_switches" {"selected" if sort_value == "seg_id_switches" else ""}>seg_id_switches</option>
           <option value="depth_absrel" {"selected" if sort_value == "depth_absrel" else ""}>depth_absrel</option>
           <option value="depth_rmse" {"selected" if sort_value == "depth_rmse" else ""}>depth_rmse</option>
           <option value="depth_delta1" {"selected" if sort_value == "depth_delta1" else ""}>depth_delta1</option>
@@ -7443,8 +7539,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&min_costmap_fused_coverage={min_costmap_fused_coverage_value}&max_costmap_fused_latency_p90={max_costmap_fused_latency_p90_value}&min_costmap_fused_iou_p90={min_costmap_fused_iou_p90_value}&max_costmap_fused_flicker_rate_mean={max_costmap_fused_flicker_rate_mean_value}&max_costmap_fused_shift_gate_reject_rate={max_costmap_fused_shift_gate_reject_rate_value}&min_costmap_fused_shift_used_rate={min_costmap_fused_shift_used_rate_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&min_costmap_fused_coverage={min_costmap_fused_coverage_value}&max_costmap_fused_latency_p90={max_costmap_fused_latency_p90_value}&min_costmap_fused_iou_p90={min_costmap_fused_iou_p90_value}&max_costmap_fused_flicker_rate_mean={max_costmap_fused_flicker_rate_mean_value}&max_costmap_fused_shift_gate_reject_rate={max_costmap_fused_shift_gate_reject_rate_value}&min_costmap_fused_shift_used_rate={min_costmap_fused_shift_used_rate_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&min_costmap_fused_coverage={min_costmap_fused_coverage_value}&max_costmap_fused_latency_p90={max_costmap_fused_latency_p90_value}&min_costmap_fused_iou_p90={min_costmap_fused_iou_p90_value}&max_costmap_fused_flicker_rate_mean={max_costmap_fused_flicker_rate_mean_value}&max_costmap_fused_shift_gate_reject_rate={max_costmap_fused_shift_gate_reject_rate_value}&min_costmap_fused_shift_used_rate={min_costmap_fused_shift_used_rate_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_track_coverage={min_seg_track_coverage_value}&min_seg_tracks_total={min_seg_tracks_total_value}&max_seg_id_switches={max_seg_id_switches_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&min_costmap_fused_coverage={min_costmap_fused_coverage_value}&max_costmap_fused_latency_p90={max_costmap_fused_latency_p90_value}&min_costmap_fused_iou_p90={min_costmap_fused_iou_p90_value}&max_costmap_fused_flicker_rate_mean={max_costmap_fused_flicker_rate_mean_value}&max_costmap_fused_shift_gate_reject_rate={max_costmap_fused_shift_gate_reject_rate_value}&min_costmap_fused_shift_used_rate={min_costmap_fused_shift_used_rate_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_track_coverage={min_seg_track_coverage_value}&min_seg_tracks_total={min_seg_tracks_total_value}&max_seg_id_switches={max_seg_id_switches_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -7476,6 +7572,9 @@ async def runs_dashboard(
           <th>Models Enabled</th>
           <th>Seg F1@0.5</th>
           <th>Seg Coverage</th>
+          <th>Seg Track Coverage</th>
+          <th>Seg Tracks Total</th>
+          <th>Seg ID Switches</th>
           <th>Seg Mask F1@0.5</th>
           <th>Seg Mask Coverage</th>
           <th>Seg Mask mIoU</th>

@@ -87,6 +87,7 @@ class MockSegBackend:
         run_id: str | None = None,
         targets: list[str] | None = None,
         prompt: dict[str, Any] | None = None,
+        tracking: bool | None = None,
     ) -> SegResult:
         started = _now_ms()
         del image_bytes, frame_seq, ts_ms, run_id
@@ -103,6 +104,7 @@ class MockSegBackend:
                 "backend": "mock",
                 "targetsCount": len(normalized_targets),
                 "targetsUsed": normalized_targets,
+                "trackingUsed": bool(tracking),
             },
         )
 

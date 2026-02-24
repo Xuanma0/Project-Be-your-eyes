@@ -72,5 +72,6 @@ class SlamProvider(Protocol):
         run_id: str | None = None,
         targets: list[str] | None = None,
         prompt: dict[str, Any] | None = None,
+        tracking: bool | None = None,
     ) -> dict[str, Any]:
         ...

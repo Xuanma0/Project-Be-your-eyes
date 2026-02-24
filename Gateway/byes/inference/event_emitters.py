@@ -421,6 +421,27 @@ def _normalize_seg_payload(payload: dict[str, Any], raw_segments: Any) -> dict[s
             "score": score,
             "bbox": [x0, y0, x1, y1],
         }
+        track_id_raw = row.get("trackId")
+        if track_id_raw is not None:
+            if isinstance(track_id_raw, str):
+                track_id = track_id_raw.strip()
+                if track_id:
+                    normalized_row["trackId"] = track_id
+                else:
+                    warnings_count += 1
+            else:
+                warnings_count += 1
+
+        track_state_raw = row.get("trackState")
+        if track_state_raw is not None:
+            if isinstance(track_state_raw, str):
+                track_state = track_state_raw.strip().lower()
+                if track_state in {"init", "track", "lost"}:
+                    normalized_row["trackState"] = track_state
+                else:
+                    warnings_count += 1
+            else:
+                warnings_count += 1
         normalized_mask, mask_warnings = _normalize_seg_mask(row.get("mask"))
         warnings_count += int(mask_warnings)
         if isinstance(normalized_mask, dict):

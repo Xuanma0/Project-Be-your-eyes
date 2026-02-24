@@ -19,6 +19,7 @@ class SegRequest(BaseModel):
     image_b64: str | None = None
     targets: list[str] | None = None
     prompt: dict[str, Any] | None = None
+    tracking: bool | None = None
     mode: str | None = None
 
 
@@ -122,6 +123,18 @@ def _normalize_segment(raw: Any) -> dict[str, Any] | None:
     score_raw = _to_float(raw.get("score"))
     score = 1.0 if score_raw is None else max(0.0, min(1.0, score_raw))
     out: dict[str, Any] = {"label": label, "score": score, "bbox": bbox}
+    track_id_raw = raw.get("trackId")
+    if isinstance(track_id_raw, str):
+        track_id = track_id_raw.strip()
+        if track_id:
+            out["trackId"] = track_id
+    track_state_raw = raw.get("trackState")
+    if track_state_raw is None:
+        out["trackState"] = None
+    elif isinstance(track_state_raw, str):
+        track_state = track_state_raw.strip().lower()
+        if track_state in {"init", "track", "lost"}:
+            out["trackState"] = track_state
     mask = _normalize_mask(raw.get("mask"))
     if isinstance(mask, dict):
         out["mask"] = mask
@@ -307,6 +320,7 @@ def segment(request: SegRequest, raw_request: Request) -> dict[str, Any]:
     warnings_count = int(state.get("warningsCount", 0) or 0)
     warning: str | None = None
     segments: list[dict[str, Any]] = []
+    tracking_used = bool(request.tracking)
 
     targets = _normalize_targets(request.targets)
     prompt_targets = _prompt_targets(request.prompt)
@@ -358,6 +372,7 @@ def segment(request: SegRequest, raw_request: Request) -> dict[str, Any]:
         "backend": BACKEND,
         "model": str(state.get("modelId") or _now_model_id()),
         "endpoint": endpoint,
+        "trackingUsed": tracking_used,
     }
     if targets:
         response["targetsCount"] = len(targets)

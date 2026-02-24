@@ -23,6 +23,7 @@ if str(GATEWAY_ROOT) not in sys.path:
 
 from byes.quality_metrics import (  # noqa: E402
     compute_seg_metrics,
+    compute_seg_tracking_metrics,
     compute_depth_metrics,
     compute_slam_metrics,
     compute_slam_metrics_by_model_from_events,
@@ -1142,6 +1143,7 @@ def generate_report_outputs(
         "costmapFused": costmap_fused_metrics,
         "slam": {"present": False, "alignment": slam_alignment},
         "slamError": {"present": False},
+        "segTracking": compute_seg_tracking_metrics(event_rows, frames_total=frames_total_hint or 0),
     }
     if risk_timings_stats is not None:
         quality_payload["riskTimingsMs"] = risk_timings_stats
@@ -1279,6 +1281,7 @@ def generate_report_outputs(
         }
         if seg_metrics is not None:
             quality_payload["seg"] = seg_metrics
+        quality_payload["segTracking"] = compute_seg_tracking_metrics(event_rows, frames_total=frames_total)
         if depth_metrics is not None:
             quality_payload["depth"] = depth_metrics
         if slam_metrics is not None:

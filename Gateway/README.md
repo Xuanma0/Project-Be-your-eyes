@@ -216,6 +216,14 @@ SAM3 model readiness check:
 - `/api/models` will require `BYES_SAM3_CKPT_PATH` when `BYES_ENABLE_SEG=1`, `BYES_SEG_BACKEND=http`, and downstream is `sam3`.
 - Use `python scripts/verify_models.py --check --quiet` to fail fast on missing checkpoint/endpoint config.
 
+SAM3 tracking fixture mode (v4.80):
+- enable downstream passthrough with `BYES_SERVICE_SEG_HTTP_TRACKING=1` (inference_service) and `BYES_SEG_TRACKING=1` (Gateway).
+- `seg.segment` payload may include `trackId` and `trackState` (`init|track|lost`) for cross-frame association.
+- `report.json -> quality.segTracking` adds:
+  - `trackCoverage = framesWithTrackId / framesWithSeg`
+  - `tracksTotal = unique trackId count`
+  - `idSwitchCount` (definition: per-frame same-label multi-track + per-track label change)
+
 Prompt + mask HTTP e2e (deterministic fixture):
 
 ```powershell
@@ -631,6 +639,22 @@ python scripts/run_dataset_benchmark.py `
 PySLAM offline profile note:
 - put fixture trajectories under `<run_package>/pyslam_fixture/` (or `<run_package>/gt/pyslam_fixture/`) for CI-safe runs
 - `slam_offline_pyslam_run` prehook calls `scripts/run_pyslam_on_run_package.py --mode fixture` then `scripts/ingest_pyslam_tum.py` before `report_run.py`, so matrix mode can compare baseline vs offline SLAM ingest even with `--replay 0`
+
+SAM3 tracking fixture profile example:
+
+```json
+{
+  "name": "sam3_tracking_fixture",
+  "services": {"seg": "sam3", "depth": "reference", "ocr": "reference"},
+  "env": {
+    "BYES_ENABLE_SEG": "1",
+    "BYES_SERVICE_SEG_HTTP_DOWNSTREAM": "sam3",
+    "BYES_SERVICE_SEG_HTTP_TRACKING": "1",
+    "BYES_SEG_TRACKING": "1",
+    "BYES_SAM3_MODE": "fixture"
+  }
+}
+```
 
 Fixture-only prehook smoke command:
 

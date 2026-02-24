@@ -291,6 +291,7 @@ class GatewayConfig:
     inference_slam_http_url: str = "http://127.0.0.1:9005/slam/pose"
     inference_seg_targets: tuple[str, ...] = ()
     inference_seg_prompt: dict[str, Any] | None = None
+    inference_seg_tracking: bool = False
     inference_seg_prompt_max_chars: int = 256
     inference_seg_prompt_max_targets: int = 8
     inference_seg_prompt_max_boxes: int = 4
@@ -474,6 +475,7 @@ def load_config() -> GatewayConfig:
         inference_slam_http_url=os.getenv("BYES_SLAM_HTTP_URL", "http://127.0.0.1:9005/slam/pose"),
         inference_seg_targets=_env_string_list("BYES_SEG_TARGETS", "BYES_SEG_TARGETS_JSON"),
         inference_seg_prompt=_env_seg_prompt(),
+        inference_seg_tracking=_env_bool("BYES_SEG_TRACKING", False),
         inference_seg_prompt_max_chars=_env_int("BYES_SEG_PROMPT_MAX_CHARS", 256),
         inference_seg_prompt_max_targets=_env_int("BYES_SEG_PROMPT_MAX_TARGETS", 8),
         inference_seg_prompt_max_boxes=_env_int("BYES_SEG_PROMPT_MAX_BOXES", 4),

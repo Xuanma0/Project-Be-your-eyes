@@ -1513,6 +1513,90 @@ def compute_seg_metrics(
     return payload
 
 
+def compute_seg_tracking_metrics(
+    events: Iterable[dict[str, Any]],
+    *,
+    frames_total: int | None = None,
+) -> dict[str, Any]:
+    frames_with_seg: set[tuple[str, int]] = set()
+    frames_with_track: set[tuple[str, int]] = set()
+    track_frames: defaultdict[str, set[tuple[str, int]]] = defaultdict(set)
+    track_last_label: dict[str, str] = {}
+    id_switch_count = 0
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "seg.segment":
+            continue
+        phase = str(event.get("phase", "")).strip().lower()
+        if phase and phase != "result":
+            continue
+        status = str(event.get("status", "")).strip().lower()
+        if status and status != "ok":
+            continue
+
+        frame_seq = _parse_int(event.get("frameSeq"))
+        if frame_seq is None or frame_seq <= 0:
+            continue
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        frame_key = (run_id, int(frame_seq))
+
+        segments = payload.get("segments")
+        if not isinstance(segments, list):
+            continue
+        frames_with_seg.add(frame_key)
+
+        label_to_ids: defaultdict[str, set[str]] = defaultdict(set)
+        for segment in segments:
+            if not isinstance(segment, dict):
+                continue
+            label = str(segment.get("label", "")).strip().lower()
+            track_id_raw = segment.get("trackId")
+            track_id = str(track_id_raw).strip() if isinstance(track_id_raw, str) else ""
+            if not track_id:
+                continue
+            frames_with_track.add(frame_key)
+            track_frames[track_id].add(frame_key)
+            if label:
+                label_to_ids[label].add(track_id)
+                previous_label = track_last_label.get(track_id)
+                if previous_label is not None and previous_label != label:
+                    id_switch_count += 1
+                track_last_label[track_id] = label
+
+        for ids in label_to_ids.values():
+            if len(ids) > 1:
+                id_switch_count += 1
+
+    frames_with_seg_count = len(frames_with_seg)
+    frames_with_track_count = len(frames_with_track)
+    frames_total_safe = max(0, int(frames_total or 0))
+    if frames_total_safe <= 0:
+        frames_total_safe = frames_with_seg_count
+    track_lengths = [len(frame_keys) for frame_keys in track_frames.values()]
+    avg_track_len = _mean_float([float(value) for value in track_lengths]) if track_lengths else 0.0
+    track_len_p90 = float(_percentile(track_lengths, 90)) if track_lengths else 0.0
+
+    return {
+        "present": bool(frames_with_track_count > 0),
+        "framesTotal": int(frames_total_safe),
+        "framesWithSeg": int(frames_with_seg_count),
+        "framesWithTrackId": int(frames_with_track_count),
+        "trackCoverage": round(_safe_ratio(frames_with_track_count, frames_with_seg_count), 6),
+        "tracksTotal": int(len(track_frames)),
+        "avgTrackLen": round(float(avg_track_len), 6),
+        "trackLenP90": round(float(track_len_p90), 6),
+        "idSwitchCount": int(max(0, id_switch_count)),
+        "idSwitchDefinition": "per-frame same-label multi-track + per-track label change",
+    }
+
+
 def compute_depth_metrics(
     gt_map: dict[int, dict[str, Any]],
     pred_map: dict[int, dict[str, Any]],

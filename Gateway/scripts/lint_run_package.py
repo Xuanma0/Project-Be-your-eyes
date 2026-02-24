@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import json
 import math
 import re
@@ -1353,6 +1354,16 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         seg_mask_schema_ok = 0
         seg_mask_size_mismatch_count = 0
         seg_mask_bad_counts_count = 0
+        seg_track_id_present = 0
+        seg_track_field_invalid_count = 0
+        seg_tracks_total_ids: set[str] = set()
+        seg_track_frames_with_seg: set[tuple[str, int]] = set()
+        seg_track_frames_with_track_id: set[tuple[str, int]] = set()
+        seg_track_last_label_by_id: dict[str, str] = {}
+        seg_id_switch_count = 0
+        seg_track_schema_ok = 0
+        seg_track_coverage = 0.0
+        seg_tracks_total = 0
         seg_context_present = 0
         seg_context_schema_ok = 0
         seg_context_chars = 0
@@ -1908,6 +1919,58 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                     seg_mask_schema_ok += int(mask_schema_ok)
                                     seg_mask_size_mismatch_count += int(mask_size_mismatch)
                                     seg_mask_bad_counts_count += int(mask_bad_counts)
+
+                                    run_id_text = str(payload.get("runId", "")).strip() or str(obj.get("runId", "")).strip()
+                                    frame_seq_raw = payload.get("frameSeq", obj.get("frameSeq"))
+                                    try:
+                                        frame_seq_value = int(frame_seq_raw)
+                                    except Exception:
+                                        frame_seq_value = 0
+                                    frame_key = (run_id_text or "unknown-run", int(frame_seq_value))
+                                    if frame_seq_value > 0:
+                                        seg_track_frames_with_seg.add(frame_key)
+
+                                    segments_payload = payload.get("segments")
+                                    segments_payload = segments_payload if isinstance(segments_payload, list) else []
+                                    label_to_track_ids: defaultdict[str, set[str]] = defaultdict(set)
+                                    for seg_row in segments_payload:
+                                        if not isinstance(seg_row, dict):
+                                            continue
+                                        label_text = str(seg_row.get("label", "")).strip().lower()
+                                        track_id_raw = seg_row.get("trackId")
+                                        track_id_text = ""
+                                        if track_id_raw is not None:
+                                            if isinstance(track_id_raw, str):
+                                                track_id_text = track_id_raw.strip()
+                                                if not track_id_text:
+                                                    seg_track_field_invalid_count += 1
+                                            else:
+                                                seg_track_field_invalid_count += 1
+                                        track_state_raw = seg_row.get("trackState")
+                                        if track_state_raw is not None:
+                                            if track_state_raw not in {None, "init", "track", "lost"}:
+                                                if not (
+                                                    isinstance(track_state_raw, str)
+                                                    and str(track_state_raw).strip().lower() in {"init", "track", "lost"}
+                                                ):
+                                                    seg_track_field_invalid_count += 1
+
+                                        if not track_id_text:
+                                            continue
+                                        seg_track_id_present = 1
+                                        seg_tracks_total_ids.add(track_id_text)
+                                        if frame_seq_value > 0:
+                                            seg_track_frames_with_track_id.add(frame_key)
+                                        if label_text:
+                                            label_to_track_ids[label_text].add(track_id_text)
+                                            prev_label = seg_track_last_label_by_id.get(track_id_text)
+                                            if prev_label is not None and prev_label != label_text:
+                                                seg_id_switch_count += 1
+                                            seg_track_last_label_by_id[track_id_text] = label_text
+
+                                    for ids in label_to_track_ids.values():
+                                        if len(ids) > 1:
+                                            seg_id_switch_count += 1
                                 if name == "depth.estimate":
                                     depth_events_present = 1
                                     depth_lines += 1
@@ -2054,6 +2117,13 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                 frame_user_e2e_duplicate_count = int(
                     sum(max(0, int(count) - 1) for count in frame_user_e2e_seen_keys.values())
                 )
+                seg_track_frames_with_seg_count = int(len(seg_track_frames_with_seg))
+                seg_track_frames_with_track_count = int(len(seg_track_frames_with_track_id))
+                seg_track_coverage = 0.0
+                if seg_track_frames_with_seg_count > 0:
+                    seg_track_coverage = float(seg_track_frames_with_track_count / seg_track_frames_with_seg_count)
+                seg_tracks_total = int(len(seg_tracks_total_ids))
+                seg_track_schema_ok = int(seg_track_id_present > 0 and seg_track_field_invalid_count == 0)
 
         pov_ir_present = 0
         pov_ir_schema_ok = 0
@@ -2188,6 +2258,11 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "segPayloadSchemaOk": int(seg_lines > 0 and seg_payload_schema_ok == seg_lines),
             "segNormalized": int(seg_normalized),
             "segWarningsCount": int(seg_warnings_count),
+            "segTrackIdPresent": int(seg_track_id_present),
+            "segTrackSchemaOk": int(seg_track_schema_ok),
+            "segTracksTotal": int(seg_tracks_total),
+            "segTrackCoverage": round(float(max(0.0, min(1.0, seg_track_coverage))), 6),
+            "segIdSwitchCount": int(max(0, seg_id_switch_count)),
             "segPromptEventsPresent": int(seg_prompt_events_present),
             "segPromptLines": int(seg_prompt_lines),
             "segPromptSchemaOk": int(seg_prompt_schema_ok),
@@ -2367,6 +2442,11 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"segPayloadSchemaOk: {summary['segPayloadSchemaOk']}")
             print(f"segNormalized: {summary['segNormalized']}")
             print(f"segWarningsCount: {summary['segWarningsCount']}")
+            print(f"segTrackIdPresent: {summary['segTrackIdPresent']}")
+            print(f"segTrackSchemaOk: {summary['segTrackSchemaOk']}")
+            print(f"segTracksTotal: {summary['segTracksTotal']}")
+            print(f"segTrackCoverage: {summary['segTrackCoverage']}")
+            print(f"segIdSwitchCount: {summary['segIdSwitchCount']}")
             print(f"segPromptEventsPresent: {summary['segPromptEventsPresent']}")
             print(f"segPromptLines: {summary['segPromptLines']}")
             print(f"segPromptSchemaOk: {summary['segPromptSchemaOk']}")

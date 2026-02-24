@@ -76,6 +76,11 @@ class RunSummary:
     seg_payload_schema_ok: bool = False
     seg_lines: int = 0
     seg_schema_ok_lines: int = 0
+    seg_track_present: bool = False
+    seg_track_schema_ok: bool = False
+    seg_tracks_total: int = 0
+    seg_track_coverage: float = 0.0
+    seg_id_switch_count: int = 0
     depth_events_present: bool = False
     depth_payload_schema_ok: bool = False
     depth_lines: int = 0
@@ -267,6 +272,11 @@ class RunSummary:
                 "payloadSchemaOk": self.seg_payload_schema_ok,
                 "segLines": self.seg_lines,
                 "segSchemaOkLines": self.seg_schema_ok_lines,
+                "segTrackPresent": self.seg_track_present,
+                "segTrackSchemaOk": self.seg_track_schema_ok,
+                "segTracksTotal": self.seg_tracks_total,
+                "segTrackCoverage": self.seg_track_coverage,
+                "segIdSwitchCount": self.seg_id_switch_count,
                 "depthEventsPresent": self.depth_events_present,
                 "depthPayloadSchemaOk": self.depth_payload_schema_ok,
                 "depthLines": self.depth_lines,
@@ -818,6 +828,8 @@ def run_suite(
     run_require_ocr_payload_schema_ok: dict[str, bool] = {}
     run_require_seg_events_present: dict[str, bool] = {}
     run_require_seg_payload_schema_ok: dict[str, bool] = {}
+    run_require_seg_track_present: dict[str, bool] = {}
+    run_require_seg_track_schema_ok: dict[str, bool] = {}
     run_require_depth_events_present: dict[str, bool] = {}
     run_require_depth_payload_schema_ok: dict[str, bool] = {}
     run_require_costmap_events_present: dict[str, bool] = {}
@@ -877,6 +889,8 @@ def run_suite(
         run_require_ocr_payload_schema_ok[run_id] = _to_bool01(run_cfg.get("requireOcrPayloadSchemaOk"), False)
         run_require_seg_events_present[run_id] = _to_bool01(run_cfg.get("requireSegEventsPresent"), False)
         run_require_seg_payload_schema_ok[run_id] = _to_bool01(run_cfg.get("requireSegPayloadSchemaOk"), False)
+        run_require_seg_track_present[run_id] = _to_bool01(run_cfg.get("requireSegTrackPresent"), False)
+        run_require_seg_track_schema_ok[run_id] = _to_bool01(run_cfg.get("requireSegTrackSchemaOk"), False)
         run_require_depth_events_present[run_id] = _to_bool01(run_cfg.get("requireDepthEventsPresent"), False)
         run_require_depth_payload_schema_ok[run_id] = _to_bool01(run_cfg.get("requireDepthPayloadSchemaOk"), False)
         run_require_costmap_events_present[run_id] = _to_bool01(run_cfg.get("requireCostmapEventsPresent"), False)
@@ -1000,6 +1014,11 @@ def run_suite(
                     run_summary.seg_payload_schema_ok = bool(lint_summary.get("segPayloadSchemaOk", 0))
                     run_summary.seg_lines = int(lint_summary.get("segLines", 0) or 0)
                     run_summary.seg_schema_ok_lines = int(lint_summary.get("segSchemaOk", 0) or 0)
+                    run_summary.seg_track_present = bool(lint_summary.get("segTrackIdPresent", 0))
+                    run_summary.seg_track_schema_ok = bool(lint_summary.get("segTrackSchemaOk", 0))
+                    run_summary.seg_tracks_total = int(lint_summary.get("segTracksTotal", 0) or 0)
+                    run_summary.seg_track_coverage = float(lint_summary.get("segTrackCoverage", 0.0) or 0.0)
+                    run_summary.seg_id_switch_count = int(lint_summary.get("segIdSwitchCount", 0) or 0)
                     run_summary.depth_events_present = bool(lint_summary.get("depthEventsPresent", 0))
                     run_summary.depth_payload_schema_ok = bool(lint_summary.get("depthPayloadSchemaOk", 0))
                     run_summary.depth_lines = int(lint_summary.get("depthLines", 0) or 0)
@@ -1165,6 +1184,10 @@ def run_suite(
             failures.append(f"{run.run_id}: seg events missing (seg.segment)")
         if run_require_seg_payload_schema_ok.get(run.run_id, False) and not bool(run.seg_payload_schema_ok):
             failures.append(f"{run.run_id}: seg payload schema check failed")
+        if run_require_seg_track_present.get(run.run_id, False) and not bool(run.seg_track_present):
+            failures.append(f"{run.run_id}: seg track fields missing (trackId)")
+        if run_require_seg_track_schema_ok.get(run.run_id, False) and not bool(run.seg_track_schema_ok):
+            failures.append(f"{run.run_id}: seg track payload schema check failed")
         if run_require_depth_events_present.get(run.run_id, False) and not bool(run.depth_events_present):
             failures.append(f"{run.run_id}: depth events missing (depth.estimate)")
         if run_require_depth_payload_schema_ok.get(run.run_id, False) and not bool(run.depth_payload_schema_ok):
@@ -1325,7 +1348,9 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "depthAbsRel={depth_absrel} depthDelta1={depth_delta1} depthCoverage={depth_cov} depthLatencyP90={depth_p90} "
                 "slamTrackingRate={slam_tracking_rate} slamLostRate={slam_lost_rate} slamRelocalized={slam_relocalized} slamLatencyP90={slam_p90} "
                 "ocrEventsPresent={ocr_events_present} ocrPayloadSchemaOk={ocr_payload_schema_ok} "
-                "segEventsPresent={seg_events_present} segPayloadSchemaOk={seg_payload_schema_ok} depthEventsPresent={depth_events_present} depthPayloadSchemaOk={depth_payload_schema_ok} "
+                "segEventsPresent={seg_events_present} segPayloadSchemaOk={seg_payload_schema_ok} "
+                "segTrackPresent={seg_track_present} segTrackSchemaOk={seg_track_schema_ok} segTracksTotal={seg_tracks_total} segTrackCoverage={seg_track_coverage} segIdSwitchCount={seg_id_switch_count} "
+                "depthEventsPresent={depth_events_present} depthPayloadSchemaOk={depth_payload_schema_ok} "
                 "costmapEventsPresent={costmap_events_present} costmapSchemaOk={costmap_schema_ok} "
                 "costmapFusedEventsPresent={costmap_fused_events_present} costmapFusedSchemaOk={costmap_fused_schema_ok} "
                 "costmapFusedIouP90={costmap_fused_iou_p90} costmapFusedFlickerMean={costmap_fused_flicker_mean} "
@@ -1387,6 +1412,11 @@ def _print_summary(result: dict[str, Any]) -> None:
                     ocr_payload_schema_ok=row.get("segLint", {}).get("ocrPayloadSchemaOk", False),
                     seg_events_present=row.get("segLint", {}).get("eventsPresent", False),
                     seg_payload_schema_ok=row.get("segLint", {}).get("payloadSchemaOk", False),
+                    seg_track_present=row.get("segLint", {}).get("segTrackPresent", False),
+                    seg_track_schema_ok=row.get("segLint", {}).get("segTrackSchemaOk", False),
+                    seg_tracks_total=row.get("segLint", {}).get("segTracksTotal", 0),
+                    seg_track_coverage=row.get("segLint", {}).get("segTrackCoverage", 0.0),
+                    seg_id_switch_count=row.get("segLint", {}).get("segIdSwitchCount", 0),
                     depth_events_present=row.get("segLint", {}).get("depthEventsPresent", False),
                     depth_payload_schema_ok=row.get("segLint", {}).get("depthPayloadSchemaOk", False),
                     costmap_events_present=row.get("segLint", {}).get("costmapEventsPresent", False),

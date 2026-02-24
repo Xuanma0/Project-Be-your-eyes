@@ -24,9 +24,10 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
 
 - `POST /ocr` -> `{"schemaVersion":"byes.ocr.v1","runId":"...","frameSeq":1,"lines":[{"text":"...","score":0.9,"bbox":[x0,y0,x1,y1]}],"linesCount":1,"latencyMs":<int>,"backend":"...","model":"...","endpoint":"...","warningsCount":0}`
 - `POST /risk` -> `{"hazards": [...], "latencyMs": <int>, "model": "<id>"}`
-- `POST /seg` -> `{"segments": [{"label":"...","score":0.0,"bbox":[x0,y0,x1,y1],"mask?":{"format":"rle_v1","size":[H,W],"counts":[...]}}], "latencyMs": <int>, "model": "<id>"}`
+- `POST /seg` -> `{"segments": [{"label":"...","score":0.0,"bbox":[x0,y0,x1,y1],"trackId?":"...","trackState?":"init|track|lost|null","mask?":{"format":"rle_v1","size":[H,W],"counts":[...]}}], "latencyMs": <int>, "model": "<id>"}`
   - request supports optional:
     - `targets: string[]`
+    - `tracking: bool` (for downstream providers that support temporal association, e.g. SAM3 video tracking)
     - `prompt: {"schemaVersion":"byes.seg_request.v1","targets":[...],"text":"...","boxes":[...],"points":[...],"meta":{"promptVersion":"v1"}}`
 - `POST /depth` -> `{"grid":{"format":"grid_u16_mm_v1","size":[gw,gh],"unit":"mm","values":[...]}, "gridCount": <int>, "valuesCount": <int>, "latencyMs": <int>, "model": "<id>" }`
   - request supports optional:
@@ -83,6 +84,7 @@ Required env for `http`:
 $env:BYES_SERVICE_SEG_PROVIDER="http"
 $env:BYES_SERVICE_SEG_ENDPOINT="http://127.0.0.1:19120/seg"
 $env:BYES_SERVICE_SEG_HTTP_DOWNSTREAM="reference"  # or sam3
+$env:BYES_SERVICE_SEG_HTTP_TRACKING="0"            # set 1 to pass tracking=true downstream
 ```
 
 Optional:
@@ -202,6 +204,7 @@ python -m uvicorn services.sam3_seg_service.app:app --app-dir Gateway --host 127
 $env:BYES_SERVICE_SEG_PROVIDER="http"
 $env:BYES_SERVICE_SEG_ENDPOINT="http://127.0.0.1:19271/seg"
 $env:BYES_SERVICE_SEG_HTTP_DOWNSTREAM="sam3"
+$env:BYES_SERVICE_SEG_HTTP_TRACKING="1"
 $env:BYES_SERVICE_SEG_MODEL_ID="sam3-v1"
 python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
 ```
@@ -299,6 +302,7 @@ Recommended default input size is `256` (can test `384`/`518` with sweep tools).
 | `BYES_SERVICE_SEG_ENDPOINT` | empty | seg endpoint URL (`http` provider) |
 | `BYES_SERVICE_SEG_TIMEOUT_MS` | `1200` | seg HTTP timeout ms |
 | `BYES_SERVICE_SEG_HTTP_DOWNSTREAM` | `reference` | seg downstream selector (`reference|sam3`) for http provider |
+| `BYES_SERVICE_SEG_HTTP_TRACKING` | `0` | pass `tracking=true` to downstream seg service |
 | `BYES_SERVICE_DEPTH_MODEL_ID` | provider default | depth model metadata tag |
 | `BYES_SERVICE_DEPTH_ENDPOINT` | empty | depth endpoint URL (`http` provider for `/depth`) |
 | `BYES_SERVICE_DEPTH_TIMEOUT_MS` | `1200` | depth HTTP timeout ms (`/depth`) |
