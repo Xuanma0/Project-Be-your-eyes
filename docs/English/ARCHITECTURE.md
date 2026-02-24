@@ -15,7 +15,7 @@ Gateway (/api/frame, scheduler, fusion, safety)
         +--> inference backend: mock or http
                  |
                  v
-        inference_service (/ocr, /risk)
+        inference_service (/ocr, /risk, /depth, /seg, /slam/pose)
                  |
                  v
 events/events_v1.jsonl  + metrics_before/after
@@ -68,3 +68,22 @@ Typical risk result event contains:
 - Reproducibility: same fixture -> same report/gate outcome.
 - Explainability: event-level evidence + report-level summaries.
 - Safety-first evolution: calibration and hard gating prevent silent regressions.
+
+## v4.82 Depth Temporal Consistency Loop
+
+`v4.82` adds a temporal-consistency lane without changing existing single-frame depth quality metrics:
+
+1. `da3_depth_service` accepts optional `refViewStrategy` and optional pose payload.
+2. `inference_service` forwards `refViewStrategy` to DA3 downstream (`reference|da3`).
+3. Gateway emits normalized `depth.estimate` events with `payload.meta`:
+   - `provider`
+   - `refViewStrategy`
+   - `poseUsed`
+4. `report_run.py` computes `quality.depthTemporal` from consecutive depth grids:
+   - `jitterAbs` (`p50/p90/max`)
+   - `flickerRateNear` (`mean/p90/max`)
+   - `scaleDriftProxy` (`p90/max`)
+   - `refViewStrategyDiversityCount`
+5. Leaderboard and matrix summaries expose temporal columns for profile comparison.
+
+This keeps evaluation deterministic while making depth temporal stability measurable.

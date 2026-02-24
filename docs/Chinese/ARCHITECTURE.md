@@ -15,7 +15,7 @@ Gateway (/api/frame, scheduler, fusion, safety)
         +--> 推理后端: mock 或 http
                  |
                  v
-        inference_service (/ocr, /risk)
+        inference_service (/ocr, /risk, /depth, /seg, /slam/pose)
                  |
                  v
 events/events_v1.jsonl  + metrics_before/after
@@ -68,3 +68,22 @@ report_run.py -> report.json + report.md
 - 可复现：同一夹具 -> 同一报告/门禁结果。
 - 可解释：事件级证据 + 报告级汇总。
 - 安全优先演进：标定与硬门禁可避免静默回归。
+
+## v4.82 深度时序一致性闭环
+
+`v4.82` 在不改变单帧深度质量指标的前提下，新增时序一致性评测链路：
+
+1. `da3_depth_service` 支持可选 `refViewStrategy` 与 `pose` 输入。
+2. `inference_service` 将 `refViewStrategy` 透传到 DA3 下游（`reference|da3`）。
+3. Gateway 在 `depth.estimate` 事件中保留 `payload.meta`：
+   - `provider`
+   - `refViewStrategy`
+   - `poseUsed`
+4. `report_run.py` 基于相邻深度帧计算 `quality.depthTemporal`：
+   - `jitterAbs`（`p50/p90/max`）
+   - `flickerRateNear`（`mean/p90/max`）
+   - `scaleDriftProxy`（`p90/max`）
+   - `refViewStrategyDiversityCount`
+5. 排行榜与矩阵汇总新增时序列，支持 profile 对比。
+
+这使深度“时间稳定性”可量化、可回归、可解释。

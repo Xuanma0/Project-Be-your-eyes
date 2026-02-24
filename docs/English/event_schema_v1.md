@@ -19,18 +19,32 @@
     - `endpoint`: sanitized endpoint URL/path (optional)
 - `raw`: optional raw event (debug use only).
 
-## Name Catalog (v4.35 additions included)
+## Name Catalog (up to v4.82)
 - `ocr.read`
 - `risk.hazards`
 - `safety.confirm`
 - `safety.latch`
 - `safety.preempt`
 - `safety.local_fallback`
+- `pov.ingest`
+- `pov.context`
+- `plan.request`
 - `plan.generate`
 - `plan.execute`
+- `plan.rule_applied`
+- `plan.context_alignment`
+- `plan.context_pack`
+- `map.costmap`
+- `map.costmap_context`
+- `map.costmap_fused`
 - `seg.segment`
+- `seg.prompt`
 - `depth.estimate`
 - `slam.pose`
+- `frame.input`
+- `frame.ack`
+- `frame.e2e`
+- `frame.user_e2e`
 - `ui.command`
 - `ui.confirm_request`
 - `ui.confirm_response`
@@ -155,6 +169,12 @@
     "backend": "http",
     "model": "reference-depth-v1",
     "endpoint": "http://127.0.0.1:19241/depth",
+    "meta": {
+      "provider": "da3",
+      "refViewStrategy": "auto_ref",
+      "poseUsed": false,
+      "warningsCount": 0
+    },
     "grid": {
       "format": "grid_u16_mm_v1",
       "size": [16, 16],
@@ -194,3 +214,8 @@
   }
 }
 ```
+
+`v4.82` note:
+- `payload.meta.refViewStrategy` is optional and used for temporal-consistency analysis/reporting.
+- Single-frame depth metrics (`absRel`, `rmse`, `delta1`) remain unchanged.
+- Temporal metrics are report-level aggregates from consecutive `depth.estimate` events (`quality.depthTemporal`), not new event names.

@@ -51,3 +51,39 @@ Gateway 侧 OCR/risk 后端模式（`mock` 或 `http`），用于获取模型推
 ## Calibration
 
 阈值网格搜索（`calibrate_risk_thresholds.py`），用于降低 FP 并强制 `critical FN == 0`，同时输出漏检解释报告。
+
+## 深度时序指标（Depth Temporal）
+
+基于相邻深度帧的报告级一致性指标：
+- `jitterAbs`：ROI 内帧间深度绝对变化量。
+- `flickerRateNear`：近距离掩码在相邻帧的异或比例。
+- `scaleDriftProxy`：ROI 中位深度的帧间漂移。
+
+## Ref View Strategy
+
+DA3 的参考视角策略提示（例如 `auto_ref`、`first`、`middle`），通过 `depth.estimate.payload.meta.refViewStrategy` 透传和审计。
+
+## Plan Request v1
+
+结构化规划请求契约（`byes.plan_request.v1`），可携带 risk/seg/pov/slam/costmap 的上下文片段与元信息。
+
+## Context Pack（上下文包）
+
+由结构化上下文信号生成的“预算化文本 + 统计”对象：
+- `seg.context.v1`
+- `slam.context.v1`
+- `plan.context_pack.v1`
+- `costmap.context.v1`
+
+## Costmap / Costmap Fused
+
+- `byes.costmap.v1`：由 depth/seg/slam 生成的单帧局部代价栅格。
+- `byes.costmap_fused.v1`：带 EMA/可选位姿 shift 的时序融合代价图，并附稳定性统计。
+
+## Matrix Profile
+
+`run_dataset_benchmark.py` 中的命名实验配置（services/env/prehooks），用于多 profile 横向对比。
+
+## Prehook
+
+在 benchmark matrix 中，每个 run package 报告前的预处理步骤（例如 `pyslam_ingest` / `pyslam_run`）。

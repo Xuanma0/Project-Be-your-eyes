@@ -25,3 +25,10 @@
 - `critical`：需立即停止 / 最高优先级安全警报
 - `warning`：近期风险；用户应减速/扫描
 - `info`：低置信度或信息性风险提示
+
+## 该分类的使用位置
+
+- `risk.hazards` 事件负载归一化。
+- planner 安全规则与确认行为。
+- 报告质量惩罚（`critical FN` 硬门禁）。
+- costmap / planner context 摘要中的障碍语义文本化。

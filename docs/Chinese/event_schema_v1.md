@@ -8,7 +8,7 @@
 - `frameSeq`：可选帧序号。
 - `component`：`unity|gateway|cloud|sim|unknown`。
 - `category`：`tool|safety|system|scenario|metric|ui|unknown`。
-- `name`：标准化事件名（`ocr.scan_text`、`risk.hazards`、`safety.confirm` 等）。
+- `name`：标准化事件名（`ocr.read`、`risk.hazards`、`safety.confirm` 等）。
 - `phase`：可选生命周期阶段（`start|result|error|info`）。
 - `status`：可选标准化状态（`ok|timeout|cancel|error`）。
 - `latencyMs`：可选延迟（毫秒）。
@@ -19,17 +19,32 @@
     - `endpoint`：脱敏后的 endpoint URL/path（可选）
 - `raw`：可选原始事件（仅用于调试）。
 
-## 名称目录（含 v4.35 新增）
-- `ocr.scan_text`
+## 名称目录（截至 v4.82）
+- `ocr.read`
 - `risk.hazards`
 - `safety.confirm`
 - `safety.latch`
 - `safety.preempt`
 - `safety.local_fallback`
+- `pov.ingest`
+- `pov.context`
+- `plan.request`
 - `plan.generate`
 - `plan.execute`
+- `plan.rule_applied`
+- `plan.context_alignment`
+- `plan.context_pack`
+- `map.costmap`
+- `map.costmap_context`
+- `map.costmap_fused`
 - `seg.segment`
+- `seg.prompt`
 - `depth.estimate`
+- `slam.pose`
+- `frame.input`
+- `frame.ack`
+- `frame.e2e`
+- `frame.user_e2e`
 - `ui.command`
 - `ui.confirm_request`
 - `ui.confirm_response`
@@ -60,7 +75,7 @@
   "frameSeq": 1,
   "component": "gateway",
   "category": "tool",
-  "name": "ocr.scan_text",
+  "name": "ocr.read",
   "phase": "start",
   "status": "ok",
   "latencyMs": null,
@@ -76,7 +91,7 @@
   "frameSeq": 1,
   "component": "gateway",
   "category": "tool",
-  "name": "ocr.scan_text",
+  "name": "ocr.read",
   "phase": "result",
   "status": "ok",
   "latencyMs": 110,
@@ -147,6 +162,12 @@
     "backend": "http",
     "model": "reference-depth-v1",
     "endpoint": "http://127.0.0.1:19241/depth",
+    "meta": {
+      "provider": "da3",
+      "refViewStrategy": "auto_ref",
+      "poseUsed": false,
+      "warningsCount": 0
+    },
     "grid": {
       "format": "grid_u16_mm_v1",
       "size": [16, 16],
@@ -158,3 +179,8 @@
   }
 }
 ```
+
+`v4.82` 说明：
+- `payload.meta.refViewStrategy` 为可选字段，用于时序一致性评估。
+- 单帧深度质量指标（`absRel`/`rmse`/`delta1`）保持不变。
+- 时序指标在报告层聚合：`report.json -> quality.depthTemporal`（非新增事件名）。

@@ -88,3 +88,47 @@ python Gateway/services/inference_service/tools/verify_depth_onnx.py --path D:\m
 ```
 
 4. Run `inference_service` with ONNX depth and repeat replay/report.
+
+## Optional: v4.82 Temporal Depth Consistency Demo (Fixture)
+
+1. Generate report from the temporal fixture:
+
+```powershell
+python Gateway/scripts/report_run.py --run-package Gateway/tests/fixtures/run_package_with_depth_temporal_min
+```
+
+2. Check `report.json`:
+- `quality.depthTemporal.present`
+- `quality.depthTemporal.jitterAbs.p90`
+- `quality.depthTemporal.flickerRateNear.mean`
+- `quality.depthTemporal.scaleDriftProxy.p90`
+
+3. Run matrix summary with DA3 temporal profile:
+
+```powershell
+cd Gateway
+python scripts/run_dataset_benchmark.py --root artifacts/imports/v468_ego4d_demo --out artifacts/benchmarks/v482_demo --matrix 1 --profiles scripts/profiles/v482_depth_temporal_profiles.json --replay 0 --shuffle 0 --max 10
+```
+
+4. Open:
+- `artifacts/benchmarks/v482_demo/summary.md`
+
+Confirm columns:
+- `depthJitterP90(p90)`
+- `depthFlickerMean(mean)`
+- `depthScaleDriftP90(p90)`
+- `depthRefViewDiversity(mean)`
+
+## Optional: Cross-Version Matrix Presets
+
+Use profile files to compare historical capability tracks without changing code:
+
+```powershell
+cd Gateway
+python scripts/run_dataset_benchmark.py --root artifacts/imports/v468_ego4d_demo --out artifacts/benchmarks/v4x_compare --matrix 1 --profiles scripts/profiles/v481_costmap_dynamic_profiles.json --replay 0 --shuffle 0 --max 10
+```
+
+Profile examples:
+- `baseline_reference`
+- `costmap_fused_local_tracking`
+- `da3_fixture_depth_temporal` (in `v482_depth_temporal_profiles.json`)

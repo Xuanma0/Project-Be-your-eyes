@@ -156,7 +156,7 @@ docs/                                 # 架构/演示/术语/命令文档
 Assets/                               # Unity 客户端与场景集成
 ```
 
-## 里程碑（v4.9 -> v4.29）
+## 里程碑（v4.9 -> v4.82）
 
 | Version | 主题 | 新增内容 |
 |---|---|---|
@@ -165,15 +165,41 @@ Assets/                               # Unity 客户端与场景集成
 | v4.16-v4.21 | 可插拔推理 | OCR/risk 后端注册（mock/http）、深度感知风险演进 |
 | v4.23-v4.26 | ONNX 深度 + 可观测性 | ONNX 深度提供方、输入尺寸扫参、延迟分解、排行榜延迟列 |
 | v4.27-v4.29 | 标定 + 安全门禁 | 阈值标定闭环、`critical FN` 可解释性、默认值固化、回归/CI 的 `critical FN == 0` 门禁 |
+| v4.30-v4.41 | 规划器与契约冻结 | planEval、POV 规划适配、在线 POV ingest、`/api/contracts` 与 lock gate |
+| v4.42-v4.50 | Seg 能力闭环 | seg provider、seg/mask 质量、SAM3 fixture 链路、prompt 合同与透传 |
+| v4.51-v4.60 | 上下文与端到端时延 | seg/plan context pack、frame e2e & user-e2e（input/ack） |
+| v4.61-v4.70 | Depth/OCR/SLAM 与 benchmark | depth/ocr/slam providers、model manifest、dataset benchmark + matrix |
+| v4.71-v4.79 | pySLAM + costmap/fused | 轨迹注入与对齐、ATE/RPE、costmap/fused/shift gate、online/final 对比 |
+| v4.80-v4.82 | 跟踪与时序一致性 | seg trackId 动态缓存、DA3 ref-view 透传、depthTemporal 指标闭环 |
+
+完整版本清单请见：`docs/Chinese/RELEASE_NOTES.md`（英文：`docs/English/RELEASE_NOTES.md`）。
+
+## v4.82 文档同步（深度时序一致性）
+
+本轮文档已同步中英文，覆盖以下新增能力：
+- DA3 `refViewStrategy` 透传（Gateway -> inference_service -> da3_depth_service）
+- 报告新增 `quality.depthTemporal`：
+  - `jitterAbs`
+  - `flickerRateNear`
+  - `scaleDriftProxy`
+  - `refViewStrategyDiversityCount`
+- 排行榜与 benchmark matrix 新增深度时序列，可直接做 profile 对比。
+
+推荐先读：
+- `docs/Chinese/ARCHITECTURE.md`
+- `docs/Chinese/COMMANDS.md`
+- `docs/Chinese/event_schema_v1.md`
+- `docs/Chinese/QUICK_DEMO.md`
+- `docs/Chinese/RELEASE_NOTES.md`
 
 ## 下一步阅读
 
 - Gateway 开发与评估指南：`Gateway/README.md`
 - 推理提供方/部署指南：`Gateway/services/inference_service/README.md`
-- 系统架构：`docs/ARCHITECTURE.md`
-- 5 分钟演示脚本：`docs/QUICK_DEMO.md`
-- 术语：`docs/GLOSSARY.md`
-- 命令索引：`docs/COMMANDS.md`
+- 系统架构：`docs/Chinese/ARCHITECTURE.md`（英文版见 `docs/English/ARCHITECTURE.md`）
+- 5 分钟演示脚本：`docs/Chinese/QUICK_DEMO.md`
+- 术语：`docs/Chinese/GLOSSARY.md`
+- 命令索引：`docs/Chinese/COMMANDS.md`
 
 ## 文档目录
 
@@ -183,6 +209,7 @@ Assets/                               # Unity 客户端与场景集成
 
 ### docs/English
 
+- [docs/English/README.md](../English/README.md)
 - [docs/English/ARCHITECTURE.md](../English/ARCHITECTURE.md)
 - [docs/English/COMMANDS.md](../English/COMMANDS.md)
 - [docs/English/contracts.md](../English/contracts.md)
@@ -191,6 +218,7 @@ Assets/                               # Unity 客户端与场景集成
 - [docs/English/hazard_taxonomy_v1.md](../English/hazard_taxonomy_v1.md)
 - [docs/English/pov_planner_adapter.md](../English/pov_planner_adapter.md)
 - [docs/English/QUICK_DEMO.md](../English/QUICK_DEMO.md)
+- [docs/English/RELEASE_NOTES.md](../English/RELEASE_NOTES.md)
 
 ### docs/Chinese
 
@@ -203,6 +231,7 @@ Assets/                               # Unity 客户端与场景集成
 - [docs/Chinese/hazard_taxonomy_v1.md](hazard_taxonomy_v1.md)
 - [docs/Chinese/pov_planner_adapter.md](pov_planner_adapter.md)
 - [docs/Chinese/QUICK_DEMO.md](QUICK_DEMO.md)
+- [docs/Chinese/RELEASE_NOTES.md](RELEASE_NOTES.md)
 
 ### Gateway 核心文档
 
