@@ -307,6 +307,10 @@ class GatewayConfig:
     inference_seg_model_id: str = "mock-seg"
     inference_depth_model_id: str = "mock-depth"
     inference_slam_model_id: str = "mock-slam"
+    inference_depth_http_ref_view_strategy: str = ""
+    inference_depth_temporal_roi: str = "bottom_center"
+    inference_depth_temporal_near_thresh_m: float = 1.0
+    inference_depth_temporal_require_same_size: bool = True
     inference_slam_traj_preferred: str = "auto"
     inference_slam_traj_allowed: tuple[str, ...] = ("online", "final")
     inference_costmap_grid_h: int = 32
@@ -502,6 +506,19 @@ def load_config() -> GatewayConfig:
         inference_seg_model_id=os.getenv("BYES_SEG_MODEL_ID", "mock-seg"),
         inference_depth_model_id=os.getenv("BYES_DEPTH_MODEL_ID", "mock-depth"),
         inference_slam_model_id=os.getenv("BYES_SLAM_MODEL_ID", os.getenv("BYES_SERVICE_SLAM_MODEL_ID", "mock-slam")),
+        inference_depth_http_ref_view_strategy=(
+            str(
+                os.getenv(
+                    "BYES_DEPTH_HTTP_REF_VIEW_STRATEGY",
+                    os.getenv("BYES_SERVICE_DEPTH_HTTP_REF_VIEW_STRATEGY", ""),
+                )
+            ).strip()
+        ),
+        inference_depth_temporal_roi=(
+            str(os.getenv("BYES_DEPTH_TEMPORAL_ROI", "bottom_center")).strip().lower() or "bottom_center"
+        ),
+        inference_depth_temporal_near_thresh_m=_env_float("BYES_DEPTH_TEMPORAL_NEAR_THRESH_M", 1.0),
+        inference_depth_temporal_require_same_size=_env_bool("BYES_DEPTH_TEMPORAL_REQUIRE_SAME_SIZE", True),
         inference_slam_traj_preferred=(str(os.getenv("BYES_SLAM_TRAJ_PREFERRED", "auto")).strip().lower() or "auto"),
         inference_slam_traj_allowed=(
             _env_string_list("BYES_SLAM_TRAJ_ALLOWED", "BYES_SLAM_TRAJ_ALLOWED_JSON")

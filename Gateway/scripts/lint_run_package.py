@@ -26,6 +26,7 @@ from byes.event_normalizer import collect_normalized_ws_events
 from byes.hazards.taxonomy_v1 import normalize_hazards
 from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events
 from byes.inference.slam_context import DEFAULT_SLAM_CONTEXT_BUDGET, build_slam_context_pack
+from byes.quality_metrics import extract_depth_temporal_metrics_from_events_v1
 from byes.schemas.pov_ir_schema import validate_pov_ir
 
 _SHA_LINE_RE = re.compile(r"^([a-fA-F0-9]{64})\s+\*?(.+)$")
@@ -1463,6 +1464,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         frame_user_e2e_negative_count = 0
         frame_user_e2e_duplicate_count = 0
         frame_user_e2e_seen_keys: dict[tuple[str, int], int] = {}
+        depth_temporal_present = 0
+        depth_temporal_same_size_pairs_count = 0
+        depth_temporal_jitter_p90 = 0.0
+        depth_temporal_flicker_mean = 0.0
         models_present = 0
         models_lines = 0
         models_schema_ok = 0
@@ -2143,6 +2148,21 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                     seg_track_coverage = float(seg_track_frames_with_track_count / seg_track_frames_with_seg_count)
                 seg_tracks_total = int(len(seg_tracks_total_ids))
                 seg_track_schema_ok = int(seg_track_id_present > 0 and seg_track_field_invalid_count == 0)
+                depth_temporal_payload = extract_depth_temporal_metrics_from_events_v1(
+                    events_v1_rows,
+                    frames_total_declared=int(frames_count_declared),
+                    roi_mode="bottom_center",
+                    near_thresh_m=1.0,
+                    require_same_size=True,
+                )
+                depth_temporal_present = int(bool(depth_temporal_payload.get("present")))
+                depth_temporal_same_size_pairs_count = int(depth_temporal_payload.get("sameSizePairsCount", 0) or 0)
+                jitter_payload = depth_temporal_payload.get("jitterAbs")
+                jitter_payload = jitter_payload if isinstance(jitter_payload, dict) else {}
+                depth_temporal_jitter_p90 = float(jitter_payload.get("p90", 0.0) or 0.0)
+                flicker_payload = depth_temporal_payload.get("flickerRateNear")
+                flicker_payload = flicker_payload if isinstance(flicker_payload, dict) else {}
+                depth_temporal_flicker_mean = float(flicker_payload.get("mean", 0.0) or 0.0)
 
         pov_ir_present = 0
         pov_ir_schema_ok = 0
@@ -2315,6 +2335,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "depthGridPresentCount": int(depth_grid_present_count),
             "depthGridBadSizeCount": int(depth_grid_bad_size_count),
             "depthGridOutOfRangeCount": int(depth_grid_out_of_range_count),
+            "depthTemporalPresent": int(depth_temporal_present),
+            "depthTemporalSameSizePairsCount": int(depth_temporal_same_size_pairs_count),
+            "depthTemporalJitterP90": round(float(depth_temporal_jitter_p90), 6),
+            "depthTemporalFlickerMean": round(float(depth_temporal_flicker_mean), 6),
             "costmapEventsPresent": int(costmap_events_present),
             "costmapLines": int(costmap_lines),
             "costmapSchemaOk": int(costmap_lines > 0 and costmap_schema_ok == costmap_lines),
@@ -2503,6 +2527,10 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"depthGridPresentCount: {summary['depthGridPresentCount']}")
             print(f"depthGridBadSizeCount: {summary['depthGridBadSizeCount']}")
             print(f"depthGridOutOfRangeCount: {summary['depthGridOutOfRangeCount']}")
+            print(f"depthTemporalPresent: {summary['depthTemporalPresent']}")
+            print(f"depthTemporalSameSizePairsCount: {summary['depthTemporalSameSizePairsCount']}")
+            print(f"depthTemporalJitterP90: {summary['depthTemporalJitterP90']}")
+            print(f"depthTemporalFlickerMean: {summary['depthTemporalFlickerMean']}")
             print(f"costmapEventsPresent: {summary['costmapEventsPresent']}")
             print(f"costmapLines: {summary['costmapLines']}")
             print(f"costmapSchemaOk: {summary['costmapSchemaOk']}")

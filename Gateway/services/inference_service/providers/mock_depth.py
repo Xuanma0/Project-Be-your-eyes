@@ -21,6 +21,8 @@ class MockDepthProvider:
         frame_seq: int | None,
         run_id: str | None = None,
         targets: list[str] | None = None,
+        ref_view_strategy: str | None = None,
+        pose: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         del run_id, targets
         width, height = image.size
@@ -31,7 +33,7 @@ class MockDepthProvider:
         for y in range(gh):
             for x in range(gw):
                 values.append(int(max(0, min(65535, base + x * 6 + y * 4))))
-        return {
+        payload: dict[str, Any] = {
             "backend": self.name,
             "model": self.model,
             "endpoint": self.endpoint,
@@ -46,3 +48,12 @@ class MockDepthProvider:
             "valuesCount": len(values),
             "gridCount": 1,
         }
+        meta: dict[str, Any] = {"provider": self.name}
+        ref_text = str(ref_view_strategy or "").strip()
+        if ref_text:
+            meta["refViewStrategy"] = ref_text
+        if pose is not None:
+            meta["poseUsed"] = isinstance(pose, dict)
+        if meta:
+            payload["meta"] = meta
+        return payload

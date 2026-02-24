@@ -38,6 +38,8 @@ class InferenceRequest(BaseModel):
     targets: list[str] | None = None
     prompt: dict[str, Any] | None = None
     tracking: bool | None = None
+    refViewStrategy: str | None = None
+    pose: dict[str, Any] | None = None
     riskThresholds: dict[str, float] | None = None
 
 
@@ -456,7 +458,17 @@ def infer_depth(request: InferenceRequest) -> dict[str, Any]:
     provider = get_tool_depth_provider()
     targets = [str(item).strip() for item in (request.targets or []) if str(item).strip()]
     try:
-        result = provider.infer(image, request.frameSeq, request.runId, targets=targets or None)
+        try:
+            result = provider.infer(
+                image,
+                request.frameSeq,
+                request.runId,
+                targets=targets or None,
+                ref_view_strategy=request.refViewStrategy,
+                pose=request.pose,
+            )
+        except TypeError:
+            result = provider.infer(image, request.frameSeq, request.runId, targets=targets or None)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -497,6 +509,9 @@ def infer_depth(request: InferenceRequest) -> dict[str, Any]:
             response["warningsCount"] = int(warnings_count)
     except Exception:
         pass
+    meta_raw = result.get("meta")
+    if isinstance(meta_raw, dict):
+        response["meta"] = meta_raw
     downstream_value = result.get("downstream")
     if isinstance(downstream_value, str) and downstream_value.strip():
         response["downstream"] = downstream_value.strip().lower()

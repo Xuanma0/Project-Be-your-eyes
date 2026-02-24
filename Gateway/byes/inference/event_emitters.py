@@ -553,11 +553,62 @@ def _normalize_depth_payload(payload: dict[str, Any], raw_grid: Any) -> dict[str
         out["valuesCount"] = 0
         out["gridCount"] = 0
 
+    meta_raw = out.get("meta")
+    meta_obj, meta_warnings = _normalize_depth_meta(meta_raw)
+    warnings_count += int(meta_warnings)
+    if isinstance(meta_obj, dict):
+        out["meta"] = meta_obj
+    elif "meta" in out:
+        out.pop("meta", None)
+
     if warnings_count > 0:
         out["warningsCount"] = int(warnings_count)
     elif "warningsCount" in out:
         out.pop("warningsCount", None)
     return out
+
+
+def _normalize_depth_meta(raw: Any) -> tuple[dict[str, Any] | None, int]:
+    if raw is None:
+        return None, 0
+    if not isinstance(raw, dict):
+        return None, 1
+    warnings = 0
+    out: dict[str, Any] = {}
+    provider_raw = raw.get("provider")
+    if provider_raw is not None:
+        provider_text = str(provider_raw).strip()
+        if provider_text:
+            out["provider"] = provider_text
+        else:
+            warnings += 1
+    ref_view_raw = raw.get("refViewStrategy")
+    if ref_view_raw is not None:
+        ref_view_text = str(ref_view_raw).strip()
+        if ref_view_text:
+            out["refViewStrategy"] = ref_view_text
+        else:
+            out["refViewStrategy"] = None
+    pose_used_raw = raw.get("poseUsed")
+    if pose_used_raw is not None:
+        if isinstance(pose_used_raw, bool):
+            out["poseUsed"] = pose_used_raw
+        else:
+            warnings += 1
+    meta_warnings_raw = raw.get("warningsCount")
+    if meta_warnings_raw is not None:
+        try:
+            parsed = int(meta_warnings_raw)
+        except Exception:
+            warnings += 1
+        else:
+            if parsed < 0:
+                warnings += 1
+            else:
+                out["warningsCount"] = parsed
+    if not out:
+        return None, warnings
+    return out, warnings
 
 
 def _normalize_slam_payload(payload: dict[str, Any], *, tracking_state: str | None, pose: Any) -> dict[str, Any]:

@@ -85,6 +85,7 @@ class RunSummary:
     depth_payload_schema_ok: bool = False
     depth_lines: int = 0
     depth_schema_ok_lines: int = 0
+    depth_temporal_present: bool = False
     costmap_events_present: bool = False
     costmap_schema_ok: bool = False
     costmap_lines: int = 0
@@ -285,6 +286,7 @@ class RunSummary:
                 "depthPayloadSchemaOk": self.depth_payload_schema_ok,
                 "depthLines": self.depth_lines,
                 "depthSchemaOkLines": self.depth_schema_ok_lines,
+                "depthTemporalPresent": self.depth_temporal_present,
                 "costmapEventsPresent": self.costmap_events_present,
                 "costmapSchemaOk": self.costmap_schema_ok,
                 "costmapLines": self.costmap_lines,
@@ -840,6 +842,7 @@ def run_suite(
     run_require_seg_track_schema_ok: dict[str, bool] = {}
     run_require_depth_events_present: dict[str, bool] = {}
     run_require_depth_payload_schema_ok: dict[str, bool] = {}
+    run_require_depth_temporal_present: dict[str, bool] = {}
     run_require_costmap_events_present: dict[str, bool] = {}
     run_require_costmap_schema_ok: dict[str, bool] = {}
     run_require_costmap_fused_events_present: dict[str, bool] = {}
@@ -903,6 +906,7 @@ def run_suite(
         run_require_seg_track_schema_ok[run_id] = _to_bool01(run_cfg.get("requireSegTrackSchemaOk"), False)
         run_require_depth_events_present[run_id] = _to_bool01(run_cfg.get("requireDepthEventsPresent"), False)
         run_require_depth_payload_schema_ok[run_id] = _to_bool01(run_cfg.get("requireDepthPayloadSchemaOk"), False)
+        run_require_depth_temporal_present[run_id] = _to_bool01(run_cfg.get("requireDepthTemporalPresent"), False)
         run_require_costmap_events_present[run_id] = _to_bool01(run_cfg.get("requireCostmapEventsPresent"), False)
         run_require_costmap_schema_ok[run_id] = _to_bool01(run_cfg.get("requireCostmapSchemaOk"), False)
         run_require_costmap_fused_events_present[run_id] = _to_bool01(
@@ -1041,6 +1045,7 @@ def run_suite(
                     run_summary.depth_payload_schema_ok = bool(lint_summary.get("depthPayloadSchemaOk", 0))
                     run_summary.depth_lines = int(lint_summary.get("depthLines", 0) or 0)
                     run_summary.depth_schema_ok_lines = int(lint_summary.get("depthSchemaOk", 0) or 0)
+                    run_summary.depth_temporal_present = bool(lint_summary.get("depthTemporalPresent", 0))
                     run_summary.costmap_events_present = bool(lint_summary.get("costmapEventsPresent", 0))
                     run_summary.costmap_schema_ok = bool(lint_summary.get("costmapSchemaOk", 0))
                     run_summary.costmap_lines = int(lint_summary.get("costmapLines", 0) or 0)
@@ -1220,6 +1225,8 @@ def run_suite(
             failures.append(f"{run.run_id}: depth events missing (depth.estimate)")
         if run_require_depth_payload_schema_ok.get(run.run_id, False) and not bool(run.depth_payload_schema_ok):
             failures.append(f"{run.run_id}: depth payload schema check failed")
+        if run_require_depth_temporal_present.get(run.run_id, False) and not bool(run.depth_temporal_present):
+            failures.append(f"{run.run_id}: depth temporal metrics missing (depth.estimate < 2 or invalid)")
         if run_require_costmap_events_present.get(run.run_id, False) and not bool(run.costmap_events_present):
             failures.append(f"{run.run_id}: costmap events missing (map.costmap)")
         if run_require_costmap_schema_ok.get(run.run_id, False) and not bool(run.costmap_schema_ok):
@@ -1385,6 +1392,7 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "segEventsPresent={seg_events_present} segPayloadSchemaOk={seg_payload_schema_ok} "
                 "segTrackPresent={seg_track_present} segTrackSchemaOk={seg_track_schema_ok} segTracksTotal={seg_tracks_total} segTrackCoverage={seg_track_coverage} segIdSwitchCount={seg_id_switch_count} "
                 "depthEventsPresent={depth_events_present} depthPayloadSchemaOk={depth_payload_schema_ok} "
+                "depthTemporalPresent={depth_temporal_present} "
                 "costmapEventsPresent={costmap_events_present} costmapSchemaOk={costmap_schema_ok} "
                 "costmapFusedEventsPresent={costmap_fused_events_present} costmapFusedSchemaOk={costmap_fused_schema_ok} "
                 "costmapFusedIouP90={costmap_fused_iou_p90} costmapFusedFlickerMean={costmap_fused_flicker_mean} "
@@ -1457,6 +1465,7 @@ def _print_summary(result: dict[str, Any]) -> None:
                     seg_id_switch_count=row.get("segLint", {}).get("segIdSwitchCount", 0),
                     depth_events_present=row.get("segLint", {}).get("depthEventsPresent", False),
                     depth_payload_schema_ok=row.get("segLint", {}).get("depthPayloadSchemaOk", False),
+                    depth_temporal_present=row.get("segLint", {}).get("depthTemporalPresent", False),
                     costmap_events_present=row.get("segLint", {}).get("costmapEventsPresent", False),
                     costmap_schema_ok=row.get("segLint", {}).get("costmapSchemaOk", False),
                     costmap_fused_events_present=row.get("segLint", {}).get("costmapFusedEventsPresent", False),

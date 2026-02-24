@@ -80,6 +80,40 @@
     "warningsCount": {
       "type": "integer",
       "minimum": 0
+    },
+    "meta": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "refViewStrategy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "poseUsed": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "warningsCount": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
     }
   }
 }

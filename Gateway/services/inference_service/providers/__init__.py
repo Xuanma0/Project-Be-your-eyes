@@ -66,7 +66,14 @@ def create_depth_provider(name: str | None = None) -> DepthProvider:
         endpoint = str(os.getenv("BYES_SERVICE_DEPTH_ENDPOINT", "")).strip()
         timeout_ms = int(str(os.getenv("BYES_SERVICE_DEPTH_TIMEOUT_MS", "1200")).strip() or "1200")
         downstream = str(os.getenv("BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM", "reference")).strip().lower() or "reference"
-        return HttpDepthProvider(endpoint=endpoint, model_id=model_id, timeout_ms=timeout_ms, downstream=downstream)
+        ref_view_strategy = str(os.getenv("BYES_SERVICE_DEPTH_HTTP_REF_VIEW_STRATEGY", "")).strip() or None
+        return HttpDepthProvider(
+            endpoint=endpoint,
+            model_id=model_id,
+            timeout_ms=timeout_ms,
+            downstream=downstream,
+            ref_view_strategy=ref_view_strategy,
+        )
     return MockDepthProvider(model_id=model_id)
 
 

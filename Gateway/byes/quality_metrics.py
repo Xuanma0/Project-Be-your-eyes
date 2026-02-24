@@ -1712,6 +1712,198 @@ def compute_depth_metrics(
     }
 
 
+def extract_depth_temporal_metrics_from_events_v1(
+    events: Iterable[dict[str, Any]],
+    *,
+    frames_total_declared: int | None = None,
+    roi_mode: str = "bottom_center",
+    near_thresh_m: float = 1.0,
+    require_same_size: bool = True,
+) -> dict[str, Any]:
+    deduped: dict[tuple[str, int], tuple[int, int, dict[str, Any], dict[str, Any]]] = {}
+    latency_values: list[int] = []
+    ref_view_strategies: set[str] = set()
+
+    for index, row in enumerate(events):
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("name", "")).strip().lower() != "depth.estimate":
+            continue
+        if str(event.get("phase", "")).strip().lower() not in {"", "result"}:
+            continue
+        if str(event.get("status", "")).strip().lower() not in {"", "ok"}:
+            continue
+
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        grid = _normalize_depth_grid_object(payload.get("grid"))
+        if not isinstance(grid, dict):
+            continue
+
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        frame_seq = _parse_int(payload.get("frameSeq"))
+        if frame_seq is None:
+            frame_seq = _parse_int(event.get("frameSeq"))
+        if frame_seq is None or frame_seq <= 0:
+            continue
+
+        meta = payload.get("meta")
+        meta = meta if isinstance(meta, dict) else {}
+        ref_view = str(meta.get("refViewStrategy", "")).strip()
+        if ref_view:
+            ref_view_strategies.add(ref_view)
+
+        latency = _parse_int(event.get("latencyMs"))
+        if latency is not None and latency >= 0:
+            latency_values.append(int(latency))
+
+        ts_ms = _parse_int(event.get("tsMs"))
+        if ts_ms is None:
+            ts_ms = _parse_int(payload.get("tsMs"))
+        if ts_ms is None:
+            ts_ms = _parse_int(event.get("timestampMs"))
+        if ts_ms is None:
+            ts_ms = index
+
+        key = (run_id, int(frame_seq))
+        previous = deduped.get(key)
+        if previous is None or (int(ts_ms), int(index)) >= (previous[0], previous[1]):
+            deduped[key] = (int(ts_ms), int(index), event, payload)
+
+    frames_with_depth = len(deduped)
+    frames_total = int(max(frames_with_depth, int(frames_total_declared or 0))) if frames_total_declared is not None else int(frames_with_depth)
+    coverage = _safe_ratio(frames_with_depth, frames_total) if frames_total > 0 else None
+
+    grouped: dict[str, list[tuple[int, dict[str, Any], dict[str, Any]]]] = defaultdict(list)
+    for (run_id, frame_seq), (_ts, _idx, event, payload) in deduped.items():
+        grouped[run_id].append((int(frame_seq), event, payload))
+    for items in grouped.values():
+        items.sort(key=lambda item: item[0])
+
+    jitter_values: list[float] = []
+    flicker_values: list[float] = []
+    drift_values: list[float] = []
+    same_size_pairs_count = 0
+    size_mismatch_pairs_count = 0
+
+    for items in grouped.values():
+        previous_grid: dict[str, Any] | None = None
+        for _frame_seq, event, payload in items:
+            payload = payload if isinstance(payload, dict) else {}
+            current_grid = _normalize_depth_grid_object(payload.get("grid"))
+            if not isinstance(current_grid, dict):
+                continue
+            if previous_grid is None:
+                previous_grid = current_grid
+                continue
+
+            prev_size = previous_grid.get("size")
+            curr_size = current_grid.get("size")
+            if not isinstance(prev_size, list) or not isinstance(curr_size, list) or len(prev_size) != 2 or len(curr_size) != 2:
+                previous_grid = current_grid
+                continue
+            prev_w = max(1, int(prev_size[0]))
+            prev_h = max(1, int(prev_size[1]))
+            curr_w = max(1, int(curr_size[0]))
+            curr_h = max(1, int(curr_size[1]))
+            if (prev_w != curr_w or prev_h != curr_h) and bool(require_same_size):
+                size_mismatch_pairs_count += 1
+                previous_grid = current_grid
+                continue
+            if prev_w != curr_w or prev_h != curr_h:
+                size_mismatch_pairs_count += 1
+                previous_grid = current_grid
+                continue
+
+            prev_values = previous_grid.get("values")
+            curr_values = current_grid.get("values")
+            if not isinstance(prev_values, list) or not isinstance(curr_values, list):
+                previous_grid = current_grid
+                continue
+            if len(prev_values) != len(curr_values) or len(prev_values) != int(prev_w * prev_h):
+                previous_grid = current_grid
+                continue
+
+            same_size_pairs_count += 1
+            roi_indices = _depth_temporal_roi_indices(prev_w, prev_h, roi_mode)
+            if not roi_indices:
+                roi_indices = list(range(len(prev_values)))
+            diffs: list[float] = []
+            near_xor = 0
+            near_total = 0
+            prev_roi_values: list[float] = []
+            curr_roi_values: list[float] = []
+            for idx in roi_indices:
+                try:
+                    prev_m = float(prev_values[idx]) / 1000.0
+                    curr_m = float(curr_values[idx]) / 1000.0
+                except Exception:
+                    continue
+                diffs.append(abs(curr_m - prev_m))
+                prev_roi_values.append(prev_m)
+                curr_roi_values.append(curr_m)
+                prev_near = prev_m > 0.0 and prev_m < float(max(0.0, near_thresh_m))
+                curr_near = curr_m > 0.0 and curr_m < float(max(0.0, near_thresh_m))
+                if bool(prev_near) ^ bool(curr_near):
+                    near_xor += 1
+                near_total += 1
+
+            if diffs:
+                jitter_values.append(float(_mean_float(diffs)))
+            if near_total > 0:
+                flicker_values.append(float(near_xor) / float(near_total))
+            if prev_roi_values and curr_roi_values:
+                drift_values.append(abs(_median_float(curr_roi_values) - _median_float(prev_roi_values)))
+
+            previous_grid = current_grid
+
+    latency_stats = summarize_latency(latency_values)
+    jitter_present = bool(jitter_values or flicker_values or drift_values)
+    present = bool(frames_with_depth >= 2 and jitter_present)
+
+    return {
+        "present": bool(present),
+        "framesTotal": int(frames_total),
+        "framesWithDepth": int(frames_with_depth),
+        "coverage": round(float(coverage), 6) if coverage is not None else None,
+        "jitterAbs": {
+            "count": int(len(jitter_values)),
+            "p50": round(_percentile_float(jitter_values, 50), 6) if jitter_values else 0.0,
+            "p90": round(_percentile_float(jitter_values, 90), 6) if jitter_values else 0.0,
+            "max": round(max(jitter_values), 6) if jitter_values else 0.0,
+            "valuesSample": [round(float(item), 6) for item in jitter_values[:10]],
+        },
+        "flickerRateNear": {
+            "count": int(len(flicker_values)),
+            "mean": round(_mean_float(flicker_values), 6),
+            "p90": round(_percentile_float(flicker_values, 90), 6) if flicker_values else 0.0,
+            "max": round(max(flicker_values), 6) if flicker_values else 0.0,
+        },
+        "scaleDriftProxy": {
+            "count": int(len(drift_values)),
+            "p90": round(_percentile_float(drift_values, 90), 6) if drift_values else 0.0,
+            "max": round(max(drift_values), 6) if drift_values else 0.0,
+        },
+        "latencyMs": {
+            "count": int(latency_stats.get("count", 0) or 0),
+            "p50": int(latency_stats.get("p50", 0) or 0),
+            "p90": int(latency_stats.get("p90", 0) or 0),
+            "max": int(latency_stats.get("max", 0) or 0),
+        },
+        "refViewStrategyDiversityCount": int(len(ref_view_strategies)),
+        "sameSizePairsCount": int(same_size_pairs_count),
+        "sizeMismatchPairsCount": int(size_mismatch_pairs_count),
+        "notes": {
+            "roi": str(roi_mode).strip() or "bottom_center",
+            "depthThreshM": float(max(0.0, near_thresh_m)),
+            "requireSameSize": bool(require_same_size),
+        },
+    }
+
+
 def compute_slam_metrics(
     gt_map: dict[int, dict[str, Any]],
     pred_map: dict[int, dict[str, Any]],
@@ -2865,6 +3057,37 @@ def _percentile_float(values: list[float], p: int) -> float:
     idx = int(math.ceil(rank * len(ordered)) - 1)
     idx = max(0, min(len(ordered) - 1, idx))
     return float(ordered[idx])
+
+
+def _median_float(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(item) for item in values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return float(ordered[mid])
+    return float((ordered[mid - 1] + ordered[mid]) / 2.0)
+
+
+def _depth_temporal_roi_indices(width: int, height: int, mode: str) -> list[int]:
+    w = max(1, int(width))
+    h = max(1, int(height))
+    normalized = str(mode or "").strip().lower() or "bottom_center"
+
+    if normalized == "full":
+        return list(range(w * h))
+
+    if normalized == "bottom":
+        y0 = int((2 * h) // 3)
+        y0 = max(0, min(h - 1, y0))
+        return [int(y * w + x) for y in range(y0, h) for x in range(0, w)]
+
+    center_width = max(1, int(round(w * 0.5)))
+    x0 = max(0, int((w - center_width) // 2))
+    x1 = min(w, x0 + center_width)
+    y0 = int((2 * h) // 3)
+    y0 = max(0, min(h - 1, y0))
+    return [int(y * w + x) for y in range(y0, h) for x in range(x0, x1)]
 
 
 def _f1(tp: int, fp: int, fn: int) -> float:

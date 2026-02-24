@@ -284,11 +284,18 @@ class HttpSegBackend:
 class HttpDepthBackend:
     name = "http"
 
-    def __init__(self, url: str, timeout_ms: int = 1200, model_id: str | None = None) -> None:
+    def __init__(
+        self,
+        url: str,
+        timeout_ms: int = 1200,
+        model_id: str | None = None,
+        ref_view_strategy: str | None = None,
+    ) -> None:
         self.url = str(url).strip()
         self.timeout_ms = max(1, int(timeout_ms))
         self.model_id = str(model_id or "").strip() or None
         self.endpoint = _sanitize_endpoint(self.url)
+        self.ref_view_strategy = str(ref_view_strategy or "").strip() or None
 
     async def infer(
         self,
@@ -297,6 +304,8 @@ class HttpDepthBackend:
         ts_ms: int,
         run_id: str | None = None,
         targets: list[str] | None = None,
+        ref_view_strategy: str | None = None,
+        pose: dict[str, Any] | None = None,
     ) -> DepthResult:
         started = _now_ms()
         request_payload: dict[str, Any] = {
@@ -310,6 +319,11 @@ class HttpDepthBackend:
         targets_normalized = [str(item).strip() for item in (targets or []) if str(item).strip()]
         if targets_normalized:
             request_payload["targets"] = targets_normalized
+        ref_view_text = str(ref_view_strategy or self.ref_view_strategy or "").strip()
+        if ref_view_text:
+            request_payload["refViewStrategy"] = ref_view_text
+        if isinstance(pose, dict):
+            request_payload["pose"] = pose
         try:
             timeout_s = max(0.05, self.timeout_ms / 1000.0)
             async with httpx.AsyncClient(timeout=timeout_s) as client:
@@ -329,6 +343,9 @@ class HttpDepthBackend:
             grid = None
             if isinstance(payload, dict):
                 grid = _normalize_depth_grid(payload.get("grid"))
+                meta_payload = payload.get("meta")
+                if isinstance(meta_payload, dict):
+                    normalized_payload["meta"] = dict(meta_payload)
             if isinstance(grid, dict):
                 normalized_payload["grid"] = grid
                 normalized_payload["gridCount"] = 1

@@ -23,6 +23,7 @@ class HttpDepthProvider:
         model_id: str | None = None,
         timeout_ms: int = 1200,
         downstream: str | None = None,
+        ref_view_strategy: str | None = None,
     ) -> None:
         endpoint_text = str(endpoint or "").strip()
         if not endpoint_text:
@@ -35,6 +36,7 @@ class HttpDepthProvider:
         if downstream_value not in {"reference", "da3"}:
             downstream_value = "reference"
         self.downstream = downstream_value
+        self.ref_view_strategy = str(ref_view_strategy or "").strip() or None
 
     def infer(
         self,
@@ -42,6 +44,8 @@ class HttpDepthProvider:
         frame_seq: int | None,
         run_id: str | None = None,
         targets: list[str] | None = None,
+        ref_view_strategy: str | None = None,
+        pose: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         started = _now_ms()
         payload: dict[str, Any] = {
@@ -54,6 +58,11 @@ class HttpDepthProvider:
         targets_used = [str(item).strip() for item in (targets or []) if str(item).strip()]
         if targets_used:
             payload["targets"] = targets_used
+        ref_view_text = str(ref_view_strategy or self.ref_view_strategy or "").strip()
+        if ref_view_text:
+            payload["refViewStrategy"] = ref_view_text
+        if isinstance(pose, dict):
+            payload["pose"] = pose
 
         try:
             timeout_s = max(0.05, self.timeout_ms / 1000.0)
@@ -83,6 +92,23 @@ class HttpDepthProvider:
             "warningsCount": int(body.get("warningsCount", 0) or 0),
             "downstream": self.downstream,
         }
+        meta_raw = body.get("meta")
+        if isinstance(meta_raw, dict):
+            meta: dict[str, Any] = {}
+            provider_text = str(meta_raw.get("provider", "")).strip()
+            if provider_text:
+                meta["provider"] = provider_text
+            ref_strategy_text = str(meta_raw.get("refViewStrategy", "")).strip()
+            if ref_strategy_text:
+                meta["refViewStrategy"] = ref_strategy_text
+            pose_used = meta_raw.get("poseUsed")
+            if isinstance(pose_used, bool):
+                meta["poseUsed"] = pose_used
+            meta_warnings = _to_nonnegative_int(meta_raw.get("warningsCount"))
+            if meta_warnings is not None:
+                meta["warningsCount"] = meta_warnings
+            if meta:
+                out["meta"] = meta
         if isinstance(grid, dict):
             out["grid"] = grid
             out["valuesCount"] = len(grid.get("values", []))
@@ -117,6 +143,16 @@ def _to_positive_int(value: Any) -> int | None:
     except Exception:
         return None
     return parsed if parsed > 0 else None
+
+
+def _to_nonnegative_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except Exception:
+        return None
+    if parsed < 0:
+        return None
+    return parsed
 
 
 def _normalize_grid(raw: Any) -> dict[str, Any] | None:

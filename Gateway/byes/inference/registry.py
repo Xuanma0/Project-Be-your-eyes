@@ -55,7 +55,21 @@ def get_depth_backend(config: GatewayConfig) -> DepthBackend:
         timeout_ms = int(
             os.getenv("BYES_DEPTH_HTTP_TIMEOUT_MS", str(config.inference_depth_timeout_ms)) or config.inference_depth_timeout_ms
         )
-        return HttpDepthBackend(url=url, timeout_ms=timeout_ms, model_id=model_id)
+        ref_view_strategy = (
+            str(
+                os.getenv(
+                    "BYES_DEPTH_HTTP_REF_VIEW_STRATEGY",
+                    config.inference_depth_http_ref_view_strategy,
+                )
+            ).strip()
+            or None
+        )
+        return HttpDepthBackend(
+            url=url,
+            timeout_ms=timeout_ms,
+            model_id=model_id,
+            ref_view_strategy=ref_view_strategy,
+        )
     return MockDepthBackend(model_id=model_id or "mock-depth")
 
 

@@ -287,6 +287,12 @@ Leaderboard fields:
 - filters: `min_depth_delta1`, `max_depth_absrel`, `min_depth_coverage`, `max_depth_latency_p90`
 - sort: `sort=depth_absrel|depth_rmse|depth_delta1|depth_coverage|depth_latency_p90`
 
+Depth temporal consistency fields (v4.82, additive):
+- `report.json -> quality.depthTemporal`: `jitterAbs`, `flickerRateNear`, `scaleDriftProxy`, `refViewStrategyDiversityCount`
+- leaderboard columns: `depth_jitter_p90`, `depth_flicker_mean`, `depth_scale_drift_p90`, `depth_ref_view_diversity`
+- filters: `max_depth_jitter_p90`, `max_depth_flicker_mean`, `max_depth_scale_drift_p90`
+- sort: `sort=depth_jitter_p90|depth_flicker_mean|depth_scale_drift_p90|depth_ref_view_diversity`
+
 Reference depth HTTP chain (Gateway -> inference_service -> reference_depth_service):
 
 ```powershell
@@ -321,6 +327,7 @@ python -m uvicorn services.da3_depth_service.app:app --app-dir Gateway --host 12
 $env:BYES_SERVICE_DEPTH_PROVIDER="http"
 $env:BYES_SERVICE_DEPTH_ENDPOINT="http://127.0.0.1:19281/depth"
 $env:BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM="da3"
+$env:BYES_SERVICE_DEPTH_HTTP_REF_VIEW_STRATEGY="auto_ref"
 $env:BYES_SERVICE_DEPTH_MODEL_ID="da3-v1"
 python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
 
@@ -332,6 +339,8 @@ $env:BYES_DEPTH_HTTP_URL="http://127.0.0.1:19120/depth"
 python scripts/replay_run_package.py --run-package tests/fixtures/run_package_with_da3_fixture_depth_min --reset
 python scripts/report_run.py --run-package tests/fixtures/run_package_with_da3_fixture_depth_min
 ```
+
+`BYES_SERVICE_DEPTH_HTTP_REF_VIEW_STRATEGY` is forwarded to DA3 as `refViewStrategy` and preserved in `depth.estimate.payload.meta.refViewStrategy` for temporal-consistency analysis.
 
 DA3 model readiness check:
 - `/api/models` will require `BYES_DA3_MODEL_PATH` when `BYES_ENABLE_DEPTH=1`, `BYES_DEPTH_BACKEND=http`, and depth downstream is `da3`.
@@ -578,6 +587,16 @@ Matrix mode (`--matrix 1`) runs the same run-package batch across multiple profi
       "env": {
         "BYES_ENABLE_DEPTH": "1",
         "BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM": "da3",
+        "BYES_DA3_MODE": "fixture"
+      }
+    },
+    {
+      "name": "da3_fixture_depth_temporal",
+      "services": {"seg": "reference", "depth": "da3", "ocr": "reference"},
+      "env": {
+        "BYES_ENABLE_DEPTH": "1",
+        "BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM": "da3",
+        "BYES_SERVICE_DEPTH_HTTP_REF_VIEW_STRATEGY": "auto_ref",
         "BYES_DA3_MODE": "fixture"
       }
     },

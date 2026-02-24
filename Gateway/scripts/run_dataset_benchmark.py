@@ -59,6 +59,10 @@ METRIC_FIELDS = [
     "seg_tracks_total",
     "seg_id_switch_count",
     "depth_absRel",
+    "depth_jitter_p90",
+    "depth_flicker_mean",
+    "depth_scale_drift_p90",
+    "depth_ref_view_diversity",
     "ocr_cer",
     "slam_tracking_rate",
     "slam_coverage",
@@ -393,6 +397,8 @@ def _collect_summary_fields(*, run_package: Path, manifest: dict[str, Any], repo
     seg_tracking = seg_tracking if isinstance(seg_tracking, dict) else {}
     depth = quality.get("depth")
     depth = depth if isinstance(depth, dict) else {}
+    depth_temporal = quality.get("depthTemporal")
+    depth_temporal = depth_temporal if isinstance(depth_temporal, dict) else {}
     ocr = quality.get("ocr")
     ocr = ocr if isinstance(ocr, dict) else {}
     slam = quality.get("slam")
@@ -459,6 +465,10 @@ def _collect_summary_fields(*, run_package: Path, manifest: dict[str, Any], repo
         "seg_tracks_total": _to_int(seg_tracking.get("tracksTotal")),
         "seg_id_switch_count": _to_int(seg_tracking.get("idSwitchCount")),
         "depth_absRel": _to_float(depth.get("absRel")),
+        "depth_jitter_p90": _to_float(_nested_get(depth_temporal, ["jitterAbs", "p90"])),
+        "depth_flicker_mean": _to_float(_nested_get(depth_temporal, ["flickerRateNear", "mean"])),
+        "depth_scale_drift_p90": _to_float(_nested_get(depth_temporal, ["scaleDriftProxy", "p90"])),
+        "depth_ref_view_diversity": _to_int(depth_temporal.get("refViewStrategyDiversityCount")),
         "ocr_cer": _to_float(ocr.get("cer")),
         "slam_tracking_rate": _to_float(_nested_get(slam, ["tracking", "trackingRate"])),
         "slam_coverage": _to_float(slam.get("coverage")),
@@ -504,6 +514,10 @@ def _summary_to_csv_row(row: dict[str, Any]) -> dict[str, Any]:
         "seg_tracks_total": row.get("seg_tracks_total"),
         "seg_id_switch_count": row.get("seg_id_switch_count"),
         "depth_absRel": row.get("depth_absRel"),
+        "depth_jitter_p90": row.get("depth_jitter_p90"),
+        "depth_flicker_mean": row.get("depth_flicker_mean"),
+        "depth_scale_drift_p90": row.get("depth_scale_drift_p90"),
+        "depth_ref_view_diversity": row.get("depth_ref_view_diversity"),
         "ocr_cer": row.get("ocr_cer"),
         "slam_tracking_rate": row.get("slam_tracking_rate"),
         "slam_coverage": row.get("slam_coverage"),
@@ -552,6 +566,10 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "seg_tracks_total",
         "seg_id_switch_count",
         "depth_absRel",
+        "depth_jitter_p90",
+        "depth_flicker_mean",
+        "depth_scale_drift_p90",
+        "depth_ref_view_diversity",
         "ocr_cer",
         "slam_tracking_rate",
         "slam_coverage",
@@ -1311,8 +1329,8 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
     lines.append(f"- processed: `{payload.get('processed', 0)}`")
     lines.append(f"- failures: `{payload.get('failures', 0)}`")
     lines.append("")
-    lines.append("| profile | services | discovered | processed | failures | quality(mean) | riskP90(p90) | frameUserTtsP90(p90) | segTrackCoverage(mean) | segTracksTotal(mean) | segIdSwitchCount(mean) | slamCoverage(mean) | slamAlignP90(p90) | slamATE(mean) | slamRPE(mean) | costmapCoverage(mean) | costmapLatencyP90(p90) | costmapDynTemporalUsedRate(mean) | costmapDynMaskUsedRate(mean) | costmapDynTracksUsedMean(mean) | costmapFusedCoverage(mean) | costmapFusedIouP90(p90) | costmapFusedFlickerMean(mean) | costmapFusedShiftUsedRate(mean) | costmapFusedShiftRejectRate(mean) | slamModelPreferred(mode) | planCostmapUsedRate(mean) |")
-    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|")
+    lines.append("| profile | services | discovered | processed | failures | quality(mean) | riskP90(p90) | depthJitterP90(p90) | depthFlickerMean(mean) | depthScaleDriftP90(p90) | depthRefViewDiversity(mean) | frameUserTtsP90(p90) | segTrackCoverage(mean) | segTracksTotal(mean) | segIdSwitchCount(mean) | slamCoverage(mean) | slamAlignP90(p90) | slamATE(mean) | slamRPE(mean) | costmapCoverage(mean) | costmapLatencyP90(p90) | costmapDynTemporalUsedRate(mean) | costmapDynMaskUsedRate(mean) | costmapDynTracksUsedMean(mean) | costmapFusedCoverage(mean) | costmapFusedIouP90(p90) | costmapFusedFlickerMean(mean) | costmapFusedShiftUsedRate(mean) | costmapFusedShiftRejectRate(mean) | slamModelPreferred(mode) | planCostmapUsedRate(mean) |")
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|")
     profiles = payload.get("profiles")
     profiles = profiles if isinstance(profiles, list) else []
     for entry in profiles:
@@ -1322,6 +1340,14 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
         quality = quality if isinstance(quality, dict) else {}
         risk = metrics.get("riskLatencyP90")
         risk = risk if isinstance(risk, dict) else {}
+        depth_jitter = metrics.get("depth_jitter_p90")
+        depth_jitter = depth_jitter if isinstance(depth_jitter, dict) else {}
+        depth_flicker = metrics.get("depth_flicker_mean")
+        depth_flicker = depth_flicker if isinstance(depth_flicker, dict) else {}
+        depth_drift = metrics.get("depth_scale_drift_p90")
+        depth_drift = depth_drift if isinstance(depth_drift, dict) else {}
+        depth_ref_diversity = metrics.get("depth_ref_view_diversity")
+        depth_ref_diversity = depth_ref_diversity if isinstance(depth_ref_diversity, dict) else {}
         tts = metrics.get("frame_user_e2e_tts_p90")
         tts = tts if isinstance(tts, dict) else {}
         seg_track_cov = metrics.get("seg_track_coverage")
@@ -1363,7 +1389,7 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
         plan_costmap_used = metrics.get("plan_costmap_ctx_used_rate")
         plan_costmap_used = plan_costmap_used if isinstance(plan_costmap_used, dict) else {}
         lines.append(
-            "| {name} | {services} | {d} | {p} | {f} | {quality} | {risk} | {tts} | {seg_track_cov} | {seg_tracks_total} | {seg_id_switch} | {slam_cov} | {slam_align} | {slam_ate} | {slam_rpe} | {costmap_cov} | {costmap_p90} | {costmap_dyn_temporal} | {costmap_dyn_mask} | {costmap_dyn_tracks} | {costmap_fused_cov} | {costmap_fused_iou} | {costmap_fused_flicker} | {costmap_fused_shift_used} | {costmap_fused_shift_reject} | {slam_model_preferred} | {plan_costmap_used} |".format(
+            "| {name} | {services} | {d} | {p} | {f} | {quality} | {risk} | {depth_jitter} | {depth_flicker} | {depth_drift} | {depth_ref_diversity} | {tts} | {seg_track_cov} | {seg_tracks_total} | {seg_id_switch} | {slam_cov} | {slam_align} | {slam_ate} | {slam_rpe} | {costmap_cov} | {costmap_p90} | {costmap_dyn_temporal} | {costmap_dyn_mask} | {costmap_dyn_tracks} | {costmap_fused_cov} | {costmap_fused_iou} | {costmap_fused_flicker} | {costmap_fused_shift_used} | {costmap_fused_shift_reject} | {slam_model_preferred} | {plan_costmap_used} |".format(
                 name=entry.get("name"),
                 services=entry.get("services"),
                 d=entry.get("discovered"),
@@ -1371,6 +1397,10 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
                 f=entry.get("failures"),
                 quality=quality.get("mean"),
                 risk=risk.get("p90"),
+                depth_jitter=depth_jitter.get("p90"),
+                depth_flicker=depth_flicker.get("mean"),
+                depth_drift=depth_drift.get("p90"),
+                depth_ref_diversity=depth_ref_diversity.get("mean"),
                 tts=tts.get("p90"),
                 seg_track_cov=seg_track_cov.get("mean"),
                 seg_tracks_total=seg_tracks_total.get("mean"),
@@ -1400,17 +1430,21 @@ def _write_matrix_summary_markdown(path: Path, payload: dict[str, Any]) -> None:
         lines.append("")
         lines.append("## Deltas vs baseline")
         lines.append("")
-        lines.append("| profile | delta_qualityScore | delta_riskLatencyP90 | delta_frame_user_e2e_tts_p90 | delta_seg_track_coverage | delta_seg_tracks_total | delta_seg_id_switch_count | delta_slam_coverage | delta_slam_align_residual_p90 | delta_slam_ate_rmse | delta_slam_rpe_trans_rmse | delta_costmap_coverage | delta_costmap_latency_p90 | delta_costmap_dynamic_temporal_used_rate | delta_costmap_dynamic_mask_used_rate | delta_costmap_dynamic_tracks_used_mean | delta_costmap_fused_coverage | delta_costmap_fused_iou_p90 | delta_costmap_fused_flicker_rate_mean | delta_costmap_fused_shift_used_rate | delta_costmap_fused_shift_gate_reject_rate | delta_plan_costmap_ctx_used_rate |")
-        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+        lines.append("| profile | delta_qualityScore | delta_riskLatencyP90 | delta_depth_jitter_p90 | delta_depth_flicker_mean | delta_depth_scale_drift_p90 | delta_depth_ref_view_diversity | delta_frame_user_e2e_tts_p90 | delta_seg_track_coverage | delta_seg_tracks_total | delta_seg_id_switch_count | delta_slam_coverage | delta_slam_align_residual_p90 | delta_slam_ate_rmse | delta_slam_rpe_trans_rmse | delta_costmap_coverage | delta_costmap_latency_p90 | delta_costmap_dynamic_temporal_used_rate | delta_costmap_dynamic_mask_used_rate | delta_costmap_dynamic_tracks_used_mean | delta_costmap_fused_coverage | delta_costmap_fused_iou_p90 | delta_costmap_fused_flicker_rate_mean | delta_costmap_fused_shift_used_rate | delta_costmap_fused_shift_gate_reject_rate | delta_plan_costmap_ctx_used_rate |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         for name, value in deltas.items():
             block = value if isinstance(value, dict) else {}
             flat = block.get("deltaFlat")
             flat = flat if isinstance(flat, dict) else {}
             lines.append(
-                "| {name} | {dq} | {dr} | {dt} | {dstc} | {dstt} | {dsis} | {ds} | {da} | {dsa} | {dsr} | {dcc} | {dcl} | {dcdt} | {dcdm} | {dcdtu} | {dcfc} | {dcfi} | {dcff} | {dcfsu} | {dcfsr} | {dpcu} |".format(
+                "| {name} | {dq} | {dr} | {ddj} | {ddf} | {ddd} | {ddrv} | {dt} | {dstc} | {dstt} | {dsis} | {ds} | {da} | {dsa} | {dsr} | {dcc} | {dcl} | {dcdt} | {dcdm} | {dcdtu} | {dcfc} | {dcfi} | {dcff} | {dcfsu} | {dcfsr} | {dpcu} |".format(
                     name=name,
                     dq=flat.get("delta_qualityScore"),
                     dr=flat.get("delta_riskLatencyP90"),
+                    ddj=flat.get("delta_depth_jitter_p90"),
+                    ddf=flat.get("delta_depth_flicker_mean"),
+                    ddd=flat.get("delta_depth_scale_drift_p90"),
+                    ddrv=flat.get("delta_depth_ref_view_diversity"),
                     dt=flat.get("delta_frame_user_e2e_tts_p90"),
                     dstc=flat.get("delta_seg_track_coverage"),
                     dstt=flat.get("delta_seg_tracks_total"),

@@ -124,6 +124,8 @@ class MockDepthBackend:
         ts_ms: int,
         run_id: str | None = None,
         targets: list[str] | None = None,
+        ref_view_strategy: str | None = None,
+        pose: dict[str, Any] | None = None,
     ) -> DepthResult:
         started = _now_ms()
         del image_bytes, ts_ms, run_id, targets
@@ -145,6 +147,11 @@ class MockDepthBackend:
                 "gridCount": 1,
                 "valuesCount": len(values),
                 "backend": self.name,
+                "meta": {
+                    "provider": self.name,
+                    "refViewStrategy": str(ref_view_strategy or "").strip() or None,
+                    "poseUsed": isinstance(pose, dict),
+                },
             },
         )
 

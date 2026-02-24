@@ -34,6 +34,8 @@ python services/inference_service/tools/verify_depth_onnx.py --path D:\models\de
     - `runId: string`
     - `frameSeq: int`
     - `targets: string[]` (reserved for future providers)
+    - `refViewStrategy: string` (forwarded to downstream DA3 depth service when provider=`http`)
+    - `pose: object` (optional future hook; forwarded as-is)
 
 - `POST /slam/pose` -> `{"schemaVersion":"byes.slam_pose.v1","runId":"...","frameSeq":1,"trackingState":"tracking|lost|relocalized|initializing","pose":{"t":[tx,ty,tz],"q":[qx,qy,qz,qw],"frame":"world_to_cam|cam_to_world"},"latencyMs":<int>,"backend":"...","model":"...","endpoint":"...","warningsCount":0}`
 
@@ -154,6 +156,7 @@ Required env for `http`:
 $env:BYES_SERVICE_DEPTH_PROVIDER="http"
 $env:BYES_SERVICE_DEPTH_ENDPOINT="http://127.0.0.1:19241/depth"
 $env:BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM="reference"  # or da3
+$env:BYES_SERVICE_DEPTH_HTTP_REF_VIEW_STRATEGY="auto_ref"  # optional
 ```
 
 Optional:
@@ -188,6 +191,7 @@ python -m uvicorn services.da3_depth_service.app:app --app-dir Gateway --host 12
 $env:BYES_SERVICE_DEPTH_PROVIDER="http"
 $env:BYES_SERVICE_DEPTH_ENDPOINT="http://127.0.0.1:19281/depth"
 $env:BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM="da3"
+$env:BYES_SERVICE_DEPTH_HTTP_REF_VIEW_STRATEGY="auto_ref"
 $env:BYES_SERVICE_DEPTH_MODEL_ID="da3-v1"
 python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
 ```
@@ -307,6 +311,7 @@ Recommended default input size is `256` (can test `384`/`518` with sweep tools).
 | `BYES_SERVICE_DEPTH_ENDPOINT` | empty | depth endpoint URL (`http` provider for `/depth`) |
 | `BYES_SERVICE_DEPTH_TIMEOUT_MS` | `1200` | depth HTTP timeout ms (`/depth`) |
 | `BYES_SERVICE_DEPTH_HTTP_DOWNSTREAM` | `reference` | depth downstream selector (`reference|da3`) for http provider |
+| `BYES_SERVICE_DEPTH_HTTP_REF_VIEW_STRATEGY` | empty | optional DA3 ref-view strategy forwarded as `refViewStrategy` |
 | `BYES_SERVICE_SLAM_PROVIDER` | `mock` | SLAM provider selection (`mock|http`) |
 | `BYES_SERVICE_SLAM_MODEL_ID` | provider default | slam model metadata tag |
 | `BYES_SERVICE_SLAM_ENDPOINT` | empty | slam endpoint URL (`http` provider for `/slam/pose`) |

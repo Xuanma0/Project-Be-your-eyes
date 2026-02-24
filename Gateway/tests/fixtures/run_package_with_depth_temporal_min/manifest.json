@@ -1,0 +1,14 @@
+﻿{
+  "scenarioTag": "fixture_with_depth_temporal_min",
+  "startMs": 1711200000000,
+  "endMs": 1711200001500,
+  "wsJsonl": "events/events_v1.jsonl",
+  "eventsV1Jsonl": "events/events_v1.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "framesDir": "frames",
+  "framesMetaJsonl": "frames_meta.jsonl",
+  "frameCountSent": 4,
+  "eventCountAccepted": 4,
+  "errors": []
+}

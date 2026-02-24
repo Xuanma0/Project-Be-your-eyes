@@ -912,6 +912,8 @@ class GatewayApp:
                     ts_ms,
                     run_id=run_id,
                     targets=None,
+                    ref_view_strategy=self.config.inference_depth_http_ref_view_strategy or None,
+                    pose=None,
                 )
             except Exception as exc:  # noqa: BLE001
                 depth_result = DepthResult(
@@ -3034,6 +3036,9 @@ async def run_packages_list(
     max_depth_absrel: float | None = None,
     min_depth_coverage: float | None = None,
     max_depth_latency_p90: int | None = None,
+    max_depth_jitter_p90: float | None = None,
+    max_depth_flicker_mean: float | None = None,
+    max_depth_scale_drift_p90: float | None = None,
     min_costmap_coverage: float | None = None,
     max_costmap_latency_p90: int | None = None,
     max_costmap_dynamic_filter_rate_mean: float | None = None,
@@ -3123,6 +3128,9 @@ async def run_packages_list(
         max_depth_absrel=max_depth_absrel,
         min_depth_coverage=min_depth_coverage,
         max_depth_latency_p90=max_depth_latency_p90,
+        max_depth_jitter_p90=max_depth_jitter_p90,
+        max_depth_flicker_mean=max_depth_flicker_mean,
+        max_depth_scale_drift_p90=max_depth_scale_drift_p90,
         min_costmap_coverage=min_costmap_coverage,
         max_costmap_latency_p90=max_costmap_latency_p90,
         max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
@@ -3213,6 +3221,9 @@ async def run_packages_list(
             "max_depth_absrel": max_depth_absrel,
             "min_depth_coverage": min_depth_coverage,
             "max_depth_latency_p90": max_depth_latency_p90,
+            "max_depth_jitter_p90": max_depth_jitter_p90,
+            "max_depth_flicker_mean": max_depth_flicker_mean,
+            "max_depth_scale_drift_p90": max_depth_scale_drift_p90,
             "min_costmap_coverage": min_costmap_coverage,
             "max_costmap_latency_p90": max_costmap_latency_p90,
             "max_costmap_dynamic_filter_rate_mean": max_costmap_dynamic_filter_rate_mean,
@@ -3307,6 +3318,9 @@ async def run_packages_export_json(
     max_depth_absrel: float | None = None,
     min_depth_coverage: float | None = None,
     max_depth_latency_p90: int | None = None,
+    max_depth_jitter_p90: float | None = None,
+    max_depth_flicker_mean: float | None = None,
+    max_depth_scale_drift_p90: float | None = None,
     min_costmap_coverage: float | None = None,
     max_costmap_latency_p90: int | None = None,
     max_costmap_dynamic_filter_rate_mean: float | None = None,
@@ -3392,13 +3406,16 @@ async def run_packages_export_json(
         min_seg_track_coverage=min_seg_track_coverage,
         min_seg_tracks_total=min_seg_tracks_total,
         max_seg_id_switches=max_seg_id_switches,
-            min_depth_delta1=min_depth_delta1,
-            max_depth_absrel=max_depth_absrel,
-            min_depth_coverage=min_depth_coverage,
-            max_depth_latency_p90=max_depth_latency_p90,
-            min_costmap_coverage=min_costmap_coverage,
-            max_costmap_latency_p90=max_costmap_latency_p90,
-            max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+        min_depth_delta1=min_depth_delta1,
+        max_depth_absrel=max_depth_absrel,
+        min_depth_coverage=min_depth_coverage,
+        max_depth_latency_p90=max_depth_latency_p90,
+        max_depth_jitter_p90=max_depth_jitter_p90,
+        max_depth_flicker_mean=max_depth_flicker_mean,
+        max_depth_scale_drift_p90=max_depth_scale_drift_p90,
+        min_costmap_coverage=min_costmap_coverage,
+        max_costmap_latency_p90=max_costmap_latency_p90,
+        max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
         min_costmap_dynamic_temporal_used_rate=min_costmap_dynamic_temporal_used_rate,
         min_costmap_dynamic_mask_used_rate=min_costmap_dynamic_mask_used_rate,
         max_costmap_dynamic_tracks_used_mean=max_costmap_dynamic_tracks_used_mean,
@@ -3492,6 +3509,9 @@ async def run_packages_export_csv(
     max_depth_absrel: float | None = None,
     min_depth_coverage: float | None = None,
     max_depth_latency_p90: int | None = None,
+    max_depth_jitter_p90: float | None = None,
+    max_depth_flicker_mean: float | None = None,
+    max_depth_scale_drift_p90: float | None = None,
     min_costmap_coverage: float | None = None,
     max_costmap_latency_p90: int | None = None,
     max_costmap_dynamic_filter_rate_mean: float | None = None,
@@ -3581,6 +3601,9 @@ async def run_packages_export_csv(
         max_depth_absrel=max_depth_absrel,
         min_depth_coverage=min_depth_coverage,
         max_depth_latency_p90=max_depth_latency_p90,
+        max_depth_jitter_p90=max_depth_jitter_p90,
+        max_depth_flicker_mean=max_depth_flicker_mean,
+        max_depth_scale_drift_p90=max_depth_scale_drift_p90,
         min_costmap_coverage=min_costmap_coverage,
         max_costmap_latency_p90=max_costmap_latency_p90,
         max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
@@ -3684,6 +3707,10 @@ async def run_packages_export_csv(
         "depth_delta1",
         "depth_coverage",
         "depth_latency_p90",
+        "depth_jitter_p90",
+        "depth_flicker_mean",
+        "depth_scale_drift_p90",
+        "depth_ref_view_diversity",
         "costmap_coverage",
         "costmap_latency_p90",
         "costmap_density_mean",
@@ -5191,6 +5218,7 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     seg_quality = quality_payload.get("seg", {}) if isinstance(quality_payload, dict) else {}
     seg_tracking_quality = quality_payload.get("segTracking", {}) if isinstance(quality_payload, dict) else {}
     depth_quality = quality_payload.get("depth", {}) if isinstance(quality_payload, dict) else {}
+    depth_temporal_quality = quality_payload.get("depthTemporal", {}) if isinstance(quality_payload, dict) else {}
     slam_quality = quality_payload.get("slam", {}) if isinstance(quality_payload, dict) else {}
     costmap_quality = quality_payload.get("costmap", {}) if isinstance(quality_payload, dict) else {}
     costmap_fused_quality = quality_payload.get("costmapFused", {}) if isinstance(quality_payload, dict) else {}
@@ -5244,6 +5272,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     depth_delta1: float | None = None
     depth_coverage: float | None = None
     depth_latency_p90: int | None = None
+    depth_jitter_p90: float | None = None
+    depth_flicker_mean: float | None = None
+    depth_scale_drift_p90: float | None = None
+    depth_ref_view_diversity: int | None = None
     costmap_coverage: float | None = None
     costmap_latency_p90: int | None = None
     costmap_density_mean: float | None = None
@@ -5665,6 +5697,25 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         raw_depth_p90 = _read_float(depth_latency, "p90")
         if raw_depth_p90 is not None:
             depth_latency_p90 = int(raw_depth_p90)
+    if isinstance(depth_temporal_quality, dict):
+        jitter_payload = depth_temporal_quality.get("jitterAbs")
+        jitter_payload = jitter_payload if isinstance(jitter_payload, dict) else {}
+        raw_jitter_p90 = _read_float(jitter_payload, "p90")
+        if raw_jitter_p90 is not None:
+            depth_jitter_p90 = float(raw_jitter_p90)
+        flicker_payload = depth_temporal_quality.get("flickerRateNear")
+        flicker_payload = flicker_payload if isinstance(flicker_payload, dict) else {}
+        raw_flicker_mean = _read_float(flicker_payload, "mean")
+        if raw_flicker_mean is not None:
+            depth_flicker_mean = float(raw_flicker_mean)
+        drift_payload = depth_temporal_quality.get("scaleDriftProxy")
+        drift_payload = drift_payload if isinstance(drift_payload, dict) else {}
+        raw_drift_p90 = _read_float(drift_payload, "p90")
+        if raw_drift_p90 is not None:
+            depth_scale_drift_p90 = float(raw_drift_p90)
+        raw_diversity = _read_float(depth_temporal_quality, "refViewStrategyDiversityCount")
+        if raw_diversity is not None:
+            depth_ref_view_diversity = int(raw_diversity)
     if isinstance(costmap_quality, dict):
         raw_costmap_cov = _read_float(costmap_quality, "coverage")
         if raw_costmap_cov is not None:
@@ -5857,6 +5908,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "depth_delta1": depth_delta1,
         "depth_coverage": depth_coverage,
         "depth_latency_p90": depth_latency_p90,
+        "depth_jitter_p90": depth_jitter_p90,
+        "depth_flicker_mean": depth_flicker_mean,
+        "depth_scale_drift_p90": depth_scale_drift_p90,
+        "depth_ref_view_diversity": depth_ref_view_diversity,
         "costmap_coverage": costmap_coverage,
         "costmap_latency_p90": costmap_latency_p90,
         "costmap_density_mean": costmap_density_mean,
@@ -5985,6 +6040,9 @@ def _matches_run_filters(
     max_depth_absrel: float | None,
     min_depth_coverage: float | None,
     max_depth_latency_p90: int | None,
+    max_depth_jitter_p90: float | None,
+    max_depth_flicker_mean: float | None,
+    max_depth_scale_drift_p90: float | None,
     min_costmap_coverage: float | None = None,
     max_costmap_latency_p90: int | None = None,
     max_costmap_dynamic_filter_rate_mean: float | None = None,
@@ -6167,6 +6225,24 @@ def _matches_run_filters(
         if value is None:
             return False
         if int(value) > int(max_depth_latency_p90):
+            return False
+    if max_depth_jitter_p90 is not None:
+        value = row.get("depth_jitter_p90")
+        if value is None:
+            return False
+        if float(value) > float(max_depth_jitter_p90):
+            return False
+    if max_depth_flicker_mean is not None:
+        value = row.get("depth_flicker_mean")
+        if value is None:
+            return False
+        if float(value) > float(max_depth_flicker_mean):
+            return False
+    if max_depth_scale_drift_p90 is not None:
+        value = row.get("depth_scale_drift_p90")
+        if value is None:
+            return False
+        if float(value) > float(max_depth_scale_drift_p90):
             return False
     if min_costmap_coverage is not None:
         value = row.get("costmap_coverage")
@@ -6564,6 +6640,10 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "depth_delta1",
         "depth_coverage",
         "depth_latency_p90",
+        "depth_jitter_p90",
+        "depth_flicker_mean",
+        "depth_scale_drift_p90",
+        "depth_ref_view_diversity",
         "costmap_coverage",
         "costmap_latency_p90",
         "costmap_density_mean",
@@ -6679,6 +6759,9 @@ async def _query_run_package_rows(
     max_depth_absrel: float | None,
     min_depth_coverage: float | None,
     max_depth_latency_p90: int | None,
+    max_depth_jitter_p90: float | None,
+    max_depth_flicker_mean: float | None,
+    max_depth_scale_drift_p90: float | None,
     min_costmap_coverage: float | None,
     max_costmap_latency_p90: int | None,
     max_costmap_dynamic_filter_rate_mean: float | None,
@@ -6774,6 +6857,9 @@ async def _query_run_package_rows(
             max_depth_absrel=max_depth_absrel,
             min_depth_coverage=min_depth_coverage,
             max_depth_latency_p90=max_depth_latency_p90,
+            max_depth_jitter_p90=max_depth_jitter_p90,
+            max_depth_flicker_mean=max_depth_flicker_mean,
+            max_depth_scale_drift_p90=max_depth_scale_drift_p90,
             min_costmap_coverage=min_costmap_coverage,
             max_costmap_latency_p90=max_costmap_latency_p90,
             max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
@@ -6897,6 +6983,9 @@ async def runs_dashboard(
     max_depth_absrel: float | None = None,
     min_depth_coverage: float | None = None,
     max_depth_latency_p90: int | None = None,
+    max_depth_jitter_p90: float | None = None,
+    max_depth_flicker_mean: float | None = None,
+    max_depth_scale_drift_p90: float | None = None,
     min_costmap_coverage: float | None = None,
     max_costmap_latency_p90: int | None = None,
     max_costmap_dynamic_filter_rate_mean: float | None = None,
@@ -6987,6 +7076,9 @@ async def runs_dashboard(
         max_depth_absrel=max_depth_absrel,
         min_depth_coverage=min_depth_coverage,
         max_depth_latency_p90=max_depth_latency_p90,
+        max_depth_jitter_p90=max_depth_jitter_p90,
+        max_depth_flicker_mean=max_depth_flicker_mean,
+        max_depth_scale_drift_p90=max_depth_scale_drift_p90,
         min_costmap_coverage=min_costmap_coverage,
         max_costmap_latency_p90=max_costmap_latency_p90,
         max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
@@ -7125,6 +7217,18 @@ async def runs_dashboard(
         depth_cov = "—" if depth_cov_raw is None else f"{float(depth_cov_raw):.4f}"
         depth_p90_raw = row.get("depth_latency_p90")
         depth_p90 = "—" if depth_p90_raw is None else str(int(depth_p90_raw))
+        depth_jitter_p90_raw = row.get("depth_jitter_p90")
+        depth_jitter_p90 = "—" if depth_jitter_p90_raw is None else f"{float(depth_jitter_p90_raw):.6f}"
+        depth_flicker_mean_raw = row.get("depth_flicker_mean")
+        depth_flicker_mean = "—" if depth_flicker_mean_raw is None else f"{float(depth_flicker_mean_raw):.6f}"
+        depth_scale_drift_p90_raw = row.get("depth_scale_drift_p90")
+        depth_scale_drift_p90 = (
+            "—" if depth_scale_drift_p90_raw is None else f"{float(depth_scale_drift_p90_raw):.6f}"
+        )
+        depth_ref_view_diversity_raw = row.get("depth_ref_view_diversity")
+        depth_ref_view_diversity = (
+            "—" if depth_ref_view_diversity_raw is None else str(int(depth_ref_view_diversity_raw))
+        )
         costmap_cov_raw = row.get("costmap_coverage")
         costmap_cov = "—" if costmap_cov_raw is None else f"{float(costmap_cov_raw):.4f}"
         costmap_p90_raw = row.get("costmap_latency_p90")
@@ -7254,6 +7358,10 @@ async def runs_dashboard(
             f"<td>{html.escape(depth_delta1)}</td>"
             f"<td>{html.escape(depth_cov)}</td>"
             f"<td>{html.escape(depth_p90)}</td>"
+            f"<td>{html.escape(depth_jitter_p90)}</td>"
+            f"<td>{html.escape(depth_flicker_mean)}</td>"
+            f"<td>{html.escape(depth_scale_drift_p90)}</td>"
+            f"<td>{html.escape(depth_ref_view_diversity)}</td>"
             f"<td>{html.escape(costmap_cov)}</td>"
             f"<td>{html.escape(costmap_p90)}</td>"
             f"<td>{html.escape(costmap_density)}</td>"
@@ -7333,6 +7441,11 @@ async def runs_dashboard(
     max_depth_absrel_value = html.escape("" if max_depth_absrel is None else str(max_depth_absrel))
     min_depth_coverage_value = html.escape("" if min_depth_coverage is None else str(min_depth_coverage))
     max_depth_latency_p90_value = html.escape("" if max_depth_latency_p90 is None else str(max_depth_latency_p90))
+    max_depth_jitter_p90_value = html.escape("" if max_depth_jitter_p90 is None else str(max_depth_jitter_p90))
+    max_depth_flicker_mean_value = html.escape("" if max_depth_flicker_mean is None else str(max_depth_flicker_mean))
+    max_depth_scale_drift_p90_value = html.escape(
+        "" if max_depth_scale_drift_p90 is None else str(max_depth_scale_drift_p90)
+    )
     min_costmap_coverage_value = html.escape("" if min_costmap_coverage is None else str(min_costmap_coverage))
     max_costmap_latency_p90_value = html.escape("" if max_costmap_latency_p90 is None else str(max_costmap_latency_p90))
     max_costmap_dynamic_filter_rate_mean_value = html.escape(
@@ -7510,6 +7623,9 @@ async def runs_dashboard(
       <label>max_depth_absrel: <input type="number" step="0.0001" min="0" name="max_depth_absrel" value="{max_depth_absrel_value}" /></label>
       <label>min_depth_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_depth_coverage" value="{min_depth_coverage_value}" /></label>
       <label>max_depth_latency_p90: <input type="number" min="0" name="max_depth_latency_p90" value="{max_depth_latency_p90_value}" /></label>
+      <label>max_depth_jitter_p90: <input type="number" step="0.000001" min="0" name="max_depth_jitter_p90" value="{max_depth_jitter_p90_value}" /></label>
+      <label>max_depth_flicker_mean: <input type="number" step="0.000001" min="0" max="1" name="max_depth_flicker_mean" value="{max_depth_flicker_mean_value}" /></label>
+      <label>max_depth_scale_drift_p90: <input type="number" step="0.000001" min="0" name="max_depth_scale_drift_p90" value="{max_depth_scale_drift_p90_value}" /></label>
       <label>min_costmap_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_coverage" value="{min_costmap_coverage_value}" /></label>
       <label>max_costmap_latency_p90: <input type="number" min="0" name="max_costmap_latency_p90" value="{max_costmap_latency_p90_value}" /></label>
       <label>max_costmap_dynamic_filter_rate_mean: <input type="number" step="0.0001" min="0" max="1" name="max_costmap_dynamic_filter_rate_mean" value="{max_costmap_dynamic_filter_rate_mean_value}" /></label>
@@ -7587,6 +7703,10 @@ async def runs_dashboard(
           <option value="depth_delta1" {"selected" if sort_value == "depth_delta1" else ""}>depth_delta1</option>
           <option value="depth_coverage" {"selected" if sort_value == "depth_coverage" else ""}>depth_coverage</option>
           <option value="depth_latency_p90" {"selected" if sort_value == "depth_latency_p90" else ""}>depth_latency_p90</option>
+          <option value="depth_jitter_p90" {"selected" if sort_value == "depth_jitter_p90" else ""}>depth_jitter_p90</option>
+          <option value="depth_flicker_mean" {"selected" if sort_value == "depth_flicker_mean" else ""}>depth_flicker_mean</option>
+          <option value="depth_scale_drift_p90" {"selected" if sort_value == "depth_scale_drift_p90" else ""}>depth_scale_drift_p90</option>
+          <option value="depth_ref_view_diversity" {"selected" if sort_value == "depth_ref_view_diversity" else ""}>depth_ref_view_diversity</option>
           <option value="costmap_coverage" {"selected" if sort_value == "costmap_coverage" else ""}>costmap_coverage</option>
           <option value="costmap_latency_p90" {"selected" if sort_value == "costmap_latency_p90" else ""}>costmap_latency_p90</option>
           <option value="costmap_density_mean" {"selected" if sort_value == "costmap_density_mean" else ""}>costmap_density_mean</option>
@@ -7645,8 +7765,8 @@ async def runs_dashboard(
       </label>
       <label>limit: <input type="number" name="limit" min="1" max="200" value="{limit_value}" /></label>
       <button type="submit">Apply</button>
-      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&min_costmap_fused_coverage={min_costmap_fused_coverage_value}&max_costmap_fused_latency_p90={max_costmap_fused_latency_p90_value}&min_costmap_fused_iou_p90={min_costmap_fused_iou_p90_value}&max_costmap_fused_flicker_rate_mean={max_costmap_fused_flicker_rate_mean_value}&max_costmap_fused_shift_gate_reject_rate={max_costmap_fused_shift_gate_reject_rate_value}&min_costmap_fused_shift_used_rate={min_costmap_fused_shift_used_rate_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_track_coverage={min_seg_track_coverage_value}&min_seg_tracks_total={min_seg_tracks_total_value}&max_seg_id_switches={max_seg_id_switches_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
-      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&min_costmap_fused_coverage={min_costmap_fused_coverage_value}&max_costmap_fused_latency_p90={max_costmap_fused_latency_p90_value}&min_costmap_fused_iou_p90={min_costmap_fused_iou_p90_value}&max_costmap_fused_flicker_rate_mean={max_costmap_fused_flicker_rate_mean_value}&max_costmap_fused_shift_gate_reject_rate={max_costmap_fused_shift_gate_reject_rate_value}&min_costmap_fused_shift_used_rate={min_costmap_fused_shift_used_rate_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_track_coverage={min_seg_track_coverage_value}&min_seg_tracks_total={min_seg_tracks_total_value}&max_seg_id_switches={max_seg_id_switches_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
+      <a href="{base_url}/api/run_packages/export.csv?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&max_depth_jitter_p90={max_depth_jitter_p90_value}&max_depth_flicker_mean={max_depth_flicker_mean_value}&max_depth_scale_drift_p90={max_depth_scale_drift_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&min_costmap_fused_coverage={min_costmap_fused_coverage_value}&max_costmap_fused_latency_p90={max_costmap_fused_latency_p90_value}&min_costmap_fused_iou_p90={min_costmap_fused_iou_p90_value}&max_costmap_fused_flicker_rate_mean={max_costmap_fused_flicker_rate_mean_value}&max_costmap_fused_shift_gate_reject_rate={max_costmap_fused_shift_gate_reject_rate_value}&min_costmap_fused_shift_used_rate={min_costmap_fused_shift_used_rate_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_track_coverage={min_seg_track_coverage_value}&min_seg_tracks_total={min_seg_tracks_total_value}&max_seg_id_switches={max_seg_id_switches_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export CSV</a>
+      <a href="{base_url}/api/run_packages/export.json?scenario={scenario_value}&run_id={run_id_value}&has_gt={has_gt_value}&has_pov={has_pov_value}&has_pov_context={has_pov_context_value}&has_plan={has_plan_value}&plan_fallback_used={plan_fallback_used_value}&plan_risk_level={plan_risk_level_value}&min_quality={min_quality_value}&min_pov_decisions={min_pov_decisions_value}&min_pov_context_token_approx={min_pov_context_token_approx_value}&min_plan_score={min_plan_score_value}&max_confirm_timeouts={max_confirm_timeouts_value}&max_critical_misses={max_critical_misses_value}&max_risk_latency_p90={max_risk_latency_p90_value}&max_risk_latency_max={max_risk_latency_max_value}&max_ocr_cer={max_ocr_cer_value}&min_ocr_exact_match_rate={min_ocr_exact_match_rate_value}&min_ocr_coverage={min_ocr_coverage_value}&max_ocr_latency_p90={max_ocr_latency_p90_value}&min_depth_delta1={min_depth_delta1_value}&max_depth_absrel={max_depth_absrel_value}&min_depth_coverage={min_depth_coverage_value}&max_depth_latency_p90={max_depth_latency_p90_value}&max_depth_jitter_p90={max_depth_jitter_p90_value}&max_depth_flicker_mean={max_depth_flicker_mean_value}&max_depth_scale_drift_p90={max_depth_scale_drift_p90_value}&min_costmap_coverage={min_costmap_coverage_value}&max_costmap_latency_p90={max_costmap_latency_p90_value}&max_costmap_dynamic_filter_rate_mean={max_costmap_dynamic_filter_rate_mean_value}&min_costmap_fused_coverage={min_costmap_fused_coverage_value}&max_costmap_fused_latency_p90={max_costmap_fused_latency_p90_value}&min_costmap_fused_iou_p90={min_costmap_fused_iou_p90_value}&max_costmap_fused_flicker_rate_mean={max_costmap_fused_flicker_rate_mean_value}&max_costmap_fused_shift_gate_reject_rate={max_costmap_fused_shift_gate_reject_rate_value}&min_costmap_fused_shift_used_rate={min_costmap_fused_shift_used_rate_value}&max_frame_user_e2e_p90={max_frame_user_e2e_p90_value}&max_frame_user_e2e_max={max_frame_user_e2e_max_value}&max_frame_user_e2e_tts_p90={max_frame_user_e2e_tts_p90_value}&max_frame_user_e2e_ar_p90={max_frame_user_e2e_ar_p90_value}&min_ack_kind_diversity={min_ack_kind_diversity_value}&max_models_missing_required={max_models_missing_required_value}&min_seg_f1_50={min_seg_f1_50_value}&min_seg_coverage={min_seg_coverage_value}&min_seg_track_coverage={min_seg_track_coverage_value}&min_seg_tracks_total={min_seg_tracks_total_value}&max_seg_id_switches={max_seg_id_switches_value}&min_seg_mask_f1_50={min_seg_mask_f1_50_value}&min_seg_mask_coverage={min_seg_mask_coverage_value}&max_seg_latency_p90={max_seg_latency_p90_value}&max_seg_ctx_chars={max_seg_ctx_chars_value}&max_seg_ctx_trunc_dropped={max_seg_ctx_trunc_dropped_value}&max_plan_ctx_trunc_rate={max_plan_ctx_trunc_rate_value}&min_plan_ctx_chars_p90={min_plan_ctx_chars_p90_value}&min_seg_prompt_text_chars={min_seg_prompt_text_chars_value}&max_seg_prompt_trunc_rate={max_seg_prompt_trunc_rate_value}&max_seg_prompt_trunc_dropped={max_seg_prompt_trunc_dropped_value}&max_plan_guardrails={max_plan_guardrails_value}&max_plan_latency_p90={max_plan_latency_p90_value}&max_plan_overcautious_rate={max_plan_overcautious_rate_value}&max_plan_guardrail_override_rate={max_plan_guardrail_override_rate_value}&require_plan_costmap_ctx_used={require_plan_costmap_ctx_used_value}&sort={sort_value}&order={order_value}&limit={limit_value}">Export JSON</a>
     </form>
     <button id="compare">Compare Selected (2)</button>
     <table>
@@ -7690,6 +7810,10 @@ async def runs_dashboard(
           <th>Depth Delta1</th>
           <th>Depth Coverage</th>
           <th>Depth p90(ms)</th>
+          <th>Depth Jitter p90(m)</th>
+          <th>Depth Flicker Mean</th>
+          <th>Depth ScaleDrift p90(m)</th>
+          <th>Depth RefView Diversity</th>
           <th>Costmap Coverage</th>
           <th>Costmap p90(ms)</th>
           <th>Costmap DensityMean</th>

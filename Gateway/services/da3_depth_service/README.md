@@ -37,12 +37,15 @@ python -m uvicorn services.da3_depth_service.app:app --app-dir ../../ --host 127
     - `runId`, `frameSeq`
     - optional `image_b64`
     - optional `mode` per-request override (`fixture|da3`)
+    - optional `refViewStrategy` (e.g. `auto_ref|first|middle`)
+    - optional `pose` object (v4.82 hook; fixture mode only records `poseUsed`)
   - response (`byes.depth.v1` compatible):
     - `grid`: `{format:"grid_u16_mm_v1", size:[gw,gh], unit:"mm", values:[...]}`
     - `gridCount`, `valuesCount`
     - `backend="da3"`
     - `model=<BYES_DA3_MODEL_ID>`
     - `endpoint`
+    - optional `meta`: `{provider, refViewStrategy, poseUsed, warningsCount}`
     - optional `warningsCount`
 
 ## Behavior notes
@@ -54,5 +57,5 @@ python -m uvicorn services.da3_depth_service.app:app --app-dir ../../ --host 127
 - `da3` mode:
   - if model path is missing/invalid, `/depth` returns HTTP 500 with readable `da3_not_ready:*`.
   - v4.66 keeps inference as a lightweight stub grid (no heavy model dependency in CI).
+  - v4.82 forwards `refViewStrategy` into response `meta` (and into future DA3 pipeline hooks).
   - model files are external assets and must not be committed to this repository.
-

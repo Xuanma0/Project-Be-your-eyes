@@ -19,6 +19,8 @@ class DepthRequest(BaseModel):
     frameSeq: int | None = None
     runId: str | None = None
     mode: str | None = None
+    refViewStrategy: str | None = None
+    pose: dict[str, Any] | None = None
 
 
 app = FastAPI(title=APP_TITLE)
@@ -302,6 +304,16 @@ def depth_estimate(request: DepthRequest, raw_request: Request) -> dict[str, Any
         "gridCount": 0,
         "valuesCount": 0,
     }
+    meta: dict[str, Any] = {
+        "provider": BACKEND,
+    }
+    ref_view_strategy = str(request.refViewStrategy or "").strip()
+    if ref_view_strategy:
+        meta["refViewStrategy"] = ref_view_strategy
+    if request.pose is not None:
+        meta["poseUsed"] = isinstance(request.pose, dict)
+    elif ref_view_strategy:
+        meta["poseUsed"] = False
     if isinstance(frame_payload, dict):
         grid = frame_payload.get("grid")
         if isinstance(grid, dict):
@@ -326,5 +338,7 @@ def depth_estimate(request: DepthRequest, raw_request: Request) -> dict[str, Any
         response["warning"] = warning
     if warnings_count > 0:
         response["warningsCount"] = int(warnings_count)
+        meta["warningsCount"] = int(warnings_count)
+    if meta:
+        response["meta"] = meta
     return response
-

@@ -25,6 +25,7 @@ from byes.quality_metrics import (  # noqa: E402
     compute_seg_metrics,
     compute_seg_tracking_metrics,
     compute_depth_metrics,
+    extract_depth_temporal_metrics_from_events_v1,
     compute_slam_metrics,
     compute_slam_metrics_by_model_from_events,
     compute_slam_error_metrics,
@@ -100,6 +101,31 @@ def _coerce_positive_int(raw: Any, fallback: int) -> int:
         return value
     except Exception:
         return int(fallback)
+
+
+def _coerce_nonnegative_float(raw: Any, fallback: float) -> float:
+    try:
+        if raw is None:
+            return float(fallback)
+        value = float(raw)
+        if value < 0.0:
+            return float(fallback)
+        return float(value)
+    except Exception:
+        return float(fallback)
+
+
+def _coerce_bool(raw: Any, fallback: bool) -> bool:
+    if raw is None:
+        return bool(fallback)
+    if isinstance(raw, bool):
+        return bool(raw)
+    text = str(raw).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(fallback)
 
 
 def parse_metric_labels(raw_labels: str | None) -> dict[str, str]:
@@ -1125,6 +1151,16 @@ def generate_report_outputs(
             frames_total_hint = 0
     if frames_total_hint <= 0:
         frames_total_hint = None
+    depth_temporal_roi = str(os.getenv("BYES_DEPTH_TEMPORAL_ROI", "bottom_center")).strip() or "bottom_center"
+    depth_temporal_near_thresh_m = _coerce_nonnegative_float(os.getenv("BYES_DEPTH_TEMPORAL_NEAR_THRESH_M"), 1.0)
+    depth_temporal_require_same_size = _coerce_bool(os.getenv("BYES_DEPTH_TEMPORAL_REQUIRE_SAME_SIZE"), True)
+    depth_temporal_metrics = extract_depth_temporal_metrics_from_events_v1(
+        event_rows,
+        frames_total_declared=frames_total_hint,
+        roi_mode=depth_temporal_roi,
+        near_thresh_m=depth_temporal_near_thresh_m,
+        require_same_size=depth_temporal_require_same_size,
+    )
     costmap_metrics = extract_costmap_metrics_from_events_v1(
         event_rows,
         frames_total_declared=frames_total_hint,
@@ -1139,6 +1175,7 @@ def generate_report_outputs(
         "eventSchema": event_schema_stats,
         "riskLatencyMs": risk_latency_stats,
         "depth": {"present": False},
+        "depthTemporal": depth_temporal_metrics,
         "costmap": costmap_metrics,
         "costmapFused": costmap_fused_metrics,
         "slam": {"present": False, "alignment": slam_alignment},
@@ -1271,6 +1308,7 @@ def generate_report_outputs(
             "ocr": ocr_metrics,
             "depthRisk": risk_metrics,
             "depth": {"present": False},
+            "depthTemporal": depth_temporal_metrics,
             "slam": {"present": False, "alignment": slam_alignment},
             "safetyBehavior": safety_behavior,
             "eventSchema": event_schema_stats,

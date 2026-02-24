@@ -70,6 +70,16 @@
       "requireDepthPayloadSchemaOk": true
     },
     {
+      "id": "fixture_with_depth_temporal_contract",
+      "runPackage": "Gateway/tests/fixtures/run_package_with_depth_temporal_min",
+      "requireCriticalFnZero": false,
+      "requirePovPresent": false,
+      "minPovDecisions": 0,
+      "requireDepthEventsPresent": true,
+      "requireDepthPayloadSchemaOk": true,
+      "requireDepthTemporalPresent": true
+    },
+    {
       "id": "fixture_with_costmap_contract",
       "runPackage": "Gateway/tests/fixtures/run_package_with_costmap_min",
       "requireCriticalFnZero": false,

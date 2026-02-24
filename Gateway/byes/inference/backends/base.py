@@ -107,6 +107,8 @@ class DepthBackend(Protocol):
         ts_ms: int,
         run_id: str | None = None,
         targets: list[str] | None = None,
+        ref_view_strategy: str | None = None,
+        pose: dict[str, Any] | None = None,
     ) -> DepthResult:
         ...
 
