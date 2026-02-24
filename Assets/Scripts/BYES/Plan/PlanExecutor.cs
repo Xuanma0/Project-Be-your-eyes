@@ -123,12 +123,28 @@ namespace BYES.Plan
                     );
                     break;
                 case "haptic":
-                    Debug.Log("[PlanExecutor] HAPTIC unsupported on current runtime");
-                    ByesFrameTelemetry.AckFeedback(_runIdForAck, _frameSeqForAck, "haptic", false, ByesFrameTelemetry.NowUnixMs());
+                    if (ByesHaptics.Instance.TrySendPulse(HapticChannel.Both, 0.5f, 0.08f, command.actionId, command.confirmId))
+                    {
+                        if (ByesOverlayAckThrottler.Instance.TryMark(_runIdForAck, _frameSeqForAck, "haptic"))
+                        {
+                            ByesFrameTelemetry.AckFeedback(_runIdForAck, _frameSeqForAck, "haptic", true, ByesFrameTelemetry.NowUnixMs());
+                        }
+                    }
+                    else if (Debug.isDebugBuild)
+                    {
+                        Debug.Log("[PlanExecutor] HAPTIC skipped (unsupported or debounced)");
+                    }
                     break;
                 case "stop":
                     IsStopped = true;
                     ByesOverlayRenderer.EnsureExists().RenderStop(_runIdForAck, _frameSeqForAck, string.IsNullOrWhiteSpace(command.text) ? "STOP" : command.text);
+                    if (ByesHaptics.Instance.TrySendPulse(HapticChannel.Both, 0.9f, 0.15f, command.actionId, command.confirmId))
+                    {
+                        if (ByesOverlayAckThrottler.Instance.TryMark(_runIdForAck, _frameSeqForAck, "haptic"))
+                        {
+                            ByesFrameTelemetry.AckFeedback(_runIdForAck, _frameSeqForAck, "haptic", true, ByesFrameTelemetry.NowUnixMs());
+                        }
+                    }
                     Debug.Log($"[PlanExecutor] STOP: {command.reason}");
                     break;
                 default:

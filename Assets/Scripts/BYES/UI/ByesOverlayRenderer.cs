@@ -15,10 +15,17 @@ namespace BYES.UI
         private Text _titleText;
         private Text _detailText;
         private Text _hotspotText;
+        private Camera _worldCamera;
+        private Vector3 _canvasVelocity;
+        private bool _poseInitialized;
 
         private string _lastPlanSignature = string.Empty;
         private int _lastRenderedFrameSeq = -1;
         private string _lastRenderedRunId = string.Empty;
+
+        private const float OverlayDistanceMeters = 1.2f;
+        private const float OverlayVerticalOffsetMeters = 0.0f;
+        private const float OverlaySmoothTimeSec = 0.08f;
 
         public static ByesOverlayRenderer Instance => EnsureExists();
 
@@ -65,6 +72,8 @@ namespace BYES.UI
 
         private void Update()
         {
+            UpdateCanvasPose(forceSnap: false);
+
             var state = ByesSystemState.Instance;
             if (state == null)
             {
@@ -161,6 +170,7 @@ namespace BYES.UI
         public void RenderStop(string runId, int frameSeq, string message)
         {
             EnsureUi();
+            UpdateCanvasPose(forceSnap: true);
             ApplyPanel(Color.red, "STOP", string.IsNullOrWhiteSpace(message) ? "STOP" : message, string.Empty);
             AcknowledgeAr(runId, frameSeq, true);
         }
@@ -168,6 +178,7 @@ namespace BYES.UI
         public void RenderTurn(string runId, int frameSeq, string direction, string message)
         {
             EnsureUi();
+            UpdateCanvasPose(forceSnap: true);
             var normalized = string.IsNullOrWhiteSpace(direction) ? "TURN" : direction.Trim().ToUpperInvariant();
             ApplyPanel(new Color(0.15f, 0.35f, 0.8f, 0.85f), $"TURN {normalized}", message, string.Empty);
             AcknowledgeAr(runId, frameSeq, true);
@@ -176,6 +187,7 @@ namespace BYES.UI
         public void RenderRiskHotspot(string runId, int frameSeq, string left, string center, string right, string message)
         {
             EnsureUi();
+            UpdateCanvasPose(forceSnap: true);
             var hotspot = $"L:{left}  C:{center}  R:{right}";
             ApplyPanel(new Color(0.1f, 0.1f, 0.1f, 0.85f), "RISK HOTSPOT", message, hotspot);
             AcknowledgeAr(runId, frameSeq, true);
@@ -240,7 +252,7 @@ namespace BYES.UI
             var canvasRect = canvasGo.GetComponent<RectTransform>();
             canvasRect.sizeDelta = new Vector2(640f, 220f);
             canvasRect.localScale = Vector3.one * 0.0025f;
-            canvasRect.localPosition = new Vector3(0f, 0f, 2.0f);
+            canvasRect.localPosition = Vector3.zero;
 
             var panelGo = new GameObject("OverlayPanel");
             panelGo.transform.SetParent(canvasGo.transform, false);
@@ -273,6 +285,9 @@ namespace BYES.UI
             hotspotRect.anchorMax = new Vector2(0.95f, 0.25f);
             hotspotRect.offsetMin = Vector2.zero;
             hotspotRect.offsetMax = Vector2.zero;
+
+            _poseInitialized = false;
+            UpdateCanvasPose(forceSnap: true);
         }
 
         private static Text CreateText(string name, Transform parent, TextAnchor anchor, int size, FontStyle style)
@@ -305,6 +320,73 @@ namespace BYES.UI
                 return action.reason.Trim();
             }
             return fallback;
+        }
+
+        private void UpdateCanvasPose(bool forceSnap)
+        {
+            if (_canvas == null)
+            {
+                return;
+            }
+
+            var camera = ResolveWorldCamera();
+            if (camera == null)
+            {
+                return;
+            }
+
+            _canvas.worldCamera = camera;
+            var targetPosition = camera.transform.position
+                                 + (camera.transform.forward * OverlayDistanceMeters)
+                                 + (camera.transform.up * OverlayVerticalOffsetMeters);
+            if (!_poseInitialized || forceSnap)
+            {
+                _canvas.transform.position = targetPosition;
+                _canvasVelocity = Vector3.zero;
+                _poseInitialized = true;
+            }
+            else
+            {
+                _canvas.transform.position = Vector3.SmoothDamp(
+                    _canvas.transform.position,
+                    targetPosition,
+                    ref _canvasVelocity,
+                    OverlaySmoothTimeSec
+                );
+            }
+
+            var toCamera = camera.transform.position - _canvas.transform.position;
+            if (toCamera.sqrMagnitude > 0.0001f)
+            {
+                var targetRotation = Quaternion.LookRotation(toCamera.normalized, camera.transform.up);
+                _canvas.transform.rotation = Quaternion.Slerp(_canvas.transform.rotation, targetRotation, Time.deltaTime * 12f);
+            }
+        }
+
+        private Camera ResolveWorldCamera()
+        {
+            if (_worldCamera != null && _worldCamera.isActiveAndEnabled)
+            {
+                return _worldCamera;
+            }
+
+            _worldCamera = Camera.main;
+            if (_worldCamera != null && _worldCamera.isActiveAndEnabled)
+            {
+                return _worldCamera;
+            }
+
+            var cameras = Camera.allCameras;
+            for (var i = 0; i < cameras.Length; i += 1)
+            {
+                if (cameras[i] != null && cameras[i].isActiveAndEnabled)
+                {
+                    _worldCamera = cameras[i];
+                    return _worldCamera;
+                }
+            }
+
+            return null;
         }
     }
 }

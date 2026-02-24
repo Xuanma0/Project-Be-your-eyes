@@ -3747,6 +3747,7 @@ async def run_packages_export_csv(
         "ack_coverage",
         "tts_ack_rate",
         "ar_ack_rate",
+        "haptic_ack_rate",
         "confirm_responses",
         "confirm_response_p90",
         "models_missing_required",
@@ -5385,6 +5386,7 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     ack_kind_diversity: int = 0
     tts_ack_rate: float | None = None
     ar_ack_rate: float | None = None
+    haptic_ack_rate: float | None = None
     confirm_responses: int = 0
     confirm_response_p90: int | None = None
     models_missing_required: int | None = None
@@ -5625,6 +5627,9 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         ar_ack_rate_raw = _read_float(plan_ack_payload, "arAckRate")
         if ar_ack_rate_raw is not None:
             ar_ack_rate = float(ar_ack_rate_raw)
+        haptic_ack_rate_raw = _read_float(plan_ack_payload, "hapticAckRate")
+        if haptic_ack_rate_raw is not None:
+            haptic_ack_rate = float(haptic_ack_rate_raw)
         confirm_responses_raw = _read_float(plan_ack_payload, "confirmResponsesFromUnity")
         if confirm_responses_raw is not None:
             confirm_responses = int(confirm_responses_raw)
@@ -6033,6 +6038,7 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "ack_coverage": ack_coverage,
         "tts_ack_rate": tts_ack_rate,
         "ar_ack_rate": ar_ack_rate,
+        "haptic_ack_rate": haptic_ack_rate,
         "confirm_responses": int(confirm_responses),
         "confirm_response_p90": confirm_response_p90,
         "models_missing_required": models_missing_required,
@@ -7218,6 +7224,8 @@ async def runs_dashboard(
         tts_ack_rate = "—" if tts_ack_rate_raw is None else f"{float(tts_ack_rate_raw):.4f}"
         ar_ack_rate_raw = row.get("ar_ack_rate")
         ar_ack_rate = "—" if ar_ack_rate_raw is None else f"{float(ar_ack_rate_raw):.4f}"
+        haptic_ack_rate_raw = row.get("haptic_ack_rate")
+        haptic_ack_rate = "—" if haptic_ack_rate_raw is None else f"{float(haptic_ack_rate_raw):.4f}"
         confirm_responses_raw = row.get("confirm_responses")
         confirm_responses = "—" if confirm_responses_raw is None else str(int(confirm_responses_raw))
         confirm_response_p90_raw = row.get("confirm_response_p90")
@@ -7381,6 +7389,7 @@ async def runs_dashboard(
             f"<td>{html.escape(ack_coverage)}</td>"
             f"<td>{html.escape(tts_ack_rate)}</td>"
             f"<td>{html.escape(ar_ack_rate)}</td>"
+            f"<td>{html.escape(haptic_ack_rate)}</td>"
             f"<td>{html.escape(confirm_responses)}</td>"
             f"<td>{html.escape(confirm_response_p90)}</td>"
             f"<td>{html.escape(models_missing_required)}</td>"
@@ -7837,6 +7846,7 @@ async def runs_dashboard(
           <th>ACK Coverage</th>
           <th>TTS ACK Rate</th>
           <th>AR ACK Rate</th>
+          <th>Haptic ACK Rate</th>
           <th>Confirm Responses</th>
           <th>Confirm Response p90(ms)</th>
           <th>Models Missing</th>

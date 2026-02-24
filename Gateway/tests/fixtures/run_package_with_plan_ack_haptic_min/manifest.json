@@ -1,0 +1,15 @@
+﻿{
+  "runId": "fixture-plan-ack-haptic-min",
+  "scenarioTag": "fixture_with_plan_ack_haptic_min",
+  "startMs": 1715600000000,
+  "endMs": 1715600001200,
+  "wsJsonl": "events/events_v1.jsonl",
+  "eventsV1Jsonl": "events/events_v1.jsonl",
+  "metricsBefore": "metrics_before.txt",
+  "metricsAfter": "metrics_after.txt",
+  "framesDir": "frames",
+  "framesMetaJsonl": "frames_meta.jsonl",
+  "frameCountSent": 2,
+  "eventCountAccepted": 3,
+  "errors": []
+}

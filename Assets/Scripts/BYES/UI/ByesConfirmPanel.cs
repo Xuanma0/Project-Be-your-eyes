@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Generic;
 using BYES.Core;
 using BYES.Telemetry;
 using BeYourEyes.Adapters.Networking;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.XR;
 
 namespace BYES.UI
 {
@@ -25,6 +27,17 @@ namespace BYES.UI
         private bool _visible;
         private bool _submitted;
         private Action<string, bool> _onDecision;
+        private float _nextInputAllowedRealtimeSec;
+        private bool _prevPrimaryPressed;
+        private bool _prevSecondaryPressed;
+        private Camera _worldCamera;
+        private Vector3 _panelVelocity;
+        private bool _panelPoseInitialized;
+
+        private const float PanelDistanceMeters = 1.2f;
+        private const float PanelVerticalOffsetMeters = -0.18f;
+        private const float PanelSmoothTimeSec = 0.08f;
+        private const float InputDebounceSec = 0.2f;
 
         public static ByesConfirmPanel Instance => EnsureExists();
 
@@ -70,8 +83,17 @@ namespace BYES.UI
 
         private void Update()
         {
+            UpdatePanelPose(forceSnap: false);
+
             if (!_visible || _submitted)
             {
+                return;
+            }
+
+            var now = Time.realtimeSinceStartup;
+            if (now < _nextInputAllowedRealtimeSec)
+            {
+                UpdateCountdown(now);
                 return;
             }
 
@@ -85,8 +107,26 @@ namespace BYES.UI
                 SubmitDecision(false, "keyboard_no");
                 return;
             }
+            if (TryReadXrConfirmInput(out var xrAccept, out var xrReject))
+            {
+                if (xrAccept)
+                {
+                    SubmitDecision(true, "xr_primary");
+                    return;
+                }
+                if (xrReject)
+                {
+                    SubmitDecision(false, "xr_secondary");
+                    return;
+                }
+            }
 
-            var remaining = Mathf.Max(0f, _deadlineRealtimeSec - Time.realtimeSinceStartup);
+            UpdateCountdown(now);
+        }
+
+        private void UpdateCountdown(float nowRealtimeSec)
+        {
+            var remaining = Mathf.Max(0f, _deadlineRealtimeSec - nowRealtimeSec);
             if (_countdownText != null)
             {
                 _countdownText.text = $"Timeout in {Mathf.CeilToInt(remaining)}s";
@@ -123,7 +163,7 @@ namespace BYES.UI
             }
             if (_hintText != null)
             {
-                _hintText.text = "Press Y to accept / N to reject  (XR input TODO)";
+                _hintText.text = "Accept: Y / XR primary button    Reject: N / XR secondary button";
             }
             if (_countdownText != null)
             {
@@ -138,6 +178,10 @@ namespace BYES.UI
                 _panel.SetActive(true);
             }
             _visible = true;
+            _nextInputAllowedRealtimeSec = Time.realtimeSinceStartup + InputDebounceSec;
+            _prevPrimaryPressed = false;
+            _prevSecondaryPressed = false;
+            UpdatePanelPose(forceSnap: true);
 
             var state = ByesSystemState.Instance;
             if (state != null)
@@ -156,11 +200,26 @@ namespace BYES.UI
             _submitted = true;
             _visible = false;
             Hide();
+            _nextInputAllowedRealtimeSec = Time.realtimeSinceStartup + InputDebounceSec;
 
             var state = ByesSystemState.Instance;
             if (state != null)
             {
                 state.SetPendingConfirm(0, _confirmId);
+            }
+
+            if (ByesHaptics.Instance.TrySendPulse(
+                    HapticChannel.Both,
+                    accepted ? 0.6f : 0.35f,
+                    0.06f,
+                    actionId: _confirmId,
+                    confirmId: _confirmId
+                ))
+            {
+                if (ByesOverlayAckThrottler.Instance.TryMark(_runId, _frameSeq, "haptic"))
+                {
+                    ByesFrameTelemetry.AckFeedback(_runId, _frameSeq, "haptic", true, ByesFrameTelemetry.NowUnixMs());
+                }
             }
 
             ResolveGatewayClient();
@@ -212,6 +271,118 @@ namespace BYES.UI
             _visible = false;
         }
 
+        private bool TryReadXrConfirmInput(out bool acceptPressed, out bool rejectPressed)
+        {
+            acceptPressed = false;
+            rejectPressed = false;
+            var anyDevice = false;
+            var primaryPressedNow = false;
+            var secondaryPressedNow = false;
+
+            using (var devices = ListPool<InputDevice>.Get())
+            {
+                var allDevices = devices.List;
+                InputDevices.GetDevices(allDevices);
+                for (var i = 0; i < allDevices.Count; i += 1)
+                {
+                    var device = allDevices[i];
+                    if (!device.isValid)
+                    {
+                        continue;
+                    }
+                    anyDevice = true;
+                    if (device.TryGetFeatureValue(CommonUsages.primaryButton, out var primary) && primary)
+                    {
+                        primaryPressedNow = true;
+                    }
+                    if (device.TryGetFeatureValue(CommonUsages.secondaryButton, out var secondary) && secondary)
+                    {
+                        secondaryPressedNow = true;
+                    }
+                }
+            }
+
+            if (!anyDevice)
+            {
+                _prevPrimaryPressed = false;
+                _prevSecondaryPressed = false;
+                return false;
+            }
+
+            acceptPressed = primaryPressedNow && !_prevPrimaryPressed;
+            rejectPressed = secondaryPressedNow && !_prevSecondaryPressed;
+            _prevPrimaryPressed = primaryPressedNow;
+            _prevSecondaryPressed = secondaryPressedNow;
+            return acceptPressed || rejectPressed;
+        }
+
+        private void UpdatePanelPose(bool forceSnap)
+        {
+            if (_canvas == null)
+            {
+                return;
+            }
+
+            var camera = ResolveWorldCamera();
+            if (camera == null)
+            {
+                return;
+            }
+
+            _canvas.worldCamera = camera;
+            var targetPosition = camera.transform.position
+                                 + (camera.transform.forward * PanelDistanceMeters)
+                                 + (camera.transform.up * PanelVerticalOffsetMeters);
+            if (!_panelPoseInitialized || forceSnap)
+            {
+                _canvas.transform.position = targetPosition;
+                _panelVelocity = Vector3.zero;
+                _panelPoseInitialized = true;
+            }
+            else
+            {
+                _canvas.transform.position = Vector3.SmoothDamp(
+                    _canvas.transform.position,
+                    targetPosition,
+                    ref _panelVelocity,
+                    PanelSmoothTimeSec
+                );
+            }
+
+            var toCamera = camera.transform.position - _canvas.transform.position;
+            if (toCamera.sqrMagnitude > 0.0001f)
+            {
+                var targetRotation = Quaternion.LookRotation(toCamera.normalized, camera.transform.up);
+                _canvas.transform.rotation = Quaternion.Slerp(_canvas.transform.rotation, targetRotation, Time.deltaTime * 12f);
+            }
+        }
+
+        private Camera ResolveWorldCamera()
+        {
+            if (_worldCamera != null && _worldCamera.isActiveAndEnabled)
+            {
+                return _worldCamera;
+            }
+
+            _worldCamera = Camera.main;
+            if (_worldCamera != null && _worldCamera.isActiveAndEnabled)
+            {
+                return _worldCamera;
+            }
+
+            var cameras = Camera.allCameras;
+            for (var i = 0; i < cameras.Length; i += 1)
+            {
+                if (cameras[i] != null && cameras[i].isActiveAndEnabled)
+                {
+                    _worldCamera = cameras[i];
+                    return _worldCamera;
+                }
+            }
+
+            return null;
+        }
+
         private void EnsureUi()
         {
             if (_canvas != null)
@@ -230,7 +401,7 @@ namespace BYES.UI
             var canvasRect = canvasGo.GetComponent<RectTransform>();
             canvasRect.sizeDelta = new Vector2(760f, 360f);
             canvasRect.localScale = Vector3.one * 0.0025f;
-            canvasRect.localPosition = new Vector3(0f, -0.2f, 2.0f);
+            canvasRect.localPosition = Vector3.zero;
 
             _panel = new GameObject("ConfirmPanel");
             _panel.transform.SetParent(canvasGo.transform, false);
@@ -262,6 +433,9 @@ namespace BYES.UI
             hintRect.anchorMax = new Vector2(0.95f, 0.28f);
             hintRect.offsetMin = Vector2.zero;
             hintRect.offsetMax = Vector2.zero;
+
+            _panelPoseInitialized = false;
+            UpdatePanelPose(forceSnap: true);
         }
 
         private static Text CreateText(string name, Transform parent, TextAnchor anchor, FontStyle style, int size)
@@ -276,6 +450,32 @@ namespace BYES.UI
             text.alignment = anchor;
             text.resizeTextForBestFit = true;
             return text;
+        }
+
+        private sealed class ListPool<T> : IDisposable
+        {
+            private static readonly Stack<List<T>> Pool = new Stack<List<T>>();
+            public List<T> List { get; }
+
+            private ListPool(List<T> list)
+            {
+                List = list;
+            }
+
+            public static ListPool<T> Get()
+            {
+                if (Pool.Count > 0)
+                {
+                    return new ListPool<T>(Pool.Pop());
+                }
+                return new ListPool<T>(new List<T>(16));
+            }
+
+            public void Dispose()
+            {
+                List.Clear();
+                Pool.Push(List);
+            }
         }
     }
 }

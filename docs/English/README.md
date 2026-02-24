@@ -33,3 +33,11 @@ For chronological details, read `RELEASE_NOTES.md` (`v4.38` -> `v4.82`).
 - `pov_planner_adapter.md`
 - `QUICK_DEMO.md`
 - `RELEASE_NOTES.md`
+
+## Unity Runtime Notes (v4.86)
+
+- ActionPlan execution now supports runtime haptic pulses on Quest-compatible controllers (when `supportsImpulse` is available).
+- Confirm UI input mapping:
+  - `Y/N` in Editor
+  - XR `primaryButton` = accept, `secondaryButton` = reject
+- Gateway report/leaderboard now expose `planAck.hapticAckRate` / `haptic_ack_rate`.

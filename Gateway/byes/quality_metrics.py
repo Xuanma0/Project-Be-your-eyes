@@ -4641,12 +4641,15 @@ def extract_plan_ack_summary_from_events_v1(
     frames_with_ack = len(ack_frames)
     tts_ack_frames = len(ack_frames_by_kind.get("tts", set()))
     ar_ack_frames = len(ack_frames_by_kind.get("ar", set()))
+    haptic_ack_frames = len(ack_frames_by_kind.get("haptic", set()))
 
     tts_ack_rate = None
     ar_ack_rate = None
+    haptic_ack_rate = None
     if frames_with_plan > 0:
         tts_ack_rate = round(_safe_ratio(tts_ack_frames, frames_with_plan), 6)
         ar_ack_rate = round(_safe_ratio(ar_ack_frames, frames_with_plan), 6)
+        haptic_ack_rate = round(_safe_ratio(haptic_ack_frames, frames_with_plan), 6)
 
     return {
         "present": bool(frames_with_plan > 0 or frames_with_ack > 0 or confirm_responses_from_unity > 0),
@@ -4655,8 +4658,10 @@ def extract_plan_ack_summary_from_events_v1(
         "ackKindDiversity": int(len([key for key in ack_frames_by_kind.keys() if str(key).strip()])),
         "ttsAckFrames": int(tts_ack_frames),
         "arAckFrames": int(ar_ack_frames),
+        "hapticAckFrames": int(haptic_ack_frames),
         "ttsAckRate": tts_ack_rate,
         "arAckRate": ar_ack_rate,
+        "hapticAckRate": haptic_ack_rate,
         "confirmResponsesFromUnity": int(confirm_responses_from_unity),
         "confirmResponseLatencyMs": summarize_latency(confirm_response_latencies),
         "byKindCounts": {kind: int(len(frames)) for kind, frames in sorted(ack_frames_by_kind.items())},

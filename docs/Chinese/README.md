@@ -225,6 +225,14 @@ Assets/                               # Unity 客户端与场景集成
 - [docs/Chinese/README.md](README.md)
 - [docs/Chinese/ARCHITECTURE.md](ARCHITECTURE.md)
 - [docs/Chinese/COMMANDS.md](COMMANDS.md)
+
+## v4.86 补充（Unity 端闭环）
+
+- ActionPlan 执行支持 Quest 控制器触觉反馈（设备 `supportsImpulse` 时生效）。
+- Confirm 输入映射：
+  - Editor：`Y` 接受，`N` 拒绝
+  - XR：`primaryButton` 接受，`secondaryButton` 拒绝
+- Gateway 报表与排行榜新增 `hapticAckRate` / `haptic_ack_rate`，用于观察 Unity 端是否真实执行触觉回执。
 - [docs/Chinese/contracts.md](contracts.md)
 - [docs/Chinese/event_schema_v1.md](event_schema_v1.md)
 - [docs/Chinese/GLOSSARY.md](GLOSSARY.md)

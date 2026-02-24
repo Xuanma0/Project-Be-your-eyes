@@ -1089,6 +1089,18 @@ Report and leaderboard fields:
 - `report.json.frameUserE2E.coverage.ratio` (ACK coverage)
 - `/api/run_packages`: `frame_user_e2e_p90`, `frame_user_e2e_max`, `frame_user_e2e_tts_p90`, `frame_user_e2e_ar_p90`, `ack_kind_diversity`, `ack_coverage`
 
+## Unity Action Execution ACK Metrics (v4.86)
+
+Unity now sends real `frame.ack kind="haptic"` when ActionPlan execution triggers supported controller haptics.
+
+- `report.json.planAck` includes:
+  - `hapticAckFrames`
+  - `hapticAckRate` (`hapticAckFrames / framesWithPlan`)
+- `/api/run_packages` and `/runs` include `haptic_ack_rate` for quick execution-loop visibility.
+- Confirm input mapping in runtime UI:
+  - keyboard: `Y=accept`, `N=reject`
+  - XR controller: `primaryButton=accept`, `secondaryButton=reject`
+
 ## Script Index (Most Used)
 
 - `scripts/replay_run_package.py`: replay a run package to produce events/metrics.
