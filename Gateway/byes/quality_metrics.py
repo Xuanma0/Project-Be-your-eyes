@@ -4589,6 +4589,68 @@ def extract_frame_user_e2e_summary_from_events_v1(
     }
 
 
+def extract_plan_ack_summary_from_events_v1(
+    events: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    plan_frames: set[tuple[str, int]] = set()
+    ack_frames: set[tuple[str, int]] = set()
+    ack_frames_by_kind: defaultdict[str, set[tuple[str, int]]] = defaultdict(set)
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        seq = _to_nonnegative_int(payload.get("frameSeq"))
+        if seq is None:
+            seq = _to_nonnegative_int(event.get("frameSeq"))
+        if seq is None or seq <= 0:
+            continue
+        key = (run_id, int(seq))
+
+        name = str(event.get("name", "")).strip().lower()
+        if name == "plan.generate":
+            plan_frames.add(key)
+            continue
+        if name != "frame.ack":
+            continue
+        ack_frames.add(key)
+        ack_kind = _normalize_frame_ack_kind(payload.get("kind"))
+        ack_frames_by_kind[ack_kind].add(key)
+
+    frames_with_plan = len(plan_frames)
+    frames_with_ack = len(ack_frames)
+    tts_ack_frames = len(ack_frames_by_kind.get("tts", set()))
+    ar_ack_frames = len(ack_frames_by_kind.get("ar", set()))
+
+    tts_ack_rate = None
+    ar_ack_rate = None
+    if frames_with_plan > 0:
+        tts_ack_rate = round(_safe_ratio(tts_ack_frames, frames_with_plan), 6)
+        ar_ack_rate = round(_safe_ratio(ar_ack_frames, frames_with_plan), 6)
+
+    return {
+        "present": bool(frames_with_plan > 0 or frames_with_ack > 0),
+        "framesWithPlan": int(frames_with_plan),
+        "framesWithAck": int(frames_with_ack),
+        "ackKindDiversity": int(len([key for key in ack_frames_by_kind.keys() if str(key).strip()])),
+        "ttsAckFrames": int(tts_ack_frames),
+        "arAckFrames": int(ar_ack_frames),
+        "ttsAckRate": tts_ack_rate,
+        "arAckRate": ar_ack_rate,
+        "byKindCounts": {kind: int(len(frames)) for kind, frames in sorted(ack_frames_by_kind.items())},
+    }
+
+
 def _normalize_frame_ack_kind(value: Any) -> str:
     raw = str(value or "").strip().lower()
     if raw in {"tts"}:

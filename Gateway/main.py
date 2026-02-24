@@ -5247,6 +5247,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     frame_e2e_payload = frame_e2e_payload if isinstance(frame_e2e_payload, dict) else {}
     frame_user_e2e_payload = summary.get("frameUserE2E", {})
     frame_user_e2e_payload = frame_user_e2e_payload if isinstance(frame_user_e2e_payload, dict) else {}
+    plan_ack_payload = summary.get("planAck", {})
+    plan_ack_payload = plan_ack_payload if isinstance(plan_ack_payload, dict) else {}
     models_payload = summary.get("models", {})
     models_payload = models_payload if isinstance(models_payload, dict) else {}
     plan_quality_payload = summary.get("planQuality", {})
@@ -5377,6 +5379,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     frame_user_e2e_ar_p90: int | None = None
     frame_user_e2e_ar_max: int | None = None
     ack_kind_diversity: int = 0
+    tts_ack_rate: float | None = None
+    ar_ack_rate: float | None = None
     models_missing_required: int | None = None
     models_enabled_total: int | None = None
     plan_actions_payload = plan_payload.get("actions")
@@ -5608,6 +5612,13 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         ar_max_raw = _read_float(ar_total, "max")
         if ar_max_raw is not None:
             frame_user_e2e_ar_max = int(ar_max_raw)
+    if isinstance(plan_ack_payload, dict) and bool(plan_ack_payload.get("present")):
+        tts_ack_rate_raw = _read_float(plan_ack_payload, "ttsAckRate")
+        if tts_ack_rate_raw is not None:
+            tts_ack_rate = float(tts_ack_rate_raw)
+        ar_ack_rate_raw = _read_float(plan_ack_payload, "arAckRate")
+        if ar_ack_rate_raw is not None:
+            ar_ack_rate = float(ar_ack_rate_raw)
     if isinstance(models_payload, dict) and bool(models_payload.get("present")):
         missing_raw = _read_float(models_payload, "missingRequiredTotal")
         if missing_raw is not None:
@@ -6006,6 +6017,8 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "frame_user_e2e_ar_max": frame_user_e2e_ar_max,
         "ack_kind_diversity": int(ack_kind_diversity),
         "ack_coverage": ack_coverage,
+        "tts_ack_rate": tts_ack_rate,
+        "ar_ack_rate": ar_ack_rate,
         "models_missing_required": models_missing_required,
         "models_enabled_total": models_enabled_total,
         "summary": summary,
@@ -7185,6 +7198,10 @@ async def runs_dashboard(
         ack_kind_diversity = "—" if ack_kind_diversity_raw is None else str(int(ack_kind_diversity_raw))
         ack_coverage_raw = row.get("ack_coverage")
         ack_coverage = "—" if ack_coverage_raw is None else f"{float(ack_coverage_raw):.4f}"
+        tts_ack_rate_raw = row.get("tts_ack_rate")
+        tts_ack_rate = "—" if tts_ack_rate_raw is None else f"{float(tts_ack_rate_raw):.4f}"
+        ar_ack_rate_raw = row.get("ar_ack_rate")
+        ar_ack_rate = "—" if ar_ack_rate_raw is None else f"{float(ar_ack_rate_raw):.4f}"
         models_missing_required_raw = row.get("models_missing_required")
         models_missing_required = "—" if models_missing_required_raw is None else str(int(models_missing_required_raw))
         models_enabled_total_raw = row.get("models_enabled_total")
@@ -7342,6 +7359,8 @@ async def runs_dashboard(
             f"<td>{html.escape(frame_user_e2e_ar_max)}</td>"
             f"<td>{html.escape(ack_kind_diversity)}</td>"
             f"<td>{html.escape(ack_coverage)}</td>"
+            f"<td>{html.escape(tts_ack_rate)}</td>"
+            f"<td>{html.escape(ar_ack_rate)}</td>"
             f"<td>{html.escape(models_missing_required)}</td>"
             f"<td>{html.escape(models_enabled_total)}</td>"
             f"<td>{html.escape(seg_f1)}</td>"
@@ -7794,6 +7813,8 @@ async def runs_dashboard(
           <th>User E2E ar max(ms)</th>
           <th>ACK Kind Diversity</th>
           <th>ACK Coverage</th>
+          <th>TTS ACK Rate</th>
+          <th>AR ACK Rate</th>
           <th>Models Missing</th>
           <th>Models Enabled</th>
           <th>Seg F1@0.5</th>

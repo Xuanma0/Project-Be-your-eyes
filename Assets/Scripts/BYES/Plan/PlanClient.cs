@@ -3,6 +3,7 @@ using System.Collections;
 using System.Text;
 using UnityEngine;
 using UnityEngine.Networking;
+using BYES.Core;
 using BYES.Telemetry;
 
 namespace BYES.Plan
@@ -20,6 +21,7 @@ namespace BYES.Plan
 
         [Header("References")]
         public PlanExecutor Executor;
+        public ActionPlanExecutor ActionExecutor;
 
         private string _lastPlanJson = string.Empty;
         private string _lastRunId = string.Empty;
@@ -73,6 +75,10 @@ namespace BYES.Plan
             {
                 Executor = GetComponent<PlanExecutor>();
             }
+            if (ActionExecutor == null)
+            {
+                ActionExecutor = GetComponent<ActionPlanExecutor>();
+            }
             if (AutoRunOnStart)
             {
                 StartCoroutine(RequestPlanAndMaybeExecute());
@@ -107,6 +113,12 @@ namespace BYES.Plan
                 var header = JsonUtility.FromJson<ActionPlanHeader>(_lastPlanJson);
                 _lastRunId = header != null ? header.runId : string.Empty;
                 _lastFrameSeq = (header != null && header.frameSeq > 0) ? header.frameSeq : Mathf.Max(1, FrameSeq);
+                var state = ByesSystemState.Instance;
+                if (state != null)
+                {
+                    state.SetRunFrame(_lastRunId, _lastFrameSeq);
+                    state.RecordActionPlanRaw(_lastPlanJson);
+                }
                 Debug.Log($"[PlanClient] plan generated runId={_lastRunId} frameSeq={_lastFrameSeq}");
             }
 
@@ -158,6 +170,15 @@ namespace BYES.Plan
                     }
                     Executor.SetExecutionContext(_lastRunId, Mathf.Max(1, _lastFrameSeq));
                     Executor.ExecuteSummary(summary, OnConfirmDecision);
+                }
+                else if (ActionExecutor != null)
+                {
+                    if (!ActionPlanParser.TryParse(_lastPlanJson, out var parsedPlan, out var parseError))
+                    {
+                        parsedPlan = ActionPlanParser.BuildSafeFallback("ActionPlan parse failed: " + parseError, _lastRunId, _lastFrameSeq);
+                    }
+                    ActionExecutor.SetExecutionContext(_lastRunId, Mathf.Max(1, _lastFrameSeq));
+                    ActionExecutor.ExecutePlan(parsedPlan);
                 }
                 else
                 {
