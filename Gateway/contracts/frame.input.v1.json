@@ -54,6 +54,18 @@
             "string",
             "null"
           ]
+        },
+        "mode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "walk",
+            "read_text",
+            "inspect",
+            null
+          ]
         }
       },
       "required": []

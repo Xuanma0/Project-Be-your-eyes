@@ -6,10 +6,9 @@ namespace BYES.Core
 {
     public enum ByesMode
     {
-        Explore,
-        Navigate,
+        Walk,
         ReadText,
-        Debug,
+        Inspect,
     }
 
     public sealed class ByesSystemState : MonoBehaviour
@@ -18,7 +17,7 @@ namespace BYES.Core
 
         [SerializeField] private string runId = "unknown-run";
         [SerializeField] private int frameSeq = 1;
-        [SerializeField] private ByesMode currentMode = ByesMode.Explore;
+        [SerializeField] private ByesMode currentMode = ByesMode.Walk;
         [SerializeField] private string lastActionPlanJson = string.Empty;
         [SerializeField] private string lastRiskLevel = string.Empty;
         [SerializeField] private string[] topHazards = Array.Empty<string>();

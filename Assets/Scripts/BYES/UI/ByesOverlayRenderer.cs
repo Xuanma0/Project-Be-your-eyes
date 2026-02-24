@@ -15,6 +15,7 @@ namespace BYES.UI
         private Text _titleText;
         private Text _detailText;
         private Text _hotspotText;
+        private Text _modeText;
         private Camera _worldCamera;
         private Vector3 _canvasVelocity;
         private bool _poseInitialized;
@@ -79,6 +80,8 @@ namespace BYES.UI
             {
                 return;
             }
+
+            UpdateModeDisplay(state.CurrentMode);
 
             var plan = state.LastActionPlan;
             if (plan == null)
@@ -282,9 +285,17 @@ namespace BYES.UI
             _hotspotText = CreateText("Hotspot", panelGo.transform, TextAnchor.LowerCenter, 24, FontStyle.Italic);
             var hotspotRect = _hotspotText.GetComponent<RectTransform>();
             hotspotRect.anchorMin = new Vector2(0.05f, 0.05f);
-            hotspotRect.anchorMax = new Vector2(0.95f, 0.25f);
+            hotspotRect.anchorMax = new Vector2(0.95f, 0.22f);
             hotspotRect.offsetMin = Vector2.zero;
             hotspotRect.offsetMax = Vector2.zero;
+
+            _modeText = CreateText("Mode", panelGo.transform, TextAnchor.LowerRight, 18, FontStyle.Normal);
+            _modeText.color = new Color(1f, 1f, 1f, 0.9f);
+            var modeRect = _modeText.GetComponent<RectTransform>();
+            modeRect.anchorMin = new Vector2(0.50f, 0.0f);
+            modeRect.anchorMax = new Vector2(0.98f, 0.10f);
+            modeRect.offsetMin = Vector2.zero;
+            modeRect.offsetMax = Vector2.zero;
 
             _poseInitialized = false;
             UpdateCanvasPose(forceSnap: true);
@@ -320,6 +331,32 @@ namespace BYES.UI
                 return action.reason.Trim();
             }
             return fallback;
+        }
+
+        private void UpdateModeDisplay(ByesMode mode)
+        {
+            if (_modeText == null)
+            {
+                return;
+            }
+            if (_canvas != null && !_canvas.enabled)
+            {
+                _canvas.enabled = true;
+            }
+            _modeText.text = "MODE: " + FormatModeLabel(mode);
+        }
+
+        private static string FormatModeLabel(ByesMode mode)
+        {
+            switch (mode)
+            {
+                case ByesMode.ReadText:
+                    return "READ_TEXT";
+                case ByesMode.Inspect:
+                    return "INSPECT";
+                default:
+                    return "WALK";
+            }
         }
 
         private void UpdateCanvasPose(bool forceSnap)

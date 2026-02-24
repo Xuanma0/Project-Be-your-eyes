@@ -413,6 +413,51 @@ namespace BeYourEyes.Adapters.Networking
             SendDevIntent(target, string.Empty, onDone);
         }
 
+        public void PostModeChange(
+            string runId,
+            int frameSeq,
+            string mode,
+            string source = "system",
+            long tsMs = 0,
+            string deviceId = null,
+            Action<bool, string> onDone = null
+        )
+        {
+            if (replayMode)
+            {
+                OnReplayBlockedNetworkAction?.Invoke("mode_change");
+                onDone?.Invoke(false, "replay_mode");
+                return;
+            }
+
+            var safeRunId = string.IsNullOrWhiteSpace(runId) ? SessionId : runId.Trim();
+            var safeFrameSeq = Math.Max(1, frameSeq);
+            var safeTsMs = tsMs > 0 ? tsMs : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var payload = new JObject
+            {
+                ["runId"] = safeRunId,
+                ["frameSeq"] = safeFrameSeq,
+                ["mode"] = NormalizeMode(mode),
+                ["source"] = NormalizeModeSource(source),
+                ["tsMs"] = safeTsMs,
+                ["deviceId"] = string.IsNullOrWhiteSpace(deviceId) ? null : deviceId.Trim(),
+            };
+
+            StartCoroutine(PostJsonRoutine(
+                BuildApiUrl("/api/mode"),
+                payload.ToString(Formatting.None),
+                success =>
+                {
+                    var status = success ? "ok" : "error";
+                    if (!success)
+                    {
+                        Debug.LogWarning($"[GatewayClient] mode_change failed mode={payload["mode"]} runId={safeRunId} frameSeq={safeFrameSeq}");
+                    }
+                    onDone?.Invoke(success, status);
+                }
+            ));
+        }
+
         public void TriggerAskOnce(string question, Action<bool, string> onDone = null)
         {
             var resolvedQuestion = string.IsNullOrWhiteSpace(question) ? ResolveDefaultAskQuestion() : question.Trim();
@@ -1552,6 +1597,28 @@ namespace BeYourEyes.Adapters.Networking
             }
 
             return "unknown";
+        }
+
+        private static string NormalizeMode(string mode)
+        {
+            var normalized = string.IsNullOrWhiteSpace(mode) ? "walk" : mode.Trim().ToLowerInvariant();
+            if (normalized == "walk" || normalized == "read_text" || normalized == "inspect")
+            {
+                return normalized;
+            }
+
+            return "walk";
+        }
+
+        private static string NormalizeModeSource(string source)
+        {
+            var normalized = string.IsNullOrWhiteSpace(source) ? "system" : source.Trim().ToLowerInvariant();
+            if (normalized == "hotkey" || normalized == "xr" || normalized == "system")
+            {
+                return normalized;
+            }
+
+            return "system";
         }
 
         private static string NormalizeIntent(string intent)

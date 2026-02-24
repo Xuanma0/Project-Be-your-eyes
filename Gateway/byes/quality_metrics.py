@@ -4668,6 +4668,82 @@ def extract_plan_ack_summary_from_events_v1(
     }
 
 
+def extract_mode_change_summary_from_events_v1(
+    events: Iterable[dict[str, Any]],
+    *,
+    frames_total_declared: int | None = None,
+) -> dict[str, Any]:
+    allowed_modes = ("walk", "read_text", "inspect")
+    by_mode_counts: dict[str, int] = {key: 0 for key in allowed_modes}
+    switches = 0
+    last_mode: str | None = None
+    mode_set: set[str] = set()
+    frames_with_input: set[tuple[str, int]] = set()
+    frames_with_mode_meta: set[tuple[str, int]] = set()
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        seq = _parse_int(payload.get("frameSeq"))
+        if seq is None or seq <= 0:
+            seq = _parse_int(event.get("frameSeq"))
+        if seq is None or seq <= 0:
+            continue
+        key = (run_id, int(seq))
+
+        name = str(event.get("name", "")).strip().lower()
+        if name == "frame.input":
+            frames_with_input.add(key)
+            meta = payload.get("meta")
+            meta = meta if isinstance(meta, dict) else {}
+            mode_text = str(meta.get("mode", "")).strip().lower()
+            if mode_text in by_mode_counts:
+                frames_with_mode_meta.add(key)
+            continue
+
+        if name != "ui.mode_change":
+            continue
+        if str(payload.get("schemaVersion", "")).strip() != "ui.mode_change.v1":
+            continue
+        mode_text = str(payload.get("mode", "")).strip().lower()
+        if mode_text not in by_mode_counts:
+            continue
+        by_mode_counts[mode_text] += 1
+        mode_set.add(mode_text)
+        switches += 1
+        last_mode = mode_text
+
+    if frames_total_declared is not None:
+        total_declared = int(max(0, int(frames_total_declared or 0)))
+    else:
+        total_declared = int(len(frames_with_input))
+    mode_meta_coverage = 0.0
+    if total_declared > 0:
+        mode_meta_coverage = round(_safe_ratio(len(frames_with_mode_meta), total_declared), 6)
+
+    return {
+        "present": bool(switches > 0 or len(frames_with_mode_meta) > 0),
+        "events": int(switches),
+        "switches": int(switches),
+        "modeDiversity": int(len(mode_set)),
+        "lastMode": last_mode,
+        "framesWithModeMeta": int(len(frames_with_mode_meta)),
+        "modeMetaCoverage": float(mode_meta_coverage),
+        "byModeCounts": by_mode_counts,
+    }
+
+
 def _normalize_frame_ack_kind(value: Any) -> str:
     raw = str(value or "").strip().lower()
     if raw in {"tts"}:

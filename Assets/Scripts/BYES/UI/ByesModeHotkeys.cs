@@ -9,31 +9,22 @@ namespace BYES.UI
         {
             if (Input.GetKeyDown(KeyCode.Alpha1) || Input.GetKeyDown(KeyCode.F1))
             {
-                SwitchMode(ByesMode.Explore);
+                SwitchMode(ByesMode.Walk);
             }
             else if (Input.GetKeyDown(KeyCode.Alpha2) || Input.GetKeyDown(KeyCode.F2))
             {
-                SwitchMode(ByesMode.Navigate);
+                SwitchMode(ByesMode.ReadText);
             }
             else if (Input.GetKeyDown(KeyCode.Alpha3) || Input.GetKeyDown(KeyCode.F3))
             {
-                SwitchMode(ByesMode.ReadText);
-            }
-            else if (Input.GetKeyDown(KeyCode.Alpha4) || Input.GetKeyDown(KeyCode.F4))
-            {
-                SwitchMode(ByesMode.Debug);
+                SwitchMode(ByesMode.Inspect);
             }
         }
 
         private static void SwitchMode(ByesMode mode)
         {
-            var state = ByesSystemState.Instance;
-            if (state == null)
-            {
-                return;
-            }
-            state.SetMode(mode);
-            Debug.Log("[ByesModeHotkeys] mode=" + mode);
+            ByesModeManager.Instance.SetMode(mode, "hotkey");
+            Debug.Log("[ByesModeHotkeys] mode=" + ByesModeManager.ToApiMode(mode));
         }
     }
 }

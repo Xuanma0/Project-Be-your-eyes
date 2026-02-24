@@ -46,6 +46,7 @@ namespace BYES.Core
             // Triggers telemetry singleton creation.
             _ = ByesFrameTelemetry.DeviceId;
             _ = ByesHaptics.Instance;
+            _ = ByesModeManager.EnsureExists();
             _ = ByesOverlayAckThrottler.EnsureExists();
             _ = ByesOverlayRenderer.EnsureExists();
             _ = ByesConfirmPanel.EnsureExists();

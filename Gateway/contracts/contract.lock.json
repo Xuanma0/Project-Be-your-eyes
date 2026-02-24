@@ -1,6 +1,6 @@
 {
   "schemaVersion": "byes.contract.lock.v1",
-  "generatedAtMs": 1771923540905,
+  "generatedAtMs": 1771943789645,
   "versions": {
     "byes.action_plan.v1": {
       "version": "byes.action_plan.v1",
@@ -89,8 +89,8 @@
     "frame.input.v1": {
       "version": "frame.input.v1",
       "path": "Gateway/contracts/frame.input.v1.json",
-      "sha256": "dc87dadad1b4596847ccccb6d0bbf841d76894408045e0f987c158fffdc2bfa1",
-      "updatedAtMs": 1771158738422
+      "sha256": "c77336ec7a2911dfebea46a0e9cf44eadb44334e5a8a86c599caa0e30016ae65",
+      "updatedAtMs": 1771942724071
     },
     "plan.context_alignment.v1": {
       "version": "plan.context_alignment.v1",
@@ -127,6 +127,12 @@
       "path": "Gateway/contracts/slam.context.v1.json",
       "sha256": "7f78b0fd433b6ef62d2295d46772daccac3a305ae1e29afd3b3b1f306a37a704",
       "updatedAtMs": 1771835030947
+    },
+    "ui.mode_change.v1": {
+      "version": "ui.mode_change.v1",
+      "path": "Gateway/contracts/ui.mode_change.v1.json",
+      "sha256": "5c35aad83f1e78e164425a25f9f282015b26e72ee32733591c0c5f7197b2c2f6",
+      "updatedAtMs": 1771942732592
     }
   }
 }
