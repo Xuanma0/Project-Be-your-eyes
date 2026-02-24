@@ -1188,6 +1188,13 @@ def _mean_float(values: list[float]) -> float:
     return float(sum(float(item) for item in values) / float(len(values)))
 
 
+def _to_nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except Exception:
+        return 0
+
+
 def _normalize_frame_ack_kind_bucket(value: Any) -> str:
     raw = str(value or "").strip().lower()
     if raw == "tts":
@@ -1385,6 +1392,9 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         costmap_lines = 0
         costmap_schema_ok = 0
         costmap_dynamic_filtered_rates: list[float] = []
+        costmap_dynamic_temporal_used_true_count = 0
+        costmap_dynamic_tracks_used_values: list[float] = []
+        costmap_dynamic_mask_used_true_count = 0
         costmap_latency_values: list[float] = []
         costmap_fused_events_present = 0
         costmap_fused_lines = 0
@@ -1716,6 +1726,15 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                     if schema_ok:
                                         costmap_schema_ok += 1
                                         costmap_dynamic_filtered_rates.append(float(dynamic_rate))
+                                        stats_payload = payload.get("stats")
+                                        stats_payload = stats_payload if isinstance(stats_payload, dict) else {}
+                                        if bool(stats_payload.get("dynamicTemporalUsed")):
+                                            costmap_dynamic_temporal_used_true_count += 1
+                                        if bool(stats_payload.get("dynamicMaskUsed")):
+                                            costmap_dynamic_mask_used_true_count += 1
+                                        costmap_dynamic_tracks_used_values.append(
+                                            float(max(0, _to_nonnegative_int(stats_payload.get("dynamicTracksUsed"))))
+                                        )
                                     else:
                                         warnings.append("map.costmap payload missing required fields")
                                 if name == "map.costmap_fused":
@@ -2299,6 +2318,7 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "costmapEventsPresent": int(costmap_events_present),
             "costmapLines": int(costmap_lines),
             "costmapSchemaOk": int(costmap_lines > 0 and costmap_schema_ok == costmap_lines),
+            "costmapDynamicSchemaOk": int(costmap_lines > 0 and costmap_schema_ok == costmap_lines),
             "costmapFusedEventsPresent": int(costmap_fused_events_present),
             "costmapFusedLines": int(costmap_fused_lines),
             "costmapFusedSchemaOk": int(costmap_fused_lines > 0 and costmap_fused_schema_ok == costmap_fused_lines),
@@ -2329,6 +2349,9 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             ),
             "costmapLatencyP90": round(float(_percentile_float(costmap_latency_values, 90)), 6),
             "costmapDynamicFilteredRateMean": round(float(_mean_float(costmap_dynamic_filtered_rates)), 6),
+            "costmapDynamicTemporalUsedTrueCount": int(costmap_dynamic_temporal_used_true_count),
+            "costmapDynamicTracksUsedMean": round(float(_mean_float(costmap_dynamic_tracks_used_values)), 6),
+            "costmapDynamicMaskUsedTrueCount": int(costmap_dynamic_mask_used_true_count),
             "costmapFusedIouP90": round(float(_percentile_float(costmap_fused_iou_prev_values, 90)), 6),
             "costmapFusedFlickerMean": round(float(_mean_float(costmap_fused_flicker_prev_values)), 6),
             "costmapCtxCharsP90": round(float(_percentile_float(costmap_context_chars, 90)), 6),
@@ -2496,6 +2519,9 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"costmapContextSchemaOk: {summary['costmapContextSchemaOk']}")
             print(f"costmapLatencyP90: {summary['costmapLatencyP90']}")
             print(f"costmapDynamicFilteredRateMean: {summary['costmapDynamicFilteredRateMean']}")
+            print(f"costmapDynamicTemporalUsedTrueCount: {summary['costmapDynamicTemporalUsedTrueCount']}")
+            print(f"costmapDynamicTracksUsedMean: {summary['costmapDynamicTracksUsedMean']}")
+            print(f"costmapDynamicMaskUsedTrueCount: {summary['costmapDynamicMaskUsedTrueCount']}")
             print(f"costmapFusedIouP90: {summary['costmapFusedIouP90']}")
             print(f"costmapFusedFlickerMean: {summary['costmapFusedFlickerMean']}")
             print(f"costmapCtxCharsP90: {summary['costmapCtxCharsP90']}")

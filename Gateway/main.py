@@ -53,6 +53,9 @@ from byes.mapping.costmap_fuser import (
     DEFAULT_COSTMAP_FUSED_CONFIG,
     CostmapFuser,
 )
+from byes.mapping.dynamic_mask_cache import (
+    DynamicMaskCache,
+)
 from byes.metrics import GatewayMetrics
 from byes.observability import Observability
 from byes.planner import PolicyPlannerV0, PolicyPlannerV1
@@ -537,6 +540,7 @@ class GatewayApp:
         self.depth_backend = get_depth_backend(self.config)
         self.slam_backend = get_slam_backend(self.config)
         self.costmap_fuser = CostmapFuser()
+        self.dynamic_mask_cache = DynamicMaskCache()
         self._inference_events: list[dict[str, Any]] = []
         self._inference_events_limit = 2048
         self.scheduler = Scheduler(
@@ -581,6 +585,7 @@ class GatewayApp:
         self.slam_backend = get_slam_backend(self.config)
         self._inference_events.clear()
         self.costmap_fuser.reset()
+        self.dynamic_mask_cache.reset()
         self._external_readiness = {}
         self.registry.clear()
         startup_unavailable_tools: list[str] = []
@@ -1077,7 +1082,10 @@ class GatewayApp:
                     "resolutionM": float(self.config.inference_costmap_resolution_m),
                     "depthThreshM": float(self.config.inference_costmap_depth_thresh_m),
                     "dynamicLabels": list(self.config.inference_costmap_dynamic_labels),
+                    "enableDynamicTrack": bool(self.config.inference_costmap_dynamic_track),
+                    "dynamicTrackTtlFrames": int(self.config.inference_costmap_dynamic_track_ttl_frames),
                 },
+                dynamic_mask_cache=self.dynamic_mask_cache,
                 backend="local",
                 model="local-costmap-v1",
                 endpoint=None,
@@ -1244,6 +1252,7 @@ class GatewayApp:
         self.scheduler.reset_runtime()
         self._inference_events.clear()
         self.costmap_fuser.reset()
+        self.dynamic_mask_cache.reset()
         with _FRAME_E2E_STATE_LOCK:
             _FRAME_E2E_STATE.clear()
         with _FRAME_USER_E2E_STATE_LOCK:
@@ -3028,6 +3037,9 @@ async def run_packages_list(
     min_costmap_coverage: float | None = None,
     max_costmap_latency_p90: int | None = None,
     max_costmap_dynamic_filter_rate_mean: float | None = None,
+    min_costmap_dynamic_temporal_used_rate: float | None = None,
+    min_costmap_dynamic_mask_used_rate: float | None = None,
+    max_costmap_dynamic_tracks_used_mean: float | None = None,
     min_costmap_fused_coverage: float | None = None,
     max_costmap_fused_latency_p90: int | None = None,
     min_costmap_fused_iou_p90: float | None = None,
@@ -3114,6 +3126,9 @@ async def run_packages_list(
         min_costmap_coverage=min_costmap_coverage,
         max_costmap_latency_p90=max_costmap_latency_p90,
         max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+        min_costmap_dynamic_temporal_used_rate=min_costmap_dynamic_temporal_used_rate,
+        min_costmap_dynamic_mask_used_rate=min_costmap_dynamic_mask_used_rate,
+        max_costmap_dynamic_tracks_used_mean=max_costmap_dynamic_tracks_used_mean,
         min_costmap_fused_coverage=min_costmap_fused_coverage,
         max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
         min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
@@ -3201,6 +3216,9 @@ async def run_packages_list(
             "min_costmap_coverage": min_costmap_coverage,
             "max_costmap_latency_p90": max_costmap_latency_p90,
             "max_costmap_dynamic_filter_rate_mean": max_costmap_dynamic_filter_rate_mean,
+            "min_costmap_dynamic_temporal_used_rate": min_costmap_dynamic_temporal_used_rate,
+            "min_costmap_dynamic_mask_used_rate": min_costmap_dynamic_mask_used_rate,
+            "max_costmap_dynamic_tracks_used_mean": max_costmap_dynamic_tracks_used_mean,
             "min_costmap_fused_coverage": min_costmap_fused_coverage,
             "max_costmap_fused_latency_p90": max_costmap_fused_latency_p90,
             "min_costmap_fused_iou_p90": min_costmap_fused_iou_p90,
@@ -3292,6 +3310,9 @@ async def run_packages_export_json(
     min_costmap_coverage: float | None = None,
     max_costmap_latency_p90: int | None = None,
     max_costmap_dynamic_filter_rate_mean: float | None = None,
+    min_costmap_dynamic_temporal_used_rate: float | None = None,
+    min_costmap_dynamic_mask_used_rate: float | None = None,
+    max_costmap_dynamic_tracks_used_mean: float | None = None,
     min_costmap_fused_coverage: float | None = None,
     max_costmap_fused_latency_p90: int | None = None,
     min_costmap_fused_iou_p90: float | None = None,
@@ -3378,6 +3399,9 @@ async def run_packages_export_json(
             min_costmap_coverage=min_costmap_coverage,
             max_costmap_latency_p90=max_costmap_latency_p90,
             max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+        min_costmap_dynamic_temporal_used_rate=min_costmap_dynamic_temporal_used_rate,
+        min_costmap_dynamic_mask_used_rate=min_costmap_dynamic_mask_used_rate,
+        max_costmap_dynamic_tracks_used_mean=max_costmap_dynamic_tracks_used_mean,
             min_costmap_fused_coverage=min_costmap_fused_coverage,
             max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
             min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
@@ -3471,6 +3495,9 @@ async def run_packages_export_csv(
     min_costmap_coverage: float | None = None,
     max_costmap_latency_p90: int | None = None,
     max_costmap_dynamic_filter_rate_mean: float | None = None,
+    min_costmap_dynamic_temporal_used_rate: float | None = None,
+    min_costmap_dynamic_mask_used_rate: float | None = None,
+    max_costmap_dynamic_tracks_used_mean: float | None = None,
     min_costmap_fused_coverage: float | None = None,
     max_costmap_fused_latency_p90: int | None = None,
     min_costmap_fused_iou_p90: float | None = None,
@@ -3557,6 +3584,9 @@ async def run_packages_export_csv(
         min_costmap_coverage=min_costmap_coverage,
         max_costmap_latency_p90=max_costmap_latency_p90,
         max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+        min_costmap_dynamic_temporal_used_rate=min_costmap_dynamic_temporal_used_rate,
+        min_costmap_dynamic_mask_used_rate=min_costmap_dynamic_mask_used_rate,
+        max_costmap_dynamic_tracks_used_mean=max_costmap_dynamic_tracks_used_mean,
         min_costmap_fused_coverage=min_costmap_fused_coverage,
         max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
         min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
@@ -3658,6 +3688,9 @@ async def run_packages_export_csv(
         "costmap_latency_p90",
         "costmap_density_mean",
         "costmap_dynamic_filter_rate_mean",
+        "costmap_dynamic_temporal_used_rate",
+        "costmap_dynamic_tracks_used_mean",
+        "costmap_dynamic_mask_used_rate",
         "costmap_fused_coverage",
         "costmap_fused_latency_p90",
         "costmap_fused_iou_p90",
@@ -5215,6 +5248,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     costmap_latency_p90: int | None = None
     costmap_density_mean: float | None = None
     costmap_dynamic_filter_rate_mean: float | None = None
+    costmap_dynamic_temporal_used_rate: float | None = None
+    costmap_dynamic_tracks_used_mean: float | None = None
+    costmap_dynamic_mask_used_rate: float | None = None
+    costmap_dynamic_leak_proxy_mean: float | None = None
     costmap_fused_coverage: float | None = None
     costmap_fused_latency_p90: int | None = None
     costmap_fused_iou_p90: float | None = None
@@ -5647,6 +5684,20 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         raw_dynamic_mean = _read_float(dynamic_filter, "mean")
         if raw_dynamic_mean is not None:
             costmap_dynamic_filter_rate_mean = float(raw_dynamic_mean)
+        raw_dynamic_temporal_used_rate = _read_float(costmap_quality, "dynamicTemporalUsedRate")
+        if raw_dynamic_temporal_used_rate is not None:
+            costmap_dynamic_temporal_used_rate = float(raw_dynamic_temporal_used_rate)
+        dynamic_tracks_payload = costmap_quality.get("dynamicTracksUsed")
+        dynamic_tracks_payload = dynamic_tracks_payload if isinstance(dynamic_tracks_payload, dict) else {}
+        raw_dynamic_tracks_mean = _read_float(dynamic_tracks_payload, "mean")
+        if raw_dynamic_tracks_mean is not None:
+            costmap_dynamic_tracks_used_mean = float(raw_dynamic_tracks_mean)
+        raw_dynamic_mask_used_rate = _read_float(costmap_quality, "dynamicMaskUsedRate")
+        if raw_dynamic_mask_used_rate is not None:
+            costmap_dynamic_mask_used_rate = float(raw_dynamic_mask_used_rate)
+        raw_dynamic_leak_proxy_mean = _read_float(costmap_quality, "dynamicLeakProxyMean")
+        if raw_dynamic_leak_proxy_mean is not None:
+            costmap_dynamic_leak_proxy_mean = float(raw_dynamic_leak_proxy_mean)
     if isinstance(costmap_fused_quality, dict):
         raw_costmap_fused_cov = _read_float(costmap_fused_quality, "coverage")
         if raw_costmap_fused_cov is not None:
@@ -5810,6 +5861,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "costmap_latency_p90": costmap_latency_p90,
         "costmap_density_mean": costmap_density_mean,
         "costmap_dynamic_filter_rate_mean": costmap_dynamic_filter_rate_mean,
+        "costmap_dynamic_temporal_used_rate": costmap_dynamic_temporal_used_rate,
+        "costmap_dynamic_tracks_used_mean": costmap_dynamic_tracks_used_mean,
+        "costmap_dynamic_mask_used_rate": costmap_dynamic_mask_used_rate,
+        "costmap_dynamic_leak_proxy_mean": costmap_dynamic_leak_proxy_mean,
         "costmap_fused_coverage": costmap_fused_coverage,
         "costmap_fused_latency_p90": costmap_fused_latency_p90,
         "costmap_fused_iou_p90": costmap_fused_iou_p90,
@@ -5933,6 +5988,9 @@ def _matches_run_filters(
     min_costmap_coverage: float | None = None,
     max_costmap_latency_p90: int | None = None,
     max_costmap_dynamic_filter_rate_mean: float | None = None,
+    min_costmap_dynamic_temporal_used_rate: float | None = None,
+    min_costmap_dynamic_mask_used_rate: float | None = None,
+    max_costmap_dynamic_tracks_used_mean: float | None = None,
     min_costmap_fused_coverage: float | None = None,
     max_costmap_fused_latency_p90: int | None = None,
     min_costmap_fused_iou_p90: float | None = None,
@@ -6127,6 +6185,24 @@ def _matches_run_filters(
         if value is None:
             return False
         if float(value) > float(max_costmap_dynamic_filter_rate_mean):
+            return False
+    if min_costmap_dynamic_temporal_used_rate is not None:
+        value = row.get("costmap_dynamic_temporal_used_rate")
+        if value is None:
+            return False
+        if float(value) < float(min_costmap_dynamic_temporal_used_rate):
+            return False
+    if min_costmap_dynamic_mask_used_rate is not None:
+        value = row.get("costmap_dynamic_mask_used_rate")
+        if value is None:
+            return False
+        if float(value) < float(min_costmap_dynamic_mask_used_rate):
+            return False
+    if max_costmap_dynamic_tracks_used_mean is not None:
+        value = row.get("costmap_dynamic_tracks_used_mean")
+        if value is None:
+            return False
+        if float(value) > float(max_costmap_dynamic_tracks_used_mean):
             return False
     if min_costmap_fused_coverage is not None:
         value = row.get("costmap_fused_coverage")
@@ -6492,6 +6568,9 @@ def _sort_run_rows(rows: list[dict[str, Any]], sort: str, order: str) -> list[di
         "costmap_latency_p90",
         "costmap_density_mean",
         "costmap_dynamic_filter_rate_mean",
+        "costmap_dynamic_temporal_used_rate",
+        "costmap_dynamic_tracks_used_mean",
+        "costmap_dynamic_mask_used_rate",
         "costmap_fused_coverage",
         "costmap_fused_latency_p90",
         "costmap_fused_iou_p90",
@@ -6603,6 +6682,9 @@ async def _query_run_package_rows(
     min_costmap_coverage: float | None,
     max_costmap_latency_p90: int | None,
     max_costmap_dynamic_filter_rate_mean: float | None,
+    min_costmap_dynamic_temporal_used_rate: float | None,
+    min_costmap_dynamic_mask_used_rate: float | None,
+    max_costmap_dynamic_tracks_used_mean: float | None,
     min_costmap_fused_coverage: float | None,
     max_costmap_fused_latency_p90: int | None,
     min_costmap_fused_iou_p90: float | None,
@@ -6695,6 +6777,9 @@ async def _query_run_package_rows(
             min_costmap_coverage=min_costmap_coverage,
             max_costmap_latency_p90=max_costmap_latency_p90,
             max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+            min_costmap_dynamic_temporal_used_rate=min_costmap_dynamic_temporal_used_rate,
+            min_costmap_dynamic_mask_used_rate=min_costmap_dynamic_mask_used_rate,
+            max_costmap_dynamic_tracks_used_mean=max_costmap_dynamic_tracks_used_mean,
             min_costmap_fused_coverage=min_costmap_fused_coverage,
             max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
             min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
@@ -6815,6 +6900,9 @@ async def runs_dashboard(
     min_costmap_coverage: float | None = None,
     max_costmap_latency_p90: int | None = None,
     max_costmap_dynamic_filter_rate_mean: float | None = None,
+    min_costmap_dynamic_temporal_used_rate: float | None = None,
+    min_costmap_dynamic_mask_used_rate: float | None = None,
+    max_costmap_dynamic_tracks_used_mean: float | None = None,
     min_costmap_fused_coverage: float | None = None,
     max_costmap_fused_latency_p90: int | None = None,
     min_costmap_fused_iou_p90: float | None = None,
@@ -6902,6 +6990,9 @@ async def runs_dashboard(
         min_costmap_coverage=min_costmap_coverage,
         max_costmap_latency_p90=max_costmap_latency_p90,
         max_costmap_dynamic_filter_rate_mean=max_costmap_dynamic_filter_rate_mean,
+        min_costmap_dynamic_temporal_used_rate=min_costmap_dynamic_temporal_used_rate,
+        min_costmap_dynamic_mask_used_rate=min_costmap_dynamic_mask_used_rate,
+        max_costmap_dynamic_tracks_used_mean=max_costmap_dynamic_tracks_used_mean,
         min_costmap_fused_coverage=min_costmap_fused_coverage,
         max_costmap_fused_latency_p90=max_costmap_fused_latency_p90,
         min_costmap_fused_iou_p90=min_costmap_fused_iou_p90,
@@ -7247,6 +7338,15 @@ async def runs_dashboard(
     max_costmap_dynamic_filter_rate_mean_value = html.escape(
         "" if max_costmap_dynamic_filter_rate_mean is None else str(max_costmap_dynamic_filter_rate_mean)
     )
+    min_costmap_dynamic_temporal_used_rate_value = html.escape(
+        "" if min_costmap_dynamic_temporal_used_rate is None else str(min_costmap_dynamic_temporal_used_rate)
+    )
+    min_costmap_dynamic_mask_used_rate_value = html.escape(
+        "" if min_costmap_dynamic_mask_used_rate is None else str(min_costmap_dynamic_mask_used_rate)
+    )
+    max_costmap_dynamic_tracks_used_mean_value = html.escape(
+        "" if max_costmap_dynamic_tracks_used_mean is None else str(max_costmap_dynamic_tracks_used_mean)
+    )
     min_costmap_fused_coverage_value = html.escape(
         "" if min_costmap_fused_coverage is None else str(min_costmap_fused_coverage)
     )
@@ -7413,6 +7513,9 @@ async def runs_dashboard(
       <label>min_costmap_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_coverage" value="{min_costmap_coverage_value}" /></label>
       <label>max_costmap_latency_p90: <input type="number" min="0" name="max_costmap_latency_p90" value="{max_costmap_latency_p90_value}" /></label>
       <label>max_costmap_dynamic_filter_rate_mean: <input type="number" step="0.0001" min="0" max="1" name="max_costmap_dynamic_filter_rate_mean" value="{max_costmap_dynamic_filter_rate_mean_value}" /></label>
+      <label>min_costmap_dynamic_temporal_used_rate: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_dynamic_temporal_used_rate" value="{min_costmap_dynamic_temporal_used_rate_value}" /></label>
+      <label>min_costmap_dynamic_mask_used_rate: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_dynamic_mask_used_rate" value="{min_costmap_dynamic_mask_used_rate_value}" /></label>
+      <label>max_costmap_dynamic_tracks_used_mean: <input type="number" step="0.0001" min="0" name="max_costmap_dynamic_tracks_used_mean" value="{max_costmap_dynamic_tracks_used_mean_value}" /></label>
       <label>min_costmap_fused_coverage: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_fused_coverage" value="{min_costmap_fused_coverage_value}" /></label>
       <label>max_costmap_fused_latency_p90: <input type="number" min="0" name="max_costmap_fused_latency_p90" value="{max_costmap_fused_latency_p90_value}" /></label>
       <label>min_costmap_fused_iou_p90: <input type="number" step="0.0001" min="0" max="1" name="min_costmap_fused_iou_p90" value="{min_costmap_fused_iou_p90_value}" /></label>
@@ -7488,6 +7591,9 @@ async def runs_dashboard(
           <option value="costmap_latency_p90" {"selected" if sort_value == "costmap_latency_p90" else ""}>costmap_latency_p90</option>
           <option value="costmap_density_mean" {"selected" if sort_value == "costmap_density_mean" else ""}>costmap_density_mean</option>
           <option value="costmap_dynamic_filter_rate_mean" {"selected" if sort_value == "costmap_dynamic_filter_rate_mean" else ""}>costmap_dynamic_filter_rate_mean</option>
+          <option value="costmap_dynamic_temporal_used_rate" {"selected" if sort_value == "costmap_dynamic_temporal_used_rate" else ""}>costmap_dynamic_temporal_used_rate</option>
+          <option value="costmap_dynamic_tracks_used_mean" {"selected" if sort_value == "costmap_dynamic_tracks_used_mean" else ""}>costmap_dynamic_tracks_used_mean</option>
+          <option value="costmap_dynamic_mask_used_rate" {"selected" if sort_value == "costmap_dynamic_mask_used_rate" else ""}>costmap_dynamic_mask_used_rate</option>
           <option value="costmap_fused_coverage" {"selected" if sort_value == "costmap_fused_coverage" else ""}>costmap_fused_coverage</option>
           <option value="costmap_fused_latency_p90" {"selected" if sort_value == "costmap_fused_latency_p90" else ""}>costmap_fused_latency_p90</option>
           <option value="costmap_fused_iou_p90" {"selected" if sort_value == "costmap_fused_iou_p90" else ""}>costmap_fused_iou_p90</option>
@@ -7876,3 +7982,9 @@ async def ws_events(websocket: WebSocket) -> None:
             trace_id="0" * 32,
             span_id="0" * 16,
         )
+
+
+
+
+
+

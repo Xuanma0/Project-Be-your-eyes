@@ -88,18 +88,24 @@ class CostmapFuser:
             fused_prev = np.array(state.fused, copy=True)
             fused_work = fused_prev * decay
 
-            if current_model and current_state:
-                state.history.append(
-                    {
-                        "frameSeq": int(max(1, int(frame_seq))),
-                        "model": current_model,
-                        "label": current_label,
-                        "trackingState": current_state,
-                    }
-                )
-                max_history = max(20, int(max(1, int(normalized["windowFrames"]))) * 4)
-                if len(state.history) > max_history:
-                    state.history = state.history[-max_history:]
+            raw_dynamic_temporal_used = bool(_nested(raw_costmap_payload, ["stats", "dynamicTemporalUsed"]))
+            raw_dynamic_tracks_used = max(0, _to_int(_nested(raw_costmap_payload, ["stats", "dynamicTracksUsed"]), 0))
+            raw_dynamic_mask_used = bool(_nested(raw_costmap_payload, ["stats", "dynamicMaskUsed"]))
+
+            history_row: dict[str, Any] = {
+                "frameSeq": int(max(1, int(frame_seq))),
+                "dynamicTemporalUsed": bool(raw_dynamic_temporal_used),
+                "dynamicTracksUsed": int(raw_dynamic_tracks_used),
+                "dynamicMaskUsed": bool(raw_dynamic_mask_used),
+            }
+            if current_model:
+                history_row["model"] = current_model
+                history_row["label"] = current_label
+                history_row["trackingState"] = current_state
+            state.history.append(history_row)
+            max_history = max(20, int(max(1, int(normalized["windowFrames"]))) * 4)
+            if len(state.history) > max_history:
+                state.history = state.history[-max_history:]
 
             selected_label, selected_model = _select_slam_model(
                 preferred_label=preferred_label,
@@ -116,6 +122,10 @@ class CostmapFuser:
             tracking_rate, longest_lost_streak = _tracking_window_stats(
                 state.history,
                 label=selected_label,
+                window_frames=int(max(1, int(normalized["windowFrames"]))),
+            )
+            dynamic_mask_used_rate_window = _dynamic_mask_used_rate(
+                state.history,
                 window_frames=int(max(1, int(normalized["windowFrames"]))),
             )
             align_residual_p90_ms = _pick_slam_quality_metric(
@@ -183,6 +193,8 @@ class CostmapFuser:
             self._states[run_key] = state
 
         dynamic_filtered_rate = _to_unit_float(_nested(raw_costmap_payload, ["stats", "dynamicFilteredRate"]))
+        dynamic_temporal_used = bool(_nested(raw_costmap_payload, ["stats", "dynamicTemporalUsed"]))
+        dynamic_tracks_used = max(0, _to_int(_nested(raw_costmap_payload, ["stats", "dynamicTracksUsed"]), 0))
         sources = _nested(raw_costmap_payload, ["stats", "sources"])
         sources = sources if isinstance(sources, dict) else {}
         source_depth = bool(sources.get("depth"))
@@ -223,6 +235,9 @@ class CostmapFuser:
                 "meanCost": float(round(mean_cost, 6)),
                 "maxCost": int(max_cost),
                 "dynamicFilteredRate": float(round(dynamic_filtered_rate, 6)),
+                "dynamicTemporalUsed": bool(dynamic_temporal_used),
+                "dynamicTracksUsed": int(dynamic_tracks_used),
+                "dynamicMaskUsedRateWindow": float(round(dynamic_mask_used_rate_window, 6)),
                 "stability": {
                     "iouPrev": None if iou_prev is None else float(round(iou_prev, 6)),
                     "flickerRatePrev": None if flicker_prev is None else float(round(flicker_prev, 6)),
@@ -492,6 +507,28 @@ def _tracking_window_stats(
         else:
             current_lost = 0
     return tracking_rate, int(longest_lost)
+
+
+def _dynamic_mask_used_rate(history: list[dict[str, Any]], *, window_frames: int) -> float:
+    if not history:
+        return 0.0
+    rows = history[-max(1, int(window_frames)) :]
+    if not rows:
+        return 0.0
+    used = 0
+    total = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        value = row.get("dynamicMaskUsed")
+        if not isinstance(value, bool):
+            continue
+        total += 1
+        if value:
+            used += 1
+    if total <= 0:
+        return 0.0
+    return float(used) / float(total)
 
 
 def _pick_slam_quality_metric(

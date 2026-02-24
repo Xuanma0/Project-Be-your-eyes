@@ -11,6 +11,8 @@ DEFAULT_COSTMAP_CONFIG = {
     "resolutionM": 0.1,
     "depthThreshM": 1.0,
     "dynamicLabels": ("person", "car"),
+    "enableDynamicTrack": False,
+    "dynamicTrackTtlFrames": 5,
 }
 
 DEFAULT_COSTMAP_CONTEXT_BUDGET = {
@@ -31,6 +33,7 @@ def build_local_costmap(
     seg_payload: dict[str, Any] | None,
     slam_payload: dict[str, Any] | None,
     config: dict[str, Any] | None = None,
+    dynamic_mask_cache: Any | None = None,
     backend: str | None = "local",
     model: str | None = "local-costmap-v1",
     endpoint: str | None = None,
@@ -40,6 +43,8 @@ def build_local_costmap(
     cost_w = int(normalized_cfg["gridW"])
     depth_thresh_m = float(normalized_cfg["depthThreshM"])
     dynamic_labels = {str(item).strip().lower() for item in normalized_cfg["dynamicLabels"] if str(item).strip()}
+    enable_dynamic_track = bool(normalized_cfg["enableDynamicTrack"])
+    dynamic_track_ttl_frames = int(max(0, int(normalized_cfg["dynamicTrackTtlFrames"])))
 
     grid_values = [0] * (cost_h * cost_w)
     warnings_count = 0
@@ -51,6 +56,9 @@ def build_local_costmap(
 
     filtered_count = 0
     considered_count = 0
+    dynamic_temporal_used = False
+    dynamic_tracks_used = 0
+    dynamic_mask_used = False
     if not has_depth:
         warnings_count += 1
     else:
@@ -65,6 +73,39 @@ def build_local_costmap(
             dynamic_labels=dynamic_labels,
         )
         warnings_count += int(dynamic_warnings)
+        current_has_dynamic_mask = any(dynamic_mask)
+        track_ids_present = _has_dynamic_track_ids(seg_payload=seg_payload, dynamic_labels=dynamic_labels)
+
+        if enable_dynamic_track and dynamic_mask_cache is not None:
+            segments = seg_payload.get("segments") if isinstance(seg_payload, dict) else []
+            if isinstance(segments, list):
+                image_w = _to_nonnegative_int((seg_payload or {}).get("imageWidth"), gw) or gw
+                image_h = _to_nonnegative_int((seg_payload or {}).get("imageHeight"), gh) or gh
+                try:
+                    dynamic_mask_cache.update_from_segments(
+                        run_id=str(run_id or "").strip() or "costmap-run",
+                        frame_seq=int(max(1, int(frame_seq))),
+                        segments=[row for row in segments if isinstance(row, dict)],
+                        dynamic_labels_set=dynamic_labels,
+                        image_w=image_w,
+                        image_h=image_h,
+                    )
+                    cached_mask, tracks_used, cache_hit = dynamic_mask_cache.build_union_mask(
+                        run_id=str(run_id or "").strip() or "costmap-run",
+                        image_w=gw,
+                        image_h=gh,
+                        now_frame_seq=int(max(1, int(frame_seq))),
+                        ttl_frames=dynamic_track_ttl_frames,
+                    )
+                    if isinstance(cached_mask, list) and len(cached_mask) == len(dynamic_mask):
+                        for idx, flag in enumerate(cached_mask):
+                            if bool(flag):
+                                dynamic_mask[idx] = True
+                    dynamic_tracks_used = int(max(0, tracks_used))
+                    dynamic_temporal_used = bool(track_ids_present or cache_hit)
+                    dynamic_mask_used = bool(cache_hit and not current_has_dynamic_mask)
+                except Exception:
+                    warnings_count += 1
 
         for y in range(roi_start, gh):
             for x in range(gw):
@@ -108,6 +149,10 @@ def build_local_costmap(
             "meanCost": float(round(mean_cost, 6)),
             "maxCost": int(max_cost),
             "dynamicFilteredRate": float(round(max(0.0, min(1.0, dynamic_filtered_rate)), 6)),
+            "dynamicTemporalUsed": bool(dynamic_temporal_used),
+            "dynamicTracksUsed": int(max(0, dynamic_tracks_used)),
+            "dynamicTtlFrames": int(max(0, dynamic_track_ttl_frames)),
+            "dynamicMaskUsed": bool(dynamic_mask_used),
             "sources": {
                 "depth": bool(has_depth),
                 "seg": bool(has_seg),
@@ -303,6 +348,14 @@ def _normalize_costmap_config(raw: dict[str, Any] | None) -> dict[str, Any]:
         "resolutionM": max(0.01, _to_float(source.get("resolutionM"), float(DEFAULT_COSTMAP_CONFIG["resolutionM"]))),
         "depthThreshM": max(0.1, _to_float(source.get("depthThreshM"), float(DEFAULT_COSTMAP_CONFIG["depthThreshM"]))),
         "dynamicLabels": [str(item).strip().lower() for item in labels if str(item).strip()],
+        "enableDynamicTrack": bool(source.get("enableDynamicTrack", DEFAULT_COSTMAP_CONFIG["enableDynamicTrack"])),
+        "dynamicTrackTtlFrames": max(
+            0,
+            _to_nonnegative_int(
+                source.get("dynamicTrackTtlFrames"),
+                int(DEFAULT_COSTMAP_CONFIG["dynamicTrackTtlFrames"]),
+            ),
+        ),
     }
 
 
@@ -401,6 +454,22 @@ def _build_dynamic_mask(
             for gx in range(gx0, max(gx0, gx1)):
                 mask[gy * depth_w + gx] = True
     return mask, warnings
+
+
+def _has_dynamic_track_ids(*, seg_payload: dict[str, Any] | None, dynamic_labels: set[str]) -> bool:
+    payload = seg_payload if isinstance(seg_payload, dict) else {}
+    segments = payload.get("segments")
+    segments = segments if isinstance(segments, list) else []
+    for row in segments:
+        if not isinstance(row, dict):
+            continue
+        label = str(row.get("label", "")).strip().lower()
+        if dynamic_labels and label not in dynamic_labels:
+            continue
+        track_id = str(row.get("trackId", "")).strip()
+        if track_id:
+            return True
+    return False
 
 
 def _decode_seg_mask(seg_mask: Any, *, depth_w: int, depth_h: int) -> list[bool] | None:

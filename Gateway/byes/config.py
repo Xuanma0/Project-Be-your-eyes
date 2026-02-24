@@ -314,6 +314,8 @@ class GatewayConfig:
     inference_costmap_resolution_m: float = 0.1
     inference_costmap_depth_thresh_m: float = 1.0
     inference_costmap_dynamic_labels: tuple[str, ...] = ("person", "car")
+    inference_costmap_dynamic_track: bool = False
+    inference_costmap_dynamic_track_ttl_frames: int = 5
     inference_costmap_fused_alpha: float = 0.6
     inference_costmap_fused_decay: float = 0.95
     inference_costmap_fused_window: int = 10
@@ -513,6 +515,8 @@ def load_config() -> GatewayConfig:
             _env_string_list("BYES_COSTMAP_DYNAMIC_LABELS", "BYES_COSTMAP_DYNAMIC_LABELS_JSON")
             or ("person", "car")
         ),
+        inference_costmap_dynamic_track=_env_bool("BYES_ENABLE_COSTMAP_DYNAMIC_TRACK", False),
+        inference_costmap_dynamic_track_ttl_frames=_env_int("BYES_COSTMAP_DYNAMIC_TRACK_TTL_FRAMES", 5),
         inference_costmap_fused_alpha=_env_float("BYES_COSTMAP_FUSED_ALPHA", 0.6),
         inference_costmap_fused_decay=_env_float("BYES_COSTMAP_FUSED_DECAY", 0.95),
         inference_costmap_fused_window=_env_int("BYES_COSTMAP_FUSED_WINDOW", 10),

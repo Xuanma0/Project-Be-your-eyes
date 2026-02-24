@@ -607,6 +607,23 @@ Matrix mode (`--matrix 1`) runs the same run-package batch across multiple profi
       }
     },
     {
+      "name": "costmap_fused_local_tracking",
+      "services": {"seg": "sam3", "depth": "reference", "ocr": "reference"},
+      "env": {
+        "BYES_ENABLE_SEG": "1",
+        "BYES_ENABLE_DEPTH": "1",
+        "BYES_ENABLE_COSTMAP": "1",
+        "BYES_ENABLE_COSTMAP_FUSED": "1",
+        "BYES_ENABLE_COSTMAP_DYNAMIC_TRACK": "1",
+        "BYES_COSTMAP_DYNAMIC_TRACK_TTL_FRAMES": "5",
+        "BYES_SERVICE_SEG_HTTP_DOWNSTREAM": "sam3",
+        "BYES_SERVICE_SEG_HTTP_TRACKING": "1",
+        "BYES_SEG_TRACKING": "1",
+        "BYES_SAM3_MODE": "fixture",
+        "BYES_PLANNER_PROMPT_VERSION": "v4"
+      }
+    },
+    {
       "name": "slam_offline_pyslam_run",
       "services": {"seg": "reference", "depth": "reference", "ocr": "reference"},
       "env": {},
@@ -772,6 +789,12 @@ Notes:
 - `pyslam-online` is closer to real-time behavior; `pyslam-final` is usually better accuracy after backend optimization.
 - When shift gate rejects SLAM-based shift, fused map falls back to EMA-only (`ema_v1`) and records reasons (`tracking_rate_low`, `lost_streak_high`, `align_residual_high`, `slam_error_high`, etc.).
 - `/api/run_packages` and benchmark matrix include `costmap_fused_shift_used_rate` and `costmap_fused_shift_gate_reject_rate` for profile comparison.
+
+Dynamic obstacle temporal filtering (v4.81):
+- Enable with `BYES_ENABLE_COSTMAP_DYNAMIC_TRACK=1`; cache is keyed by SAM3 `trackId` and uses `BYES_COSTMAP_DYNAMIC_TRACK_TTL_FRAMES` (default `5`).
+- When current-frame dynamic seg is missing but TTL cache still valid, costmap stats emit `dynamicMaskUsed=true` and retain filtering.
+- `report["quality"]["costmap"]` now includes `dynamicTemporalUsedRate`, `dynamicTracksUsed`, `dynamicMaskUsedRate`, and `dynamicLeakProxyMean`.
+- `/api/run_packages` adds: `costmap_dynamic_temporal_used_rate`, `costmap_dynamic_tracks_used_mean`, `costmap_dynamic_mask_used_rate`.
 
 Plan context pack (risk+pov+seg, budgeted):
 

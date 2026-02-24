@@ -11,3 +11,6 @@ from .costmap_fuser import (  # noqa: F401
     DEFAULT_COSTMAP_FUSED_CONFIG,
     CostmapFuser,
 )
+from .dynamic_mask_cache import (  # noqa: F401
+    DynamicMaskCache,
+)

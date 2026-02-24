@@ -178,6 +178,18 @@
           "minimum": 0,
           "maximum": 1
         },
+        "dynamicTemporalUsed": {
+          "type": "boolean"
+        },
+        "dynamicTracksUsed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dynamicMaskUsedRateWindow": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
         "stability": {
           "type": "object",
           "additionalProperties": true,

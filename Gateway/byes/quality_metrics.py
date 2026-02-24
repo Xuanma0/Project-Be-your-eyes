@@ -3473,6 +3473,10 @@ def extract_costmap_metrics_from_events_v1(
     frame_keys: set[tuple[str, int]] = set()
     latencies: list[int] = []
     dynamic_rates: list[float] = []
+    dynamic_temporal_used_flags: list[float] = []
+    dynamic_tracks_used_values: list[float] = []
+    dynamic_mask_used_flags: list[float] = []
+    dynamic_ttl_counter: Counter[int] = Counter()
     density_values: list[float] = []
     event_count = 0
 
@@ -3508,6 +3512,12 @@ def extract_costmap_metrics_from_events_v1(
         stats = payload.get("stats")
         stats = stats if isinstance(stats, dict) else {}
         dynamic_rates.append(_to_unit_float(stats.get("dynamicFilteredRate")))
+        dynamic_temporal_used_flags.append(1.0 if bool(stats.get("dynamicTemporalUsed")) else 0.0)
+        dynamic_tracks_used_values.append(float(max(0, _to_nonnegative_int(stats.get("dynamicTracksUsed")))))
+        dynamic_mask_used_flags.append(1.0 if bool(stats.get("dynamicMaskUsed")) else 0.0)
+        ttl_frames = max(0, _to_nonnegative_int(stats.get("dynamicTtlFrames")))
+        if ttl_frames > 0:
+            dynamic_ttl_counter[ttl_frames] += 1
         occupied = max(0, _to_nonnegative_int(stats.get("occupiedCells")))
         grid = payload.get("grid")
         grid = grid if isinstance(grid, dict) else {}
@@ -3526,6 +3536,11 @@ def extract_costmap_metrics_from_events_v1(
             "coverage": 0.0 if frames_total_declared is not None else None,
             "latencyMs": summarize_latency([]),
             "dynamicFilteredRate": {"mean": 0.0, "p90": 0.0},
+            "dynamicTemporalUsedRate": 0.0,
+            "dynamicTracksUsed": {"mean": 0.0, "p90": 0.0},
+            "dynamicMaskUsedRate": 0.0,
+            "dynamicTtlFrames": 0,
+            "dynamicLeakProxyMean": 1.0,
             "densityMean": {"mean": 0.0, "p90": 0.0},
         }
 
@@ -3544,6 +3559,14 @@ def extract_costmap_metrics_from_events_v1(
             "mean": round(_mean_float(dynamic_rates), 6),
             "p90": round(_percentile_float(dynamic_rates, 90), 6),
         },
+        "dynamicTemporalUsedRate": round(_mean_float(dynamic_temporal_used_flags), 6),
+        "dynamicTracksUsed": {
+            "mean": round(_mean_float(dynamic_tracks_used_values), 6),
+            "p90": round(_percentile_float(dynamic_tracks_used_values, 90), 6),
+        },
+        "dynamicMaskUsedRate": round(_mean_float(dynamic_mask_used_flags), 6),
+        "dynamicTtlFrames": int(dynamic_ttl_counter.most_common(1)[0][0]) if dynamic_ttl_counter else 0,
+        "dynamicLeakProxyMean": round(1.0 - _mean_float(dynamic_rates), 6),
         "densityMean": {
             "mean": round(_mean_float(density_values), 6),
             "p90": round(_percentile_float(density_values, 90), 6),
@@ -3559,6 +3582,9 @@ def extract_costmap_fused_metrics_from_events_v1(
     frame_keys: set[tuple[str, int]] = set()
     latencies: list[int] = []
     dynamic_rates: list[float] = []
+    dynamic_temporal_used_flags: list[float] = []
+    dynamic_tracks_used_values: list[float] = []
+    dynamic_mask_used_rate_window_values: list[float] = []
     density_values: list[float] = []
     iou_prev_values: list[float] = []
     flicker_prev_values: list[float] = []
@@ -3601,6 +3627,9 @@ def extract_costmap_fused_metrics_from_events_v1(
         stats = payload.get("stats")
         stats = stats if isinstance(stats, dict) else {}
         dynamic_rates.append(_to_unit_float(stats.get("dynamicFilteredRate")))
+        dynamic_temporal_used_flags.append(1.0 if bool(stats.get("dynamicTemporalUsed")) else 0.0)
+        dynamic_tracks_used_values.append(float(max(0, _to_nonnegative_int(stats.get("dynamicTracksUsed")))))
+        dynamic_mask_used_rate_window_values.append(_to_unit_float(stats.get("dynamicMaskUsedRateWindow")))
         occupied = max(0, _to_nonnegative_int(stats.get("occupiedCells")))
 
         grid = payload.get("grid")
@@ -3649,6 +3678,9 @@ def extract_costmap_fused_metrics_from_events_v1(
             "coverage": 0.0 if frames_total_declared is not None else None,
             "latencyMs": summarize_latency([]),
             "dynamicFilteredRate": {"mean": 0.0, "p90": 0.0},
+            "dynamicTemporalUsedRate": 0.0,
+            "dynamicTracksUsed": {"mean": 0.0, "p90": 0.0},
+            "dynamicMaskUsedRateWindow": {"mean": 0.0, "p90": 0.0},
             "densityMean": {"mean": 0.0, "p90": 0.0},
             "stability": {
                 "iouPrevMean": 0.0,
@@ -3679,6 +3711,15 @@ def extract_costmap_fused_metrics_from_events_v1(
         "dynamicFilteredRate": {
             "mean": round(_mean_float(dynamic_rates), 6),
             "p90": round(_percentile_float(dynamic_rates, 90), 6),
+        },
+        "dynamicTemporalUsedRate": round(_mean_float(dynamic_temporal_used_flags), 6),
+        "dynamicTracksUsed": {
+            "mean": round(_mean_float(dynamic_tracks_used_values), 6),
+            "p90": round(_percentile_float(dynamic_tracks_used_values, 90), 6),
+        },
+        "dynamicMaskUsedRateWindow": {
+            "mean": round(_mean_float(dynamic_mask_used_rate_window_values), 6),
+            "p90": round(_percentile_float(dynamic_mask_used_rate_window_values, 90), 6),
         },
         "densityMean": {
             "mean": round(_mean_float(density_values), 6),

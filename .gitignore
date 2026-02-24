@@ -63,6 +63,7 @@ crashlytics-build.properties
 Gateway/.venv/
 Gateway/__pycache__/
 Gateway/artifacts/
+Gateway/regression/out/
 Gateway/run*.jsonl
 Gateway/frames/
 Gateway/external/modelpack/weights/

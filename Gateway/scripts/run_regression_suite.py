@@ -102,6 +102,10 @@ class RunSummary:
     costmap_context_lines: int = 0
     costmap_latency_p90: float = 0.0
     costmap_dynamic_filtered_rate_mean: float = 0.0
+    costmap_dynamic_schema_ok: bool = False
+    costmap_dynamic_temporal_used_true_count: int = 0
+    costmap_dynamic_tracks_used_mean: float = 0.0
+    costmap_dynamic_mask_used_true_count: int = 0
     slam_pose_events_present: bool = False
     slam_pose_payload_schema_ok: bool = False
     slam_pose_lines: int = 0
@@ -298,6 +302,10 @@ class RunSummary:
                 "costmapContextLines": self.costmap_context_lines,
                 "costmapLatencyP90": self.costmap_latency_p90,
                 "costmapDynamicFilteredRateMean": self.costmap_dynamic_filtered_rate_mean,
+                "costmapDynamicSchemaOk": self.costmap_dynamic_schema_ok,
+                "costmapDynamicTemporalUsedTrueCount": self.costmap_dynamic_temporal_used_true_count,
+                "costmapDynamicTracksUsedMean": self.costmap_dynamic_tracks_used_mean,
+                "costmapDynamicMaskUsedTrueCount": self.costmap_dynamic_mask_used_true_count,
                 "slamPoseEventsPresent": self.slam_pose_events_present,
                 "slamPosePayloadSchemaOk": self.slam_pose_payload_schema_ok,
                 "slamPoseLines": self.slam_pose_lines,
@@ -839,6 +847,8 @@ def run_suite(
     run_require_costmap_fused_shift_gate_present: dict[str, bool] = {}
     run_require_costmap_context_present: dict[str, bool] = {}
     run_require_costmap_context_schema_ok: dict[str, bool] = {}
+    run_require_costmap_dynamic_fields_present: dict[str, bool] = {}
+    run_require_costmap_dynamic_schema_ok: dict[str, bool] = {}
     run_require_slam_pose_events_present: dict[str, bool] = {}
     run_require_slam_pose_payload_schema_ok: dict[str, bool] = {}
     run_require_seg_prompt_events_present: dict[str, bool] = {}
@@ -913,6 +923,14 @@ def run_suite(
         )
         run_require_costmap_context_schema_ok[run_id] = _to_bool01(
             run_cfg.get("requireCostmapContextSchemaOk"),
+            False,
+        )
+        run_require_costmap_dynamic_fields_present[run_id] = _to_bool01(
+            run_cfg.get("requireCostmapDynamicFieldsPresent"),
+            False,
+        )
+        run_require_costmap_dynamic_schema_ok[run_id] = _to_bool01(
+            run_cfg.get("requireCostmapDynamicSchemaOk"),
             False,
         )
         run_require_slam_pose_events_present[run_id] = _to_bool01(run_cfg.get("requireSlamPoseEventsPresent"), False)
@@ -1052,6 +1070,16 @@ def run_suite(
                     run_summary.costmap_latency_p90 = float(lint_summary.get("costmapLatencyP90", 0.0) or 0.0)
                     run_summary.costmap_dynamic_filtered_rate_mean = float(
                         lint_summary.get("costmapDynamicFilteredRateMean", 0.0) or 0.0
+                    )
+                    run_summary.costmap_dynamic_schema_ok = bool(lint_summary.get("costmapDynamicSchemaOk", 0))
+                    run_summary.costmap_dynamic_temporal_used_true_count = int(
+                        lint_summary.get("costmapDynamicTemporalUsedTrueCount", 0) or 0
+                    )
+                    run_summary.costmap_dynamic_tracks_used_mean = float(
+                        lint_summary.get("costmapDynamicTracksUsedMean", 0.0) or 0.0
+                    )
+                    run_summary.costmap_dynamic_mask_used_true_count = int(
+                        lint_summary.get("costmapDynamicMaskUsedTrueCount", 0) or 0
                     )
                     run_summary.slam_pose_events_present = bool(lint_summary.get("slamPoseEventsPresent", 0))
                     run_summary.slam_pose_payload_schema_ok = bool(lint_summary.get("slamPosePayloadSchemaOk", 0))
@@ -1208,6 +1236,12 @@ def run_suite(
             failures.append(f"{run.run_id}: costmap context events missing (map.costmap_context)")
         if run_require_costmap_context_schema_ok.get(run.run_id, False) and not bool(run.costmap_context_schema_ok):
             failures.append(f"{run.run_id}: costmap context payload schema check failed")
+        if run_require_costmap_dynamic_fields_present.get(run.run_id, False) and not bool(
+            run.costmap_dynamic_temporal_used_true_count > 0
+        ):
+            failures.append(f"{run.run_id}: costmap dynamic fields missing or never used")
+        if run_require_costmap_dynamic_schema_ok.get(run.run_id, False) and not bool(run.costmap_dynamic_schema_ok):
+            failures.append(f"{run.run_id}: costmap dynamic schema check failed")
         if run_require_slam_pose_events_present.get(run.run_id, False) and not bool(run.slam_pose_events_present):
             failures.append(f"{run.run_id}: slam pose events missing (slam.pose)")
         if run_require_slam_pose_payload_schema_ok.get(run.run_id, False) and not bool(run.slam_pose_payload_schema_ok):
@@ -1359,6 +1393,10 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "costmapFusedShiftGateRejectRate={costmap_fused_shift_gate_reject_rate} "
                 "costmapFusedShiftGateTopReason={costmap_fused_shift_gate_top_reason} "
                 "costmapContextPresent={costmap_context_present} costmapContextSchemaOk={costmap_context_schema_ok} "
+                "costmapDynamicSchemaOk={costmap_dynamic_schema_ok} "
+                "costmapDynamicTemporalUsedTrueCount={costmap_dynamic_temporal_used_true_count} "
+                "costmapDynamicTracksUsedMean={costmap_dynamic_tracks_used_mean} "
+                "costmapDynamicMaskUsedTrueCount={costmap_dynamic_mask_used_true_count} "
                 "slamPoseEventsPresent={slam_pose_events_present} slamPosePayloadSchemaOk={slam_pose_payload_schema_ok} "
                 "segPromptEventsPresent={seg_prompt_events_present} segPromptPayloadSchemaOk={seg_prompt_payload_schema_ok} "
                 "segPromptBudgetPresent={seg_prompt_budget_present} segPromptTruncationPresent={seg_prompt_truncation_present} "
@@ -1437,6 +1475,16 @@ def _print_summary(result: dict[str, Any]) -> None:
                     ),
                     costmap_context_present=row.get("segLint", {}).get("costmapContextPresent", False),
                     costmap_context_schema_ok=row.get("segLint", {}).get("costmapContextSchemaOk", False),
+                    costmap_dynamic_schema_ok=row.get("segLint", {}).get("costmapDynamicSchemaOk", False),
+                    costmap_dynamic_temporal_used_true_count=row.get("segLint", {}).get(
+                        "costmapDynamicTemporalUsedTrueCount",
+                        0,
+                    ),
+                    costmap_dynamic_tracks_used_mean=row.get("segLint", {}).get("costmapDynamicTracksUsedMean", 0.0),
+                    costmap_dynamic_mask_used_true_count=row.get("segLint", {}).get(
+                        "costmapDynamicMaskUsedTrueCount",
+                        0,
+                    ),
                     slam_pose_events_present=row.get("segLint", {}).get("slamPoseEventsPresent", False),
                     slam_pose_payload_schema_ok=row.get("segLint", {}).get("slamPosePayloadSchemaOk", False),
                     seg_prompt_events_present=row.get("segLint", {}).get("promptEventsPresent", False),
