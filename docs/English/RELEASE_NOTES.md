@@ -1,3 +1,5 @@
+Current development version is defined by `VERSION`; this file records historical milestones only.
+
 # Release Notes (v4.x)
 
 This changelog summarizes the delivered capabilities from `v4.38` to `v4.82` for reviewers and maintainers.

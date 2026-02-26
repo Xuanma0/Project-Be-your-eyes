@@ -1,18 +1,15 @@
 # Project-Be-your-eyes Docs (English)
 
-This folder contains the English documentation set for architecture, contracts, commands, demos, and version history.
+Current development version is defined by the repository root [VERSION](../../VERSION).
 
-## Version Coverage
+This folder is the English documentation set for architecture, contracts, commands, demos, and historical release notes.
 
-This documentation set covers the full `v4.x` evolution path, including:
-- planning/context contracts,
-- seg/depth/ocr/slam toolchains,
-- costmap and fused costmap,
-- benchmark matrix and regression gates.
+## Version Policy
 
-For chronological details, read `RELEASE_NOTES.md` (`v4.38` -> `v4.82`).
+- **Current development version**: always read from `VERSION`.
+- **Historical timeline**: recorded in `RELEASE_NOTES.md`.
 
-## Reading Order
+## Recommended Reading Order
 
 1. `ARCHITECTURE.md`
 2. `contracts.md`
@@ -22,22 +19,13 @@ For chronological details, read `RELEASE_NOTES.md` (`v4.38` -> `v4.82`).
 6. `GLOSSARY.md`
 7. `RELEASE_NOTES.md`
 
-## File Index
+## Maintainer Docs
 
-- `ARCHITECTURE.md`
-- `COMMANDS.md`
-- `contracts.md`
-- `event_schema_v1.md`
-- `GLOSSARY.md`
-- `hazard_taxonomy_v1.md`
-- `pov_planner_adapter.md`
-- `QUICK_DEMO.md`
-- `RELEASE_NOTES.md`
+For operational/audit/runbook materials, see `docs/maintainer/`:
 
-## Unity Runtime Notes (v4.86)
-
-- ActionPlan execution now supports runtime haptic pulses on Quest-compatible controllers (when `supportsImpulse` is available).
-- Confirm UI input mapping:
-  - `Y/N` in Editor
-  - XR `primaryButton` = accept, `secondaryButton` = reject
-- Gateway report/leaderboard now expose `planAck.hapticAckRate` / `haptic_ack_rate`.
+- `AUDIT_REPO.md`
+- `RUNBOOK_LOCAL.md`
+- `API_INVENTORY.md`
+- `CONFIG_MATRIX.md`
+- `SECURITY_REVIEW.md`
+- `OPEN_QUESTIONS.md`
