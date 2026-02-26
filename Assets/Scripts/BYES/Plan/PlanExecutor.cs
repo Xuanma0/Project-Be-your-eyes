@@ -1,7 +1,8 @@
 using System;
-using UnityEngine;
-using UnityEngine.UI;
+using BYES.Core;
 using BYES.Telemetry;
+using BYES.UI;
+using UnityEngine;
 
 namespace BYES.Plan
 {
@@ -52,11 +53,6 @@ namespace BYES.Plan
         public bool IsStopped { get; private set; }
         public string LastOverlayText { get; private set; } = string.Empty;
 
-        private Canvas _confirmCanvas;
-        private GameObject _confirmPanel;
-        private Text _confirmText;
-        private Button _yesButton;
-        private Button _noButton;
         private string _runIdForAck = "unknown-run";
         private int _frameSeqForAck = 1;
 
@@ -74,67 +70,81 @@ namespace BYES.Plan
                 return;
             }
 
-            if (summary.uiCommands == null || summary.uiCommands.Length == 0)
+            if (summary.uiCommands != null && summary.uiCommands.Length > 0)
             {
-                Debug.Log("[PlanExecutor] no uiCommands to execute");
-                return;
+                foreach (var cmd in summary.uiCommands)
+                {
+                    if (cmd == null)
+                    {
+                        continue;
+                    }
+                    ExecuteCommand(cmd, onConfirmDecision);
+                }
             }
 
-            foreach (var cmd in summary.uiCommands)
+            if (summary.pendingConfirms != null && summary.pendingConfirms.Length > 0)
             {
-                if (cmd == null)
+                var pending = summary.pendingConfirms[0];
+                if (pending != null)
                 {
-                    continue;
+                    ShowConfirmFromPending(pending, onConfirmDecision);
                 }
-                ExecuteCommand(cmd, onConfirmDecision);
             }
         }
 
         private void ExecuteCommand(UiCommand command, Action<string, bool> onConfirmDecision)
         {
-            string kind = (command.kind ?? string.Empty).Trim().ToLowerInvariant();
+            var kind = (command.kind ?? string.Empty).Trim().ToLowerInvariant();
             if (kind == "ui.confirm_request")
             {
-                ShowConfirmPanel(command, onConfirmDecision);
+                var prompt = string.IsNullOrWhiteSpace(command.text) ? "Please confirm." : command.text;
+                var timeoutMs = command.timeoutMs > 0 ? command.timeoutMs : 5000;
+                ShowConfirm(command.confirmId, prompt, timeoutMs, onConfirmDecision);
                 return;
             }
 
-            string commandType = (command.commandType ?? string.Empty).Trim().ToLowerInvariant();
+            var commandType = (command.commandType ?? string.Empty).Trim().ToLowerInvariant();
             switch (commandType)
             {
                 case "speak":
                     Debug.Log($"[PlanExecutor] SPEAK: {command.text}");
-                    ByesFrameTelemetry.AckFeedback(
-                        _runIdForAck,
-                        _frameSeqForAck,
-                        "tts",
-                        true,
-                        ByesFrameTelemetry.NowUnixMs()
-                    );
+                    ByesFrameTelemetry.AckFeedback(_runIdForAck, _frameSeqForAck, "tts", true, ByesFrameTelemetry.NowUnixMs());
                     break;
                 case "overlay":
-                    LastOverlayText = command.label;
-                    Debug.Log($"[PlanExecutor] OVERLAY: {command.label} ({command.text})");
-                    ByesFrameTelemetry.AckFeedback(
+                case "ar":
+                    LastOverlayText = command.label ?? string.Empty;
+                    ByesOverlayRenderer.EnsureExists().RenderOverlayCommand(
                         _runIdForAck,
                         _frameSeqForAck,
-                        "ar",
-                        true,
-                        ByesFrameTelemetry.NowUnixMs()
+                        commandType,
+                        command.label,
+                        command.text,
+                        command.reason
                     );
                     break;
                 case "haptic":
-                    Debug.Log("[PlanExecutor] HAPTIC trigger");
-                    ByesFrameTelemetry.AckFeedback(
-                        _runIdForAck,
-                        _frameSeqForAck,
-                        "haptic",
-                        true,
-                        ByesFrameTelemetry.NowUnixMs()
-                    );
+                    if (ByesHaptics.Instance.TrySendPulse(HapticChannel.Both, 0.5f, 0.08f, command.actionId, command.confirmId))
+                    {
+                        if (ByesOverlayAckThrottler.Instance.TryMark(_runIdForAck, _frameSeqForAck, "haptic"))
+                        {
+                            ByesFrameTelemetry.AckFeedback(_runIdForAck, _frameSeqForAck, "haptic", true, ByesFrameTelemetry.NowUnixMs());
+                        }
+                    }
+                    else if (Debug.isDebugBuild)
+                    {
+                        Debug.Log("[PlanExecutor] HAPTIC skipped (unsupported or debounced)");
+                    }
                     break;
                 case "stop":
                     IsStopped = true;
+                    ByesOverlayRenderer.EnsureExists().RenderStop(_runIdForAck, _frameSeqForAck, string.IsNullOrWhiteSpace(command.text) ? "STOP" : command.text);
+                    if (ByesHaptics.Instance.TrySendPulse(HapticChannel.Both, 0.9f, 0.15f, command.actionId, command.confirmId))
+                    {
+                        if (ByesOverlayAckThrottler.Instance.TryMark(_runIdForAck, _frameSeqForAck, "haptic"))
+                        {
+                            ByesFrameTelemetry.AckFeedback(_runIdForAck, _frameSeqForAck, "haptic", true, ByesFrameTelemetry.NowUnixMs());
+                        }
+                    }
                     Debug.Log($"[PlanExecutor] STOP: {command.reason}");
                     break;
                 default:
@@ -143,104 +153,42 @@ namespace BYES.Plan
             }
         }
 
-        private void ShowConfirmPanel(UiCommand command, Action<string, bool> onConfirmDecision)
+        private void ShowConfirmFromPending(PendingConfirm pending, Action<string, bool> onConfirmDecision)
         {
-            EnsureConfirmUi();
-            if (_confirmPanel == null || _confirmText == null || _yesButton == null || _noButton == null)
+            var confirmId = pending != null ? pending.confirmId : string.Empty;
+            var timeoutMs = pending != null ? pending.timeoutMs : 5000;
+            var actionId = pending != null ? pending.actionId : string.Empty;
+            var prompt = string.IsNullOrWhiteSpace(actionId) ? "Please confirm." : actionId;
+            ShowConfirm(confirmId, prompt, timeoutMs, onConfirmDecision);
+        }
+
+        private void ShowConfirm(string confirmId, string prompt, int timeoutMs, Action<string, bool> onConfirmDecision)
+        {
+            var safeConfirmId = string.IsNullOrWhiteSpace(confirmId) ? $"confirm-{Time.frameCount}" : confirmId.Trim();
+            var safePrompt = string.IsNullOrWhiteSpace(prompt) ? "Please confirm." : prompt.Trim();
+            var safeTimeout = timeoutMs > 0 ? timeoutMs : 5000;
+
+            var state = ByesSystemState.Instance;
+            if (state != null)
             {
-                Debug.LogWarning("[PlanExecutor] confirm UI unavailable");
-                return;
+                state.SetPendingConfirm(1, safeConfirmId);
             }
 
-            string confirmId = string.IsNullOrWhiteSpace(command.confirmId) ? "confirm-unknown" : command.confirmId;
-            string prompt = string.IsNullOrWhiteSpace(command.text) ? "Please confirm." : command.text;
-            _confirmText.text = prompt;
-            _confirmPanel.SetActive(true);
-
-            _yesButton.onClick.RemoveAllListeners();
-            _noButton.onClick.RemoveAllListeners();
-            _yesButton.onClick.AddListener(() =>
-            {
-                _confirmPanel.SetActive(false);
-                onConfirmDecision?.Invoke(confirmId, true);
-            });
-            _noButton.onClick.AddListener(() =>
-            {
-                _confirmPanel.SetActive(false);
-                onConfirmDecision?.Invoke(confirmId, false);
-            });
-        }
-
-        private void EnsureConfirmUi()
-        {
-            if (_confirmCanvas != null)
-            {
-                return;
-            }
-
-            var canvasGo = new GameObject("BYES_ConfirmCanvas");
-            _confirmCanvas = canvasGo.AddComponent<Canvas>();
-            _confirmCanvas.renderMode = RenderMode.ScreenSpaceOverlay;
-            canvasGo.AddComponent<CanvasScaler>();
-            canvasGo.AddComponent<GraphicRaycaster>();
-
-            _confirmPanel = new GameObject("ConfirmPanel");
-            _confirmPanel.transform.SetParent(canvasGo.transform, false);
-            var panelImage = _confirmPanel.AddComponent<Image>();
-            panelImage.color = new Color(0f, 0f, 0f, 0.75f);
-            var panelRect = _confirmPanel.GetComponent<RectTransform>();
-            panelRect.anchorMin = new Vector2(0.25f, 0.25f);
-            panelRect.anchorMax = new Vector2(0.75f, 0.75f);
-            panelRect.offsetMin = Vector2.zero;
-            panelRect.offsetMax = Vector2.zero;
-
-            _confirmText = CreateText("PromptText", _confirmPanel.transform, "Please confirm.");
-            var textRect = _confirmText.GetComponent<RectTransform>();
-            textRect.anchorMin = new Vector2(0.1f, 0.55f);
-            textRect.anchorMax = new Vector2(0.9f, 0.9f);
-            textRect.offsetMin = Vector2.zero;
-            textRect.offsetMax = Vector2.zero;
-
-            _yesButton = CreateButton("YesButton", _confirmPanel.transform, "Yes", new Vector2(0.2f, 0.15f), new Vector2(0.45f, 0.4f));
-            _noButton = CreateButton("NoButton", _confirmPanel.transform, "No", new Vector2(0.55f, 0.15f), new Vector2(0.8f, 0.4f));
-
-            _confirmPanel.SetActive(false);
-        }
-
-        private static Text CreateText(string name, Transform parent, string content)
-        {
-            var go = new GameObject(name);
-            go.transform.SetParent(parent, false);
-            var text = go.AddComponent<Text>();
-            text.text = content;
-            text.color = Color.white;
-            text.alignment = TextAnchor.MiddleCenter;
-            text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-            text.resizeTextForBestFit = true;
-            return text;
-        }
-
-        private static Button CreateButton(string name, Transform parent, string label, Vector2 anchorMin, Vector2 anchorMax)
-        {
-            var go = new GameObject(name);
-            go.transform.SetParent(parent, false);
-            var image = go.AddComponent<Image>();
-            image.color = new Color(0.2f, 0.2f, 0.2f, 0.95f);
-            var button = go.AddComponent<Button>();
-
-            var rect = go.GetComponent<RectTransform>();
-            rect.anchorMin = anchorMin;
-            rect.anchorMax = anchorMax;
-            rect.offsetMin = Vector2.zero;
-            rect.offsetMax = Vector2.zero;
-
-            var text = CreateText("Label", go.transform, label);
-            var textRect = text.GetComponent<RectTransform>();
-            textRect.anchorMin = new Vector2(0f, 0f);
-            textRect.anchorMax = new Vector2(1f, 1f);
-            textRect.offsetMin = Vector2.zero;
-            textRect.offsetMax = Vector2.zero;
-            return button;
+            ByesConfirmPanel.EnsureExists().ShowConfirm(
+                _runIdForAck,
+                _frameSeqForAck,
+                safeConfirmId,
+                safePrompt,
+                safeTimeout,
+                onDecision: (id, accepted) =>
+                {
+                    if (state != null)
+                    {
+                        state.SetPendingConfirm(0, id);
+                    }
+                    onConfirmDecision?.Invoke(id, accepted);
+                }
+            );
         }
     }
 }

@@ -30,9 +30,10 @@ jobs:
           python -m pip install -r Gateway/requirements.txt
 
       - name: Pytest
+        timeout-minutes: 60
         run: |
           cd Gateway
-          python -m pytest -q
+          python -m pytest -q -n auto --dist loadgroup
 
       - name: Lint Run Package
         run: |

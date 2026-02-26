@@ -4589,6 +4589,161 @@ def extract_frame_user_e2e_summary_from_events_v1(
     }
 
 
+def extract_plan_ack_summary_from_events_v1(
+    events: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    plan_frames: set[tuple[str, int]] = set()
+    ack_frames: set[tuple[str, int]] = set()
+    ack_frames_by_kind: defaultdict[str, set[tuple[str, int]]] = defaultdict(set)
+    confirm_responses_from_unity = 0
+    confirm_response_latencies: list[int] = []
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        seq = _parse_int(payload.get("frameSeq"))
+        if seq is None or seq <= 0:
+            seq = _parse_int(event.get("frameSeq"))
+        if seq is None or seq <= 0:
+            continue
+        key = (run_id, int(seq))
+
+        name = str(event.get("name", "")).strip().lower()
+        if name == "plan.generate":
+            plan_frames.add(key)
+            continue
+        if name == "ui.confirm_response":
+            confirm_responses_from_unity += 1
+            latency_ms = _parse_int(event.get("latencyMs"))
+            if latency_ms is None and isinstance(payload, dict):
+                latency_ms = _parse_int(payload.get("latencyMs"))
+            if latency_ms is not None and latency_ms >= 0:
+                confirm_response_latencies.append(int(latency_ms))
+            continue
+        if name != "frame.ack":
+            continue
+        ack_frames.add(key)
+        ack_kind = _normalize_frame_ack_kind(payload.get("kind"))
+        ack_frames_by_kind[ack_kind].add(key)
+
+    frames_with_plan = len(plan_frames)
+    frames_with_ack = len(ack_frames)
+    tts_ack_frames = len(ack_frames_by_kind.get("tts", set()))
+    ar_ack_frames = len(ack_frames_by_kind.get("ar", set()))
+    haptic_ack_frames = len(ack_frames_by_kind.get("haptic", set()))
+
+    tts_ack_rate = None
+    ar_ack_rate = None
+    haptic_ack_rate = None
+    if frames_with_plan > 0:
+        tts_ack_rate = round(_safe_ratio(tts_ack_frames, frames_with_plan), 6)
+        ar_ack_rate = round(_safe_ratio(ar_ack_frames, frames_with_plan), 6)
+        haptic_ack_rate = round(_safe_ratio(haptic_ack_frames, frames_with_plan), 6)
+
+    return {
+        "present": bool(frames_with_plan > 0 or frames_with_ack > 0 or confirm_responses_from_unity > 0),
+        "framesWithPlan": int(frames_with_plan),
+        "framesWithAck": int(frames_with_ack),
+        "ackKindDiversity": int(len([key for key in ack_frames_by_kind.keys() if str(key).strip()])),
+        "ttsAckFrames": int(tts_ack_frames),
+        "arAckFrames": int(ar_ack_frames),
+        "hapticAckFrames": int(haptic_ack_frames),
+        "ttsAckRate": tts_ack_rate,
+        "arAckRate": ar_ack_rate,
+        "hapticAckRate": haptic_ack_rate,
+        "confirmResponsesFromUnity": int(confirm_responses_from_unity),
+        "confirmResponseLatencyMs": summarize_latency(confirm_response_latencies),
+        "byKindCounts": {kind: int(len(frames)) for kind, frames in sorted(ack_frames_by_kind.items())},
+    }
+
+
+def extract_mode_change_summary_from_events_v1(
+    events: Iterable[dict[str, Any]],
+    *,
+    frames_total_declared: int | None = None,
+) -> dict[str, Any]:
+    allowed_modes = ("walk", "read_text", "inspect")
+    by_mode_counts: dict[str, int] = {key: 0 for key in allowed_modes}
+    switches = 0
+    last_mode: str | None = None
+    mode_set: set[str] = set()
+    frames_with_input: set[tuple[str, int]] = set()
+    frames_with_mode_meta: set[tuple[str, int]] = set()
+
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        event = row.get("event") if isinstance(row.get("event"), dict) else row
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("phase", "")).strip().lower() != "result":
+            continue
+        if str(event.get("status", "")).strip().lower() != "ok":
+            continue
+
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        run_id = str(payload.get("runId", "")).strip() or str(event.get("runId", "")).strip() or "unknown-run"
+        seq = _parse_int(payload.get("frameSeq"))
+        if seq is None or seq <= 0:
+            seq = _parse_int(event.get("frameSeq"))
+        if seq is None or seq <= 0:
+            continue
+        key = (run_id, int(seq))
+
+        name = str(event.get("name", "")).strip().lower()
+        if name == "frame.input":
+            frames_with_input.add(key)
+            meta = payload.get("meta")
+            meta = meta if isinstance(meta, dict) else {}
+            mode_text = str(meta.get("mode", "")).strip().lower()
+            if mode_text in by_mode_counts:
+                frames_with_mode_meta.add(key)
+            continue
+
+        if name != "ui.mode_change":
+            continue
+        if str(payload.get("schemaVersion", "")).strip() != "ui.mode_change.v1":
+            continue
+        mode_text = str(payload.get("mode", "")).strip().lower()
+        if mode_text not in by_mode_counts:
+            continue
+        by_mode_counts[mode_text] += 1
+        mode_set.add(mode_text)
+        switches += 1
+        last_mode = mode_text
+
+    if frames_total_declared is not None:
+        total_declared = int(max(0, int(frames_total_declared or 0)))
+    else:
+        total_declared = int(len(frames_with_input))
+    mode_meta_coverage = 0.0
+    if total_declared > 0:
+        mode_meta_coverage = round(_safe_ratio(len(frames_with_mode_meta), total_declared), 6)
+
+    return {
+        "present": bool(switches > 0 or len(frames_with_mode_meta) > 0),
+        "events": int(switches),
+        "switches": int(switches),
+        "modeDiversity": int(len(mode_set)),
+        "lastMode": last_mode,
+        "framesWithModeMeta": int(len(frames_with_mode_meta)),
+        "modeMetaCoverage": float(mode_meta_coverage),
+        "byModeCounts": by_mode_counts,
+    }
+
+
 def _normalize_frame_ack_kind(value: Any) -> str:
     raw = str(value or "").strip().lower()
     if raw in {"tts"}:

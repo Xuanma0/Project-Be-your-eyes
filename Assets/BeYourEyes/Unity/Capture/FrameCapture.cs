@@ -6,6 +6,7 @@ using UnityEngine;
 using Object = UnityEngine.Object;
 using BeYourEyes.Unity.Interaction;
 using BYES.Telemetry;
+using BYES.Core;
 
 namespace BeYourEyes.Unity.Capture
 {
@@ -440,6 +441,7 @@ namespace BeYourEyes.Unity.Capture
                 ["roiApplied"] = capture.usedRoi,
                 ["deviceId"] = ByesFrameTelemetry.DeviceId,
                 ["deviceTimeBase"] = ByesFrameTelemetry.DeviceTimeBase,
+                ["mode"] = ByesModeManager.ToApiMode(ByesModeManager.Instance.GetMode()),
             };
 
             if (includePose)

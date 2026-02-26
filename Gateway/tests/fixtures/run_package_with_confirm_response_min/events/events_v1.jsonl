@@ -1,0 +1,2 @@
+{"schemaVersion":"byes.event.v1","tsMs":1715000000100,"runId":"fixture-confirm-response-min","frameSeq":1,"component":"gateway","category":"ui","name":"ui.confirm_request","phase":"start","status":"ok","latencyMs":null,"payload":{"confirmId":"c-v485","text":"Proceed?","timeoutMs":3000}}
+{"schemaVersion":"byes.event.v1","tsMs":1715000000400,"runId":"fixture-confirm-response-min","frameSeq":1,"component":"gateway","category":"ui","name":"ui.confirm_response","phase":"result","status":"ok","latencyMs":300,"payload":{"confirmId":"c-v485","accepted":true,"latencyMs":300}}

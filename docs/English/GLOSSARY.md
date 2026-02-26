@@ -51,3 +51,39 @@ Input-size parameter scan (`sweep_depth_input_size.py`) to quantify speed/qualit
 ## Calibration
 
 Threshold grid search (`calibrate_risk_thresholds.py`) used to minimize FP and enforce `critical FN == 0`, with explain reports for misses.
+
+## Depth Temporal Metrics
+
+Report-level consistency metrics computed from consecutive depth grids:
+- `jitterAbs`: frame-to-frame absolute depth change in ROI.
+- `flickerRateNear`: near-obstacle mask XOR ratio between frames.
+- `scaleDriftProxy`: frame-to-frame median depth drift in ROI.
+
+## Ref View Strategy
+
+DA3-side reference-view selection hint (for example `auto_ref`, `first`, `middle`) forwarded via `depth.estimate.payload.meta.refViewStrategy`.
+
+## Plan Request v1
+
+Structured planner request contract (`byes.plan_request.v1`) that carries risk/seg/pov/slam/costmap context fragments and metadata.
+
+## Context Pack
+
+Budgeted text+stats package generated from structured context signals:
+- `seg.context.v1`
+- `slam.context.v1`
+- `plan.context_pack.v1`
+- `costmap.context.v1`
+
+## Costmap / Costmap Fused
+
+- `byes.costmap.v1`: per-frame local occupancy-cost grid from depth/seg/slam.
+- `byes.costmap_fused.v1`: temporal fused grid (EMA/optional pose shift) with stability statistics.
+
+## Matrix Profile
+
+A named benchmark runtime configuration in `run_dataset_benchmark.py` (services/env/prehooks), used for cross-profile comparison.
+
+## Prehook
+
+Per-run-package preprocessing step in benchmark matrix (for example `pyslam_ingest` / `pyslam_run`) executed before report aggregation.

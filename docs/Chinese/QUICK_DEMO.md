@@ -88,3 +88,47 @@ python Gateway/services/inference_service/tools/verify_depth_onnx.py --path D:\m
 ```
 
 4. 以 ONNX 深度运行 `inference_service`，并重复回放/报告流程。
+
+## 可选：v4.82 深度时序一致性演示（fixture）
+
+1. 对时序夹具生成报告：
+
+```powershell
+python Gateway/scripts/report_run.py --run-package Gateway/tests/fixtures/run_package_with_depth_temporal_min
+```
+
+2. 检查 `report.json`：
+- `quality.depthTemporal.present`
+- `quality.depthTemporal.jitterAbs.p90`
+- `quality.depthTemporal.flickerRateNear.mean`
+- `quality.depthTemporal.scaleDriftProxy.p90`
+
+3. 使用 DA3 temporal profile 生成 matrix 汇总：
+
+```powershell
+cd Gateway
+python scripts/run_dataset_benchmark.py --root artifacts/imports/v468_ego4d_demo --out artifacts/benchmarks/v482_demo --matrix 1 --profiles scripts/profiles/v482_depth_temporal_profiles.json --replay 0 --shuffle 0 --max 10
+```
+
+4. 打开：
+- `artifacts/benchmarks/v482_demo/summary.md`
+
+确认表头包含：
+- `depthJitterP90(p90)`
+- `depthFlickerMean(mean)`
+- `depthScaleDriftP90(p90)`
+- `depthRefViewDiversity(mean)`
+
+## 可选：跨版本 matrix 预设对比
+
+可直接用 profile 文件做历史能力轨迹对比，无需改代码：
+
+```powershell
+cd Gateway
+python scripts/run_dataset_benchmark.py --root artifacts/imports/v468_ego4d_demo --out artifacts/benchmarks/v4x_compare --matrix 1 --profiles scripts/profiles/v481_costmap_dynamic_profiles.json --replay 0 --shuffle 0 --max 10
+```
+
+常见 profile：
+- `baseline_reference`
+- `costmap_fused_local_tracking`
+- `da3_fixture_depth_temporal`（在 `v482_depth_temporal_profiles.json`）

@@ -46,6 +46,8 @@ from byes.quality_metrics import (  # noqa: E402
     extract_models_summary_from_events_v1,
     extract_frame_e2e_summary_from_events_v1,
     extract_frame_user_e2e_summary_from_events_v1,
+    extract_plan_ack_summary_from_events_v1,
+    extract_mode_change_summary_from_events_v1,
     extract_event_schema_stats,
     extract_inference_summary_from_ws_events,
     infer_inference_summary_from_events_v1,
@@ -1090,6 +1092,17 @@ def generate_report_outputs(
         frames_total_declared=frames_total_declared,
     )
     summary["frameUserE2E"] = extract_frame_user_e2e_summary_from_events_v1(event_rows)
+    summary["planAck"] = extract_plan_ack_summary_from_events_v1(event_rows)
+    summary["mode"] = extract_mode_change_summary_from_events_v1(
+        event_rows,
+        frames_total_declared=frames_total_declared,
+    )
+    plan_ack_payload = summary["planAck"] if isinstance(summary.get("planAck"), dict) else {}
+    summary["confirm"] = {
+        "present": bool(int(plan_ack_payload.get("confirmResponsesFromUnity", 0) or 0) > 0),
+        "responses": int(plan_ack_payload.get("confirmResponsesFromUnity", 0) or 0),
+        "latencyMs": plan_ack_payload.get("confirmResponseLatencyMs", {"count": 0, "p50": 0, "p90": 0, "max": 0}),
+    }
     summary["models"] = extract_models_summary_from_events_v1(event_rows)
     summary["povPlan"] = compute_pov_plan_metrics(pov_ir_payload, summary.get("plan"))
     inferred_summary = extract_inference_summary_from_ws_events(event_source_path)

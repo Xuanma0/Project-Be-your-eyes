@@ -6,6 +6,7 @@ TL;DR：
 - `Gateway` 是运行时中枢：接收帧/事件，调用推理后端，并输出标准化事件。
 - 它支持“回放优先”的评估链路：`RunPackage -> events_v1 -> report.json -> leaderboard -> regression gate`。
 - 推理服务部署细节请阅读 `Gateway/services/inference_service/README.md`。
+- 全版本里程碑请阅读 `docs/Chinese/RELEASE_NOTES.md`（英文见 `docs/English/RELEASE_NOTES.md`）。
 
 术语约定（本文统一使用）：
 - 回放包：`RunPackage`
@@ -117,6 +118,28 @@ curl -X POST "http://127.0.0.1:8000/api/pov/context" `
 审计输出：
 - `events/events_v1.jsonl`：追加 `pov.context` 事件，包含输出/截断统计。
 - `report.json`：查看 `povContext` 的默认预算输出统计与截断情况。
+
+## v4.82：DA3 深度时序一致性（新增）
+
+本版本新增深度时序稳定性评测闭环，并已接入报告/排行榜/matrix：
+
+- `depth.estimate` 事件支持可选 `payload.meta`：
+  - `provider`
+  - `refViewStrategy`
+  - `poseUsed`
+- `report.json -> quality.depthTemporal`：
+  - `jitterAbs`（帧间深度抖动）
+  - `flickerRateNear`（近距离区域闪烁率）
+  - `scaleDriftProxy`（尺度漂移代理）
+  - `refViewStrategyDiversityCount`
+
+常用命令：
+
+```powershell
+python scripts/report_run.py --run-package tests/fixtures/run_package_with_depth_temporal_min
+python scripts/run_regression_suite.py --suite regression/suites/contract_suite.json --baseline regression/baselines/baseline.json --fail-on-drop
+python scripts/run_dataset_benchmark.py --root artifacts/imports/v468_ego4d_demo --out artifacts/benchmarks/v482_demo --matrix 1 --profiles scripts/profiles/v482_depth_temporal_profiles.json --replay 0 --shuffle 0 --max 10
+```
 
 ## 分割（mock/http）
 

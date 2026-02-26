@@ -351,10 +351,111 @@ namespace BeYourEyes.Adapters.Networking
             ));
         }
 
+        public void SendConfirmResponseV1(
+            string runId,
+            int frameSeq,
+            string confirmId,
+            bool accepted,
+            string runPackage = null,
+            string source = "unity_ui_confirm_v1",
+            Action<bool, string> onDone = null
+        )
+        {
+            if (replayMode)
+            {
+                OnReplayBlockedNetworkAction?.Invoke("confirm_response");
+                onDone?.Invoke(false, "replay_mode");
+                return;
+            }
+
+            var safeRunId = string.IsNullOrWhiteSpace(runId) ? SessionId : runId.Trim();
+            var safeFrameSeq = Math.Max(1, frameSeq);
+            if (string.IsNullOrWhiteSpace(confirmId))
+            {
+                onDone?.Invoke(false, "empty_confirm_id");
+                return;
+            }
+
+            var payload = new JObject
+            {
+                ["runId"] = safeRunId,
+                ["frameSeq"] = safeFrameSeq,
+                ["confirmId"] = confirmId.Trim(),
+                ["accepted"] = accepted,
+            };
+            if (!string.IsNullOrWhiteSpace(runPackage))
+            {
+                payload["runPackage"] = runPackage.Trim();
+            }
+            if (!string.IsNullOrWhiteSpace(source))
+            {
+                payload["source"] = source.Trim();
+            }
+
+            StartCoroutine(PostJsonRoutine(
+                BuildApiUrl("/api/confirm/response"),
+                payload.ToString(Formatting.None),
+                success =>
+                {
+                    var status = success ? "ok" : "error";
+                    if (!success)
+                    {
+                        Debug.LogWarning($"[GatewayClient] confirm_response failed id={confirmId} runId={safeRunId} frameSeq={safeFrameSeq}");
+                    }
+                    onDone?.Invoke(success, status);
+                }
+            ));
+        }
+
         public void SetIntentScanText(bool enabled, Action<bool, string> onDone = null)
         {
             var target = enabled ? "scan_text" : "none";
             SendDevIntent(target, string.Empty, onDone);
+        }
+
+        public void PostModeChange(
+            string runId,
+            int frameSeq,
+            string mode,
+            string source = "system",
+            long tsMs = 0,
+            string deviceId = null,
+            Action<bool, string> onDone = null
+        )
+        {
+            if (replayMode)
+            {
+                OnReplayBlockedNetworkAction?.Invoke("mode_change");
+                onDone?.Invoke(false, "replay_mode");
+                return;
+            }
+
+            var safeRunId = string.IsNullOrWhiteSpace(runId) ? SessionId : runId.Trim();
+            var safeFrameSeq = Math.Max(1, frameSeq);
+            var safeTsMs = tsMs > 0 ? tsMs : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var payload = new JObject
+            {
+                ["runId"] = safeRunId,
+                ["frameSeq"] = safeFrameSeq,
+                ["mode"] = NormalizeMode(mode),
+                ["source"] = NormalizeModeSource(source),
+                ["tsMs"] = safeTsMs,
+                ["deviceId"] = string.IsNullOrWhiteSpace(deviceId) ? null : deviceId.Trim(),
+            };
+
+            StartCoroutine(PostJsonRoutine(
+                BuildApiUrl("/api/mode"),
+                payload.ToString(Formatting.None),
+                success =>
+                {
+                    var status = success ? "ok" : "error";
+                    if (!success)
+                    {
+                        Debug.LogWarning($"[GatewayClient] mode_change failed mode={payload["mode"]} runId={safeRunId} frameSeq={safeFrameSeq}");
+                    }
+                    onDone?.Invoke(success, status);
+                }
+            ));
         }
 
         public void TriggerAskOnce(string question, Action<bool, string> onDone = null)
@@ -1496,6 +1597,28 @@ namespace BeYourEyes.Adapters.Networking
             }
 
             return "unknown";
+        }
+
+        private static string NormalizeMode(string mode)
+        {
+            var normalized = string.IsNullOrWhiteSpace(mode) ? "walk" : mode.Trim().ToLowerInvariant();
+            if (normalized == "walk" || normalized == "read_text" || normalized == "inspect")
+            {
+                return normalized;
+            }
+
+            return "walk";
+        }
+
+        private static string NormalizeModeSource(string source)
+        {
+            var normalized = string.IsNullOrWhiteSpace(source) ? "system" : source.Trim().ToLowerInvariant();
+            if (normalized == "hotkey" || normalized == "xr" || normalized == "system")
+            {
+                return normalized;
+            }
+
+            return "system";
         }
 
         private static string NormalizeIntent(string intent)

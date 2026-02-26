@@ -6,6 +6,7 @@ opentelemetry-api
 opentelemetry-sdk
 opentelemetry-instrumentation-fastapi
 pytest
+pytest-xdist
 pytest-asyncio
 httpx
 websockets

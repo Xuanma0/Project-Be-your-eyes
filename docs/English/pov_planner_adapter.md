@@ -58,3 +58,19 @@ If `pov/pov_ir_v1.json` is missing or invalid:
 - `warnings`
 
 Contract fixture: `Gateway/tests/fixtures/pov_plan_min`.
+
+## Cross-Version Integration Notes
+
+After `v4.53+`, planner requests are primarily carried through `byes.plan_request.v1`.
+`pov` adapter remains deterministic, and coexists with other contexts:
+- `contexts.pov` (this adapter source),
+- `contexts.seg`,
+- `contexts.slam`,
+- `contexts.costmap`.
+
+Prompt versions evolved by stage:
+- `v1/v2`: basic + seg/pov context
+- `v3`: includes `[SLAM]`
+- `v4`: includes `[COSTMAP]` with fused/raw context fallback
+
+POV adapter behavior itself is unchanged: it still guarantees strict `byes.action_plan.v1` output and deterministic fallback semantics.

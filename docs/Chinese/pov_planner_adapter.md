@@ -58,3 +58,19 @@
 - `warnings`
 
 契约夹具：`Gateway/tests/fixtures/pov_plan_min`。
+
+## 跨版本集成说明
+
+从 `v4.53+` 开始，规划请求主要通过 `byes.plan_request.v1` 传递。  
+`pov` 适配器仍保持确定性，并与其他上下文并存：
+- `contexts.pov`（本适配器来源）
+- `contexts.seg`
+- `contexts.slam`
+- `contexts.costmap`
+
+提示词版本演进：
+- `v1/v2`：基础 + seg/pov context
+- `v3`：加入 `[SLAM]`
+- `v4`：加入 `[COSTMAP]`（fused/raw 回退）
+
+POV 适配器本身行为不变：仍保证严格 `byes.action_plan.v1` 输出与可解释 fallback 语义。

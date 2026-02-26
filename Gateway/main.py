@@ -432,6 +432,26 @@ class FrameAckRequest(BaseModel):
         return self
 
 
+class ModeChangeRequest(BaseModel):
+    runId: str
+    frameSeq: int
+    mode: Literal["walk", "read_text", "inspect"]
+    source: Literal["hotkey", "xr", "system"] = "system"
+    tsMs: int | None = None
+    deviceId: str | None = None
+    runPackage: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_mode_change(self) -> "ModeChangeRequest":
+        if not str(self.runId or "").strip():
+            raise ValueError("runId is required")
+        if int(self.frameSeq) <= 0:
+            raise ValueError("frameSeq must be >= 1")
+        if self.tsMs is not None and int(self.tsMs) < 0:
+            raise ValueError("tsMs must be >= 0")
+        return self
+
+
 class ConfirmResponseRequest(BaseModel):
     runId: str
     frameSeq: int
@@ -1775,6 +1795,7 @@ async def frame(
     captureTsMs: int | None = Form(default=None),
     deviceId: str | None = Form(default=None),
     deviceTimeBase: str | None = Form(default=None),
+    mode: str | None = Form(default=None),
 ) -> dict[str, Any]:
     content_type = str(request.headers.get("content-type", "")).lower()
     frame_bytes: bytes | None = None
@@ -1816,6 +1837,11 @@ async def frame(
         capture_ts_ms = _to_nonnegative_int_or_none(captureTsMs)
     device_id = str(meta_json.get("deviceId", "")).strip() or (str(deviceId or "").strip() or None)
     raw_time_base = str(meta_json.get("deviceTimeBase", "")).strip() or (str(deviceTimeBase or "").strip() or None)
+    raw_mode = (
+        str(meta_json.get("mode", "")).strip()
+        or str((meta_json.get("frameMeta") if isinstance(meta_json.get("frameMeta"), dict) else {}).get("mode", "")).strip()
+        or str(mode or "").strip()
+    )
     frame_input_payload = _build_frame_input_payload(
         run_id=run_id,
         frame_seq=event_frame_seq,
@@ -1823,6 +1849,7 @@ async def frame(
         recv_ts_ms=recv_ts_ms,
         device_time_base=raw_time_base,
         device_id=device_id,
+        mode=raw_mode,
     )
     frame_input_event = _build_byes_event(
         run_id=run_id,
@@ -1929,6 +1956,69 @@ async def frame_ack(request: FrameAckRequest) -> dict[str, Any]:
         "kind": str(request.kind),
         "accepted": bool(request.accepted),
         "userE2eMs": user_e2e_ms,
+    }
+
+
+@app.post("/api/mode")
+async def mode_change(request: ModeChangeRequest) -> dict[str, Any]:
+    cleanup_dir: Path | None = None
+    run_id = str(request.runId or "").strip() or "unknown-run"
+    frame_seq = int(max(1, int(request.frameSeq)))
+    ts_ms = _to_nonnegative_int_or_none(request.tsMs)
+    if ts_ms is None:
+        ts_ms = _now_ms()
+    mode = _normalize_mode_value(request.mode) or "walk"
+    source = str(request.source or "system").strip().lower()
+    if source not in {"hotkey", "xr", "system"}:
+        source = "system"
+    device_id = str(request.deviceId or "").strip() or None
+    payload = {
+        "schemaVersion": "ui.mode_change.v1",
+        "runId": run_id,
+        "frameSeq": frame_seq,
+        "mode": mode,
+        "source": source,
+        "tsMs": int(ts_ms),
+        "deviceId": device_id,
+    }
+    event = _build_byes_event(
+        run_id=run_id,
+        frame_seq=frame_seq,
+        category="ui",
+        name="ui.mode_change",
+        payload=payload,
+    )
+    await gateway._emit_inference_event(event)  # noqa: SLF001
+
+    run_package_raw = str(request.runPackage or "").strip() or None
+    run_package_dir: Path | None = None
+    can_write_events = False
+    try:
+        try:
+            run_package_dir, cleanup_dir, can_write_events = await _resolve_context_run_package_dir_async(
+                run_package_raw=run_package_raw,
+                run_id=run_id,
+            )
+        except HTTPException as ex:
+            if int(ex.status_code) != 404:
+                raise
+            run_package_dir = None
+            can_write_events = False
+        if run_package_dir is not None and can_write_events:
+            _manifest_path, manifest = _load_run_package_manifest(run_package_dir)
+            events_path = _resolve_events_v1_path(run_package_dir, manifest)
+            _append_events_v1_rows(events_path, [event])
+    finally:
+        if cleanup_dir is not None and cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+    return {
+        "ok": True,
+        "runId": run_id,
+        "frameSeq": frame_seq,
+        "mode": mode,
+        "source": source,
+        "tsMs": int(ts_ms),
     }
 
 
@@ -3745,6 +3835,15 @@ async def run_packages_export_csv(
         "frame_user_e2e_ar_max",
         "ack_kind_diversity",
         "ack_coverage",
+        "tts_ack_rate",
+        "ar_ack_rate",
+        "haptic_ack_rate",
+        "confirm_responses",
+        "confirm_response_p90",
+        "mode_switches",
+        "mode_diversity",
+        "mode_last",
+        "mode_meta_coverage",
         "models_missing_required",
         "models_enabled_total",
         "seg_mask_f1_50",
@@ -4316,6 +4415,13 @@ def _latest_event_latency_ms(
     return value
 
 
+def _normalize_mode_value(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    if text in {"walk", "read_text", "inspect"}:
+        return text
+    return None
+
+
 def _build_frame_input_payload(
     *,
     run_id: str,
@@ -4324,11 +4430,13 @@ def _build_frame_input_payload(
     recv_ts_ms: int,
     device_time_base: str | None,
     device_id: str | None,
+    mode: str | None,
 ) -> dict[str, Any]:
     normalized_time_base = str(device_time_base or "").strip().lower()
     if normalized_time_base not in {"unix_ms", "monotonic_ms"}:
         normalized_time_base = None
     normalized_device_id = str(device_id or "").strip() or None
+    normalized_mode = _normalize_mode_value(mode)
     return {
         "schemaVersion": "frame.input.v1",
         "runId": str(run_id or "").strip() or "unknown-run",
@@ -4338,6 +4446,7 @@ def _build_frame_input_payload(
         "meta": {
             "deviceTimeBase": normalized_time_base,
             "deviceId": normalized_device_id,
+            "mode": normalized_mode,
         },
     }
 
@@ -5247,6 +5356,10 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     frame_e2e_payload = frame_e2e_payload if isinstance(frame_e2e_payload, dict) else {}
     frame_user_e2e_payload = summary.get("frameUserE2E", {})
     frame_user_e2e_payload = frame_user_e2e_payload if isinstance(frame_user_e2e_payload, dict) else {}
+    plan_ack_payload = summary.get("planAck", {})
+    plan_ack_payload = plan_ack_payload if isinstance(plan_ack_payload, dict) else {}
+    mode_payload = summary.get("mode", {})
+    mode_payload = mode_payload if isinstance(mode_payload, dict) else {}
     models_payload = summary.get("models", {})
     models_payload = models_payload if isinstance(models_payload, dict) else {}
     plan_quality_payload = summary.get("planQuality", {})
@@ -5377,6 +5490,15 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
     frame_user_e2e_ar_p90: int | None = None
     frame_user_e2e_ar_max: int | None = None
     ack_kind_diversity: int = 0
+    tts_ack_rate: float | None = None
+    ar_ack_rate: float | None = None
+    haptic_ack_rate: float | None = None
+    confirm_responses: int = 0
+    confirm_response_p90: int | None = None
+    mode_switches: int | None = None
+    mode_diversity: int | None = None
+    mode_last: str | None = None
+    mode_meta_coverage: float | None = None
     models_missing_required: int | None = None
     models_enabled_total: int | None = None
     plan_actions_payload = plan_payload.get("actions")
@@ -5608,6 +5730,39 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         ar_max_raw = _read_float(ar_total, "max")
         if ar_max_raw is not None:
             frame_user_e2e_ar_max = int(ar_max_raw)
+    if isinstance(plan_ack_payload, dict) and bool(plan_ack_payload.get("present")):
+        tts_ack_rate_raw = _read_float(plan_ack_payload, "ttsAckRate")
+        if tts_ack_rate_raw is not None:
+            tts_ack_rate = float(tts_ack_rate_raw)
+        ar_ack_rate_raw = _read_float(plan_ack_payload, "arAckRate")
+        if ar_ack_rate_raw is not None:
+            ar_ack_rate = float(ar_ack_rate_raw)
+        haptic_ack_rate_raw = _read_float(plan_ack_payload, "hapticAckRate")
+        if haptic_ack_rate_raw is not None:
+            haptic_ack_rate = float(haptic_ack_rate_raw)
+        confirm_responses_raw = _read_float(plan_ack_payload, "confirmResponsesFromUnity")
+        if confirm_responses_raw is not None:
+            confirm_responses = int(confirm_responses_raw)
+        confirm_latency_payload = plan_ack_payload.get("confirmResponseLatencyMs")
+        confirm_latency_payload = confirm_latency_payload if isinstance(confirm_latency_payload, dict) else {}
+        confirm_p90_raw = _read_float(confirm_latency_payload, "p90")
+        if confirm_p90_raw is not None:
+            confirm_response_p90 = int(confirm_p90_raw)
+    if isinstance(mode_payload, dict) and bool(mode_payload.get("present")):
+        mode_switches_raw = _read_float(mode_payload, "switches")
+        if mode_switches_raw is None:
+            mode_switches_raw = _read_float(mode_payload, "events")
+        if mode_switches_raw is not None:
+            mode_switches = int(mode_switches_raw)
+        mode_diversity_raw = _read_float(mode_payload, "modeDiversity")
+        if mode_diversity_raw is not None:
+            mode_diversity = int(mode_diversity_raw)
+        mode_last_text = str(mode_payload.get("lastMode", "")).strip()
+        if mode_last_text:
+            mode_last = mode_last_text
+        mode_meta_coverage_raw = _read_float(mode_payload, "modeMetaCoverage")
+        if mode_meta_coverage_raw is not None:
+            mode_meta_coverage = float(mode_meta_coverage_raw)
     if isinstance(models_payload, dict) and bool(models_payload.get("present")):
         missing_raw = _read_float(models_payload, "missingRequiredTotal")
         if missing_raw is not None:
@@ -6006,6 +6161,15 @@ def _build_leaderboard_row(entry: dict[str, Any], base_url: str) -> dict[str, An
         "frame_user_e2e_ar_max": frame_user_e2e_ar_max,
         "ack_kind_diversity": int(ack_kind_diversity),
         "ack_coverage": ack_coverage,
+        "tts_ack_rate": tts_ack_rate,
+        "ar_ack_rate": ar_ack_rate,
+        "haptic_ack_rate": haptic_ack_rate,
+        "confirm_responses": int(confirm_responses),
+        "confirm_response_p90": confirm_response_p90,
+        "mode_switches": mode_switches,
+        "mode_diversity": mode_diversity,
+        "mode_last": mode_last,
+        "mode_meta_coverage": mode_meta_coverage,
         "models_missing_required": models_missing_required,
         "models_enabled_total": models_enabled_total,
         "summary": summary,
@@ -7185,6 +7349,24 @@ async def runs_dashboard(
         ack_kind_diversity = "—" if ack_kind_diversity_raw is None else str(int(ack_kind_diversity_raw))
         ack_coverage_raw = row.get("ack_coverage")
         ack_coverage = "—" if ack_coverage_raw is None else f"{float(ack_coverage_raw):.4f}"
+        tts_ack_rate_raw = row.get("tts_ack_rate")
+        tts_ack_rate = "—" if tts_ack_rate_raw is None else f"{float(tts_ack_rate_raw):.4f}"
+        ar_ack_rate_raw = row.get("ar_ack_rate")
+        ar_ack_rate = "—" if ar_ack_rate_raw is None else f"{float(ar_ack_rate_raw):.4f}"
+        haptic_ack_rate_raw = row.get("haptic_ack_rate")
+        haptic_ack_rate = "—" if haptic_ack_rate_raw is None else f"{float(haptic_ack_rate_raw):.4f}"
+        confirm_responses_raw = row.get("confirm_responses")
+        confirm_responses = "—" if confirm_responses_raw is None else str(int(confirm_responses_raw))
+        confirm_response_p90_raw = row.get("confirm_response_p90")
+        confirm_response_p90 = "—" if confirm_response_p90_raw is None else str(int(confirm_response_p90_raw))
+        mode_switches_raw = row.get("mode_switches")
+        mode_switches = "—" if mode_switches_raw is None else str(int(mode_switches_raw))
+        mode_diversity_raw = row.get("mode_diversity")
+        mode_diversity = "—" if mode_diversity_raw is None else str(int(mode_diversity_raw))
+        mode_last_raw = row.get("mode_last")
+        mode_last = "—" if mode_last_raw in {None, ""} else str(mode_last_raw)
+        mode_meta_coverage_raw = row.get("mode_meta_coverage")
+        mode_meta_coverage = "—" if mode_meta_coverage_raw is None else f"{float(mode_meta_coverage_raw):.4f}"
         models_missing_required_raw = row.get("models_missing_required")
         models_missing_required = "—" if models_missing_required_raw is None else str(int(models_missing_required_raw))
         models_enabled_total_raw = row.get("models_enabled_total")
@@ -7342,6 +7524,15 @@ async def runs_dashboard(
             f"<td>{html.escape(frame_user_e2e_ar_max)}</td>"
             f"<td>{html.escape(ack_kind_diversity)}</td>"
             f"<td>{html.escape(ack_coverage)}</td>"
+            f"<td>{html.escape(tts_ack_rate)}</td>"
+            f"<td>{html.escape(ar_ack_rate)}</td>"
+            f"<td>{html.escape(haptic_ack_rate)}</td>"
+            f"<td>{html.escape(confirm_responses)}</td>"
+            f"<td>{html.escape(confirm_response_p90)}</td>"
+            f"<td>{html.escape(mode_switches)}</td>"
+            f"<td>{html.escape(mode_diversity)}</td>"
+            f"<td>{html.escape(mode_last)}</td>"
+            f"<td>{html.escape(mode_meta_coverage)}</td>"
             f"<td>{html.escape(models_missing_required)}</td>"
             f"<td>{html.escape(models_enabled_total)}</td>"
             f"<td>{html.escape(seg_f1)}</td>"
@@ -7794,6 +7985,15 @@ async def runs_dashboard(
           <th>User E2E ar max(ms)</th>
           <th>ACK Kind Diversity</th>
           <th>ACK Coverage</th>
+          <th>TTS ACK Rate</th>
+          <th>AR ACK Rate</th>
+          <th>Haptic ACK Rate</th>
+          <th>Confirm Responses</th>
+          <th>Confirm Response p90(ms)</th>
+          <th>Mode Switches</th>
+          <th>Mode Diversity</th>
+          <th>Mode Last</th>
+          <th>Mode Meta Coverage</th>
           <th>Models Missing</th>
           <th>Models Enabled</th>
           <th>Seg F1@0.5</th>

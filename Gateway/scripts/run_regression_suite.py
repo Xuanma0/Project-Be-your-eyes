@@ -162,6 +162,11 @@ class RunSummary:
     frame_input_schema_ok: bool = False
     frame_ack_events_present: bool = False
     frame_ack_schema_ok: bool = False
+    mode_events_present: bool = False
+    mode_schema_ok: bool = False
+    mode_switches: int = 0
+    mode_meta_frames_with_mode: int = 0
+    mode_meta_coverage: float = 0.0
     frame_user_e2e_events_present: bool = False
     frame_user_e2e_schema_ok: bool = False
     frame_user_e2e_negative_count: int = 0
@@ -363,6 +368,11 @@ class RunSummary:
                 "frameInputSchemaOk": self.frame_input_schema_ok,
                 "frameAckEventsPresent": self.frame_ack_events_present,
                 "frameAckSchemaOk": self.frame_ack_schema_ok,
+                "modeEventsPresent": self.mode_events_present,
+                "modeSchemaOk": self.mode_schema_ok,
+                "modeSwitches": self.mode_switches,
+                "modeMetaFramesWithMode": self.mode_meta_frames_with_mode,
+                "modeMetaCoverage": self.mode_meta_coverage,
                 "frameUserE2eEventsPresent": self.frame_user_e2e_events_present,
                 "frameUserE2eSchemaOk": self.frame_user_e2e_schema_ok,
                 "frameUserE2eNegativeCount": self.frame_user_e2e_negative_count,
@@ -877,6 +887,8 @@ def run_suite(
     run_require_frame_input_schema_ok: dict[str, bool] = {}
     run_require_frame_ack_events_present: dict[str, bool] = {}
     run_require_frame_ack_schema_ok: dict[str, bool] = {}
+    run_require_mode_events_present: dict[str, bool] = {}
+    run_require_mode_schema_ok: dict[str, bool] = {}
     run_require_frame_user_e2e_events_present: dict[str, bool] = {}
     run_require_frame_user_e2e_schema_ok: dict[str, bool] = {}
     run_require_models_present: dict[str, bool] = {}
@@ -983,6 +995,8 @@ def run_suite(
         run_require_frame_input_schema_ok[run_id] = _to_bool01(run_cfg.get("requireFrameInputSchemaOk"), False)
         run_require_frame_ack_events_present[run_id] = _to_bool01(run_cfg.get("requireFrameAckEventsPresent"), False)
         run_require_frame_ack_schema_ok[run_id] = _to_bool01(run_cfg.get("requireFrameAckSchemaOk"), False)
+        run_require_mode_events_present[run_id] = _to_bool01(run_cfg.get("requireModeEventsPresent"), False)
+        run_require_mode_schema_ok[run_id] = _to_bool01(run_cfg.get("requireModeSchemaOk"), False)
         run_require_frame_user_e2e_events_present[run_id] = _to_bool01(
             run_cfg.get("requireFrameUserE2eEventsPresent"),
             False,
@@ -1149,6 +1163,11 @@ def run_suite(
                     run_summary.frame_input_schema_ok = bool(lint_summary.get("frameInputSchemaOk", 0))
                     run_summary.frame_ack_events_present = bool(lint_summary.get("frameAckEventsPresent", 0))
                     run_summary.frame_ack_schema_ok = bool(lint_summary.get("frameAckSchemaOk", 0))
+                    run_summary.mode_events_present = bool(lint_summary.get("modeEventsPresent", 0))
+                    run_summary.mode_schema_ok = bool(lint_summary.get("modeSchemaOk", 0))
+                    run_summary.mode_switches = int(lint_summary.get("modeSwitches", 0) or 0)
+                    run_summary.mode_meta_frames_with_mode = int(lint_summary.get("modeMetaFramesWithMode", 0) or 0)
+                    run_summary.mode_meta_coverage = float(lint_summary.get("modeMetaCoverage", 0.0) or 0.0)
                     run_summary.frame_user_e2e_events_present = bool(lint_summary.get("frameUserE2eEventsPresent", 0))
                     run_summary.frame_user_e2e_schema_ok = bool(lint_summary.get("frameUserE2eSchemaOk", 0))
                     run_summary.frame_user_e2e_negative_count = int(
@@ -1301,6 +1320,10 @@ def run_suite(
             failures.append(f"{run.run_id}: frame.ack events missing")
         if run_require_frame_ack_schema_ok.get(run.run_id, False) and not bool(run.frame_ack_schema_ok):
             failures.append(f"{run.run_id}: frame.ack payload schema check failed")
+        if run_require_mode_events_present.get(run.run_id, False) and not bool(run.mode_events_present):
+            failures.append(f"{run.run_id}: ui.mode_change events missing")
+        if run_require_mode_schema_ok.get(run.run_id, False) and not bool(run.mode_schema_ok):
+            failures.append(f"{run.run_id}: ui.mode_change payload schema check failed")
         if run_require_frame_user_e2e_events_present.get(run.run_id, False) and not bool(run.frame_user_e2e_events_present):
             failures.append(f"{run.run_id}: frame.user_e2e events missing")
         if run_require_frame_user_e2e_schema_ok.get(run.run_id, False) and not bool(run.frame_user_e2e_schema_ok):
@@ -1427,6 +1450,8 @@ def _print_summary(result: dict[str, Any]) -> None:
                 "frameE2eCount={frame_e2e_count} frameE2eTotalMsP90={frame_e2e_total_ms_p90} "
                 "frameInputEventsPresent={frame_input_events_present} frameInputSchemaOk={frame_input_schema_ok} "
                 "frameAckEventsPresent={frame_ack_events_present} frameAckSchemaOk={frame_ack_schema_ok} "
+                "modeEventsPresent={mode_events_present} modeSchemaOk={mode_schema_ok} "
+                "modeSwitches={mode_switches} modeMetaFramesWithMode={mode_meta_frames_with_mode} modeMetaCoverage={mode_meta_coverage} "
                 "frameUserE2eEventsPresent={frame_user_e2e_events_present} frameUserE2eSchemaOk={frame_user_e2e_schema_ok} "
                 "frameUserE2eNegativeCount={frame_user_e2e_negative_count} frameUserE2eDuplicateCount={frame_user_e2e_duplicate_count} "
                 "modelsPresent={models_present} modelsSchemaOk={models_schema_ok} "
@@ -1538,6 +1563,11 @@ def _print_summary(result: dict[str, Any]) -> None:
                     frame_input_schema_ok=row.get("segLint", {}).get("frameInputSchemaOk", False),
                     frame_ack_events_present=row.get("segLint", {}).get("frameAckEventsPresent", False),
                     frame_ack_schema_ok=row.get("segLint", {}).get("frameAckSchemaOk", False),
+                    mode_events_present=row.get("segLint", {}).get("modeEventsPresent", False),
+                    mode_schema_ok=row.get("segLint", {}).get("modeSchemaOk", False),
+                    mode_switches=row.get("segLint", {}).get("modeSwitches", 0),
+                    mode_meta_frames_with_mode=row.get("segLint", {}).get("modeMetaFramesWithMode", 0),
+                    mode_meta_coverage=row.get("segLint", {}).get("modeMetaCoverage", 0.0),
                     frame_user_e2e_events_present=row.get("segLint", {}).get("frameUserE2eEventsPresent", False),
                     frame_user_e2e_schema_ok=row.get("segLint", {}).get("frameUserE2eSchemaOk", False),
                     frame_user_e2e_negative_count=row.get("segLint", {}).get("frameUserE2eNegativeCount", 0),

@@ -42,6 +42,7 @@ _PLAN_CONTEXT_PACK_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "plan.context_pack
 _FRAME_E2E_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.e2e.v1.json"
 _FRAME_INPUT_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.input.v1.json"
 _FRAME_ACK_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "frame.ack.v1.json"
+_MODE_CHANGE_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "ui.mode_change.v1.json"
 _MODELS_SCHEMA_PATH = GATEWAY_ROOT / "contracts" / "byes.models.v1.json"
 
 
@@ -378,6 +379,18 @@ def _load_models_schema() -> dict[str, Any] | None:
         return None
     try:
         payload = json.loads(_MODELS_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _load_mode_change_schema() -> dict[str, Any] | None:
+    if not _MODE_CHANGE_SCHEMA_PATH.exists():
+        return None
+    try:
+        payload = json.loads(_MODE_CHANGE_SCHEMA_PATH.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     if not isinstance(payload, dict):
@@ -1171,6 +1184,38 @@ def _frame_ack_schema_ok(payload: dict[str, Any], schema: dict[str, Any] | None)
     return bool(schema_ok)
 
 
+def _mode_change_schema_ok(payload: dict[str, Any], schema: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    schema_ok = True
+    if schema is not None and jsonschema is not None:
+        try:
+            jsonschema.validate(payload, schema)
+        except Exception:
+            schema_ok = False
+    if str(payload.get("schemaVersion", "")).strip() != "ui.mode_change.v1":
+        return False
+    if not isinstance(payload.get("runId"), str):
+        return False
+    try:
+        frame_seq = int(payload.get("frameSeq", 0))
+        ts_ms = int(payload.get("tsMs", -1))
+    except Exception:
+        return False
+    if frame_seq <= 0 or ts_ms < 0:
+        return False
+    mode = str(payload.get("mode", "")).strip().lower()
+    if mode not in {"walk", "read_text", "inspect"}:
+        return False
+    source = str(payload.get("source", "")).strip().lower()
+    if source not in {"hotkey", "xr", "system"}:
+        return False
+    device_id = payload.get("deviceId")
+    if device_id is not None and not isinstance(device_id, str):
+        return False
+    return bool(schema_ok)
+
+
 def _percentile_float(values: list[float], p: int) -> float:
     if not values:
         return 0.0
@@ -1458,6 +1503,12 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         frame_ack_tts_count = 0
         frame_ack_ar_count = 0
         frame_ack_haptic_count = 0
+        mode_events_present = 0
+        mode_lines = 0
+        mode_schema_ok = 0
+        mode_switches = 0
+        mode_meta_frames_with_mode = 0
+        mode_meta_seen_keys: set[tuple[str, int]] = set()
         frame_user_e2e_events_present = 0
         frame_user_e2e_lines = 0
         frame_user_e2e_schema_ok = 0
@@ -1485,6 +1536,7 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
         frame_e2e_schema = _load_frame_e2e_schema()
         frame_input_schema = _load_frame_input_schema()
         frame_ack_schema = _load_frame_ack_schema()
+        mode_change_schema = _load_mode_change_schema()
         models_schema = _load_models_schema()
         if events_v1_rel:
             events_v1_path = run_root / events_v1_rel
@@ -1637,10 +1689,27 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                                     frame_input_lines += 1
                                     payload = obj.get("payload")
                                     payload = payload if isinstance(payload, dict) else {}
+                                    run_id_text = str(payload.get("runId", "")).strip() or str(obj.get("runId", "")).strip() or "unknown-run"
+                                    frame_seq_value = _to_nonnegative_int(payload.get("frameSeq"))
+                                    meta_payload = payload.get("meta")
+                                    meta_payload = meta_payload if isinstance(meta_payload, dict) else {}
+                                    mode_text = str(meta_payload.get("mode", "")).strip().lower()
+                                    if frame_seq_value > 0 and mode_text in {"walk", "read_text", "inspect"}:
+                                        mode_meta_seen_keys.add((run_id_text, frame_seq_value))
                                     if _frame_input_schema_ok(payload, frame_input_schema):
                                         frame_input_schema_ok += 1
                                     else:
                                         warnings.append("frame.input payload missing required fields")
+                                if name == "ui.mode_change":
+                                    mode_events_present = 1
+                                    mode_lines += 1
+                                    mode_switches += 1
+                                    payload = obj.get("payload")
+                                    payload = payload if isinstance(payload, dict) else {}
+                                    if _mode_change_schema_ok(payload, mode_change_schema):
+                                        mode_schema_ok += 1
+                                    else:
+                                        warnings.append("ui.mode_change payload missing required fields")
                                 if name == "frame.ack":
                                     frame_ack_events_present = 1
                                     frame_ack_lines += 1
@@ -2264,6 +2333,9 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
                         else:
                             warnings.append(msg)
 
+        mode_meta_frames_with_mode = int(len(mode_meta_seen_keys))
+        mode_meta_coverage = float(mode_meta_frames_with_mode / max(1, int(frames_count_declared))) if int(frames_count_declared) > 0 else 0.0
+
         summary = {
             "sourceType": source_type,
             "runRoot": str(run_root),
@@ -2450,6 +2522,12 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             "frameAckTtsCount": int(frame_ack_tts_count),
             "frameAckArCount": int(frame_ack_ar_count),
             "frameAckHapticCount": int(frame_ack_haptic_count),
+            "modeEventsPresent": int(mode_events_present),
+            "modeLines": int(mode_lines),
+            "modeSchemaOk": int(mode_lines > 0 and mode_schema_ok == mode_lines),
+            "modeSwitches": int(max(0, mode_switches)),
+            "modeMetaFramesWithMode": int(mode_meta_frames_with_mode),
+            "modeMetaCoverage": round(float(mode_meta_coverage), 6),
             "frameUserE2eEventsPresent": int(frame_user_e2e_events_present),
             "frameUserE2eLines": int(frame_user_e2e_lines),
             "frameUserE2eSchemaOk": int(frame_user_e2e_lines > 0 and frame_user_e2e_schema_ok == frame_user_e2e_lines),
@@ -2608,6 +2686,12 @@ def lint_run_package(run_package: Path, strict: bool = False, *, quiet: bool = F
             print(f"frameAckTtsCount: {summary['frameAckTtsCount']}")
             print(f"frameAckArCount: {summary['frameAckArCount']}")
             print(f"frameAckHapticCount: {summary['frameAckHapticCount']}")
+            print(f"modeEventsPresent: {summary['modeEventsPresent']}")
+            print(f"modeLines: {summary['modeLines']}")
+            print(f"modeSchemaOk: {summary['modeSchemaOk']}")
+            print(f"modeSwitches: {summary['modeSwitches']}")
+            print(f"modeMetaFramesWithMode: {summary['modeMetaFramesWithMode']}")
+            print(f"modeMetaCoverage: {summary['modeMetaCoverage']}")
             print(f"frameUserE2eEventsPresent: {summary['frameUserE2eEventsPresent']}")
             print(f"frameUserE2eLines: {summary['frameUserE2eLines']}")
             print(f"frameUserE2eSchemaOk: {summary['frameUserE2eSchemaOk']}")

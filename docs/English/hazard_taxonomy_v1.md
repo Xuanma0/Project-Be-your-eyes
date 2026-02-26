@@ -25,3 +25,10 @@ Unknown kinds are allowed for backward compatibility, but they are reported as w
 - `critical`: immediate stop / highest priority safety warning
 - `warning`: near-term risk; user should slow down/scan
 - `info`: low-confidence or informational risk cue
+
+## Where this taxonomy is used
+
+- `risk.hazards` event payload normalization.
+- planner safety rules and confirmation behavior.
+- report quality penalties (`critical FN` hard gate).
+- costmap/planner-context summaries when obstacle semantics are mapped into prompt text.

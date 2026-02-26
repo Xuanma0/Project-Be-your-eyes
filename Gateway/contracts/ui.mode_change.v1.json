@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ui.mode_change.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "frameSeq",
+    "mode",
+    "source",
+    "tsMs",
+    "deviceId"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "ui.mode_change.v1"
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "frameSeq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "walk",
+        "read_text",
+        "inspect"
+      ]
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "hotkey",
+        "xr",
+        "system"
+      ]
+    },
+    "tsMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "deviceId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}
