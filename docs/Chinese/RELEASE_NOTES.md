@@ -1,3 +1,5 @@
+Current development version is defined by `VERSION`; this file records historical milestones only.
+
 # 版本发布记录（v4.x）
 
 本文档按版本总结 `v4.38` 到 `v4.82` 的核心能力闭环，便于评审与维护。

@@ -497,7 +497,10 @@ def _call_llm_provider(req: dict[str, Any], endpoint: str, timeout_ms: int, prom
     mode = str(os.getenv("BYES_PLANNER_LLM_MODE", "generic")).strip().lower() or "generic"
 
     if mode == "openai":
-        api_key = str(os.getenv("BYES_PLANNER_LLM_API_KEY", "")).strip()
+        # Compatibility: prefer BYES key, fallback to OPENAI_API_KEY for legacy setups.
+        api_key = str(
+            os.getenv("BYES_PLANNER_LLM_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
+        ).strip()
         if not api_key:
             raise RuntimeError("openai_api_key_missing")
         model = str(os.getenv("BYES_PLANNER_LLM_MODEL", "gpt-4o-mini")).strip() or "gpt-4o-mini"

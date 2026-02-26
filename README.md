@@ -1,247 +1,198 @@
-# Project-Be-your-eyes
+# Project Be Your Eyes
 
-[中文说明 / Chinese Version](docs/Chinese/README.md)
+[Chinese Docs](docs/Chinese/README.md)
 
-Project-Be-your-eyes (Be Your Eyes) is an event-driven assistive perception system for Unity + Gateway + pluggable inference, with replayable evaluation and safety gating for `risk + ocr` pipelines.
+Current development version: **see [VERSION](VERSION)**.
 
-## Why This Project
+Be Your Eyes is a Unity + Gateway assistive perception stack for visually impaired navigation/readability workflows. Current capability scope includes:
 
-- Replayable `RunPackage`: deterministic offline evaluation from recorded frames/events/metrics.
-- Unified events schema: `events/events_v1.jsonl` for tool results and latency evidence.
-- Report + quality metrics: `report.json` and markdown report with OCR/risk/safety breakdown.
-- Leaderboard for runs: filter/sort by quality, latency, confirm timeouts, critical misses.
-- Regression gate in CI: score-drop checks plus hard safety gate (`critical FN == 0`).
-- Pluggable inference: mock/http backends; optional real OCR and ONNX depth providers.
+- `risk` (hazard/risk events)
+- `ocr` (text reading)
+- `seg` (segmentation context)
+- `depth` (depth estimation + risk-related metrics)
+- `slam` (pose/tracking context)
+- `plan` (action planning + confirm loop)
 
-## Quick Start (PowerShell)
+## 1) Architecture
 
-### 1) Prepare Python environment (required for Gateway)
+```mermaid
+flowchart LR
+  U[Unity Client
+SampleScene / DemoScene] -->|HTTP POST /api/frame| G[Gateway
+FastAPI]
+  G -->|WS /ws/events| U
+  U -->|HTTP POST /api/frame/ack| G
 
-Option A: `venv`
+  G -->|HTTP| I[inference_service
+/ocr /risk /seg /depth /slam/pose]
+  G -->|HTTP| P[planner_service
+/plan]
+  I --> RS[reference_* / sam3 / da3 services]
 
-```powershell
-cd Gateway
-python -m venv .venv
-.\.venv\Scripts\activate
-python -m pip install -U pip
-python -m pip install -r requirements.txt
+  R[RunPackage replay scripts] -->|/api/frame + ws events| G
+  G --> E[events/events_v1.jsonl]
+  E --> REP[report_run.py
+report.json/report.md]
+  REP --> REG[regression suite + CI gates]
 ```
 
-Option B: conda
+## 2) Quick Start A: Offline Evaluation (10-minute path)
 
-```powershell
-cd Gateway
-conda create -n byes python=3.11 -y
-conda activate byes
-python -m pip install -U pip
-python -m pip install -r requirements.txt
+### Prerequisites
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r Gateway/requirements.txt
 ```
 
-### 2) Run Gateway tests only
+### CI-equivalent checks
 
-```powershell
+```bash
 cd Gateway
-python -m pytest -q
-```
-
-### 3) Minimal replay
-
-```powershell
+python -m pytest -q -n auto --dist loadgroup
 cd ..
-python Gateway/scripts/replay_run_package.py --run-package Gateway/tests/fixtures/run_package_with_risk_gt_min --reset
+python Gateway/scripts/lint_run_package.py --run-package Gateway/tests/fixtures/run_package_with_events_v1_min
+python Gateway/scripts/run_regression_suite.py --suite Gateway/regression/suites/baseline_suite.json --baseline Gateway/regression/baselines/baseline.json --fail-on-drop --fail-on-critical-fn
+python Gateway/scripts/run_regression_suite.py --suite Gateway/regression/suites/contract_suite.json --baseline Gateway/regression/baselines/baseline.json --fail-on-drop --fail-on-critical-fn
+python Gateway/scripts/verify_contracts.py --check-lock
 ```
 
-### 4) Generate report
+### Replay + report
 
-```powershell
+```bash
+python Gateway/scripts/replay_run_package.py --run-package Gateway/tests/fixtures/run_package_with_risk_gt_min --reset
 python Gateway/scripts/report_run.py --run-package Gateway/tests/fixtures/run_package_with_risk_gt_min
 ```
 
-### 5) Run regression
+### Success signals
 
-```powershell
-python Gateway/scripts/run_regression_suite.py --suite Gateway/regression/suites/baseline_suite.json --baseline Gateway/regression/baselines/baseline.json --fail-on-drop --fail-on-critical-fn
+- `events/events_v1.jsonl` is generated/updated.
+- `report.json` and `report.md` exist in the run package directory.
+- Regression exits 0 and does not hit critical-fn gate.
+
+## 3) Quick Start B: Unity + Gateway Realtime (30-minute path)
+
+### Start backend processes
+
+Terminal 1 (Gateway):
+
+```bash
+python -m uvicorn main:app --app-dir Gateway --host 127.0.0.1 --port 8000
 ```
 
-## POV-compiler -> BYE Contract
+Terminal 2 (optional inference service):
 
-- Single source schema: `schemas/pov_ir_v1.schema.json`
-- Ingest POV IR to BYES events v1:
-
-```powershell
-python Gateway/scripts/ingest_pov_ir.py --run-package <run_package_dir> --pov-ir <pov_ir.json> --strict 1
+```bash
+python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120
 ```
 
-- Run contract regression suite:
+### Start Unity
 
-```powershell
-python Gateway/scripts/run_regression_suite.py --suite Gateway/regression/suites/contract_suite.json --baseline Gateway/regression/baselines/baseline.json --fail-on-drop
-```
+- Open this repo in Unity `6000.3.5f2`.
+- Default enabled scene is `Assets/Scenes/SampleScene.unity`.
+- Demo alternative: `Assets/Scenes/DemoScene.unity`.
+- Default WS URL in scene/client: `ws://127.0.0.1:8000/ws/events`.
 
-## Optional: Real ONNX Depth (Depth Anything V2 Small)
+### Runtime controls
 
-### Install optional deps
+- Trigger scan/upload: `S`
+- Mode switch: `1/2/3` or `F1/F2/F3`
+- Confirm decision: `Y/N` (or XR primary/secondary)
 
-```powershell
-python -m pip install -r Gateway/services/inference_service/requirements-onnx-depth.txt
-```
+### Success signals
 
-### Download model (do not store in repo)
+- Gateway receives `/api/frame` requests.
+- Unity receives `/ws/events` messages.
+- `/api/frame/ack` is posted after UI/audio/haptic feedback.
 
-- Model: `onnx-community/depth-anything-v2-small -> onnx/model.onnx`
-- Example local path: `D:\models\depth_anything_v2_small\model.onnx`
+## 4) Configuration (minimal set)
 
-### Verify sha256
+See [.env.example](.env.example) for a minimal configuration checklist (placeholders only).
 
-```powershell
-python Gateway/services/inference_service/tools/verify_depth_onnx.py --path D:\models\depth_anything_v2_small\model.onnx --expected-sha256 <sha256_from_hf_page>
-```
+Typical local baseline:
 
-### Start inference_service (HTTP + ONNX depth)
+- `BYES_OCR_BACKEND=mock`
+- `BYES_RISK_BACKEND=mock`
+- `BYES_SEG_BACKEND=mock`
+- `BYES_DEPTH_BACKEND=mock`
+- `BYES_SLAM_BACKEND=mock`
+- `GATEWAY_SEND_ENVELOPE=false`
+- `BYES_INFERENCE_EMIT_WS_V1=false`
+- `BYES_PLANNER_PROVIDER=reference`
 
-```powershell
+Planner/LLM keys (if using llm provider):
+
+- Primary: `BYES_PLANNER_LLM_API_KEY=YOUR_KEY_HERE`
+- Compatibility fallback: `OPENAI_API_KEY=YOUR_KEY_HERE`
+
+## 5) Data & Evaluation Flow
+
+The core evaluation chain is:
+
+`RunPackage -> events/events_v1.jsonl -> report.json -> regression gate`
+
+Entry scripts:
+
+- `Gateway/scripts/replay_run_package.py`
+- `Gateway/scripts/report_run.py`
+- `Gateway/scripts/run_regression_suite.py`
+
+## 6) API & Contracts
+
+- Gateway API inventory: [docs/maintainer/API_INVENTORY.md](docs/maintainer/API_INVENTORY.md)
+- Contracts directory: `Gateway/contracts/`
+- Schemas directory: `schemas/`
+- Event schema notes: [docs/event_schema_v1.md](docs/event_schema_v1.md)
+
+## 7) Security Statement
+
+This repo's default dev setup is **unauthenticated** and intended for localhost / trusted network use.
+
+- Do not expose Gateway/services directly to the internet without reverse-proxy auth + TLS.
+- Treat upload/dev endpoints as non-public by default.
+
+See [docs/maintainer/SECURITY_REVIEW.md](docs/maintainer/SECURITY_REVIEW.md) for the full security baseline.
+
+## 8) Roadmap (open decisions)
+
+See [docs/maintainer/OPEN_QUESTIONS.md](docs/maintainer/OPEN_QUESTIONS.md). Current key open items:
+
+- ASR input roadmap (currently TTS-focused runtime)
+- Deployment profile (local-only default vs hardened internet profile)
+- Unity `.meta` governance policy
+- Release tagging process tied to `VERSION`
+
+## 9) Contributing / CI parity
+
+Before opening PRs, run:
+
+```bash
 cd Gateway
-$env:BYES_SERVICE_RISK_PROVIDER="heuristic"
-$env:BYES_SERVICE_DEPTH_PROVIDER="onnx"
-$env:BYES_SERVICE_DEPTH_ONNX_PATH="D:\models\depth_anything_v2_small\model.onnx"
-$env:BYES_SERVICE_DEPTH_MODEL_ID="depth-anything-v2-small-onnx"
-$env:BYES_SERVICE_DEPTH_INPUT_SIZE="256"
-$env:BYES_SERVICE_RISK_DEBUG="1"
-python -m uvicorn services.inference_service.app:app --host 127.0.0.1 --port 19120
+python -m pytest -q -n auto --dist loadgroup
+cd ..
+python Gateway/scripts/lint_run_package.py --run-package Gateway/tests/fixtures/run_package_with_events_v1_min
+python Gateway/scripts/run_regression_suite.py --suite Gateway/regression/suites/baseline_suite.json --baseline Gateway/regression/baselines/baseline.json --fail-on-drop --fail-on-critical-fn
+python Gateway/scripts/run_regression_suite.py --suite Gateway/regression/suites/contract_suite.json --baseline Gateway/regression/baselines/baseline.json --fail-on-drop --fail-on-critical-fn
+python Gateway/scripts/verify_contracts.py --check-lock
 ```
 
-### Sweep input size (518/384/256)
+## 10) Maintainer Docs
 
-```powershell
-python Gateway/scripts/sweep_depth_input_size.py --run-package Gateway/tests/fixtures/run_package_with_risk_gt_min --sizes 518,384,256 --out "$env:TEMP\byes_depth_sweep.json" --port 19120 --risk-url http://127.0.0.1:19120/risk
+- [docs/maintainer/REPO_FACTS.json](docs/maintainer/REPO_FACTS.json)
+- [docs/maintainer/AUDIT_REPO.md](docs/maintainer/AUDIT_REPO.md)
+- [docs/maintainer/RUNBOOK_LOCAL.md](docs/maintainer/RUNBOOK_LOCAL.md)
+- [docs/maintainer/API_INVENTORY.md](docs/maintainer/API_INVENTORY.md)
+- [docs/maintainer/CONFIG_MATRIX.md](docs/maintainer/CONFIG_MATRIX.md)
+- [docs/maintainer/SECURITY_REVIEW.md](docs/maintainer/SECURITY_REVIEW.md)
+- [docs/maintainer/OPEN_QUESTIONS.md](docs/maintainer/OPEN_QUESTIONS.md)
+- [docs/maintainer/MAINTAINER_BRIEF.md](docs/maintainer/MAINTAINER_BRIEF.md)
+
+## Release Tag Suggestion (manual, optional)
+
+If maintainers decide to align release tags with `VERSION`:
+
+```bash
+git tag -a v4.87 -m "v4.87" <commit>
 ```
 
-Default ONNX depth input size is now calibrated and fixed to `256` (still env-overridable).
-
-## How We Evaluate Safety And Usefulness
-
-`qualityScore` is penalty-based and emphasizes safety first:
-
-- Critical misses (`critical FN`) are treated as hard safety risk.
-- Confirm timeout / missing response are penalized.
-- Depth-risk FP/FN and delay are penalized by risk quality terms.
-- OCR mismatch metrics (CER/WER/exact match) contribute when OCR GT exists.
-- Risk latency is tracked (`p50/p90/p99/max`) for performance visibility.
-
-Example `report.json` snippet:
-
-```json
-{
-  "inference": {
-    "risk": {"backend": "http", "model": "heuristic-risk-v2+depth=depth-anything-v2-small-onnx", "endpoint": "http://127.0.0.1:19120/risk"}
-  },
-  "quality": {
-    "depthRisk": {
-      "critical": {"missCriticalCount": 0},
-      "detectionDelayFrames": {"p90": 0, "max": 0}
-    },
-    "riskLatencyMs": {"count": 10, "p50": 88, "p90": 131, "max": 168},
-    "qualityScore": 89.0,
-    "qualityScoreBreakdown": {"risk": 42.0, "ocr": 25.0, "safetyBehavior": 22.0}
-  }
-}
-```
-
-## Key Directories
-
-```text
-Gateway/                              # core gateway runtime + APIs + tests
-Gateway/services/inference_service/   # pluggable OCR/risk/depth inference service
-Gateway/scripts/                      # replay/report/regression/sweep/calibration tools
-Gateway/regression/                   # suite definitions, baselines, outputs
-docs/                                 # architecture/demo/glossary/commands docs
-Assets/                               # Unity client and scene integration
-```
-
-## Milestones (v4.9 -> v4.29)
-
-| Version | Theme | What Was Added |
-|---|---|---|
-| v4.9 | Replayable inputs | RunPackage replay flow and fixture-based reproducibility |
-| v4.13-v4.15 | Event standard + CI | `events_v1` schema, recorder compatibility, regression suite in CI |
-| v4.16-v4.21 | Pluggable inference | OCR/risk backend registry (mock/http), depth-aware risk evolution |
-| v4.23-v4.26 | ONNX depth + observability | ONNX depth provider, input-size sweep, latency breakdown, leaderboard latency columns |
-| v4.27-v4.29 | Calibration + safety gate | Threshold calibration loop, `critical FN` explainability, defaults solidified, regression/CI gate for `critical FN == 0` |
-
-## Where To Read Next
-
-- Gateway developer/evaluation guide: `Gateway/README.md`
-- Inference provider/deployment guide: `Gateway/services/inference_service/README.md`
-- System architecture: `docs/ARCHITECTURE.md`
-- 5-minute demo script: `docs/QUICK_DEMO.md`
-- Terms: `docs/GLOSSARY.md`
-- Command index: `docs/COMMANDS.md`
-
-## Documentation Index
-
-### Root
-
-- [README.md](README.md)
-
-### docs/English
-
-- [docs/English/ARCHITECTURE.md](docs/English/ARCHITECTURE.md)
-- [docs/English/COMMANDS.md](docs/English/COMMANDS.md)
-- [docs/English/contracts.md](docs/English/contracts.md)
-- [docs/English/event_schema_v1.md](docs/English/event_schema_v1.md)
-- [docs/English/GLOSSARY.md](docs/English/GLOSSARY.md)
-- [docs/English/hazard_taxonomy_v1.md](docs/English/hazard_taxonomy_v1.md)
-- [docs/English/pov_planner_adapter.md](docs/English/pov_planner_adapter.md)
-- [docs/English/QUICK_DEMO.md](docs/English/QUICK_DEMO.md)
-
-### docs/Chinese
-
-- [docs/Chinese/README.md](docs/Chinese/README.md)
-- [docs/Chinese/ARCHITECTURE.md](docs/Chinese/ARCHITECTURE.md)
-- [docs/Chinese/COMMANDS.md](docs/Chinese/COMMANDS.md)
-- [docs/Chinese/contracts.md](docs/Chinese/contracts.md)
-- [docs/Chinese/event_schema_v1.md](docs/Chinese/event_schema_v1.md)
-- [docs/Chinese/GLOSSARY.md](docs/Chinese/GLOSSARY.md)
-- [docs/Chinese/hazard_taxonomy_v1.md](docs/Chinese/hazard_taxonomy_v1.md)
-- [docs/Chinese/pov_planner_adapter.md](docs/Chinese/pov_planner_adapter.md)
-- [docs/Chinese/QUICK_DEMO.md](docs/Chinese/QUICK_DEMO.md)
-
-### Gateway Core
-
-- [Gateway/README.md](Gateway/README.md)
-- [Gateway/docs/Chinese/README.md](Gateway/docs/Chinese/README.md)
-- [Gateway/regression/README.md](Gateway/regression/README.md)
-
-### Gateway Services
-
-- [Gateway/services/inference_service/README.md](Gateway/services/inference_service/README.md)
-- [Gateway/services/planner_service/README.md](Gateway/services/planner_service/README.md)
-- [Gateway/services/reference_depth_service/README.md](Gateway/services/reference_depth_service/README.md)
-- [Gateway/services/reference_seg_service/README.md](Gateway/services/reference_seg_service/README.md)
-
-### Gateway Service Prompts
-
-- [Gateway/services/planner_service/prompts/planner_system.md](Gateway/services/planner_service/prompts/planner_system.md)
-- [Gateway/services/planner_service/prompts/planner_user.md](Gateway/services/planner_service/prompts/planner_user.md)
-
-### Gateway External Services
-
-- [Gateway/external/real_depth_service/README.md](Gateway/external/real_depth_service/README.md)
-- [Gateway/external/real_ocr_service/README.md](Gateway/external/real_ocr_service/README.md)
-- [Gateway/external/real_vlm_service/README.md](Gateway/external/real_vlm_service/README.md)
-
-### Gateway Test Fixtures
-
-- [Gateway/tests/fixtures/pov_ir_v1_min/README.md](Gateway/tests/fixtures/pov_ir_v1_min/README.md)
-- [Gateway/tests/fixtures/pov_plan_min/README.md](Gateway/tests/fixtures/pov_plan_min/README.md)
-- [Gateway/tests/fixtures/run_package_with_plan_http_min/README.md](Gateway/tests/fixtures/run_package_with_plan_http_min/README.md)
-- [Gateway/tests/fixtures/run_package_with_plan_llm_stub_min/README.md](Gateway/tests/fixtures/run_package_with_plan_llm_stub_min/README.md)
-- [Gateway/tests/fixtures/run_package_with_risk_gt_and_pov_min/README.md](Gateway/tests/fixtures/run_package_with_risk_gt_and_pov_min/README.md)
-- [Gateway/tests/fixtures/run_package_with_events_v1_min/report.md](Gateway/tests/fixtures/run_package_with_events_v1_min/report.md)
-- [Gateway/tests/fixtures/run_package_with_schema_v1_events_min/report.md](Gateway/tests/fixtures/run_package_with_schema_v1_events_min/report.md)
-
-### Unity / Assets Docs
-
-- [Assets/BeYourEyes/Docs/architecture.md](Assets/BeYourEyes/Docs/architecture.md)
-- [Assets/BeYourEyes/Docs/Spatial Audio Demo.md](Assets/BeYourEyes/Docs/Spatial%20Audio%20Demo.md)
-- [Assets/Samples/XR Hands/1.7.1/HandVisualizer/README.md](Assets/Samples/XR%20Hands/1.7.1/HandVisualizer/README.md)
+Do not run this automatically unless release approval is explicit.
