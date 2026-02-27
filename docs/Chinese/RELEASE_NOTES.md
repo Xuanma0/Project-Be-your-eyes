@@ -1,5 +1,11 @@
 Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v4.90
+- 新增 mode 端云同步调度：Unity 模式切换通过 `/api/mode` 写入 Gateway 运行态 mode store（`Gateway/byes/mode_state.py`）。
+- 新增 `BYES_MODE_PROFILE_JSON`，支持按 mode 配置各感知目标的 `every_n_frames`（空值时保持旧行为，向后兼容）。
+- 新增 `BYES_EMIT_MODE_PROFILE_DEBUG`，可输出 `mode.profile` 调试事件，便于核验每帧触发/跳过目标。
+- 新增单元测试：mode profile 解析与回退、mode state TTL/LRU 与 changed-flag、stride 判定规则。
+
 ## v4.89
 - 新增 Gateway 部署档位：`BYES_GATEWAY_PROFILE=local|hardened`，`hardened` 下默认开启资源与暴露面护栏。
 - 新增资源护栏：请求体大小限制（`BYES_GATEWAY_MAX_*_BYTES`）与速率限制（`BYES_GATEWAY_RATE_LIMIT_*`）。

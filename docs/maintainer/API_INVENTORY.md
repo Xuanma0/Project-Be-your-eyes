@@ -10,7 +10,7 @@
 | GET | `/api/external_readiness` | External dependency readiness | No explicit request body. | JSON dict/list (see handler). | Unity capability status check (`Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs:1122`) | `Gateway/main.py:1786` (`external_readiness`) |
 | POST | `/api/frame` | Primary frame ingest | Multipart form/image bytes + optional `meta` (see `Gateway/main.py:1791-1799`). | JSON dict/list (see handler). | Unity (`Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs:597`); replay script (`Gateway/scripts/replay_run_package.py:263`); manual curl (`Gateway/README.md:1075`) | `Gateway/main.py:1791` (`frame`) |
 | POST | `/api/frame/ack` | User feedback ACK ingest | `FrameAckRequest` (`Gateway/main.py:416`). | JSON dict/list (see handler). | Unity telemetry (`Assets/Scripts/BYES/Telemetry/ByesFrameTelemetry.cs:166`); manual curl (`Gateway/README.md:1080`) | `Gateway/main.py:1895` (`frame_ack`) |
-| POST | `/api/mode` | Mode change event ingest | `ModeChangeRequest` (`Gateway/main.py:435`). | JSON dict/list (see handler). | Manual/API consumer (no single in-repo caller evidenced). | `Gateway/main.py:1963` (`mode_change`) |
+| POST | `/api/mode` | Mode change event ingest + runtime mode-state update | `ModeChangeRequest` (`runId`, `frameSeq`, `mode`, `source`, `tsMs`, `deviceId`, optional `runPackage`). | JSON dict/list (`ok`, `runId`, `frameSeq`, `mode`, `source`, `tsMs`). | Unity mode manager (`Assets/Scripts/BYES/Core/ByesModeManager.cs:107-140`) via `GatewayClient.PostModeChange` (`Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs:417-460`). | `Gateway/main.py` (`@app.post("/api/mode") mode_change, gateway.mode_state.set_mode`) |
 | POST | `/api/fault/set` | Inject fault (dev) | `FaultSetRequest` (`Gateway/main.py:263`). | JSON dict/list (see handler). | Manual/API consumer (no single in-repo caller evidenced). | `Gateway/main.py:2026` (`fault_set`) |
 | POST | `/api/fault/clear` | Clear fault (dev) | No explicit request body. | JSON dict/list (see handler). | Manual/API consumer (no single in-repo caller evidenced). | `Gateway/main.py:2040` (`fault_clear`) |
 | POST | `/api/dev/reset` | Reset runtime state (dev) | No explicit request body. | JSON dict/list (see handler). | Manual/API consumer (no single in-repo caller evidenced). | `Gateway/main.py:2046` (`dev_reset`) |
@@ -53,6 +53,17 @@
 | `BYES_GATEWAY_API_KEY` | Guarded HTTP routes + `/ws/events` | disabled | disabled unless explicitly set | `Gateway/main.py` (`_gateway_guardrails`, `_ws_guardrails_ok`) |
 
 Profile defaults are applied in `Gateway/main.py` via `_apply_gateway_profile_defaults` when `BYES_GATEWAY_PROFILE=hardened`.
+
+## v4.90 Mode-Synced Scheduling Notes
+
+- Mode write path: Unity mode hotkey/UI -> `GatewayClient.PostModeChange` -> `POST /api/mode` -> `gateway.mode_state.set_mode(...)`.
+- Mode read path for frame scheduling: `submit_frame(...)` resolves mode/device (`_resolve_mode_for_frame`) and `_run_inference_for_frame(...)` applies `should_run_mode_target(...)`.
+- Optional per-mode stride source: `BYES_MODE_PROFILE_JSON` (empty = legacy behavior).
+- Optional observability: `BYES_EMIT_MODE_PROFILE_DEBUG=1` emits `mode.profile` debug events with fired/skipped targets.
+- Evidence:
+  - `Gateway/byes/mode_state.py`
+  - `Gateway/byes/scheduler.py` (`should_run_mode_target`)
+  - `Gateway/main.py` (`_resolve_mode_for_frame`, `_run_inference_for_frame`, `mode_change`)
 
 ## WebSocket Event Modes
 

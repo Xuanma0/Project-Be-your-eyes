@@ -11,7 +11,7 @@
 - Evidence: `Assets/Scenes/DemoScene.unity:972` (`ws://127.0.0.1:8000/ws/events`).
 
 ### 3) Version head signal
-- Fact: current development version file is `v4.89`.
+- Fact: current development version file is `v4.90`.
 - Evidence: `VERSION`.
 
 ### 4) Planner key variable compatibility
@@ -29,6 +29,12 @@
 - Evidence: `Gateway/scripts/dev_up.py` (`--host` default `127.0.0.1`).
 - Fact: profile-driven hardening is now implemented (`BYES_GATEWAY_PROFILE=local|hardened`), including rate-limit/body-size/dev/upload/local-path guards.
 - Evidence: `Gateway/main.py` (`_apply_gateway_profile_defaults`, middleware mount, endpoint/path guards); `Gateway/byes/config.py` (`BYES_GATEWAY_*`); `Gateway/byes/middleware/*.py`.
+
+### 6) Mode switch caller + runtime effect
+- Fact: Unity now has an in-repo `/api/mode` caller path.
+- Evidence: `Assets/Scripts/BYES/Core/ByesModeManager.cs` (`PostModeChange`), `Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs` (`PostModeChange`).
+- Fact: Gateway now stores mode state and applies mode-profile stride at frame inference scheduling.
+- Evidence: `Gateway/byes/mode_state.py`; `Gateway/main.py` (`_resolve_mode_for_frame`, `_run_inference_for_frame`, `mode_change`); `Gateway/byes/scheduler.py` (`should_run_mode_target`).
 
 ## Unresolved Decisions + Recommendation
 
@@ -51,6 +57,11 @@
 - Confirmed facts: repository includes TTS output components (`SpeechOrchestrator`, `AndroidTtsBackend`), but no ASR input pipeline evidence.
 - Need decision: local ASR vs cloud ASR, privacy constraints, and API integration point.
 - Recommendation: define ASR scope in roadmap before adding interfaces.
+
+### G) Mode profile governance
+- Confirmed facts: `BYES_MODE_PROFILE_JSON` can shift per-target compute cadence by mode, and `BYES_EMIT_MODE_PROFILE_DEBUG` can emit debug events.
+- Need decision: should project ship one canonical production profile JSON (tracked in repo) or keep profiles deployment-local only?
+- Recommendation: publish one baseline profile in docs/examples and keep deployment override capability.
 
 ### E) Internet deployment profile
 - Confirmed facts: explicit `hardened` profile now exists and is documented in README + maintainer docs; default docs still use localhost; external Dockerfiles still include `0.0.0.0`.

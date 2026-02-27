@@ -20,6 +20,7 @@ flowchart LR
   U[Unity Client
 SampleScene / DemoScene] -->|HTTP POST /api/frame| G[Gateway
 FastAPI]
+  U -->|HTTP POST /api/mode| G
   G -->|WS /ws/events| U
   U -->|HTTP POST /api/frame/ack| G
 
@@ -127,6 +128,7 @@ python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 12
 ### Success signals
 
 - Gateway receives `/api/frame` requests.
+- Gateway receives `/api/mode` when mode hotkeys switch mode.
 - Unity receives `/ws/events` messages.
 - `/api/frame/ack` is posted after UI/audio/haptic feedback.
 
@@ -161,6 +163,8 @@ Gateway guardrails (optional):
 - `BYES_GATEWAY_ALLOW_LOCAL_RUNPACKAGE_PATH=0/1` (default local `1`, hardened default `0`)
 - `BYES_GATEWAY_MAX_FRAME_BYTES`, `BYES_GATEWAY_MAX_RUNPACKAGE_ZIP_BYTES`, `BYES_GATEWAY_MAX_JSON_BYTES` (request body limits)
 - `BYES_GATEWAY_RATE_LIMIT_ENABLED`, `BYES_GATEWAY_RATE_LIMIT_RPS`, `BYES_GATEWAY_RATE_LIMIT_BURST`, `BYES_GATEWAY_RATE_LIMIT_KEY_MODE`
+- `BYES_MODE_PROFILE_JSON` (optional per-mode per-target stride profile; empty keeps legacy behavior)
+- `BYES_EMIT_MODE_PROFILE_DEBUG=0/1` (emit `mode.profile` debug events for stride verification)
 
 ## 5) Data & Evaluation Flow
 
@@ -233,7 +237,7 @@ python Gateway/scripts/verify_contracts.py --check-lock
 If maintainers decide to align release tags with `VERSION`:
 
 ```bash
-git tag -a v4.89 -m "v4.89" <commit>
+git tag -a v4.90 -m "v4.90" <commit>
 ```
 
 Do not run this automatically unless release approval is explicit.

@@ -25,6 +25,11 @@ The repository now includes an explicit profile-driven hardening layer:
 
 HTTP middleware order is currently `API-key/host/origin guard -> rate-limit -> request-size` (auth-first), implemented by middleware registration order in `Gateway/main.py`.
 
+Rate-limit and body-size scope details (for predictable operations):
+- Rate-limit middleware skips `/api/health`, `/api/external_readiness`, and `/metrics`, and skips `OPTIONS`.
+- Request-size middleware skips `GET/HEAD/OPTIONS`, and applies per-path limits to `/api/frame*`, `/api/run_package/upload`, and other JSON write routes.
+- Evidence: `Gateway/byes/middleware/rate_limit.py` (`_skip_paths`, method checks), `Gateway/byes/middleware/request_size_limit.py` (`_resolve_limit`).
+
 ## Exposed Surface and Guardrails (Code Evidence)
 
 | Surface | Current State | Evidence |
@@ -37,6 +42,7 @@ HTTP middleware order is currently `API-key/host/origin guard -> rate-limit -> r
 | Dev endpoints (`/api/mock_event`, `/api/dev/*`, `/api/fault/*`) | Toggleable (`BYES_GATEWAY_DEV_ENDPOINTS_ENABLED`), hardened default disabled | `Gateway/main.py` (`_ensure_dev_endpoints_enabled`) |
 | Run package upload (`/api/run_package/upload`) | Toggleable (`BYES_GATEWAY_RUNPACKAGE_UPLOAD_ENABLED`), hardened default disabled | `Gateway/main.py` (`_ensure_runpackage_upload_enabled`) |
 | Local path input for context APIs | Toggleable (`BYES_GATEWAY_ALLOW_LOCAL_RUNPACKAGE_PATH`), hardened default disabled | `Gateway/main.py` (`_resolve_context_run_package_input`) |
+| Mode profile config | Non-secret tuning knobs only (`BYES_MODE_PROFILE_JSON`, `BYES_EMIT_MODE_PROFILE_DEBUG`) | `Gateway/byes/config.py`; `Gateway/byes/mode_state.py`; `Gateway/main.py` |
 | Zip extraction | Path traversal-safe extraction helper in use | `Gateway/scripts/report_run.py` (`safe_extract_zip`) |
 | External service bind | Some Dockerfiles still bind `0.0.0.0` | `Gateway/external/*/Dockerfile` |
 
@@ -46,6 +52,7 @@ HTTP middleware order is currently `API-key/host/origin guard -> rate-limit -> r
 2. In-process rate-limit is per process (not distributed); deployment behind multiple workers still needs edge controls.
 3. Built-in guards reduce exposure but do not replace reverse proxy auth/TLS, WAF, and centralized observability.
 4. Upload and model inference endpoints remain potentially expensive even with body-size/rate limits if exposed publicly.
+5. Mode profile JSON is not credential material, but malformed profile values can change compute load profile; keep it under deployment config control.
 
 ## Recommended Baseline Profiles
 

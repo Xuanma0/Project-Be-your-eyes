@@ -85,10 +85,29 @@ Evidence: `docs/English/COMMANDS.md:57`; `Gateway/services/inference_service/REA
 
 ### Success Signals
 - Unity sends POST `/api/frame` (`Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs:597`).
+- Unity mode switch sends POST `/api/mode` (`Assets/Scripts/BYES/Core/ByesModeManager.cs:107-140`, `Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs:417-460`).
 - Gateway WS emits events from `/ws/events` (`Gateway/main.py:8280`).
 - Unity presenter handles WS event `type` switch (`Assets/BeYourEyes/Presenters/Audio/SpeechOrchestrator.cs:162-178`).
 - ACKs reach `/api/frame/ack` (`Assets/Scripts/BYES/Telemetry/ByesFrameTelemetry.cs:166`; `Gateway/main.py:1894`).
 - Hardened profile smoke: `/api/mock_event` and `/api/run_package/upload` are blocked unless explicitly re-enabled (`Gateway/main.py`: `_ensure_dev_endpoints_enabled`, `_ensure_runpackage_upload_enabled`).
+
+### Optional: Verify v4.90 mode profile takes effect
+1. Set mode-profile env and restart Gateway:
+```bash
+# PowerShell example: read_text forces OCR every frame, walk throttles OCR
+$env:BYES_MODE_PROFILE_JSON='{"default":{"ocr":{"every_n_frames":3},"risk":{"every_n_frames":1}},"read":{"ocr":{"every_n_frames":1}}}'
+$env:BYES_EMIT_MODE_PROFILE_DEBUG='1'
+python -m uvicorn main:app --app-dir Gateway --host 127.0.0.1 --port 8000
+```
+2. In Unity, switch mode (`1/2/3`) and trigger scan (`S`).
+3. Observe:
+- `/api/mode` accepted with `{"ok": true}` (`Gateway/main.py` `mode_change`).
+- WS/events include `mode.profile` debug rows (when debug flag enabled) showing `targetsFired`/`targetsSkipped`.
+Evidence:
+- Config load: `Gateway/byes/config.py` (`BYES_MODE_PROFILE_JSON`, `BYES_EMIT_MODE_PROFILE_DEBUG`)
+- Runtime mode resolution + consume changed flag: `Gateway/main.py` (`_resolve_mode_for_frame`)
+- Stride decision function: `Gateway/byes/scheduler.py` (`should_run_mode_target`)
+- Mode store: `Gateway/byes/mode_state.py` (`ModeStateStore`)
 
 ## Troubleshooting Quick Checks
 

@@ -4,6 +4,15 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v4.90
+- Added mode-synced active-perception profile support in Gateway:
+  - new runtime mode state store (`Gateway/byes/mode_state.py`)
+  - optional mode profile env (`BYES_MODE_PROFILE_JSON`) for per-target keyframe stride
+  - optional debug event switch (`BYES_EMIT_MODE_PROFILE_DEBUG`) for per-frame fired/skipped targets
+- Wired `/api/mode` into Gateway runtime mode state so mode changes affect subsequent frame inference scheduling (with one-shot force-run on mode-change frame).
+- Added unit tests for mode profile parsing/fallback, mode-state store behavior (TTL/LRU/changed-flag), and scheduler stride decisions.
+- Updated maintainer docs/runbook/config matrix to document mode sync and profile verification steps.
+
 ## v4.89
 - Added a profile-driven Gateway hardening layer (`BYES_GATEWAY_PROFILE=local|hardened`) with hardened defaults for rate-limit, request-size limits, and dev surface restrictions.
 - Added Gateway resource guardrails:

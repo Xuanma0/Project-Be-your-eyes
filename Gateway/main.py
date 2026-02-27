@@ -63,7 +63,8 @@ from byes.preprocess import FramePreprocessor
 from byes.preempt_window import PreemptWindow
 from byes.runtime_stats import RuntimeStats
 from byes.safety import SafetyKernel
-from byes.scheduler import Scheduler
+from byes.scheduler import Scheduler, should_run_mode_target
+from byes.mode_state import ModeStateStore, parse_mode_profile_json, normalize_mode_value as normalize_mode_token
 from byes.schema import CoordFrame, EventEnvelope, EventType, FrameMeta, HealthStatus, ToolStatus
 from byes.tool_registry import ToolRegistry
 from byes.tools import MockOcrTool, MockRiskTool, RealDepthTool, RealDetTool, RealOcrTool, RealVlmTool
@@ -515,6 +516,8 @@ class GatewayApp:
     def __init__(self, app: FastAPI) -> None:
         self.app = app
         self.config: GatewayConfig = load_config()
+        self.mode_state = ModeStateStore(default_mode="walk")
+        self.mode_profile = parse_mode_profile_json(self.config.mode_profile_json)
         self.metrics = GatewayMetrics()
         self.observability = Observability("be-your-eyes-gateway")
         self.registry = ToolRegistry()
@@ -757,6 +760,37 @@ class GatewayApp:
         return None
 
     @staticmethod
+    def _resolve_device_id(meta: dict[str, Any]) -> str | None:
+        direct = str(meta.get("deviceId", "") or "").strip()
+        if direct:
+            return direct
+        frame_meta = meta.get("frameMeta")
+        if isinstance(frame_meta, dict):
+            nested = str(frame_meta.get("deviceId", "") or "").strip()
+            if nested:
+                return nested
+        return None
+
+    def _resolve_mode_for_frame(self, meta: dict[str, Any]) -> tuple[str | None, str, bool]:
+        run_id = self._extract_run_id(meta) or "unknown-run"
+        device_id = self._resolve_device_id(meta)
+        incoming_mode = normalize_mode_token(meta.get("mode"))
+        if incoming_mode is None:
+            frame_meta = meta.get("frameMeta")
+            if isinstance(frame_meta, dict):
+                incoming_mode = normalize_mode_token(frame_meta.get("mode"))
+        if incoming_mode is not None:
+            self.mode_state.set_mode(
+                device_id=device_id,
+                run_id=run_id,
+                mode=incoming_mode,
+                source="frame",
+            )
+        resolved_mode = incoming_mode or self.mode_state.get_mode(device_id=device_id, run_id=run_id)
+        changed = self.mode_state.consume_changed_flag(device_id=device_id, run_id=run_id)
+        return device_id, resolved_mode, bool(changed)
+
+    @staticmethod
     def _resolve_event_frame_seq(seq: int, meta: dict[str, Any]) -> int:
         event_frame_seq = int(max(1, int(seq)))
         for key in ("clientSeq", "frameSeq", "frame_seq", "seq"):
@@ -865,6 +899,9 @@ class GatewayApp:
         run_id = self._extract_run_id(meta)
         component = str(self.config.inference_event_component or "gateway")
         event_frame_seq = self._resolve_event_frame_seq(seq, meta)
+        device_id = self._resolve_device_id(meta)
+        mode = normalize_mode_token(meta.get("mode")) or self.mode_state.get_mode(device_id=device_id, run_id=run_id)
+        mode_changed = bool(meta.get("_modeChanged", False))
         depth_payload_for_costmap: dict[str, Any] | None = None
         seg_payload_for_costmap: dict[str, Any] | None = None
         slam_payload_for_costmap: dict[str, Any] | None = None
@@ -872,7 +909,21 @@ class GatewayApp:
         depth_model_for_costmap = None
         depth_endpoint_for_costmap = None
         costmap_fused_payload: dict[str, Any] | None = None
-        if self.config.inference_enable_ocr:
+        fired_targets: list[str] = []
+        skipped_targets: list[str] = []
+        force_heavy_once = mode_changed
+
+        run_ocr = bool(self.config.inference_enable_ocr) and should_run_mode_target(
+            frame_seq=event_frame_seq,
+            mode=mode,
+            target="ocr",
+            profile=self.mode_profile,
+            force_on_mode_change=force_heavy_once,
+        )
+        if bool(self.config.inference_enable_ocr) and not run_ocr:
+            skipped_targets.append("ocr")
+        if run_ocr:
+            fired_targets.append("ocr")
             ocr_started_ms = _now_ms()
             try:
                 ocr_result = await self.ocr_backend.infer(
@@ -898,7 +949,17 @@ class GatewayApp:
                 endpoint=getattr(self.ocr_backend, "endpoint", None),
             )
 
-        if self.config.inference_enable_risk:
+        run_risk = bool(self.config.inference_enable_risk) and should_run_mode_target(
+            frame_seq=event_frame_seq,
+            mode=mode,
+            target="risk",
+            profile=self.mode_profile,
+            force_on_mode_change=False,
+        )
+        if bool(self.config.inference_enable_risk) and not run_risk:
+            skipped_targets.append("risk")
+        if run_risk:
+            fired_targets.append("risk")
             risk_started_ms = _now_ms()
             try:
                 risk_result = await self.risk_backend.infer(frame_bytes, seq, ts_ms)
@@ -922,7 +983,17 @@ class GatewayApp:
                 endpoint=getattr(self.risk_backend, "endpoint", None),
             )
 
-        if self.config.inference_enable_depth:
+        run_depth = bool(self.config.inference_enable_depth) and should_run_mode_target(
+            frame_seq=event_frame_seq,
+            mode=mode,
+            target="depth",
+            profile=self.mode_profile,
+            force_on_mode_change=force_heavy_once,
+        )
+        if bool(self.config.inference_enable_depth) and not run_depth:
+            skipped_targets.append("depth")
+        if run_depth:
+            fired_targets.append("depth")
             depth_started_ms = _now_ms()
             depth_backend_name = getattr(self.depth_backend, "name", None)
             depth_model_id = getattr(self.depth_backend, "model_id", None)
@@ -968,52 +1039,17 @@ class GatewayApp:
             depth_model_for_costmap = depth_model_id
             depth_endpoint_for_costmap = depth_endpoint
 
-        if self.config.inference_enable_slam:
-            slam_started_ms = _now_ms()
-            slam_backend_name = getattr(self.slam_backend, "name", None)
-            slam_model_id = getattr(self.slam_backend, "model_id", None)
-            slam_endpoint = getattr(self.slam_backend, "endpoint", None)
-            try:
-                slam_result = await self.slam_backend.infer(
-                    frame_bytes,
-                    seq,
-                    ts_ms,
-                    run_id=run_id,
-                    targets=None,
-                    prompt=None,
-                )
-            except Exception as exc:  # noqa: BLE001
-                slam_result = SlamResult(
-                    status="error",
-                    error=exc.__class__.__name__,
-                    payload={"reason": exc.__class__.__name__},
-                    latency_ms=max(0, _now_ms() - slam_started_ms),
-                )
-            await emit_slam_pose_events(
-                slam_result,
-                frame_seq=event_frame_seq,
-                ts_ms=_now_ms(),
-                started_ts_ms=slam_started_ms,
-                sink=self._emit_inference_event,
-                run_id=run_id,
-                component=component,
-                backend=slam_backend_name,
-                model=slam_model_id,
-                endpoint=slam_endpoint,
-            )
-            slam_payload_for_costmap = slam_result.payload if isinstance(slam_result.payload, dict) else {}
-            if isinstance(slam_result.pose, dict):
-                slam_payload_for_costmap = dict(slam_payload_for_costmap)
-                pose_obj = slam_payload_for_costmap.get("pose")
-                pose_obj = pose_obj if isinstance(pose_obj, dict) else {}
-                if "t" not in pose_obj and isinstance(slam_result.pose.get("t"), list):
-                    pose_obj["t"] = list(slam_result.pose.get("t") or [])
-                if "q" not in pose_obj and isinstance(slam_result.pose.get("q"), list):
-                    pose_obj["q"] = list(slam_result.pose.get("q") or [])
-                slam_payload_for_costmap["pose"] = pose_obj
-                slam_payload_for_costmap.setdefault("trackingState", slam_result.tracking_state)
-
-        if self.config.inference_enable_seg:
+        run_seg = bool(self.config.inference_enable_seg) and should_run_mode_target(
+            frame_seq=event_frame_seq,
+            mode=mode,
+            target="seg",
+            profile=self.mode_profile,
+            force_on_mode_change=force_heavy_once,
+        )
+        if bool(self.config.inference_enable_seg) and not run_seg:
+            skipped_targets.append("seg")
+        if run_seg:
+            fired_targets.append("seg")
             seg_started_ms = _now_ms()
             seg_targets = [str(item).strip() for item in self.config.inference_seg_targets if str(item).strip()]
             seg_prompt = self._normalize_seg_prompt(self.config.inference_seg_prompt)
@@ -1091,6 +1127,84 @@ class GatewayApp:
             if isinstance(seg_result.segments, list):
                 seg_payload_for_costmap = dict(seg_payload_for_costmap)
                 seg_payload_for_costmap["segments"] = [row for row in seg_result.segments if isinstance(row, dict)]
+
+        run_slam = bool(self.config.inference_enable_slam) and should_run_mode_target(
+            frame_seq=event_frame_seq,
+            mode=mode,
+            target="slam",
+            profile=self.mode_profile,
+            force_on_mode_change=force_heavy_once,
+        )
+        if bool(self.config.inference_enable_slam) and not run_slam:
+            skipped_targets.append("slam")
+        if run_slam:
+            fired_targets.append("slam")
+            slam_started_ms = _now_ms()
+            slam_backend_name = getattr(self.slam_backend, "name", None)
+            slam_model_id = getattr(self.slam_backend, "model_id", None)
+            slam_endpoint = getattr(self.slam_backend, "endpoint", None)
+            try:
+                slam_result = await self.slam_backend.infer(
+                    frame_bytes,
+                    seq,
+                    ts_ms,
+                    run_id=run_id,
+                    targets=None,
+                    prompt=None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                slam_result = SlamResult(
+                    status="error",
+                    error=exc.__class__.__name__,
+                    payload={"reason": exc.__class__.__name__},
+                    latency_ms=max(0, _now_ms() - slam_started_ms),
+                )
+            await emit_slam_pose_events(
+                slam_result,
+                frame_seq=event_frame_seq,
+                ts_ms=_now_ms(),
+                started_ts_ms=slam_started_ms,
+                sink=self._emit_inference_event,
+                run_id=run_id,
+                component=component,
+                backend=slam_backend_name,
+                model=slam_model_id,
+                endpoint=slam_endpoint,
+            )
+            slam_payload_for_costmap = slam_result.payload if isinstance(slam_result.payload, dict) else {}
+            if isinstance(slam_result.pose, dict):
+                slam_payload_for_costmap = dict(slam_payload_for_costmap)
+                pose_obj = slam_payload_for_costmap.get("pose")
+                pose_obj = pose_obj if isinstance(pose_obj, dict) else {}
+                if "t" not in pose_obj and isinstance(slam_result.pose.get("t"), list):
+                    pose_obj["t"] = list(slam_result.pose.get("t") or [])
+                if "q" not in pose_obj and isinstance(slam_result.pose.get("q"), list):
+                    pose_obj["q"] = list(slam_result.pose.get("q") or [])
+                slam_payload_for_costmap["pose"] = pose_obj
+                slam_payload_for_costmap.setdefault("trackingState", slam_result.tracking_state)
+
+        if self.config.emit_mode_profile_debug:
+            await self._emit_inference_event(
+                {
+                    "schemaVersion": "byes.event.v1",
+                    "tsMs": _now_ms(),
+                    "runId": run_id,
+                    "frameSeq": event_frame_seq,
+                    "component": component,
+                    "category": "debug",
+                    "name": "mode.profile",
+                    "phase": "result",
+                    "status": "ok",
+                    "latencyMs": 0,
+                    "payload": {
+                        "mode": mode,
+                        "deviceId": device_id,
+                        "modeChanged": bool(mode_changed),
+                        "targetsFired": fired_targets,
+                        "targetsSkipped": skipped_targets,
+                    },
+                }
+            )
 
         if self.config.inference_enable_costmap:
             costmap_started_ms = _now_ms()
@@ -1248,6 +1362,12 @@ class GatewayApp:
         if forced_crosscheck_kind != "none" and "forceCrosscheckKind" not in enriched_meta:
             enriched_meta["forceCrosscheckKind"] = forced_crosscheck_kind
         enriched_meta["fingerprint"] = hashlib.sha1(frame_bytes).hexdigest()
+        resolved_device_id, resolved_mode, mode_changed = self._resolve_mode_for_frame(enriched_meta)
+        if resolved_device_id is not None and "deviceId" not in enriched_meta:
+            enriched_meta["deviceId"] = resolved_device_id
+        if resolved_mode:
+            enriched_meta["mode"] = resolved_mode
+        enriched_meta["_modeChanged"] = bool(mode_changed)
 
         seq = await self.scheduler.submit_frame(
             frame_bytes=frame_bytes,
@@ -2160,9 +2280,16 @@ async def mode_change(request: ModeChangeRequest) -> dict[str, Any]:
         ts_ms = _now_ms()
     mode = _normalize_mode_value(request.mode) or "walk"
     source = str(request.source or "system").strip().lower()
-    if source not in {"hotkey", "xr", "system"}:
+    if source not in {"hotkey", "xr", "system", "unity"}:
         source = "system"
     device_id = str(request.deviceId or "").strip() or None
+    gateway.mode_state.set_mode(
+        device_id=device_id,
+        run_id=run_id,
+        mode=mode,
+        ts_ms=ts_ms,
+        source=source,
+    )
     payload = {
         "schemaVersion": "ui.mode_change.v1",
         "runId": run_id,
@@ -4618,10 +4745,7 @@ def _latest_event_latency_ms(
 
 
 def _normalize_mode_value(value: Any) -> str | None:
-    text = str(value or "").strip().lower()
-    if text in {"walk", "read_text", "inspect"}:
-        return text
-    return None
+    return normalize_mode_token(value)
 
 
 def _build_frame_input_payload(
