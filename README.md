@@ -245,7 +245,7 @@ python Gateway/scripts/verify_contracts.py --check-lock
 If maintainers decide to align release tags with `VERSION`:
 
 ```bash
-git tag -a v4.92 -m "v4.92" <commit>
+git tag -a v4.93 -m "v4.93" <commit>
 ```
 
 Do not run this automatically unless release approval is explicit.

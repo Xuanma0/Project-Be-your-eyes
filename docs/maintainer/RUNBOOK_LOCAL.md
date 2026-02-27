@@ -117,6 +117,15 @@ Evidence:
 - Stride decision function: `Gateway/byes/scheduler.py` (`should_run_mode_target`)
 - Mode store: `Gateway/byes/mode_state.py` (`ModeStateStore`)
 
+### Optional: Unity batch compile smoke
+```bash
+# Windows example
+<Unity.exe> -batchmode -nographics -quit -projectPath "<repo_root>" -logFile "unity_compile.log"
+```
+Quick checks:
+- `rg -n "error CS" unity_compile.log`
+- `rg -n "AssemblyResolutionException" unity_compile.log`
+
 ## Troubleshooting Quick Checks
 
 | Symptom | Check | Evidence |

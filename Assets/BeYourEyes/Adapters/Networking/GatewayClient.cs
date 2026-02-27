@@ -10,7 +10,6 @@ using NativeWebSocket;
 using UnityEngine;
 using UnityEngine.Networking;
 using BeYourEyes.Presenters.DebugHUD;
-using BYES.Telemetry;
 
 namespace BeYourEyes.Adapters.Networking
 {
@@ -546,9 +545,9 @@ namespace BeYourEyes.Adapters.Networking
             {
                 var runIdForTelemetry = SessionId;
                 var frameSeqForTelemetry = seq > 0 ? seq : -1;
-                var captureTsForTelemetry = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                var deviceIdForTelemetry = ByesFrameTelemetry.DeviceId;
-                var deviceTimeBaseForTelemetry = ByesFrameTelemetry.DeviceTimeBase;
+                var captureTsForTelemetry = GatewayRuntimeContext.NowUnixMs();
+                var deviceIdForTelemetry = GatewayRuntimeContext.DeviceId;
+                var deviceTimeBaseForTelemetry = GatewayRuntimeContext.DeviceTimeBase;
                 if (!string.IsNullOrWhiteSpace(metaJson))
                 {
                     try
@@ -612,7 +611,7 @@ namespace BeYourEyes.Adapters.Networking
                     if (req.result == UnityWebRequest.Result.Success)
                     {
                         frameOkCount++;
-                        ByesFrameTelemetry.OnFrameSentToGateway(
+                        GatewayRuntimeContext.NotifyFrameSentToTelemetry(
                             runIdForTelemetry,
                             frameSeqForTelemetry > 0 ? frameSeqForTelemetry : 1,
                             captureTsForTelemetry

@@ -115,3 +115,6 @@ Notes:
   - Lower `liveFps` and/or capture size/quality.
 - No audio/TTS:
   - Confirm WS events are arriving and `SpeechOrchestrator` is active.
+- Unity compile shows `CS0246 ... BYES` under `Assets/BeYourEyes/**`:
+  - Run `python tools/check_unity_layering.py`.
+  - This indicates a layering regression (`BeYourEyes` should not compile-reference `BYES` namespace).

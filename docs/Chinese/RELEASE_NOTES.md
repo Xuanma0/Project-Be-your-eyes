@@ -1,5 +1,10 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v4.93
+- 修复 Unity 编译失败：移除 `Assets/BeYourEyes/**` 对 `BYES` 命名空间的编译期依赖。
+- 增加分层安全运行时桥接（`GatewayRuntimeContext` + BYES 侧注册），保持功能语义同时解耦 assembly 边界。
+- 新增仓库防回归脚本 `tools/check_unity_layering.py`，并接入 CI，阻止 `Assets/BeYourEyes/**` 再次引入 `using BYES...`。
+- Quest3 构建链路继续可用（连接面板 Ping/Version/Mode + Live Loop smoke）。
 ## v4.92
 - Quest 3: added Live Loop controls (toggle/FPS/max in-flight/backpressure) in Unity scan flow.
 - Quest 3: added default downscale + JPEG quality controls for bandwidth stability.
@@ -108,4 +113,6 @@
   - `scaleDriftProxy`
   - `refViewStrategyDiversityCount`
 - 鎺ュ叆 report/leaderboard/linter/contract gate/matrix summary銆?
+
+
 

@@ -1,7 +1,6 @@
 using System.Collections;
 using System;
 using BeYourEyes.Adapters;
-using BYES.Telemetry;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -26,16 +25,16 @@ namespace BeYourEyes.Adapters.Networking
                 yield break;
             }
 
-            var startedAtMs = ByesFrameTelemetry.NowUnixMs();
+            var startedAtMs = GatewayRuntimeContext.NowUnixMs();
             var form = new WWWForm();
             form.AddBinaryData("image", jpg, "frame.jpg", "image/jpeg");
             if (!string.IsNullOrEmpty(metaJson))
             {
                 form.AddField("meta", metaJson);
             }
-            form.AddField("captureTsMs", ByesFrameTelemetry.NowUnixMs().ToString());
-            form.AddField("deviceId", ByesFrameTelemetry.DeviceId);
-            form.AddField("deviceTimeBase", ByesFrameTelemetry.DeviceTimeBase);
+            form.AddField("captureTsMs", GatewayRuntimeContext.NowUnixMs().ToString());
+            form.AddField("deviceId", GatewayRuntimeContext.DeviceId);
+            form.AddField("deviceTimeBase", GatewayRuntimeContext.DeviceTimeBase);
 
             var url = BuildFrameUrl();
             using (var req = UnityWebRequest.Post(url, form))
@@ -46,7 +45,7 @@ namespace BeYourEyes.Adapters.Networking
                 }
 
                 yield return req.SendWebRequest();
-                var elapsedMs = Math.Max(0, ByesFrameTelemetry.NowUnixMs() - startedAtMs);
+                var elapsedMs = Math.Max(0, GatewayRuntimeContext.NowUnixMs() - startedAtMs);
 
                 if (req.result == UnityWebRequest.Result.Success)
                 {

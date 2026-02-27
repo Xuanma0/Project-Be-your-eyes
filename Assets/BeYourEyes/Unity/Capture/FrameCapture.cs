@@ -5,8 +5,6 @@ using Newtonsoft.Json.Linq;
 using UnityEngine;
 using Object = UnityEngine.Object;
 using BeYourEyes.Unity.Interaction;
-using BYES.Telemetry;
-using BYES.Core;
 
 namespace BeYourEyes.Unity.Capture
 {
@@ -439,9 +437,9 @@ namespace BeYourEyes.Unity.Capture
                 ["intrinsics"] = intrinsics,
                 ["keyframeReason"] = string.IsNullOrWhiteSpace(keyReason) ? "unknown" : keyReason,
                 ["roiApplied"] = capture.usedRoi,
-                ["deviceId"] = ByesFrameTelemetry.DeviceId,
-                ["deviceTimeBase"] = ByesFrameTelemetry.DeviceTimeBase,
-                ["mode"] = ByesModeManager.ToApiMode(ByesModeManager.Instance.GetMode()),
+                ["deviceId"] = BeYourEyes.Adapters.Networking.GatewayRuntimeContext.DeviceId,
+                ["deviceTimeBase"] = BeYourEyes.Adapters.Networking.GatewayRuntimeContext.DeviceTimeBase,
+                ["mode"] = BeYourEyes.Adapters.Networking.GatewayRuntimeContext.ResolveApiMode(),
             };
 
             if (includePose)

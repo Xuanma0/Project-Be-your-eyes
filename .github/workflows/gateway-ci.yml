@@ -58,3 +58,7 @@ jobs:
       - name: Docs relative links
         run: |
           python tools/check_docs_links.py
+
+      - name: Unity layering guard
+        run: |
+          python tools/check_unity_layering.py

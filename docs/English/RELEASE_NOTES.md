@@ -4,6 +4,12 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v4.93
+- Fixed Unity compile break by removing `BYES` namespace dependencies from `Assets/BeYourEyes/**` (networking/capture layer).
+- Added layering-safe runtime bridge (`GatewayRuntimeContext`) and BYES-side registration in runtime bootstrap.
+- Added repo guard `tools/check_unity_layering.py` and CI step to prevent re-introducing `BYES` references in `Assets/BeYourEyes/**`.
+- Quest3 smoke path remains supported (connection panel ping/version/mode + live loop) with build unblocked.
+
 ## v4.92
 - Added Quest 3 live loop controls in Unity scan path:
   - live on/off toggle, target FPS, max in-flight backpressure, busy-drop behavior
