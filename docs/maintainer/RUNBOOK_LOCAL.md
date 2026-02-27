@@ -85,12 +85,15 @@ Evidence: `docs/English/COMMANDS.md:57`; `Gateway/services/inference_service/REA
 
 ### Runtime controls
 - Upload trigger key: `S` (`Assets/BeYourEyes/Unity/Interaction/ScanController.cs:22`).
+- Live loop toggle key: `L` (Quest controller primary/A in `Quest3SmokeScene`).
+- Quest manual scan trigger: right-hand trigger.
 - Mode switch: `1/2/3` or `F1/F2/F3` (`Assets/Scripts/BYES/UI/ByesModeHotkeys.cs:10-20`).
 - Confirm input: `Y/N` or XR primary/secondary (`Assets/Scripts/BYES/UI/ByesConfirmPanel.cs:100-120,294-300`).
 
 ### Success Signals
 - Unity sends POST `/api/frame` (`Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs:597`).
 - Unity mode switch sends POST `/api/mode` (`Assets/Scripts/BYES/Core/ByesModeManager.cs:107-140`, `Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs:417-460`).
+- Unity diagnostics panel can fetch `GET /api/version` and show `version/gitSha` (Quest smoke tooling).
 - Gateway WS emits events from `/ws/events` (`Gateway/main.py:8280`).
 - Unity presenter handles WS event `type` switch (`Assets/BeYourEyes/Presenters/Audio/SpeechOrchestrator.cs:162-178`).
 - ACKs reach `/api/frame/ack` (`Assets/Scripts/BYES/Telemetry/ByesFrameTelemetry.cs:166`; `Gateway/main.py:1894`).

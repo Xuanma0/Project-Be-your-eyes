@@ -4,6 +4,16 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v4.92
+- Added Quest 3 live loop controls in Unity scan path:
+  - live on/off toggle, target FPS, max in-flight backpressure, busy-drop behavior
+  - default capture bandwidth controls for Quest (`maxWidth/maxHeight/jpegQuality`)
+- Added Gateway diagnostics endpoint `GET /api/version` returning version/git-sha/uptime/profile.
+- Added runtime panel telemetry updates for Quest smoke validation:
+  - HTTP/WS status, ping RTT, last upload cost, coarse event E2E, live loop status
+  - manual `Get Version` probe in panel.
+- Added Gateway tests for `/api/version`, and synced maintainer docs/runbooks/config matrix.
+
 ## v4.91
 - Added Quest 3 smoke-loop enablement pieces:
   - runtime connection panel for host/port/api-key config + reconnect

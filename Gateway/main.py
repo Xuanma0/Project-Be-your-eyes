@@ -69,6 +69,7 @@ from byes.schema import CoordFrame, EventEnvelope, EventType, FrameMeta, HealthS
 from byes.tool_registry import ToolRegistry
 from byes.tools import MockOcrTool, MockRiskTool, RealDepthTool, RealDetTool, RealOcrTool, RealVlmTool
 from byes.tools.base import FrameInput, ToolLane
+from byes.version_info import get_build_info
 from byes.world_state import WorldState
 from byes.pov.store import PovStore
 from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text
@@ -2387,6 +2388,11 @@ async def ping(request: PingRequest) -> dict[str, Any]:
             )
         )
     return payload
+
+
+@app.get("/api/version")
+async def api_version() -> dict[str, Any]:
+    return get_build_info(profile=gateway.config.gateway_profile)
 
 
 @app.post("/api/fault/set")

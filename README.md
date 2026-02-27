@@ -81,7 +81,7 @@ python Gateway/scripts/replay_run_package.py --run-package Gateway/tests/fixture
 
 ## 3) Quick Start B: Unity + Gateway Realtime (30-minute path)
 
-Quest 3 specific steps are documented in [docs/maintainer/RUNBOOK_QUEST3.md](docs/maintainer/RUNBOOK_QUEST3.md).
+Quest 3 specific steps are documented in [docs/maintainer/RUNBOOK_QUEST3.md](docs/maintainer/RUNBOOK_QUEST3.md), including Live Loop controls and recommended capture defaults.
 
 ### Start backend processes
 
@@ -124,13 +124,17 @@ python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 12
 ### Runtime controls
 
 - Trigger scan/upload: `S`
+- Toggle live loop: `L` (Quest controller primary button/A in `Quest3SmokeScene`)
+- Quest manual scan: right-hand trigger (desktop fallback remains `S`)
 - Mode switch: `1/2/3` or `F1/F2/F3`
 - Confirm decision: `Y/N` (or XR primary/secondary)
+- Connection panel probes: `Test Ping`, `Read Mode`, `Get Version`
 
 ### Success signals
 
 - Gateway receives `/api/frame` requests.
 - Gateway receives `/api/mode` when mode hotkeys switch mode.
+- Gateway `/api/version` returns runtime version/build metadata for panel diagnostics.
 - Unity receives `/ws/events` messages.
 - `/api/frame/ack` is posted after UI/audio/haptic feedback.
 
@@ -167,6 +171,8 @@ Gateway guardrails (optional):
 - `BYES_GATEWAY_RATE_LIMIT_ENABLED`, `BYES_GATEWAY_RATE_LIMIT_RPS`, `BYES_GATEWAY_RATE_LIMIT_BURST`, `BYES_GATEWAY_RATE_LIMIT_KEY_MODE`
 - `BYES_MODE_PROFILE_JSON` (optional per-mode per-target stride profile; empty keeps legacy behavior)
 - `BYES_EMIT_MODE_PROFILE_DEBUG=0/1` (emit `mode.profile` debug events for stride verification)
+- `BYES_VERSION_OVERRIDE` (optional version string override for `/api/version`)
+- `BYES_GIT_SHA` (optional build sha exposed by `/api/version`)
 
 ## 5) Data & Evaluation Flow
 
@@ -239,7 +245,7 @@ python Gateway/scripts/verify_contracts.py --check-lock
 If maintainers decide to align release tags with `VERSION`:
 
 ```bash
-git tag -a v4.91 -m "v4.91" <commit>
+git tag -a v4.92 -m "v4.92" <commit>
 ```
 
 Do not run this automatically unless release approval is explicit.

@@ -4,6 +4,7 @@ using System.Text;
 using BYES.Core;
 using BYES.Telemetry;
 using BeYourEyes.Adapters.Networking;
+using BeYourEyes.Unity.Interaction;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -26,6 +27,7 @@ namespace BYES.UI
         [SerializeField] private bool defaultUseHttps = false;
         [SerializeField] private GatewayClient gatewayClient;
         [SerializeField] private GatewayWsClient gatewayWsClient;
+        [SerializeField] private ScanController scanController;
 
         private bool _visible;
         private string _host;
@@ -39,6 +41,9 @@ namespace BYES.UI
         private int _pingSeq = 0;
         private bool _pingInFlight;
         private bool _modeInFlight;
+        private bool _versionInFlight;
+        private string _lastVersion = "-";
+        private string _lastGitSha = "-";
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoInstallOnQuestSmokeScene()
@@ -66,6 +71,11 @@ namespace BYES.UI
             if (gatewayWsClient == null)
             {
                 gatewayWsClient = FindFirstObjectByType<GatewayWsClient>();
+            }
+
+            if (scanController == null)
+            {
+                scanController = FindFirstObjectByType<ScanController>();
             }
 
             _host = PlayerPrefs.GetString(PrefHost, defaultHost).Trim();
@@ -119,14 +129,21 @@ namespace BYES.UI
 
             GUI.depth = -999;
             var width = Mathf.Min(Screen.width - 20, 640);
-            var rect = new Rect(10, 10, width, 460);
+            var rect = new Rect(10, 10, width, 560);
             GUILayout.BeginArea(rect, GUI.skin.box);
             GUILayout.Label("BYES Quest Connection");
-            GUILayout.Label($"GatewayClient: {(gatewayClient != null && gatewayClient.IsConnected ? "Connected" : "Disconnected")}");
-            GUILayout.Label($"GatewayWsClient: {(gatewayWsClient != null ? gatewayWsClient.ConnectionState : "missing")}");
+            var httpBaseUrl = gatewayClient != null ? gatewayClient.BaseUrl : BuildBaseUrl();
+            GUILayout.Label($"HTTP Base: {httpBaseUrl}");
+            GUILayout.Label($"HTTP Link: {(gatewayClient != null && gatewayClient.IsConnected ? "Connected" : "Disconnected")}");
+            GUILayout.Label($"WS Link: {(gatewayWsClient != null ? gatewayWsClient.ConnectionState : "missing")}");
+            GUILayout.Label($"API Key: {(string.IsNullOrWhiteSpace(_apiKey) ? "not-set" : "set")}");
             GUILayout.Label($"Last RTT: {_lastRttMs} ms");
             GUILayout.Label($"Last Mode: {_lastMode}");
+            GUILayout.Label($"Gateway Version: {_lastVersion} (sha: {_lastGitSha})");
             GUILayout.Label($"Last Event Type: {_lastEventType}");
+            GUILayout.Label($"Live: {BuildLiveSummary()}");
+            GUILayout.Label($"Last Upload Cost: {BuildUploadCostSummary()}");
+            GUILayout.Label($"Last E2E: {BuildE2eSummary()}");
             GUILayout.Label($"Status: {_status}");
             GUILayout.Space(8);
 
@@ -160,6 +177,11 @@ namespace BYES.UI
             if (GUILayout.Button("Read Mode", GUILayout.Width(120)) && !_modeInFlight)
             {
                 StartCoroutine(ReadModeRoutine());
+            }
+
+            if (GUILayout.Button("Get Version", GUILayout.Width(120)) && !_versionInFlight)
+            {
+                StartCoroutine(GetVersionRoutine());
             }
             GUILayout.EndHorizontal();
 
@@ -231,6 +253,18 @@ namespace BYES.UI
             }
 
             _status = $"connected to {baseUrl}";
+        }
+
+        private string BuildBaseUrl()
+        {
+            var host = string.IsNullOrWhiteSpace(_host) ? defaultHost : _host.Trim();
+            if (!int.TryParse(_portText, out var port) || port <= 0 || port > 65535)
+            {
+                port = defaultPort;
+            }
+
+            var scheme = _useHttps ? "https" : "http";
+            return $"{scheme}://{host}:{port}";
         }
 
         private IEnumerator PingRoutine()
@@ -321,6 +355,95 @@ namespace BYES.UI
                 }
             }
             _modeInFlight = false;
+        }
+
+        private IEnumerator GetVersionRoutine()
+        {
+            _versionInFlight = true;
+            _status = "version...";
+            var host = string.IsNullOrWhiteSpace(_host) ? defaultHost : _host.Trim();
+            if (!int.TryParse(_portText, out var port) || port <= 0 || port > 65535)
+            {
+                port = defaultPort;
+            }
+
+            var scheme = _useHttps ? "https" : "http";
+            var url = $"{scheme}://{host}:{port}/api/version";
+
+            using (var req = UnityWebRequest.Get(url))
+            {
+                req.downloadHandler = new DownloadHandlerBuffer();
+                if (!string.IsNullOrWhiteSpace(_apiKey))
+                {
+                    req.SetRequestHeader("X-BYES-API-Key", _apiKey.Trim());
+                }
+
+                yield return req.SendWebRequest();
+                if (req.result == UnityWebRequest.Result.Success)
+                {
+                    try
+                    {
+                        var obj = JObject.Parse(req.downloadHandler.text ?? "{}");
+                        _lastVersion = obj.Value<string>("version") ?? "-";
+                        _lastGitSha = obj.Value<string>("gitSha") ?? "-";
+                        _status = $"version ok: {_lastVersion}";
+                    }
+                    catch (Exception ex)
+                    {
+                        _status = $"version parse failed: {ex.Message}";
+                    }
+                }
+                else
+                {
+                    _status = $"version failed: {req.error}";
+                }
+            }
+            _versionInFlight = false;
+        }
+
+        private string BuildLiveSummary()
+        {
+            if (scanController == null)
+            {
+                scanController = FindFirstObjectByType<ScanController>();
+            }
+
+            if (scanController == null)
+            {
+                return "scan-controller missing";
+            }
+
+            return $"{(scanController.LiveEnabled ? "on" : "off")} | fps={scanController.LiveFps:0.##} | inflight={scanController.InflightCount}/{scanController.LiveMaxInflight}";
+        }
+
+        private string BuildUploadCostSummary()
+        {
+            if (scanController == null)
+            {
+                return "n/a";
+            }
+
+            if (scanController.LastUploadCostMs < 0)
+            {
+                return "n/a";
+            }
+
+            return $"{scanController.LastUploadCostMs:0} ms";
+        }
+
+        private string BuildE2eSummary()
+        {
+            if (scanController == null)
+            {
+                return "n/a";
+            }
+
+            if (scanController.LastE2eMs < 0)
+            {
+                return "n/a";
+            }
+
+            return $"{scanController.LastE2eMs:0} ms";
         }
     }
 }

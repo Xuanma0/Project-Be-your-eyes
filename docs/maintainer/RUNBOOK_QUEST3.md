@@ -1,6 +1,6 @@
 # RUNBOOK_QUEST3
 
-> Goal: minimum smoke loop on Quest 3: passthrough visible -> controller scan upload -> Gateway WS event -> TTS feedback.
+> Goal: Quest 3 local loop: passthrough visible -> controller scan upload -> Gateway WS event -> TTS feedback, with optional Live Loop (continuous frames) under backpressure.
 
 ## 1) Build Prerequisites
 
@@ -32,6 +32,9 @@ python -m uvicorn main:app --app-dir Gateway --host 0.0.0.0 --port 8000
 3. Note the PC LAN IP (example: `192.168.1.20`).
 4. If API key guard is enabled, keep the same key for Unity panel:
    - `BYES_GATEWAY_API_KEY=YOUR_KEY_HERE`.
+5. Optional version/build visibility in panel:
+   - `BYES_GIT_SHA=<commit_sha>`
+   - `BYES_VERSION_OVERRIDE=vX.YY` (only if you need temporary override for test environments).
 
 ## 4) Run Steps
 
@@ -40,8 +43,13 @@ python -m uvicorn main:app --app-dir Gateway --host 0.0.0.0 --port 8000
 3. Set host/IP to PC LAN IP, port `8000`, optional API key, then click `Save + Connect`.
 4. Click `Test Ping` and verify RTT appears.
 5. Click `Read Mode` and verify mode value from Gateway.
-6. Trigger scan with right-hand controller primary button or trigger (desktop fallback is `S`).
-7. Verify loop:
+6. Click `Get Version` and verify `version/gitSha` from Gateway.
+7. Trigger manual scan with right-hand trigger (desktop fallback is `S`).
+8. Toggle Live Loop:
+   - Quest: right-hand primary button (A)
+   - Desktop: `L`
+9. Keep `liveMaxInflight=1` (default) to avoid request pile-up.
+10. Verify loop:
    - Gateway receives `/api/frame`
    - Unity receives `/ws/events`
    - Speech output is heard.
@@ -52,8 +60,42 @@ python -m uvicorn main:app --app-dir Gateway --host 0.0.0.0 --port 8000
   - `Walk`, `Read`, `Inspect`
 - These call existing mode chain:
   - `ByesModeManager.SetMode(...)` -> `GatewayClient.PostModeChange(...)` -> `POST /api/mode`.
+- Live loop controls (`ScanController`):
+  - `liveEnabledDefault` (default `false`)
+  - `liveFps` (default `2.0`)
+  - `liveMaxInflight` (default `1`)
+  - `liveDropIfBusy` (default `true`)
 
-## 6) Troubleshooting
+## 6) Recommended Capture Settings (Quest 3)
+
+- `ScreenFrameGrabber` defaults tuned for LAN stability:
+  - `maxWidth=960`
+  - `maxHeight=540`
+  - `jpegQuality=70`
+  - `keepAspect=true`
+- If network/CPU headroom is limited, lower to `720x405` and quality `60`.
+- If quality is insufficient, raise gradually and watch panel `Last Upload Cost` + `Last E2E`.
+
+## 7) Measurement Template (copy/paste)
+
+```text
+Date:
+Gateway VERSION:
+Gateway gitSha:
+Network:
+Quest Scene:
+Live Enabled:
+liveFps:
+liveMaxInflight:
+Capture maxWidth/maxHeight/jpegQuality:
+Ping RTT (median/p95):
+Last Upload Cost (median/p95):
+Last E2E (median/p95):
+Dropped frame behavior observed (yes/no):
+Notes:
+```
+
+## 8) Troubleshooting
 
 - Black passthrough:
   - Check camera alpha is 0 and AR session/camera manager are active.
@@ -67,6 +109,9 @@ python -m uvicorn main:app --app-dir Gateway --host 0.0.0.0 --port 8000
   - Check `X-BYES-API-Key` when guard enabled.
 - Scan button does nothing:
   - Confirm `ScanController` is present and gateway connection is up.
-  - Check controller input mapping / right-hand trigger or primary button.
+  - Check controller input mapping / right-hand trigger (manual) and primary button (live toggle).
+- Live mode causes rising latency:
+  - Confirm `liveMaxInflight=1` and `liveDropIfBusy=true`.
+  - Lower `liveFps` and/or capture size/quality.
 - No audio/TTS:
   - Confirm WS events are arriving and `SpeechOrchestrator` is active.

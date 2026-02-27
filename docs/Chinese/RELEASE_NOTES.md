@@ -1,113 +1,111 @@
-Current development version is defined by `VERSION`; this file records historical milestones only.
+﻿Current development version is defined by `VERSION`; this file records historical milestones only.
+
+## v4.92
+- Quest 3: added Live Loop controls (toggle/FPS/max in-flight/backpressure) in Unity scan flow.
+- Quest 3: added default downscale + JPEG quality controls for bandwidth stability.
+- Gateway: added GET /api/version (version/gitSha/uptime/profile) for runtime diagnostics.
+- Runtime panel: shows HTTP/WS status, ping RTT, last upload cost, coarse E2E, and version probe button.
+- Added tests/docs updates for v4.92 (/api/version, Quest runbook, config matrix, API inventory).
 
 ## v4.91
-- 新增 Quest 3 烟测闭环支持：
-  - 运行时连接面板（主机/IP、端口、API Key、重连）
-  - 右手控制器按钮触发扫描上传（保留桌面 `S` 作为回退）
-  - 新增 `Quest3SmokeScene` 并加入 Build Settings，增加运行时 passthrough 配置辅助脚本
-- 新增 Gateway 运行态查询端点：
-  - `GET /api/mode`（直接读取 mode state store）
-  - `POST /api/ping`（轻量 RTT 探测）
-- 新增/更新对应测试（含 API Key 开启时的鉴权行为）。
-- 更新 runbook 与配置矩阵，补充 Quest 局域网连接说明和新端点/配置项。
-
+- 鏂板 Quest 3 鐑熸祴闂幆鏀寔锛?  - 杩愯鏃惰繛鎺ラ潰鏉匡紙涓绘満/IP銆佺鍙ｃ€丄PI Key銆侀噸杩烇級
+  - 鍙虫墜鎺у埗鍣ㄦ寜閽Е鍙戞壂鎻忎笂浼狅紙淇濈暀妗岄潰 `S` 浣滀负鍥為€€锛?  - 鏂板 `Quest3SmokeScene` 骞跺姞鍏?Build Settings锛屽鍔犺繍琛屾椂 passthrough 閰嶇疆杈呭姪鑴氭湰
+- 鏂板 Gateway 杩愯鎬佹煡璇㈢鐐癸細
+  - `GET /api/mode`锛堢洿鎺ヨ鍙?mode state store锛?  - `POST /api/ping`锛堣交閲?RTT 鎺㈡祴锛?- 鏂板/鏇存柊瀵瑰簲娴嬭瘯锛堝惈 API Key 寮€鍚椂鐨勯壌鏉冭涓猴級銆?- 鏇存柊 runbook 涓庨厤缃煩闃碉紝琛ュ厖 Quest 灞€鍩熺綉杩炴帴璇存槑鍜屾柊绔偣/閰嶇疆椤广€?
 ## v4.90
-- 新增 mode 端云同步调度：Unity 模式切换通过 `/api/mode` 写入 Gateway 运行态 mode store（`Gateway/byes/mode_state.py`）。
-- 新增 `BYES_MODE_PROFILE_JSON`，支持按 mode 配置各感知目标的 `every_n_frames`（空值时保持旧行为，向后兼容）。
-- 新增 `BYES_EMIT_MODE_PROFILE_DEBUG`，可输出 `mode.profile` 调试事件，便于核验每帧触发/跳过目标。
-- 新增单元测试：mode profile 解析与回退、mode state TTL/LRU 与 changed-flag、stride 判定规则。
-
+- 鏂板 mode 绔簯鍚屾璋冨害锛歎nity 妯″紡鍒囨崲閫氳繃 `/api/mode` 鍐欏叆 Gateway 杩愯鎬?mode store锛坄Gateway/byes/mode_state.py`锛夈€?- 鏂板 `BYES_MODE_PROFILE_JSON`锛屾敮鎸佹寜 mode 閰嶇疆鍚勬劅鐭ョ洰鏍囩殑 `every_n_frames`锛堢┖鍊兼椂淇濇寔鏃ц涓猴紝鍚戝悗鍏煎锛夈€?- 鏂板 `BYES_EMIT_MODE_PROFILE_DEBUG`锛屽彲杈撳嚭 `mode.profile` 璋冭瘯浜嬩欢锛屼究浜庢牳楠屾瘡甯цЕ鍙?璺宠繃鐩爣銆?- 鏂板鍗曞厓娴嬭瘯锛歮ode profile 瑙ｆ瀽涓庡洖閫€銆乵ode state TTL/LRU 涓?changed-flag銆乻tride 鍒ゅ畾瑙勫垯銆?
 ## v4.89
-- 新增 Gateway 部署档位：`BYES_GATEWAY_PROFILE=local|hardened`，`hardened` 下默认开启资源与暴露面护栏。
-- 新增资源护栏：请求体大小限制（`BYES_GATEWAY_MAX_*_BYTES`）与速率限制（`BYES_GATEWAY_RATE_LIMIT_*`）。
-- 新增入口护栏：`/api/dev/*`、`/api/mock_event`、`/api/run_package/upload` 与本地路径输入可通过环境变量按档位禁用。
-- 新增 CI 检查：Unity `.meta` 完整性（`tools/check_unity_meta.py`）与文档相对链接有效性（`tools/check_docs_links.py`）。
+- 鏂板 Gateway 閮ㄧ讲妗ｄ綅锛歚BYES_GATEWAY_PROFILE=local|hardened`锛宍hardened` 涓嬮粯璁ゅ紑鍚祫婧愪笌鏆撮湶闈㈡姢鏍忋€?
+- 鏂板璧勬簮鎶ゆ爮锛氳姹備綋澶у皬闄愬埗锛坄BYES_GATEWAY_MAX_*_BYTES`锛変笌閫熺巼闄愬埗锛坄BYES_GATEWAY_RATE_LIMIT_*`锛夈€?
+- 鏂板鍏ュ彛鎶ゆ爮锛歚/api/dev/*`銆乣/api/mock_event`銆乣/api/run_package/upload` 涓庢湰鍦拌矾寰勮緭鍏ュ彲閫氳繃鐜鍙橀噺鎸夋。浣嶇鐢ㄣ€?
+- 鏂板 CI 妫€鏌ワ細Unity `.meta` 瀹屾暣鎬э紙`tools/check_unity_meta.py`锛変笌鏂囨。鐩稿閾炬帴鏈夋晥鎬э紙`tools/check_docs_links.py`锛夈€?
 
 ## v4.88
 - Added `Gateway/scripts/dev_up.py` for one-command local orchestration (Gateway + optional inference/planner/reference services).
 - Added optional Gateway API key guard for HTTP + WebSocket (`BYES_GATEWAY_API_KEY`) and optional host/origin allowlists.
 - Added API key compatibility in Unity clients and `Gateway/scripts/replay_run_package.py` (`X-BYES-API-Key` + WS `api_key` query).
 
-# 版本发布记录（v4.x）
+# 鐗堟湰鍙戝竷璁板綍锛坴4.x锛?
 
-本文档按版本总结 `v4.38` 到 `v4.82` 的核心能力闭环，便于评审与维护。
+鏈枃妗ｆ寜鐗堟湰鎬荤粨 `v4.38` 鍒?`v4.82` 鐨勬牳蹇冭兘鍔涢棴鐜紝渚夸簬璇勫涓庣淮鎶ゃ€?
 
 ## v4.38
-- 规划评测指标、ablation 扫参（`provider/prompt/budget`）、排行榜/报告接入、回归门禁。
+- 瑙勫垝璇勬祴鎸囨爣銆乤blation 鎵弬锛坄provider/prompt/budget`锛夈€佹帓琛屾/鎶ュ憡鎺ュ叆銆佸洖褰掗棬绂併€?
 
 ## v4.39-v4.40
-- POV 规划适配器（`pov.ir.v1 -> action_plan.v1`）。
-- 在线 POV ingest API + 内存存储 + inline `povIr` 规划链路。
+- POV 瑙勫垝閫傞厤鍣紙`pov.ir.v1 -> action_plan.v1`锛夈€?
+- 鍦ㄧ嚎 POV ingest API + 鍐呭瓨瀛樺偍 + inline `povIr` 瑙勫垝閾捐矾銆?
 
 ## v4.41
-- 契约冻结机制（`Gateway/contracts/*` + `contract.lock.json`）。
-- `/api/contracts` 与 suite/CI 严格契约校验。
+- 濂戠害鍐荤粨鏈哄埗锛坄Gateway/contracts/*` + `contract.lock.json`锛夈€?
+- `/api/contracts` 涓?suite/CI 涓ユ牸濂戠害鏍￠獙銆?
 
 ## v4.42-v4.44
-- 分割 provider 链路（`mock/http`）与 `/seg`。
-- 分割质量指标 + GT fixture。
-- `byes.seg.v1` 冻结与 payload 归一化校验。
+- 鍒嗗壊 provider 閾捐矾锛坄mock/http`锛変笌 `/seg`銆?
+- 鍒嗗壊璐ㄩ噺鎸囨爣 + GT fixture銆?
+- `byes.seg.v1` 鍐荤粨涓?payload 褰掍竴鍖栨牎楠屻€?
 
 ## v4.45-v4.47
-- `reference_seg_service` 与 HTTP E2E。
-- 分割提示契约（`byes.seg_request.v1`）+ prompt 透传 + `seg.prompt` 事件。
+- `reference_seg_service` 涓?HTTP E2E銆?
+- 鍒嗗壊鎻愮ず濂戠害锛坄byes.seg_request.v1`锛? prompt 閫忎紶 + `seg.prompt` 浜嬩欢銆?
 
 ## v4.48-v4.50
-- `byes.seg.v1` 可选 mask（`rle_v1`）与 mask 质量指标。
-- prompt-conditioned 分割行为与 prompt+mask 契约覆盖。
+- `byes.seg.v1` 鍙€?mask锛坄rle_v1`锛変笌 mask 璐ㄩ噺鎸囨爣銆?
+- prompt-conditioned 鍒嗗壊琛屼负涓?prompt+mask 濂戠害瑕嗙洊銆?
 
 ## v4.51-v4.52
-- 分割提示预算/截断工程化。
-- Seg ContextPack（`seg.context.v1`）+ `/api/seg/context` + planner prompt v2 可选拼接。
+- 鍒嗗壊鎻愮ず棰勭畻/鎴柇宸ョ▼鍖栥€?
+- Seg ContextPack锛坄seg.context.v1`锛? `/api/seg/context` + planner prompt v2 鍙€夋嫾鎺ャ€?
 
 ## v4.53-v4.55
-- `byes.plan_request.v1` + 上下文感知 planner HTTP 请求。
-- 可解释 seg-hint 规则层。
-- plan-context 对齐指标（`plan.context_alignment.v1`）。
-- 统一 PlanContextPack（`plan.context_pack.v1`）+ `/api/plan/context`。
+- `byes.plan_request.v1` + 涓婁笅鏂囨劅鐭?planner HTTP 璇锋眰銆?
+- 鍙В閲?seg-hint 瑙勫垯灞傘€?
+- plan-context 瀵归綈鎸囨爣锛坄plan.context_alignment.v1`锛夈€?
+- 缁熶竴 PlanContextPack锛坄plan.context_pack.v1`锛? `/api/plan/context`銆?
 
 ## v4.56-v4.58
-- 单请求 plan context pack override。
-- context sweep 工具。
-- 帧级 E2E 延迟契约/事件（`frame.e2e.v1`）与唯一性/一致性加固。
+- 鍗曡姹?plan context pack override銆?
+- context sweep 宸ュ叿銆?
+- 甯х骇 E2E 寤惰繜濂戠害/浜嬩欢锛坄frame.e2e.v1`锛変笌鍞竴鎬?涓€鑷存€у姞鍥恒€?
 
 ## v4.59-v4.60
-- `frame.input.v1` + `frame.ack.v1` + capture->feedback user-E2E 指标。
-- 按 kind（`tts/ar/haptic`）分桶的 user-E2E 报告/排行榜。
+- `frame.input.v1` + `frame.ack.v1` + capture->feedback user-E2E 鎸囨爣銆?
+- 鎸?kind锛坄tts/ar/haptic`锛夊垎妗剁殑 user-E2E 鎶ュ憡/鎺掕姒溿€?
 
 ## v4.61-v4.64
-- 深度能力链路（`byes.depth.v1`、reference depth service、质量评测）。
-- 模型资产清单（`byes.models.v1`、`/api/models`、`verify_models.py`）。
-- OCR 能力链路（`byes.ocr.v1`、reference OCR、CER/完全匹配指标）。
-- SLAM pose 能力链路（`byes.slam_pose.v1`、reference SLAM、稳定性指标）。
+- 娣卞害鑳藉姏閾捐矾锛坄byes.depth.v1`銆乺eference depth service銆佽川閲忚瘎娴嬶級銆?
+- 妯″瀷璧勪骇娓呭崟锛坄byes.models.v1`銆乣/api/models`銆乣verify_models.py`锛夈€?
+- OCR 鑳藉姏閾捐矾锛坄byes.ocr.v1`銆乺eference OCR銆丆ER/瀹屽叏鍖归厤鎸囨爣锛夈€?
+- SLAM pose 鑳藉姏閾捐矾锛坄byes.slam_pose.v1`銆乺eference SLAM銆佺ǔ瀹氭€ф寚鏍囷級銆?
 
 ## v4.65-v4.66
-- `sam3_seg_service`（fixture/sam3）与下游切换。
-- `da3_depth_service`（fixture/da3）与下游切换。
-- SAM3/DA3 模型文件要求纳入模型清单校验。
+- `sam3_seg_service`锛坒ixture/sam3锛変笌涓嬫父鍒囨崲銆?
+- `da3_depth_service`锛坒ixture/da3锛変笌涓嬫父鍒囨崲銆?
+- SAM3/DA3 妯″瀷鏂囦欢瑕佹眰绾冲叆妯″瀷娓呭崟鏍￠獙銆?
 
 ## v4.67-v4.75
-- pySLAM TUM 轨迹注入为离线 `slam.pose` 事件。
-- 数据集导入器（Ego4D 视频 / 图片目录）与 benchmark 批跑 + matrix profiles。
-- pySLAM prehook（`pyslam_ingest`、`pyslam_run`）。
-- SLAM 轨迹误差指标（`ATE/RPE`）。
-- SlamContextPack（`slam.context.v1`）+ `/api/slam/context`。
+- pySLAM TUM 杞ㄨ抗娉ㄥ叆涓虹绾?`slam.pose` 浜嬩欢銆?
+- 鏁版嵁闆嗗鍏ュ櫒锛圗go4D 瑙嗛 / 鍥剧墖鐩綍锛変笌 benchmark 鎵硅窇 + matrix profiles銆?
+- pySLAM prehook锛坄pyslam_ingest`銆乣pyslam_run`锛夈€?
+- SLAM 杞ㄨ抗璇樊鎸囨爣锛坄ATE/RPE`锛夈€?
+- SlamContextPack锛坄slam.context.v1`锛? `/api/slam/context`銆?
 
 ## v4.76-v4.79
-- 将 SLAM context 接入 plan_request 与 planner prompt（`v3`）。
-- Local costmap（`byes.costmap.v1`）+ costmap context（`costmap.context.v1`）+ planner prompt（`v4`）。
-- Fused costmap（`byes.costmap_fused.v1`，EMA/可选 shift）。
-- Shift gate（可解释 reject 原因）与 online/final 轨迹 profile 对比。
+- 灏?SLAM context 鎺ュ叆 plan_request 涓?planner prompt锛坄v3`锛夈€?
+- Local costmap锛坄byes.costmap.v1`锛? costmap context锛坄costmap.context.v1`锛? planner prompt锛坄v4`锛夈€?
+- Fused costmap锛坄byes.costmap_fused.v1`锛孍MA/鍙€?shift锛夈€?
+- Shift gate锛堝彲瑙ｉ噴 reject 鍘熷洜锛変笌 online/final 杞ㄨ抗 profile 瀵规瘮銆?
 
 ## v4.80-v4.81
-- SAM3 tracking 透传（`trackId`、`trackState`）与 segTracking 指标。
-- 基于 trackId 的动态障碍时序缓存，接入 costmap/costmap_fused。
+- SAM3 tracking 閫忎紶锛坄trackId`銆乣trackState`锛変笌 segTracking 鎸囨爣銆?
+- 鍩轰簬 trackId 鐨勫姩鎬侀殰纰嶆椂搴忕紦瀛橈紝鎺ュ叆 costmap/costmap_fused銆?
 
 ## v4.82
-- DA3 `refViewStrategy` 端到端透传。
-- 深度时序一致性指标：
+- DA3 `refViewStrategy` 绔埌绔€忎紶銆?
+- 娣卞害鏃跺簭涓€鑷存€ф寚鏍囷細
   - `jitterAbs`
   - `flickerRateNear`
   - `scaleDriftProxy`
   - `refViewStrategyDiversityCount`
-- 接入 report/leaderboard/linter/contract gate/matrix summary。
+- 鎺ュ叆 report/leaderboard/linter/contract gate/matrix summary銆?
+
