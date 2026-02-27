@@ -18,6 +18,9 @@
 | `BYES_SLAM_HTTP_URL` | SLAM HTTP endpoint | `http://127.0.0.1:9005/slam/pose` | Gateway inference config | `Gateway/byes/config.py:481` |
 | `GATEWAY_SEND_ENVELOPE` | WS payload mode: envelope vs legacy | `false` | Gateway WS emitter | `Gateway/byes/config.py:344`, `Gateway/main.py:1695-1699` |
 | `BYES_INFERENCE_EMIT_WS_V1` | Directly emit `byes.event.v1` rows to WS | `false` | Gateway inference event bridge | `Gateway/byes/config.py:559`, `Gateway/main.py:737-744` |
+| `BYES_GATEWAY_API_KEY` | Optional Gateway API key guard (`X-BYES-API-Key` for HTTP, `api_key` for WS query) | empty (disabled) | Gateway HTTP middleware + WS gate | `Gateway/main.py` (`_gateway_guardrails`, `_ws_guardrails_ok`) |
+| `BYES_GATEWAY_ALLOWED_HOSTS` | Optional host allowlist (comma-separated) | empty (disabled) | Gateway HTTP middleware + WS gate | `Gateway/main.py` (`_gateway_guardrails`, `_ws_guardrails_ok`) |
+| `BYES_GATEWAY_ALLOWED_ORIGINS` | Optional origin allowlist (comma-separated, only when Origin header exists) | empty (disabled) | Gateway HTTP middleware + WS gate | `Gateway/main.py` (`_gateway_guardrails`, `_ws_guardrails_ok`) |
 | `BYES_PLANNER_PROVIDER` | Planner provider (`reference`/`llm`/`pov`) | `reference` fallback | Gateway planning | `Gateway/main.py:2582-2585` |
 | `BYES_PLANNER_ENDPOINT` | Planner HTTP endpoint | `http://127.0.0.1:19211/plan` (http backend fallback) | Gateway planner backend | `Gateway/byes/planner_backends/http.py:15` |
 | `BYES_PLANNER_LLM_API_KEY` | Primary LLM auth key (openai mode) | empty | planner_service + model manifest check | `Gateway/services/planner_service/app.py:500-505`; `Gateway/byes/model_manifest.py:317-320` |

@@ -1,5 +1,10 @@
 Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v4.88
+- Added `Gateway/scripts/dev_up.py` for one-command local orchestration (Gateway + optional inference/planner/reference services).
+- Added optional Gateway API key guard for HTTP + WebSocket (`BYES_GATEWAY_API_KEY`) and optional host/origin allowlists.
+- Added API key compatibility in Unity clients and `Gateway/scripts/replay_run_package.py` (`X-BYES-API-Key` + WS `api_key` query).
+
 # 版本发布记录（v4.x）
 
 本文档按版本总结 `v4.38` 到 `v4.82` 的核心能力闭环，便于评审与维护。

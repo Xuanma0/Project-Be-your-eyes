@@ -4,6 +4,11 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes the delivered capabilities from `v4.38` to `v4.82` for reviewers and maintainers.
 
+## v4.88
+- Added `Gateway/scripts/dev_up.py` for one-command local orchestration (Gateway + optional inference/planner/reference services).
+- Added optional Gateway API key guard for HTTP + WebSocket (`BYES_GATEWAY_API_KEY`) and optional host/origin allowlists.
+- Added API key compatibility in Unity clients and `Gateway/scripts/replay_run_package.py` (`X-BYES-API-Key` + WS `api_key` query).
+
 ## v4.38
 - Planner evaluation metrics, ablation sweep (`provider/prompt/budget`), leaderboard/report integration, regression gate.
 

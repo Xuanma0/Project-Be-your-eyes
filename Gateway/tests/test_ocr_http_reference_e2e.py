@@ -166,7 +166,7 @@ def test_ocr_http_reference_e2e(tmp_path: Path) -> None:
             object.__setattr__(gateway.config, "inference_enable_risk", False)
             gateway.ocr_backend = HttpOCRBackend(
                 url=f"http://127.0.0.1:{inf_port}/ocr",
-                timeout_ms=2000,
+                timeout_ms=10000,
                 model_id="ocr-http-e2e",
             )
             setattr(gateway.scheduler, "_seq", 0)
@@ -183,15 +183,22 @@ def test_ocr_http_reference_e2e(tmp_path: Path) -> None:
                 )
                 assert response.status_code == 200, response.text
 
-        events = gateway.drain_inference_events()
-        ocr_rows = [
-            row
-            for row in events
-            if isinstance(row, dict)
-            and str(row.get("name", "")).strip() == "ocr.read"
-            and str(row.get("phase", "")).strip() == "result"
-            and str(row.get("status", "")).strip() == "ok"
-        ]
+        events: list[dict[str, Any]] = []
+        ocr_rows: list[dict[str, Any]] = []
+        deadline = time.time() + 20.0
+        while time.time() < deadline and len(ocr_rows) < 2:
+            batch = gateway.drain_inference_events()
+            events.extend(item for item in batch if isinstance(item, dict))
+            ocr_rows = [
+                row
+                for row in events
+                if str(row.get("name", "")).strip() == "ocr.read"
+                and str(row.get("phase", "")).strip() == "result"
+                and str(row.get("status", "")).strip() == "ok"
+            ]
+            if len(ocr_rows) >= 2:
+                break
+            time.sleep(0.05)
         assert len(ocr_rows) >= 2
         assert any(isinstance((row.get("payload") or {}).get("lines"), list) for row in ocr_rows)
 

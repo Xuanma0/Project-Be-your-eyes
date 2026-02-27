@@ -64,6 +64,12 @@ python Gateway/scripts/replay_run_package.py --run-package Gateway/tests/fixture
 python Gateway/scripts/report_run.py --run-package Gateway/tests/fixtures/run_package_with_risk_gt_min
 ```
 
+If Gateway auth is enabled, add replay key:
+
+```bash
+python Gateway/scripts/replay_run_package.py --run-package Gateway/tests/fixtures/run_package_with_risk_gt_min --reset --gateway-api-key YOUR_KEY_HERE
+```
+
 ### Success signals
 
 - `events/events_v1.jsonl` is generated/updated.
@@ -73,6 +79,15 @@ python Gateway/scripts/report_run.py --run-package Gateway/tests/fixtures/run_pa
 ## 3) Quick Start B: Unity + Gateway Realtime (30-minute path)
 
 ### Start backend processes
+
+Optional one-command local orchestration:
+
+```bash
+python Gateway/scripts/dev_up.py --gateway-only
+python Gateway/scripts/dev_up.py --with-inference
+```
+
+Manual split terminals:
 
 Terminal 1 (Gateway):
 
@@ -125,6 +140,12 @@ Planner/LLM keys (if using llm provider):
 - Primary: `BYES_PLANNER_LLM_API_KEY=YOUR_KEY_HERE`
 - Compatibility fallback: `OPENAI_API_KEY=YOUR_KEY_HERE`
 
+Gateway guardrails (optional):
+
+- `BYES_GATEWAY_API_KEY=YOUR_KEY_HERE` (enables API key checks for HTTP+WS)
+- `BYES_GATEWAY_ALLOWED_HOSTS=localhost,127.0.0.1` (optional host allowlist)
+- `BYES_GATEWAY_ALLOWED_ORIGINS=https://example.com` (optional origin allowlist)
+
 ## 5) Data & Evaluation Flow
 
 The core evaluation chain is:
@@ -146,7 +167,10 @@ Entry scripts:
 
 ## 7) Security Statement
 
-This repo's default dev setup is **unauthenticated** and intended for localhost / trusted network use.
+This repo's default dev setup is still localhost-first and intended for trusted network use.
+
+- Optional built-in guardrail: set `BYES_GATEWAY_API_KEY` to require `X-BYES-API-Key` for HTTP and `api_key` on `/ws/events`.
+- Optional host/origin checks: `BYES_GATEWAY_ALLOWED_HOSTS`, `BYES_GATEWAY_ALLOWED_ORIGINS`.
 
 - Do not expose Gateway/services directly to the internet without reverse-proxy auth + TLS.
 - Treat upload/dev endpoints as non-public by default.
@@ -192,7 +216,7 @@ python Gateway/scripts/verify_contracts.py --check-lock
 If maintainers decide to align release tags with `VERSION`:
 
 ```bash
-git tag -a v4.87 -m "v4.87" <commit>
+git tag -a v4.88 -m "v4.88" <commit>
 ```
 
 Do not run this automatically unless release approval is explicit.

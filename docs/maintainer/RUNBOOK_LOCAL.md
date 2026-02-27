@@ -25,6 +25,10 @@ Evidence: `.github/workflows/gateway-ci.yml:36`.
 cd ..
 python Gateway/scripts/replay_run_package.py --run-package Gateway/tests/fixtures/run_package_with_risk_gt_min --reset
 ```
+Optional hardened profile (Gateway key enabled):
+```bash
+python Gateway/scripts/replay_run_package.py --run-package Gateway/tests/fixtures/run_package_with_risk_gt_min --reset --gateway-api-key YOUR_KEY_HERE
+```
 Evidence: `README.md` command + script entry `Gateway/scripts/replay_run_package.py:324`.
 3. Generate report:
 ```bash
@@ -45,6 +49,12 @@ Evidence: `.github/workflows/gateway-ci.yml:44`.
 ## Path B: Unity + Gateway Realtime Loop
 
 ### Start backend
+0. Optional one-command startup:
+```bash
+python Gateway/scripts/dev_up.py --gateway-only
+python Gateway/scripts/dev_up.py --with-inference
+```
+Evidence: `Gateway/scripts/dev_up.py`.
 1. Gateway:
 ```bash
 python -m uvicorn main:app --app-dir Gateway --host 127.0.0.1 --port 8000

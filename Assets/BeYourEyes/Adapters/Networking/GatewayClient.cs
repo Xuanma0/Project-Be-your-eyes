@@ -27,6 +27,7 @@ namespace BeYourEyes.Adapters.Networking
         [Header("Gateway")]
         [SerializeField] private string baseUrl = "http://127.0.0.1:8000";
         [SerializeField] private string wsUrl = "ws://127.0.0.1:8000/ws/events";
+        [SerializeField] private string apiKey = "";
         [SerializeField] private string sessionId = "default";
         [SerializeField] private bool connectOnEnable = true;
         [SerializeField] private bool autoReconnect = true;
@@ -111,7 +112,7 @@ namespace BeYourEyes.Adapters.Networking
         public event Action<string> OnReplayBlockedNetworkAction;
 
         public string BaseUrl => NormalizeBaseUrl(baseUrl);
-        public string WsUrl => string.IsNullOrWhiteSpace(wsUrl) ? "ws://127.0.0.1:8000/ws/events" : wsUrl.Trim();
+        public string WsUrl => BuildWsUrlWithApiKey(string.IsNullOrWhiteSpace(wsUrl) ? "ws://127.0.0.1:8000/ws/events" : wsUrl.Trim());
         public string SessionId => string.IsNullOrWhiteSpace(sessionId) ? "default" : sessionId.Trim();
         public bool IsFrameBusy => frameRequestInFlight;
         public bool IsConnected => webSocket != null && webSocket.State == WebSocketState.Open;
@@ -596,6 +597,7 @@ namespace BeYourEyes.Adapters.Networking
 
                 using (var req = UnityWebRequest.Post(BuildApiUrl("/api/frame"), form))
                 {
+                    ApplyApiKeyHeader(req);
                     yield return req.SendWebRequest();
                     if (req.result == UnityWebRequest.Result.Success)
                     {
@@ -634,6 +636,7 @@ namespace BeYourEyes.Adapters.Networking
                 req.uploadHandler = new UploadHandlerRaw(bodyBytes);
                 req.downloadHandler = new DownloadHandlerBuffer();
                 req.SetRequestHeader("Content-Type", "application/json");
+                ApplyApiKeyHeader(req);
                 yield return req.SendWebRequest();
 
                 var success = req.result == UnityWebRequest.Result.Success;
@@ -651,6 +654,7 @@ namespace BeYourEyes.Adapters.Networking
             using (var req = UnityWebRequest.Get(url))
             {
                 req.downloadHandler = new DownloadHandlerBuffer();
+                ApplyApiKeyHeader(req);
                 yield return req.SendWebRequest();
 
                 if (req.result != UnityWebRequest.Result.Success)
@@ -854,6 +858,45 @@ namespace BeYourEyes.Adapters.Networking
         private string BuildApiUrl(string path)
         {
             return $"{BaseUrl.TrimEnd('/')}{path}";
+        }
+
+        private string ResolveApiKey()
+        {
+            return string.IsNullOrWhiteSpace(apiKey) ? string.Empty : apiKey.Trim();
+        }
+
+        private string BuildWsUrlWithApiKey(string rawUrl)
+        {
+            var normalized = string.IsNullOrWhiteSpace(rawUrl) ? "ws://127.0.0.1:8000/ws/events" : rawUrl.Trim();
+            var resolvedApiKey = ResolveApiKey();
+            if (string.IsNullOrWhiteSpace(resolvedApiKey))
+            {
+                return normalized;
+            }
+
+            if (normalized.IndexOf("api_key=", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return normalized;
+            }
+
+            var separator = normalized.Contains("?") ? "&" : "?";
+            return $"{normalized}{separator}api_key={UnityWebRequest.EscapeURL(resolvedApiKey)}";
+        }
+
+        private void ApplyApiKeyHeader(UnityWebRequest req)
+        {
+            if (req == null)
+            {
+                return;
+            }
+
+            var resolvedApiKey = ResolveApiKey();
+            if (string.IsNullOrWhiteSpace(resolvedApiKey))
+            {
+                return;
+            }
+
+            req.SetRequestHeader("X-BYES-API-Key", resolvedApiKey);
         }
 
         public bool TryAcceptUiEvent(JObject evt, string defaultType, out long receivedAtMs, out int ttlMs, out string rejectReason, bool isReplay = false)
@@ -1065,6 +1108,7 @@ namespace BeYourEyes.Adapters.Networking
             using (var req = UnityWebRequest.Get(BuildApiUrl("/api/health")))
             {
                 req.downloadHandler = new DownloadHandlerBuffer();
+                ApplyApiKeyHeader(req);
                 yield return req.SendWebRequest();
                 var finishedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 lastHealthRttMs = (int)Mathf.Clamp((float)(finishedAtMs - startedAtMs), 0f, 60000f);
@@ -1122,6 +1166,7 @@ namespace BeYourEyes.Adapters.Networking
             using (var req = UnityWebRequest.Get(BuildApiUrl("/api/external_readiness")))
             {
                 req.downloadHandler = new DownloadHandlerBuffer();
+                ApplyApiKeyHeader(req);
                 yield return req.SendWebRequest();
                 var finishedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
