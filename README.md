@@ -55,6 +55,8 @@ python Gateway/scripts/lint_run_package.py --run-package Gateway/tests/fixtures/
 python Gateway/scripts/run_regression_suite.py --suite Gateway/regression/suites/baseline_suite.json --baseline Gateway/regression/baselines/baseline.json --fail-on-drop --fail-on-critical-fn
 python Gateway/scripts/run_regression_suite.py --suite Gateway/regression/suites/contract_suite.json --baseline Gateway/regression/baselines/baseline.json --fail-on-drop --fail-on-critical-fn
 python Gateway/scripts/verify_contracts.py --check-lock
+python tools/check_unity_meta.py
+python tools/check_docs_links.py
 ```
 
 ### Replay + report
@@ -85,6 +87,14 @@ Optional one-command local orchestration:
 ```bash
 python Gateway/scripts/dev_up.py --gateway-only
 python Gateway/scripts/dev_up.py --with-inference
+```
+
+Optional hardened profile smoke (still local bind unless you override host):
+
+```bash
+# PowerShell
+$env:BYES_GATEWAY_PROFILE="hardened"
+python Gateway/scripts/dev_up.py --gateway-only
 ```
 
 Manual split terminals:
@@ -145,6 +155,12 @@ Gateway guardrails (optional):
 - `BYES_GATEWAY_API_KEY=YOUR_KEY_HERE` (enables API key checks for HTTP+WS)
 - `BYES_GATEWAY_ALLOWED_HOSTS=localhost,127.0.0.1` (optional host allowlist)
 - `BYES_GATEWAY_ALLOWED_ORIGINS=https://example.com` (optional origin allowlist)
+- `BYES_GATEWAY_PROFILE=local|hardened` (`local` default; `hardened` enables safer defaults)
+- `BYES_GATEWAY_DEV_ENDPOINTS_ENABLED=0/1` (default local `1`, hardened default `0`)
+- `BYES_GATEWAY_RUNPACKAGE_UPLOAD_ENABLED=0/1` (default local `1`, hardened default `0`)
+- `BYES_GATEWAY_ALLOW_LOCAL_RUNPACKAGE_PATH=0/1` (default local `1`, hardened default `0`)
+- `BYES_GATEWAY_MAX_FRAME_BYTES`, `BYES_GATEWAY_MAX_RUNPACKAGE_ZIP_BYTES`, `BYES_GATEWAY_MAX_JSON_BYTES` (request body limits)
+- `BYES_GATEWAY_RATE_LIMIT_ENABLED`, `BYES_GATEWAY_RATE_LIMIT_RPS`, `BYES_GATEWAY_RATE_LIMIT_BURST`, `BYES_GATEWAY_RATE_LIMIT_KEY_MODE`
 
 ## 5) Data & Evaluation Flow
 
@@ -171,6 +187,7 @@ This repo's default dev setup is still localhost-first and intended for trusted 
 
 - Optional built-in guardrail: set `BYES_GATEWAY_API_KEY` to require `X-BYES-API-Key` for HTTP and `api_key` on `/ws/events`.
 - Optional host/origin checks: `BYES_GATEWAY_ALLOWED_HOSTS`, `BYES_GATEWAY_ALLOWED_ORIGINS`.
+- Optional hardening profile: `BYES_GATEWAY_PROFILE=hardened` to default-disable dev/upload/local-path surfaces and enable rate/body-size limits.
 
 - Do not expose Gateway/services directly to the internet without reverse-proxy auth + TLS.
 - Treat upload/dev endpoints as non-public by default.
@@ -216,7 +233,7 @@ python Gateway/scripts/verify_contracts.py --check-lock
 If maintainers decide to align release tags with `VERSION`:
 
 ```bash
-git tag -a v4.88 -m "v4.88" <commit>
+git tag -a v4.89 -m "v4.89" <commit>
 ```
 
 Do not run this automatically unless release approval is explicit.

@@ -190,6 +190,17 @@ class GatewayConfig:
     mock_ocr_confidence: float
     mock_ocr_text: str
     mock_tool_timeout_ms: int
+    gateway_profile: str = "local"
+    gateway_dev_endpoints_enabled: bool = True
+    gateway_runpackage_upload_enabled: bool = True
+    gateway_allow_local_runpackage_path: bool = True
+    gateway_max_frame_bytes: int = 0
+    gateway_max_runpackage_zip_bytes: int = 0
+    gateway_max_json_bytes: int = 0
+    gateway_rate_limit_enabled: bool = False
+    gateway_rate_limit_rps: float = 10.0
+    gateway_rate_limit_burst: int = 20
+    gateway_rate_limit_key_mode: str = "ip"
     frame_tracker_retention_ms: int = 120000
     frame_tracker_max_entries: int = 20000
     enable_real_det: bool = False
@@ -341,6 +352,19 @@ class GatewayConfig:
 def load_config() -> GatewayConfig:
     slow_q_maxsize = _env_int("BYES_SLOW_Q_MAXSIZE", 64)
     return GatewayConfig(
+        gateway_profile=(str(os.getenv("BYES_GATEWAY_PROFILE", "local")).strip().lower() or "local"),
+        gateway_dev_endpoints_enabled=_env_bool("BYES_GATEWAY_DEV_ENDPOINTS_ENABLED", True),
+        gateway_runpackage_upload_enabled=_env_bool("BYES_GATEWAY_RUNPACKAGE_UPLOAD_ENABLED", True),
+        gateway_allow_local_runpackage_path=_env_bool("BYES_GATEWAY_ALLOW_LOCAL_RUNPACKAGE_PATH", True),
+        gateway_max_frame_bytes=max(0, _env_int("BYES_GATEWAY_MAX_FRAME_BYTES", 0)),
+        gateway_max_runpackage_zip_bytes=max(0, _env_int("BYES_GATEWAY_MAX_RUNPACKAGE_ZIP_BYTES", 0)),
+        gateway_max_json_bytes=max(0, _env_int("BYES_GATEWAY_MAX_JSON_BYTES", 0)),
+        gateway_rate_limit_enabled=_env_bool("BYES_GATEWAY_RATE_LIMIT_ENABLED", False),
+        gateway_rate_limit_rps=max(0.1, _env_float("BYES_GATEWAY_RATE_LIMIT_RPS", 10.0)),
+        gateway_rate_limit_burst=max(1, _env_int("BYES_GATEWAY_RATE_LIMIT_BURST", 20)),
+        gateway_rate_limit_key_mode=(
+            str(os.getenv("BYES_GATEWAY_RATE_LIMIT_KEY_MODE", "ip")).strip().lower() or "ip"
+        ),
         send_envelope=_env_bool("GATEWAY_SEND_ENVELOPE", False),
         default_ttl_ms=_env_int("BYES_DEFAULT_TTL_MS", 3000),
         risk_priority=_env_int("BYES_RISK_PRIORITY", 100),

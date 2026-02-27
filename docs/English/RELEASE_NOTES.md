@@ -2,7 +2,18 @@ Current development version is defined by `VERSION`; this file records historica
 
 # Release Notes (v4.x)
 
-This changelog summarizes the delivered capabilities from `v4.38` to `v4.82` for reviewers and maintainers.
+This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
+
+## v4.89
+- Added a profile-driven Gateway hardening layer (`BYES_GATEWAY_PROFILE=local|hardened`) with hardened defaults for rate-limit, request-size limits, and dev surface restrictions.
+- Added Gateway resource guardrails:
+  - in-process rate limit middleware (`BYES_GATEWAY_RATE_LIMIT_*`)
+  - request body size middleware (`BYES_GATEWAY_MAX_*_BYTES`)
+  - dev endpoint/run-package upload/local-path guards (`BYES_GATEWAY_*_ENABLED`)
+- Added CI guards for Unity `.meta` completeness and docs relative-link validation:
+  - `tools/check_unity_meta.py`
+  - `tools/check_docs_links.py`
+- Added corresponding tests for middleware and endpoint toggles in `Gateway/tests/`.
 
 ## v4.88
 - Added `Gateway/scripts/dev_up.py` for one-command local orchestration (Gateway + optional inference/planner/reference services).

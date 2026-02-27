@@ -11,7 +11,7 @@
 - Evidence: `Assets/Scenes/DemoScene.unity:972` (`ws://127.0.0.1:8000/ws/events`).
 
 ### 3) Version head signal
-- Fact: current development version file is `v4.88`.
+- Fact: current development version file is `v4.89`.
 - Evidence: `VERSION`.
 
 ### 4) Planner key variable compatibility
@@ -27,6 +27,8 @@
 - Evidence: `Gateway/main.py` (`_gateway_guardrails`, `_ws_guardrails_ok`).
 - Fact: local one-command startup script exists (`Gateway/scripts/dev_up.py`), default host is localhost.
 - Evidence: `Gateway/scripts/dev_up.py` (`--host` default `127.0.0.1`).
+- Fact: profile-driven hardening is now implemented (`BYES_GATEWAY_PROFILE=local|hardened`), including rate-limit/body-size/dev/upload/local-path guards.
+- Evidence: `Gateway/main.py` (`_apply_gateway_profile_defaults`, middleware mount, endpoint/path guards); `Gateway/byes/config.py` (`BYES_GATEWAY_*`); `Gateway/byes/middleware/*.py`.
 
 ## Unresolved Decisions + Recommendation
 
@@ -41,9 +43,9 @@
 - Recommendation: keep SampleScene as default; document DemoScene as optional diagnostic/demo scene.
 
 ### C) Unity `.meta` management strategy
-- Confirmed facts: `.gitignore` keeps `Assets/**/*.meta` tracked (`.gitignore:17`).
-- Need decision: enforce CI/pre-commit check for missing `.meta` files?
-- Recommendation: enforce `.meta` completeness checks to avoid GUID/reference drift.
+- Confirmed facts: `.gitignore` keeps `Assets/**/*.meta` tracked (`.gitignore:17`), and CI now runs `python tools/check_unity_meta.py` with `tools/unity_meta_allowlist.txt` for legacy gaps.
+- Need decision: whether to also enforce this guard in local pre-commit hooks (in addition to CI).
+- Recommendation: keep CI guard mandatory and add optional pre-commit hook template for faster local feedback.
 
 ### D) ASR roadmap
 - Confirmed facts: repository includes TTS output components (`SpeechOrchestrator`, `AndroidTtsBackend`), but no ASR input pipeline evidence.
@@ -51,9 +53,9 @@
 - Recommendation: define ASR scope in roadmap before adding interfaces.
 
 ### E) Internet deployment profile
-- Confirmed facts: default docs use localhost; optional API-key/host/origin guardrails now exist in Gateway; external Dockerfiles still include `0.0.0.0`.
-- Need decision: should hardened profile become an explicit documented mode (env preset + reverse proxy example)?
-- Recommendation: keep local/intranet as default; publish an explicit hardened deployment profile (reverse proxy auth/TLS/rate-limit/body-size limits).
+- Confirmed facts: explicit `hardened` profile now exists and is documented in README + maintainer docs; default docs still use localhost; external Dockerfiles still include `0.0.0.0`.
+- Need decision: should CI/release pipeline enforce hardened profile checks as release gate for internet-facing distributions?
+- Recommendation: keep `local` as default dev profile; keep `hardened` as explicit opt-in baseline and publish reverse-proxy auth/TLS reference deployment.
 
 ### F) Final key naming policy
 - Confirmed facts: compatibility exists for both planner key names.
