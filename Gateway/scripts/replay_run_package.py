@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -14,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 import websockets
@@ -113,6 +115,25 @@ def _normalize_ws_url(ws_url: str) -> str:
     if not text:
         return "ws://127.0.0.1:8000/ws/events"
     return text
+
+
+def _resolve_gateway_api_key(cli_value: str | None) -> str:
+    value = str(cli_value or "").strip()
+    if value:
+        return value
+    return str(os.getenv("BYES_GATEWAY_API_KEY", "")).strip()
+
+
+def _append_ws_api_key(ws_url: str, gateway_api_key: str) -> str:
+    if not gateway_api_key:
+        return ws_url
+    parsed = urlparse(ws_url)
+    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    if any(str(key) == "api_key" for key, _ in query_pairs):
+        return ws_url
+    query_pairs.append(("api_key", gateway_api_key))
+    updated_query = urlencode(query_pairs)
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, updated_query, parsed.fragment))
 
 
 def _now_ms() -> int:
@@ -224,19 +245,25 @@ def _build_replay_dir(out_dir: Path | None, source_name: str, scenario_tag: str)
     return replay_dir
 
 
-def _write_metrics_snapshot(client: httpx.Client, url: str, output: Path) -> None:
-    response = client.get(url, timeout=10.0)
+def _write_metrics_snapshot(client: httpx.Client, url: str, output: Path, headers: dict[str, str] | None = None) -> None:
+    response = client.get(url, timeout=10.0, headers=headers)
     response.raise_for_status()
     output.write_text(response.text, encoding="utf-8")
 
 
-def _execute_call(client: httpx.Client, base_url: str, call: ReplayCall, call_log: list[dict[str, Any]]) -> None:
+def _execute_call(
+    client: httpx.Client,
+    base_url: str,
+    call: ReplayCall,
+    call_log: list[dict[str, Any]],
+    headers: dict[str, str] | None = None,
+) -> None:
     url = f"{base_url}{call.path if call.path.startswith('/') else '/' + call.path}"
     started = _now_ms()
     if call.method == "GET":
-        response = client.get(url, timeout=10.0)
+        response = client.get(url, timeout=10.0, headers=headers)
     else:
-        response = client.request(call.method, url, json=call.body or {}, timeout=10.0)
+        response = client.request(call.method, url, json=call.body or {}, timeout=10.0, headers=headers)
     latency = max(0, _now_ms() - started)
     call_log.append(
         {
@@ -257,6 +284,7 @@ def _post_frames(
     frames: list[ReplayFrame],
     interval_ms: int,
     call_log: list[dict[str, Any]],
+    headers: dict[str, str] | None = None,
 ) -> int:
     sent = 0
     for frame in frames:
@@ -269,6 +297,7 @@ def _post_frames(
             data={"meta": payload_meta},
             files={"image": (frame.frame_path.name, content, "image/jpeg")},
             timeout=20.0,
+            headers=headers,
         )
         latency = max(0, _now_ms() - started)
         call_log.append(
@@ -332,10 +361,13 @@ def replay_run_package(
     do_reset: bool = True,
     record_ws: bool = True,
     auto_upload: bool = False,
+    gateway_api_key: str | None = None,
     client: httpx.Client | None = None,
 ) -> dict[str, Any]:
     normalized_base_url = _normalize_base_url(base_url)
-    normalized_ws_url = _normalize_ws_url(ws_url)
+    resolved_gateway_api_key = _resolve_gateway_api_key(gateway_api_key)
+    request_headers = {"X-BYES-API-Key": resolved_gateway_api_key} if resolved_gateway_api_key else None
+    normalized_ws_url = _append_ws_api_key(_normalize_ws_url(ws_url), resolved_gateway_api_key)
     source_dir, cleanup_dir = _resolve_run_package_dir(run_package)
     manifest = _load_manifest(source_dir)
     frames = _load_frames_from_package(source_dir, manifest)
@@ -370,17 +402,23 @@ def replay_run_package(
 
     try:
         if do_reset:
-            _execute_call(client, normalized_base_url, ReplayCall(method="POST", path="/api/dev/reset", body={}), call_log)
+            _execute_call(
+                client,
+                normalized_base_url,
+                ReplayCall(method="POST", path="/api/dev/reset", body={}),
+                call_log,
+                headers=request_headers,
+            )
 
         if apply_scenario_calls:
             for call in scenario_calls:
                 try:
-                    _execute_call(client, normalized_base_url, call, call_log)
+                    _execute_call(client, normalized_base_url, call, call_log, headers=request_headers)
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"scenario_call_failed:{call.method}:{call.path}:{exc}")
 
         try:
-            _write_metrics_snapshot(client, f"{normalized_base_url}/metrics", metrics_before)
+            _write_metrics_snapshot(client, f"{normalized_base_url}/metrics", metrics_before, headers=request_headers)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"metrics_before_failed:{exc}")
             metrics_before.write_text("", encoding="utf-8")
@@ -389,7 +427,7 @@ def replay_run_package(
             ws_recorder = WsRecorder(normalized_ws_url, ws_jsonl)
             ws_recorder.start()
 
-        sent_frames = _post_frames(client, normalized_base_url, frames, interval_ms, call_log)
+        sent_frames = _post_frames(client, normalized_base_url, frames, interval_ms, call_log, headers=request_headers)
         time.sleep(0.35)
 
         if ws_recorder is not None:
@@ -406,7 +444,7 @@ def replay_run_package(
             events_v1_jsonl.write_text("", encoding="utf-8")
 
         try:
-            _write_metrics_snapshot(client, f"{normalized_base_url}/metrics", metrics_after)
+            _write_metrics_snapshot(client, f"{normalized_base_url}/metrics", metrics_after, headers=request_headers)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"metrics_after_failed:{exc}")
             metrics_after.write_text("", encoding="utf-8")
@@ -450,6 +488,7 @@ def replay_run_package(
                     data={"scenarioTag": scenario_tag},
                     files={"file": (replay_zip.name, replay_zip.read_bytes(), "application/zip")},
                     timeout=30.0,
+                    headers=request_headers,
                 )
                 resp.raise_for_status()
                 upload_payload = resp.json()
@@ -465,6 +504,7 @@ def replay_run_package(
             "endMs": end_ms,
             "baseUrl": normalized_base_url,
             "wsUrl": normalized_ws_url,
+            "gatewayApiKeyConfigured": bool(resolved_gateway_api_key),
             "sessionId": str(manifest.get("sessionId", "default")),
             "sourceRunPackage": str(run_package),
             "wsJsonl": "ws_events.jsonl",
@@ -521,6 +561,7 @@ def main() -> int:
     parser.add_argument("--no-reset", dest="do_reset", action="store_false")
     parser.add_argument("--no-ws", dest="record_ws", action="store_false", default=True)
     parser.add_argument("--auto-upload", action="store_true", default=False)
+    parser.add_argument("--gateway-api-key", default="", help="Optional gateway API key (fallback env: BYES_GATEWAY_API_KEY)")
     args = parser.parse_args()
 
     run_package = Path(args.run_package)
@@ -536,6 +577,7 @@ def main() -> int:
             do_reset=bool(args.do_reset),
             record_ws=bool(args.record_ws),
             auto_upload=bool(args.auto_upload),
+            gateway_api_key=str(args.gateway_api_key or "").strip() or None,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0

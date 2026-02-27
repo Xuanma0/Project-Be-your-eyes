@@ -11,14 +11,22 @@
 - Evidence: `Assets/Scenes/DemoScene.unity:972` (`ws://127.0.0.1:8000/ws/events`).
 
 ### 3) Version head signal
-- Fact: HEAD subject includes `v4.87`.
-- Evidence: `git show -s --format=%s HEAD`.
+- Fact: current development version file is `v4.88`.
+- Evidence: `VERSION`.
 
 ### 4) Planner key variable compatibility
 - Fact: planner openai mode now supports `BYES_PLANNER_LLM_API_KEY` (preferred) and `OPENAI_API_KEY` (fallback).
 - Evidence: `Gateway/services/planner_service/app.py:500-505`.
 - Fact: model manifest requirement now accepts either key.
 - Evidence: `Gateway/byes/model_manifest.py:317-320`.
+
+### 5) Gateway optional guardrails
+- Fact: optional Gateway API key guard exists (`BYES_GATEWAY_API_KEY`) for HTTP + WS.
+- Evidence: `Gateway/main.py` (`_gateway_guardrails`, `_ws_guardrails_ok`).
+- Fact: optional host/origin allowlist exists (`BYES_GATEWAY_ALLOWED_HOSTS`, `BYES_GATEWAY_ALLOWED_ORIGINS`).
+- Evidence: `Gateway/main.py` (`_gateway_guardrails`, `_ws_guardrails_ok`).
+- Fact: local one-command startup script exists (`Gateway/scripts/dev_up.py`), default host is localhost.
+- Evidence: `Gateway/scripts/dev_up.py` (`--host` default `127.0.0.1`).
 
 ## Unresolved Decisions + Recommendation
 
@@ -43,9 +51,9 @@
 - Recommendation: define ASR scope in roadmap before adding interfaces.
 
 ### E) Internet deployment profile
-- Confirmed facts: default docs use localhost; external Dockerfiles bind `0.0.0.0`; app-level auth not present.
-- Need decision: official supported deployment profile (local-only vs hardened internet profile).
-- Recommendation: declare local/intranet as default and provide separate hardened deployment guide for internet-facing use.
+- Confirmed facts: default docs use localhost; optional API-key/host/origin guardrails now exist in Gateway; external Dockerfiles still include `0.0.0.0`.
+- Need decision: should hardened profile become an explicit documented mode (env preset + reverse proxy example)?
+- Recommendation: keep local/intranet as default; publish an explicit hardened deployment profile (reverse proxy auth/TLS/rate-limit/body-size limits).
 
 ### F) Final key naming policy
 - Confirmed facts: compatibility exists for both planner key names.

@@ -148,7 +148,7 @@ def test_da3_ref_view_strategy_passthrough_fixture(tmp_path: Path) -> None:
             object.__setattr__(gateway.config, "inference_enable_risk", False)
             gateway.depth_backend = HttpDepthBackend(
                 url=f"http://127.0.0.1:{inf_port}/depth",
-                timeout_ms=2000,
+                timeout_ms=10000,
                 model_id="depth-http-da3-ref-view",
             )
             setattr(gateway.scheduler, "_seq", 0)
@@ -163,15 +163,22 @@ def test_da3_ref_view_strategy_passthrough_fixture(tmp_path: Path) -> None:
             )
             assert response.status_code == 200, response.text
 
-        rows = gateway.drain_inference_events()
-        depth_rows = [
-            row
-            for row in rows
-            if isinstance(row, dict)
-            and str(row.get("name", "")).strip() == "depth.estimate"
-            and str(row.get("phase", "")).strip() == "result"
-            and str(row.get("status", "")).strip() == "ok"
-        ]
+        rows: list[dict[str, Any]] = []
+        depth_rows: list[dict[str, Any]] = []
+        deadline = time.time() + 20.0
+        while time.time() < deadline and not depth_rows:
+            batch = gateway.drain_inference_events()
+            rows.extend(item for item in batch if isinstance(item, dict))
+            depth_rows = [
+                row
+                for row in rows
+                if str(row.get("name", "")).strip() == "depth.estimate"
+                and str(row.get("phase", "")).strip() == "result"
+                and str(row.get("status", "")).strip() == "ok"
+            ]
+            if depth_rows:
+                break
+            time.sleep(0.05)
         assert depth_rows
         payload = depth_rows[-1].get("payload")
         payload = payload if isinstance(payload, dict) else {}

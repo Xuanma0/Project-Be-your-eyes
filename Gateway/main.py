@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, ValidationError, model_validator
 
 from byes.config import GatewayConfig, load_config
@@ -1730,6 +1730,117 @@ class GatewayApp:
 
 app = FastAPI(title="BeYourEyes Gateway")
 gateway = GatewayApp(app)
+
+_API_KEY_HEADER = "x-byes-api-key"
+
+
+def _csv_env_set(env_name: str) -> set[str]:
+    raw = str(os.getenv(env_name, "") or "").strip()
+    if not raw:
+        return set()
+    values: set[str] = set()
+    for token in raw.split(","):
+        value = token.strip().lower()
+        if value:
+            values.add(value)
+    return values
+
+
+def _normalize_host_header(host_header: str | None) -> str:
+    text = str(host_header or "").strip().lower()
+    if not text:
+        return ""
+    if text.startswith("["):
+        end = text.find("]")
+        if end > 1:
+            return text[1:end]
+    return text.split(":", 1)[0].strip()
+
+
+def _is_host_allowed(host_header: str | None, allowed_hosts: set[str]) -> bool:
+    if not allowed_hosts:
+        return True
+    host = _normalize_host_header(host_header)
+    if not host:
+        return False
+    return host in allowed_hosts
+
+
+def _is_origin_allowed(origin_header: str | None, allowed_origins: set[str]) -> bool:
+    if not allowed_origins:
+        return True
+    origin = str(origin_header or "").strip().lower()
+    if not origin:
+        return True
+    return origin in allowed_origins
+
+
+def _is_guarded_http_path(path: str) -> bool:
+    normalized = str(path or "").strip()
+    if normalized.startswith("/api/"):
+        return True
+    if normalized == "/metrics":
+        return True
+    if normalized == "/runs" or normalized.startswith("/runs/"):
+        return True
+    return False
+
+
+def _request_api_key(request: Request) -> str:
+    return str(request.headers.get("X-BYES-API-Key", "")).strip()
+
+
+def _websocket_api_key(websocket: WebSocket) -> str:
+    query_key = str(websocket.query_params.get("api_key", "")).strip()
+    if query_key:
+        return query_key
+    return str(websocket.headers.get(_API_KEY_HEADER, "")).strip()
+
+
+async def _reject_ws_policy_violation(websocket: WebSocket) -> None:
+    with contextlib.suppress(Exception):
+        await websocket.accept()
+    with contextlib.suppress(Exception):
+        await websocket.close(code=1008)
+
+
+async def _ws_guardrails_ok(websocket: WebSocket) -> bool:
+    allowed_hosts = _csv_env_set("BYES_GATEWAY_ALLOWED_HOSTS")
+    if not _is_host_allowed(websocket.headers.get("host"), allowed_hosts):
+        await _reject_ws_policy_violation(websocket)
+        return False
+
+    allowed_origins = _csv_env_set("BYES_GATEWAY_ALLOWED_ORIGINS")
+    if not _is_origin_allowed(websocket.headers.get("origin"), allowed_origins):
+        await _reject_ws_policy_violation(websocket)
+        return False
+
+    expected_key = str(os.getenv("BYES_GATEWAY_API_KEY", "")).strip()
+    if expected_key and _websocket_api_key(websocket) != expected_key:
+        await _reject_ws_policy_violation(websocket)
+        return False
+    return True
+
+
+@app.middleware("http")
+async def _gateway_guardrails(request: Request, call_next):  # type: ignore[no-untyped-def]
+    allowed_hosts = _csv_env_set("BYES_GATEWAY_ALLOWED_HOSTS")
+    if not _is_host_allowed(request.headers.get("host"), allowed_hosts):
+        return JSONResponse(status_code=400, content={"detail": "Invalid Host"})
+
+    allowed_origins = _csv_env_set("BYES_GATEWAY_ALLOWED_ORIGINS")
+    if not _is_origin_allowed(request.headers.get("origin"), allowed_origins):
+        return JSONResponse(status_code=400, content={"detail": "Invalid Origin"})
+
+    if str(request.method or "").upper() == "OPTIONS":
+        return await call_next(request)
+
+    expected_key = str(os.getenv("BYES_GATEWAY_API_KEY", "")).strip()
+    if expected_key and _is_guarded_http_path(request.url.path):
+        if _request_api_key(request) != expected_key:
+            return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+
+    return await call_next(request)
 
 
 @app.on_event("startup")
@@ -8279,6 +8390,9 @@ def metrics() -> Response:
 
 @app.websocket("/ws/events")
 async def ws_events(websocket: WebSocket) -> None:
+    if not await _ws_guardrails_ok(websocket):
+        return
+
     await gateway.connections.connect(websocket)
     gateway.degradation.set_ws_client_count(await gateway.connections.count())
     await gateway.emit_degradation_changes(
