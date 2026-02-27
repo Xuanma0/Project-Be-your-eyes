@@ -4,6 +4,17 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v4.91
+- Added Quest 3 smoke-loop enablement pieces:
+  - runtime connection panel for host/port/api-key config + reconnect
+  - XR controller scan trigger support (right-hand primary/trigger) while keeping desktop `S` fallback
+  - dedicated `Quest3SmokeScene` entry in Build Settings and runtime passthrough setup helper
+- Added Gateway runtime introspection endpoints:
+  - `GET /api/mode` (reads mode from mode-state store)
+  - `POST /api/ping` (lightweight RTT helper)
+- Added/updated tests for the new endpoints, including API-key guard behavior.
+- Updated runbooks and config matrix for Quest LAN setup and new endpoint/env coverage.
+
 ## v4.90
 - Added mode-synced active-perception profile support in Gateway:
   - new runtime mode state store (`Gateway/byes/mode_state.py`)

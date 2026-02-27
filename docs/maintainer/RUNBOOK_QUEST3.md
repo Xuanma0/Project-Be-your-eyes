@@ -1,0 +1,72 @@
+# RUNBOOK_QUEST3
+
+> Goal: minimum smoke loop on Quest 3: passthrough visible -> controller scan upload -> Gateway WS event -> TTS feedback.
+
+## 1) Build Prerequisites
+
+- Unity version: `6000.3.5f2` (`ProjectSettings/ProjectVersion.txt`).
+- XR packages present:
+  - `com.unity.xr.openxr`
+  - `com.unity.xr.meta-openxr` (>= 2.3.0 in this repo)
+  - `com.unity.xr.arfoundation`
+  - Evidence: `Packages/manifest.json`.
+- Build scenes:
+  - `Assets/Scenes/SampleScene.unity` (existing)
+  - `Assets/Scenes/Quest3SmokeScene.unity` (added for Quest smoke)
+  - Evidence: `ProjectSettings/EditorBuildSettings.asset`.
+
+## 2) Passthrough Requirements
+
+- Camera clear flags must be solid color with alpha `A=0`.
+- AR session + AR camera manager/background must exist at runtime.
+- Runtime helper script enforces this in `Quest3SmokeScene`:
+  - `Assets/Scripts/BYES/UI/ByesQuestPassthroughSetup.cs`.
+
+## 3) LAN Setup (PC + Quest)
+
+1. Ensure PC and Quest are on the same LAN / Wi-Fi.
+2. Start Gateway with LAN bind:
+```bash
+python -m uvicorn main:app --app-dir Gateway --host 0.0.0.0 --port 8000
+```
+3. Note the PC LAN IP (example: `192.168.1.20`).
+4. If API key guard is enabled, keep the same key for Unity panel:
+   - `BYES_GATEWAY_API_KEY=YOUR_KEY_HERE`.
+
+## 4) Run Steps
+
+1. Build and run `Quest3SmokeScene` on Quest 3.
+2. Open runtime connection panel (`ByesConnectionPanel` auto-installs on this scene).
+3. Set host/IP to PC LAN IP, port `8000`, optional API key, then click `Save + Connect`.
+4. Click `Test Ping` and verify RTT appears.
+5. Click `Read Mode` and verify mode value from Gateway.
+6. Trigger scan with right-hand controller primary button or trigger (desktop fallback is `S`).
+7. Verify loop:
+   - Gateway receives `/api/frame`
+   - Unity receives `/ws/events`
+   - Speech output is heard.
+
+## 5) Runtime Controls
+
+- Mode buttons in panel:
+  - `Walk`, `Read`, `Inspect`
+- These call existing mode chain:
+  - `ByesModeManager.SetMode(...)` -> `GatewayClient.PostModeChange(...)` -> `POST /api/mode`.
+
+## 6) Troubleshooting
+
+- Black passthrough:
+  - Check camera alpha is 0 and AR session/camera manager are active.
+  - Confirm `ByesQuestPassthroughSetup` exists in runtime hierarchy.
+- WS never connects:
+  - Confirm host/IP is PC LAN IP (not `127.0.0.1`).
+  - Confirm firewall allows inbound `8000`.
+  - If API key enabled, ensure key matches.
+- Ping fails:
+  - Verify `POST /api/ping` reachable from Quest.
+  - Check `X-BYES-API-Key` when guard enabled.
+- Scan button does nothing:
+  - Confirm `ScanController` is present and gateway connection is up.
+  - Check controller input mapping / right-hand trigger or primary button.
+- No audio/TTS:
+  - Confirm WS events are arriving and `SpeechOrchestrator` is active.

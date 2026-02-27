@@ -203,6 +203,7 @@ class GatewayConfig:
     gateway_rate_limit_key_mode: str = "ip"
     mode_profile_json: str = ""
     emit_mode_profile_debug: bool = False
+    emit_net_debug: bool = False
     frame_tracker_retention_ms: int = 120000
     frame_tracker_max_entries: int = 20000
     enable_real_det: bool = False
@@ -369,6 +370,7 @@ def load_config() -> GatewayConfig:
         ),
         mode_profile_json=str(os.getenv("BYES_MODE_PROFILE_JSON", "") or ""),
         emit_mode_profile_debug=_env_bool("BYES_EMIT_MODE_PROFILE_DEBUG", False),
+        emit_net_debug=_env_bool("BYES_EMIT_NET_DEBUG", False),
         send_envelope=_env_bool("GATEWAY_SEND_ENVELOPE", False),
         default_ttl_ms=_env_int("BYES_DEFAULT_TTL_MS", 3000),
         risk_priority=_env_int("BYES_RISK_PRIORITY", 100),

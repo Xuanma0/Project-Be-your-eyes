@@ -48,6 +48,8 @@ Evidence: `.github/workflows/gateway-ci.yml:44`.
 
 ## Path B: Unity + Gateway Realtime Loop
 
+Quest 3 specific checklist: [RUNBOOK_QUEST3.md](RUNBOOK_QUEST3.md).
+
 ### Start backend
 0. Optional one-command startup:
 ```bash
@@ -67,6 +69,9 @@ Evidence: `Gateway/main.py` (`_apply_gateway_profile_defaults`), `Gateway/byes/c
 python -m uvicorn main:app --app-dir Gateway --host 127.0.0.1 --port 8000
 ```
 Evidence: `docs/English/COMMANDS.md:51`.
+Quest LAN note:
+- For Quest device testing, bind Gateway on `0.0.0.0` and use the PC LAN IP in Unity connection panel.
+- Example: `python -m uvicorn main:app --app-dir Gateway --host 0.0.0.0 --port 8000`.
 2. Optional inference service (for HTTP providers):
 ```bash
 python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 127.0.0.1 --port 19120

@@ -113,6 +113,7 @@ namespace BeYourEyes.Adapters.Networking
 
         public string BaseUrl => NormalizeBaseUrl(baseUrl);
         public string WsUrl => BuildWsUrlWithApiKey(string.IsNullOrWhiteSpace(wsUrl) ? "ws://127.0.0.1:8000/ws/events" : wsUrl.Trim());
+        public string ApiKey => ResolveApiKey();
         public string SessionId => string.IsNullOrWhiteSpace(sessionId) ? "default" : sessionId.Trim();
         public bool IsFrameBusy => frameRequestInFlight;
         public bool IsConnected => webSocket != null && webSocket.State == WebSocketState.Open;
@@ -208,6 +209,15 @@ namespace BeYourEyes.Adapters.Networking
                 wsUrl = newWsUrl.Trim();
             }
 
+            if (reconnect)
+            {
+                ConnectWebSocket();
+            }
+        }
+
+        public void SetApiKey(string value, bool reconnect = true)
+        {
+            apiKey = string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
             if (reconnect)
             {
                 ConnectWebSocket();

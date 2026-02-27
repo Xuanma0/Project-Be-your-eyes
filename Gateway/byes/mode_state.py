@@ -104,6 +104,15 @@ class _ModeEntry:
     changed: bool
 
 
+@dataclass(frozen=True)
+class ModeSnapshot:
+    device_id: str
+    mode: str
+    updated_ts_ms: int
+    expires_in_ms: int | None
+    source: str
+
+
 class ModeStateStore:
     def __init__(
         self,
@@ -228,3 +237,42 @@ class ModeStateStore:
             entry.changed = False
             self._run_modes.move_to_end(run_key, last=True)
         return changed
+
+    def get_device_snapshot(self, *, device_id: str | None) -> ModeSnapshot:
+        now_ms = _now_ms()
+        self._purge_expired(now_ms)
+        normalized_device = self._normalize_key(device_id) or "default"
+        lookup_key = self._normalize_key(device_id)
+        if lookup_key is None:
+            return ModeSnapshot(
+                device_id=normalized_device,
+                mode=self.default_mode,
+                updated_ts_ms=now_ms,
+                expires_in_ms=None,
+                source="default",
+            )
+
+        entry = self._device_modes.get(lookup_key)
+        if entry is None:
+            return ModeSnapshot(
+                device_id=normalized_device,
+                mode=self.default_mode,
+                updated_ts_ms=now_ms,
+                expires_in_ms=None,
+                source="default",
+            )
+
+        self._device_modes.move_to_end(lookup_key, last=True)
+        expires_in_ms: int | None
+        if self.ttl_ms <= 0:
+            expires_in_ms = None
+        else:
+            remaining = int(self.ttl_ms) - max(0, now_ms - int(entry.updated_at_ms))
+            expires_in_ms = max(0, remaining)
+        return ModeSnapshot(
+            device_id=lookup_key,
+            mode=entry.mode,
+            updated_ts_ms=int(entry.updated_at_ms),
+            expires_in_ms=expires_in_ms,
+            source="explicit",
+        )

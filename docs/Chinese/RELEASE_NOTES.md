@@ -1,5 +1,16 @@
 Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v4.91
+- 新增 Quest 3 烟测闭环支持：
+  - 运行时连接面板（主机/IP、端口、API Key、重连）
+  - 右手控制器按钮触发扫描上传（保留桌面 `S` 作为回退）
+  - 新增 `Quest3SmokeScene` 并加入 Build Settings，增加运行时 passthrough 配置辅助脚本
+- 新增 Gateway 运行态查询端点：
+  - `GET /api/mode`（直接读取 mode state store）
+  - `POST /api/ping`（轻量 RTT 探测）
+- 新增/更新对应测试（含 API Key 开启时的鉴权行为）。
+- 更新 runbook 与配置矩阵，补充 Quest 局域网连接说明和新端点/配置项。
+
 ## v4.90
 - 新增 mode 端云同步调度：Unity 模式切换通过 `/api/mode` 写入 Gateway 运行态 mode store（`Gateway/byes/mode_state.py`）。
 - 新增 `BYES_MODE_PROFILE_JSON`，支持按 mode 配置各感知目标的 `every_n_frames`（空值时保持旧行为，向后兼容）。

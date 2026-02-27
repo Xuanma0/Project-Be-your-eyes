@@ -310,6 +310,20 @@ namespace BeYourEyes.Adapters.Networking
             return new Uri(BuildWsUrlWithApiKey(url));
         }
 
+        public void SetConnectionConfig(string newWsUrl, string newApiKey, bool reconnect = true)
+        {
+            if (!string.IsNullOrWhiteSpace(newWsUrl))
+            {
+                wsUrl = newWsUrl.Trim();
+            }
+
+            apiKey = string.IsNullOrWhiteSpace(newApiKey) ? string.Empty : newApiKey.Trim();
+            if (reconnect && isActiveAndEnabled)
+            {
+                StartClient();
+            }
+        }
+
         private string BuildWsUrlWithApiKey(string rawUrl)
         {
             var normalized = string.IsNullOrWhiteSpace(rawUrl) ? "ws://127.0.0.1:8000/ws/events" : rawUrl.Trim();
@@ -336,6 +350,7 @@ namespace BeYourEyes.Adapters.Networking
 {
     public sealed class GatewayWsClient : MonoBehaviour
     {
+        public string wsUrl = "ws://127.0.0.1:8000/ws/events";
         public string apiKey = "";
         public int ReconnectCount { get; private set; }
         public string ConnectionState { get; private set; } = "Disconnected";
@@ -345,6 +360,16 @@ namespace BeYourEyes.Adapters.Networking
         private void OnEnable()
         {
             Debug.LogWarning("GatewayWsClient is only enabled for Windows Editor/Standalone in this version.");
+        }
+
+        public void SetConnectionConfig(string newWsUrl, string newApiKey, bool reconnect = true)
+        {
+            if (!string.IsNullOrWhiteSpace(newWsUrl))
+            {
+                wsUrl = newWsUrl.Trim();
+            }
+
+            apiKey = string.IsNullOrWhiteSpace(newApiKey) ? string.Empty : newApiKey.Trim();
         }
     }
 }

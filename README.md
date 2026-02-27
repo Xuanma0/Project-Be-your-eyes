@@ -81,6 +81,8 @@ python Gateway/scripts/replay_run_package.py --run-package Gateway/tests/fixture
 
 ## 3) Quick Start B: Unity + Gateway Realtime (30-minute path)
 
+Quest 3 specific steps are documented in [docs/maintainer/RUNBOOK_QUEST3.md](docs/maintainer/RUNBOOK_QUEST3.md).
+
 ### Start backend processes
 
 Optional one-command local orchestration:
@@ -237,7 +239,7 @@ python Gateway/scripts/verify_contracts.py --check-lock
 If maintainers decide to align release tags with `VERSION`:
 
 ```bash
-git tag -a v4.90 -m "v4.90" <commit>
+git tag -a v4.91 -m "v4.91" <commit>
 ```
 
 Do not run this automatically unless release approval is explicit.

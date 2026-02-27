@@ -7,6 +7,7 @@ using BeYourEyes.Core.Events;
 using BeYourEyes.Core.Scheduling;
 using BeYourEyes.Unity.Capture;
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 namespace BeYourEyes.Unity.Interaction
 {
@@ -21,10 +22,17 @@ namespace BeYourEyes.Unity.Interaction
 
         public KeyCode scanKey = KeyCode.S;
         public float minIntervalSec = 1.0f;
+        [Header("XR Input (optional)")]
+        [SerializeField] private bool enableXrButtons = true;
+        [SerializeField] private InputActionReference rightPrimaryButtonAction;
+        [SerializeField] private InputActionReference rightTriggerButtonAction;
 
         private ScreenFrameGrabber frameGrabber;
         private GatewayFrameUploader uploader;
         private GatewayWsClient wsClient;
+        private GatewayClient gatewayClient;
+        private InputAction fallbackPrimaryButtonAction;
+        private InputAction fallbackTriggerButtonAction;
         private float lastScanAt = -1000f;
         private float lastNoGatewayPromptAt = -1000f;
         private bool isScanning;
@@ -42,6 +50,49 @@ namespace BeYourEyes.Unity.Interaction
             if (uploader == null)
             {
                 uploader = gameObject.AddComponent<GatewayFrameUploader>();
+            }
+
+            gatewayClient = FindFirstObjectByType<GatewayClient>();
+        }
+
+        private void OnEnable()
+        {
+            EnsureXrFallbackActions();
+            rightPrimaryButtonAction?.action?.Enable();
+            rightTriggerButtonAction?.action?.Enable();
+            fallbackPrimaryButtonAction?.Enable();
+            fallbackTriggerButtonAction?.Enable();
+        }
+
+        private void OnDisable()
+        {
+            rightPrimaryButtonAction?.action?.Disable();
+            rightTriggerButtonAction?.action?.Disable();
+            fallbackPrimaryButtonAction?.Disable();
+            fallbackTriggerButtonAction?.Disable();
+        }
+
+        private void EnsureXrFallbackActions()
+        {
+            if (!enableXrButtons)
+            {
+                return;
+            }
+
+            if (fallbackPrimaryButtonAction == null)
+            {
+                fallbackPrimaryButtonAction = new InputAction(
+                    name: "BYES_RightPrimaryButton",
+                    type: InputActionType.Button,
+                    binding: "<XRController>{RightHand}/primaryButton");
+            }
+
+            if (fallbackTriggerButtonAction == null)
+            {
+                fallbackTriggerButtonAction = new InputAction(
+                    name: "BYES_RightTriggerButton",
+                    type: InputActionType.Button,
+                    binding: "<XRController>{RightHand}/triggerPressed");
             }
         }
 
@@ -74,7 +125,18 @@ namespace BeYourEyes.Unity.Interaction
 
         private bool IsGatewayConnected()
         {
-            return wsClient != null && string.Equals(wsClient.ConnectionState, "Connected", StringComparison.Ordinal);
+            var wsConnected = wsClient != null && string.Equals(wsClient.ConnectionState, "Connected", StringComparison.Ordinal);
+            if (wsConnected)
+            {
+                return true;
+            }
+
+            if (gatewayClient == null)
+            {
+                gatewayClient = FindFirstObjectByType<GatewayClient>();
+            }
+
+            return gatewayClient != null && gatewayClient.IsConnected;
         }
 
         private IEnumerator ScanOnce()
@@ -116,6 +178,25 @@ namespace BeYourEyes.Unity.Interaction
 
         private bool WasScanPressedThisFrame()
         {
+            if (enableXrButtons)
+            {
+                var primaryPressed =
+                    (rightPrimaryButtonAction != null && rightPrimaryButtonAction.action != null && rightPrimaryButtonAction.action.WasPressedThisFrame())
+                    || (fallbackPrimaryButtonAction != null && fallbackPrimaryButtonAction.WasPressedThisFrame());
+                if (primaryPressed)
+                {
+                    return true;
+                }
+
+                var triggerPressed =
+                    (rightTriggerButtonAction != null && rightTriggerButtonAction.action != null && rightTriggerButtonAction.action.WasPressedThisFrame())
+                    || (fallbackTriggerButtonAction != null && fallbackTriggerButtonAction.WasPressedThisFrame());
+                if (triggerPressed)
+                {
+                    return true;
+                }
+            }
+
             if (scanKey != KeyCode.S)
             {
                 return false;

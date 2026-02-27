@@ -455,6 +455,20 @@ class ModeChangeRequest(BaseModel):
         return self
 
 
+class PingRequest(BaseModel):
+    deviceId: str | None = None
+    seq: int = 0
+    clientSendTsMs: int | None = None
+
+    @model_validator(mode="after")
+    def _validate_ping(self) -> "PingRequest":
+        if int(self.seq) < 0:
+            raise ValueError("seq must be >= 0")
+        if self.clientSendTsMs is not None and int(self.clientSendTsMs) < 0:
+            raise ValueError("clientSendTsMs must be >= 0")
+        return self
+
+
 class ConfirmResponseRequest(BaseModel):
     runId: str
     frameSeq: int
@@ -2338,6 +2352,41 @@ async def mode_change(request: ModeChangeRequest) -> dict[str, Any]:
         "source": source,
         "tsMs": int(ts_ms),
     }
+
+
+@app.get("/api/mode")
+async def mode_get(deviceId: str | None = None) -> dict[str, Any]:
+    snapshot = gateway.mode_state.get_device_snapshot(device_id=deviceId)
+    return {
+        "deviceId": snapshot.device_id,
+        "mode": snapshot.mode,
+        "updatedTsMs": int(snapshot.updated_ts_ms),
+        "expiresInMs": snapshot.expires_in_ms,
+        "source": snapshot.source,
+    }
+
+
+@app.post("/api/ping")
+async def ping(request: PingRequest) -> dict[str, Any]:
+    server_recv_ts_ms = _now_ms()
+    payload = {
+        "deviceId": str(request.deviceId or "").strip() or "default",
+        "seq": int(max(0, int(request.seq))),
+        "clientSendTsMs": _to_nonnegative_int_or_none(request.clientSendTsMs),
+        "serverRecvTsMs": int(server_recv_ts_ms),
+        "serverSendTsMs": int(_now_ms()),
+    }
+    if gateway.config.emit_net_debug:
+        await gateway._emit_inference_event(  # noqa: SLF001
+            _build_byes_event(
+                run_id="unknown-run",
+                frame_seq=1,
+                category="debug",
+                name="net.ping",
+                payload=payload,
+            )
+        )
+    return payload
 
 
 @app.post("/api/fault/set")
