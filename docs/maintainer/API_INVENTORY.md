@@ -43,6 +43,17 @@
 | GET | `/metrics` | Prometheus metrics | No explicit request body. | Prometheus response (`Gateway/main.py:8274-8277`). | Manual/API consumer (no single in-repo caller evidenced). | `Gateway/main.py:8275` (`metrics`) |
 | WEBSOCKET | `/ws/events` | Realtime websocket event stream | No explicit request body. | WebSocket text/json stream (`Gateway/main.py:8280-8302`). | Unity WS clients (`Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs:29`, `GatewayWsClient.cs:19`); replay client (`Gateway/scripts/replay_run_package.py:114`) | `Gateway/main.py:8281` (`ws_events`) |
 
+## v4.89 Endpoint Guard Toggles
+
+| Guard | Affected Endpoints | Default (`local`) | Hardened Default | Evidence |
+|---|---|---|---|---|
+| `BYES_GATEWAY_DEV_ENDPOINTS_ENABLED` | `/api/mock_event`, `/api/fault/*`, `/api/dev/*` | enabled | disabled | `Gateway/main.py` (`_ensure_dev_endpoints_enabled`) |
+| `BYES_GATEWAY_RUNPACKAGE_UPLOAD_ENABLED` | `/api/run_package/upload` | enabled | disabled | `Gateway/main.py` (`_ensure_runpackage_upload_enabled`) |
+| `BYES_GATEWAY_ALLOW_LOCAL_RUNPACKAGE_PATH` | Context APIs that accept `runPackage` local paths | enabled | disabled | `Gateway/main.py` (`_resolve_context_run_package_input`) |
+| `BYES_GATEWAY_API_KEY` | Guarded HTTP routes + `/ws/events` | disabled | disabled unless explicitly set | `Gateway/main.py` (`_gateway_guardrails`, `_ws_guardrails_ok`) |
+
+Profile defaults are applied in `Gateway/main.py` via `_apply_gateway_profile_defaults` when `BYES_GATEWAY_PROFILE=hardened`.
+
 ## WebSocket Event Modes
 
 | Mode | Switch | Payload Form | Evidence |

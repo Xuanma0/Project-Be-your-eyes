@@ -1,0 +1,29 @@
+# Legacy missing Unity .meta files/directories.
+# CI fails only on new missing entries not listed here.
+
+Assets/Demo/UnitySentis/ProfilerCaptures
+Assets/Demo/UnitySentis/ProfilerCaptures/Project-Be-your-eyes_2026-02-15_22-21-44.bc7
+Assets/Demo/UnitySentis/ProfilerCaptures/Project-Be-your-eyes_2026-02-15_22-42-50.bc7
+Assets/Demo/UnitySentis/ProfilerCaptures/Project-Be-your-eyes_2026-02-15_22-42-50.data
+Assets/Demo/UnitySentis/ProfilerCaptures/Project-Be-your-eyes_2026-02-15_22-42-50.highlights
+Assets/Demo/UnitySentis/ProfilerCaptures/Project-Be-your-eyes_2026-02-15_22-42-50.png
+Assets/MRTemplateAssets/Fonts/Inter/.gitattributes
+Assets/Scripts
+Assets/Scripts/BYES
+Assets/Scripts/BYES/Core
+Assets/Scripts/BYES/Core/ByesModeManager.cs
+Assets/Scripts/BYES/Core/ByesRuntimeBootstrap.cs
+Assets/Scripts/BYES/Core/ByesSystemState.cs
+Assets/Scripts/BYES/Plan
+Assets/Scripts/BYES/Plan/ActionPlanExecutor.cs
+Assets/Scripts/BYES/Plan/ActionPlanTypes.cs
+Assets/Scripts/BYES/Plan/PlanClient.cs
+Assets/Scripts/BYES/Plan/PlanExecutor.cs
+Assets/Scripts/BYES/Telemetry
+Assets/Scripts/BYES/Telemetry/ByesFrameTelemetry.cs
+Assets/Scripts/BYES/Telemetry/ByesHaptics.cs
+Assets/Scripts/BYES/UI
+Assets/Scripts/BYES/UI/ByesConfirmPanel.cs
+Assets/Scripts/BYES/UI/ByesModeHotkeys.cs
+Assets/Scripts/BYES/UI/ByesOverlayAckThrottler.cs
+Assets/Scripts/BYES/UI/ByesOverlayRenderer.cs

@@ -1,5 +1,11 @@
 Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v4.89
+- 新增 Gateway 部署档位：`BYES_GATEWAY_PROFILE=local|hardened`，`hardened` 下默认开启资源与暴露面护栏。
+- 新增资源护栏：请求体大小限制（`BYES_GATEWAY_MAX_*_BYTES`）与速率限制（`BYES_GATEWAY_RATE_LIMIT_*`）。
+- 新增入口护栏：`/api/dev/*`、`/api/mock_event`、`/api/run_package/upload` 与本地路径输入可通过环境变量按档位禁用。
+- 新增 CI 检查：Unity `.meta` 完整性（`tools/check_unity_meta.py`）与文档相对链接有效性（`tools/check_docs_links.py`）。
+
 ## v4.88
 - Added `Gateway/scripts/dev_up.py` for one-command local orchestration (Gateway + optional inference/planner/reference services).
 - Added optional Gateway API key guard for HTTP + WebSocket (`BYES_GATEWAY_API_KEY`) and optional host/origin allowlists.

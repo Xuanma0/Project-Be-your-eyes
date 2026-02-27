@@ -76,6 +76,8 @@ from byes.plan_pipeline import extract_risk_summary, generate_action_plan, load_
 from byes.plan_executor import execute_plan as execute_action_plan
 from byes.schemas.pov_ir_schema import validate_pov_ir
 from byes.model_manifest import build_model_manifest
+from byes.middleware.rate_limit import RateLimitConfig, RateLimitMiddleware
+from byes.middleware.request_size_limit import RequestSizeLimitMiddleware, RequestSizeLimits
 from scripts.report_run import generate_report_outputs, load_run_package, safe_extract_zip
 
 
@@ -1728,8 +1730,61 @@ class GatewayApp:
         )
 
 
+def _gateway_profile() -> str:
+    return str(os.getenv("BYES_GATEWAY_PROFILE", "local")).strip().lower() or "local"
+
+
+def _gateway_profile_is_hardened() -> bool:
+    return _gateway_profile() == "hardened"
+
+
+def _profile_bool(name: str, local_default: bool, hardened_default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return hardened_default if _gateway_profile_is_hardened() else local_default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _apply_gateway_profile_defaults() -> None:
+    if not _gateway_profile_is_hardened():
+        return
+    defaults = {
+        "BYES_GATEWAY_RATE_LIMIT_ENABLED": "1",
+        "BYES_GATEWAY_RATE_LIMIT_RPS": "10",
+        "BYES_GATEWAY_RATE_LIMIT_BURST": "20",
+        "BYES_GATEWAY_RATE_LIMIT_KEY_MODE": "api_key_or_ip",
+        "BYES_GATEWAY_MAX_FRAME_BYTES": str(10 * 1024 * 1024),
+        "BYES_GATEWAY_MAX_RUNPACKAGE_ZIP_BYTES": str(200 * 1024 * 1024),
+        "BYES_GATEWAY_MAX_JSON_BYTES": str(1 * 1024 * 1024),
+        "BYES_GATEWAY_DEV_ENDPOINTS_ENABLED": "0",
+        "BYES_GATEWAY_ALLOW_LOCAL_RUNPACKAGE_PATH": "0",
+        "BYES_GATEWAY_RUNPACKAGE_UPLOAD_ENABLED": "0",
+    }
+    for key, value in defaults.items():
+        os.environ.setdefault(key, value)
+
+
+_apply_gateway_profile_defaults()
+
 app = FastAPI(title="BeYourEyes Gateway")
 gateway = GatewayApp(app)
+app.add_middleware(
+    RequestSizeLimitMiddleware,
+    limits=RequestSizeLimits(
+        frame_bytes=max(0, int(gateway.config.gateway_max_frame_bytes)),
+        runpackage_zip_bytes=max(0, int(gateway.config.gateway_max_runpackage_zip_bytes)),
+        json_bytes=max(0, int(gateway.config.gateway_max_json_bytes)),
+    ),
+)
+app.add_middleware(
+    RateLimitMiddleware,
+    config=RateLimitConfig(
+        enabled=bool(gateway.config.gateway_rate_limit_enabled),
+        requests_per_second=max(0.1, float(gateway.config.gateway_rate_limit_rps)),
+        burst=max(1, int(gateway.config.gateway_rate_limit_burst)),
+        key_mode=str(gateway.config.gateway_rate_limit_key_mode or "ip"),
+    ),
+)
 
 _API_KEY_HEADER = "x-byes-api-key"
 
@@ -1843,6 +1898,30 @@ async def _gateway_guardrails(request: Request, call_next):  # type: ignore[no-u
     return await call_next(request)
 
 
+def _ensure_dev_endpoints_enabled(path: str) -> None:
+    if _profile_bool("BYES_GATEWAY_DEV_ENDPOINTS_ENABLED", True, False):
+        return
+    raise HTTPException(status_code=403, detail=f"endpoint disabled by profile: {path}")
+
+
+def _ensure_runpackage_upload_enabled() -> None:
+    if _profile_bool("BYES_GATEWAY_RUNPACKAGE_UPLOAD_ENABLED", True, False):
+        return
+    raise HTTPException(status_code=403, detail="run package upload disabled by profile")
+
+
+def _allow_local_runpackage_path() -> bool:
+    return _profile_bool("BYES_GATEWAY_ALLOW_LOCAL_RUNPACKAGE_PATH", True, False)
+
+
+def _is_path_under(base_dir: Path, target_path: Path) -> bool:
+    try:
+        target_path.resolve().relative_to(base_dir.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 @app.on_event("startup")
 async def _startup() -> None:
     await gateway.startup()
@@ -1885,6 +1964,7 @@ def health() -> dict[str, Any]:
 
 @app.get("/api/mock_event", response_model=MockEvent)
 def mock_event() -> MockEvent:
+    _ensure_dev_endpoints_enabled("/api/mock_event")
     return gateway.build_mock_event()
 
 
@@ -2135,6 +2215,7 @@ async def mode_change(request: ModeChangeRequest) -> dict[str, Any]:
 
 @app.post("/api/fault/set")
 async def fault_set(request: FaultSetRequest) -> dict[str, Any]:
+    _ensure_dev_endpoints_enabled("/api/fault/set")
     try:
         snapshot = await gateway.faults.set_fault(
             tool=request.tool,
@@ -2149,18 +2230,21 @@ async def fault_set(request: FaultSetRequest) -> dict[str, Any]:
 
 @app.post("/api/fault/clear")
 async def fault_clear() -> dict[str, Any]:
+    _ensure_dev_endpoints_enabled("/api/fault/clear")
     snapshot = await gateway.faults.clear_faults()
     return {"ok": True, **snapshot}
 
 
 @app.post("/api/dev/reset")
 async def dev_reset() -> dict[str, Any]:
+    _ensure_dev_endpoints_enabled("/api/dev/reset")
     runtime = await gateway.reset_runtime()
     return {"ok": True, **runtime}
 
 
 @app.post("/api/dev/intent")
 async def dev_intent(request: IntentRequest) -> dict[str, Any]:
+    _ensure_dev_endpoints_enabled("/api/dev/intent")
     duration_ms = int(request.durationMs or 0)
     try:
         snapshot = gateway.intent.set_intent(request.kind or "none", duration_ms, question=request.question)
@@ -2177,6 +2261,7 @@ async def dev_intent(request: IntentRequest) -> dict[str, Any]:
 
 @app.post("/api/dev/crosscheck")
 async def dev_crosscheck(request: CrossCheckRequest) -> dict[str, Any]:
+    _ensure_dev_endpoints_enabled("/api/dev/crosscheck")
     duration_ms = int(request.durationMs or 0)
     try:
         snapshot = gateway.set_forced_crosscheck(request.kind, duration_ms)
@@ -2187,6 +2272,7 @@ async def dev_crosscheck(request: CrossCheckRequest) -> dict[str, Any]:
 
 @app.post("/api/dev/performance")
 async def dev_performance(request: PerformanceRequest) -> dict[str, Any]:
+    _ensure_dev_endpoints_enabled("/api/dev/performance")
     duration_ms = int(request.durationMs or 0)
     try:
         snapshot = gateway.set_forced_performance(request.mode, request.reason or "manual_override", duration_ms)
@@ -2242,6 +2328,7 @@ async def run_package_upload(
     file: UploadFile = File(...),
     scenarioTag: str | None = Form(default=None),
 ) -> dict[str, Any]:
+    _ensure_runpackage_upload_enabled()
     filename = (file.filename or "").strip().lower()
     if not filename.endswith(".zip"):
         raise HTTPException(status_code=400, detail="file must be .zip")
@@ -4100,6 +4187,10 @@ def _resolve_context_run_package_input(run_package_raw: str) -> tuple[Path, Path
     source_path = Path(run_package_text)
     if not source_path.exists():
         raise HTTPException(status_code=404, detail=f"runPackage not found: {run_package_text}")
+    if not _allow_local_runpackage_path():
+        resolved_source = source_path.resolve()
+        if not _is_path_under(gateway.run_packages_root, resolved_source):
+            raise HTTPException(status_code=403, detail="local runPackage path input disabled by profile")
     if source_path.is_dir():
         return source_path.resolve(), None, True
     if source_path.is_file() and source_path.suffix.lower() == ".zip":

@@ -55,6 +55,13 @@ python Gateway/scripts/dev_up.py --gateway-only
 python Gateway/scripts/dev_up.py --with-inference
 ```
 Evidence: `Gateway/scripts/dev_up.py`.
+Optional hardened profile (v4.89):
+```bash
+# PowerShell
+$env:BYES_GATEWAY_PROFILE="hardened"
+python Gateway/scripts/dev_up.py --gateway-only
+```
+Evidence: `Gateway/main.py` (`_apply_gateway_profile_defaults`), `Gateway/byes/config.py` (`BYES_GATEWAY_PROFILE`).
 1. Gateway:
 ```bash
 python -m uvicorn main:app --app-dir Gateway --host 127.0.0.1 --port 8000
@@ -81,6 +88,7 @@ Evidence: `docs/English/COMMANDS.md:57`; `Gateway/services/inference_service/REA
 - Gateway WS emits events from `/ws/events` (`Gateway/main.py:8280`).
 - Unity presenter handles WS event `type` switch (`Assets/BeYourEyes/Presenters/Audio/SpeechOrchestrator.cs:162-178`).
 - ACKs reach `/api/frame/ack` (`Assets/Scripts/BYES/Telemetry/ByesFrameTelemetry.cs:166`; `Gateway/main.py:1894`).
+- Hardened profile smoke: `/api/mock_event` and `/api/run_package/upload` are blocked unless explicitly re-enabled (`Gateway/main.py`: `_ensure_dev_endpoints_enabled`, `_ensure_runpackage_upload_enabled`).
 
 ## Troubleshooting Quick Checks
 
@@ -91,3 +99,5 @@ Evidence: `docs/English/COMMANDS.md:57`; `Gateway/services/inference_service/REA
 | Upload fails | Validate zip format + manifest + safe extract rules | `Gateway/main.py:2128-2163`; `Gateway/scripts/report_run.py:2008-2017` |
 | Contract lock mismatch | Run `python Gateway/scripts/verify_contracts.py --check-lock` | `.github/workflows/gateway-ci.yml:52`; `Gateway/scripts/verify_contracts.py:132,156` |
 | Provider mismatch | Verify `BYES_*_BACKEND` and `*_HTTP_URL` envs | `Gateway/byes/config.py:469-481` |
+| Hardening blocks requests unexpectedly | Check `BYES_GATEWAY_PROFILE`, `BYES_GATEWAY_DEV_ENDPOINTS_ENABLED`, `BYES_GATEWAY_RUNPACKAGE_UPLOAD_ENABLED`, `BYES_GATEWAY_ALLOW_LOCAL_RUNPACKAGE_PATH` | `Gateway/byes/config.py:355-367`; `Gateway/main.py:1955-1968` |
+| 413 / 429 returned | Check request-size and rate-limit envs (`BYES_GATEWAY_MAX_*`, `BYES_GATEWAY_RATE_LIMIT_*`) | `Gateway/byes/config.py:359-366`; `Gateway/byes/middleware/request_size_limit.py`; `Gateway/byes/middleware/rate_limit.py` |
