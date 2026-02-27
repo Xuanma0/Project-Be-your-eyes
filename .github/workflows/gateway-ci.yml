@@ -62,3 +62,7 @@ jobs:
       - name: Unity layering guard
         run: |
           python tools/check_unity_layering.py
+
+      - name: Unity legacy input guard
+        run: |
+          python tools/check_unity_legacy_input.py

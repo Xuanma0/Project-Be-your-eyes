@@ -9,6 +9,9 @@ using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.SceneManagement;
+#if ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem;
+#endif
 
 namespace BYES.UI
 {
@@ -44,6 +47,8 @@ namespace BYES.UI
         private bool _versionInFlight;
         private string _lastVersion = "-";
         private string _lastGitSha = "-";
+        private string _selfTestStatus = "IDLE";
+        private string _selfTestSummary = "-";
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoInstallOnQuestSmokeScene()
@@ -103,7 +108,7 @@ namespace BYES.UI
 
         private void Update()
         {
-            if (allowKeyboardToggle && Input.GetKeyDown(toggleKey))
+            if (allowKeyboardToggle && WasTogglePressedThisFrame())
             {
                 _visible = !_visible;
             }
@@ -141,6 +146,8 @@ namespace BYES.UI
             GUILayout.Label($"Last Mode: {_lastMode}");
             GUILayout.Label($"Gateway Version: {_lastVersion} (sha: {_lastGitSha})");
             GUILayout.Label($"Last Event Type: {_lastEventType}");
+            GUILayout.Label($"SelfTest: {_selfTestStatus}");
+            GUILayout.Label($"SelfTest Summary: {_selfTestSummary}");
             GUILayout.Label($"Live: {BuildLiveSummary()}");
             GUILayout.Label($"Last Upload Cost: {BuildUploadCostSummary()}");
             GUILayout.Label($"Last E2E: {BuildE2eSummary()}");
@@ -182,6 +189,13 @@ namespace BYES.UI
             if (GUILayout.Button("Get Version", GUILayout.Width(120)) && !_versionInFlight)
             {
                 StartCoroutine(GetVersionRoutine());
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Export Debug Text", GUILayout.Width(160)))
+            {
+                ExportDebugText();
             }
             GUILayout.EndHorizontal();
 
@@ -444,6 +458,72 @@ namespace BYES.UI
             }
 
             return $"{scanController.LastE2eMs:0} ms";
+        }
+
+        public void SetSelfTestStatus(string status, string summary)
+        {
+            _selfTestStatus = string.IsNullOrWhiteSpace(status) ? "UNKNOWN" : status.Trim().ToUpperInvariant();
+            _selfTestSummary = string.IsNullOrWhiteSpace(summary) ? "-" : summary.Trim();
+        }
+
+        public string ComposeDebugText()
+        {
+            var lines = new StringBuilder(512);
+            lines.AppendLine("BYES Quest Debug Snapshot");
+            lines.AppendLine($"TimestampUtc: {DateTimeOffset.UtcNow:O}");
+            lines.AppendLine($"HTTP Base: {(gatewayClient != null ? gatewayClient.BaseUrl : BuildBaseUrl())}");
+            lines.AppendLine($"HTTP Link: {(gatewayClient != null && gatewayClient.IsConnected ? "Connected" : "Disconnected")}");
+            lines.AppendLine($"WS Link: {(gatewayWsClient != null ? gatewayWsClient.ConnectionState : "missing")}");
+            lines.AppendLine($"API Key Set: {(string.IsNullOrWhiteSpace(_apiKey) ? "no" : "yes")}");
+            lines.AppendLine($"Last RTT: {_lastRttMs}");
+            lines.AppendLine($"Last Mode: {_lastMode}");
+            lines.AppendLine($"Gateway Version: {_lastVersion}");
+            lines.AppendLine($"Gateway GitSha: {_lastGitSha}");
+            lines.AppendLine($"Last Event Type: {_lastEventType}");
+            lines.AppendLine($"SelfTest: {_selfTestStatus}");
+            lines.AppendLine($"SelfTest Summary: {_selfTestSummary}");
+            lines.AppendLine($"Live: {BuildLiveSummary()}");
+            lines.AppendLine($"Last Upload Cost: {BuildUploadCostSummary()}");
+            lines.AppendLine($"Last E2E: {BuildE2eSummary()}");
+            lines.AppendLine($"Status: {_status}");
+            return lines.ToString();
+        }
+
+        private void ExportDebugText()
+        {
+            try
+            {
+                var text = ComposeDebugText();
+                var path = System.IO.Path.Combine(Application.persistentDataPath, "byes_quest_debug.txt");
+                System.IO.File.WriteAllText(path, text, Encoding.UTF8);
+                _status = $"debug exported: {path}";
+            }
+            catch (Exception ex)
+            {
+                _status = $"debug export failed: {ex.Message}";
+            }
+        }
+
+        private bool WasTogglePressedThisFrame()
+        {
+#if ENABLE_INPUT_SYSTEM
+            var kb = Keyboard.current;
+            if (kb != null)
+            {
+                switch (toggleKey)
+                {
+                    case KeyCode.BackQuote:
+                        return kb.backquoteKey.wasPressedThisFrame;
+                    case KeyCode.Escape:
+                        return kb.escapeKey.wasPressedThisFrame;
+                }
+            }
+#endif
+#if ENABLE_LEGACY_INPUT_MANAGER
+            return Input.GetKeyDown(toggleKey);
+#else
+            return false;
+#endif
         }
     }
 }

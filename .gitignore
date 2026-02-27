@@ -72,3 +72,11 @@ Gateway/external/modelpack/weights_test/
 **/*.pyc
 **/*.pyo
 **/*.pyd
+
+# ---- Local profiling / capture artifacts (do not commit) ----
+**/ProfilerCaptures/
+**/ProfilerCaptures.meta
+
+# Optional: if Unity generates these locally and you don't want them committed
+**/MemoryCaptures/
+**/Logs/

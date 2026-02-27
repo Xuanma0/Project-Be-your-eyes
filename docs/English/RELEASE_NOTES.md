@@ -4,6 +4,13 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v4.94
+- Quest3 zero-controller smoke loop: added startup self-test runner (`ping`, `version`, `mode`, short live-loop metrics) with PASS/FAIL summary in runtime panel.
+- Input System migration hardening: removed unguarded legacy `Input.GetKey*` calls from BYES runtime scripts and kept legacy API behind `#if ENABLE_LEGACY_INPUT_MANAGER`.
+- Suppressed XR hand-tracking spam in `Quest3SmokeScene` by auto-disabling `XRInputModalityManager` when no running `XRHandSubsystem` exists.
+- Added Windows one-command smoke launcher `tools/quest3/quest3_smoke.ps1` (USB/LAN) for Gateway boot + optional adb reverse setup.
+- Added CI guard `tools/check_unity_legacy_input.py` and workflow step to prevent legacy-input regressions.
+
 ## v4.93
 - Fixed Unity compile break by removing `BYES` namespace dependencies from `Assets/BeYourEyes/**` (networking/capture layer).
 - Added layering-safe runtime bridge (`GatewayRuntimeContext`) and BYES-side registration in runtime bootstrap.

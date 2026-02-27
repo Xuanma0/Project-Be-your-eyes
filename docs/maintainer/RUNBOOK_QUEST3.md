@@ -54,6 +54,28 @@ python -m uvicorn main:app --app-dir Gateway --host 0.0.0.0 --port 8000
    - Unity receives `/ws/events`
    - Speech output is heard.
 
+## 小白两步法（USB/局域网）
+
+### USB two-step (recommended for first smoke)
+
+1. On PC:
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/quest3/quest3_smoke.ps1 --usb
+```
+2. Put on Quest and open app:
+   - Keep host as `127.0.0.1` in panel (USB reverse tunnel).
+   - Wait for startup self-test status to become `PASS`.
+
+### LAN two-step
+
+1. On PC:
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/quest3/quest3_smoke.ps1 --lan --gatewayHost 0.0.0.0
+```
+2. On Quest panel:
+   - Set host to your PC LAN IP (script prints IPv4 candidates), then `Save + Connect`.
+   - Wait for startup self-test `PASS`.
+
 ## 5) Runtime Controls
 
 - Mode buttons in panel:
@@ -118,3 +140,6 @@ Notes:
 - Unity compile shows `CS0246 ... BYES` under `Assets/BeYourEyes/**`:
   - Run `python tools/check_unity_layering.py`.
   - This indicates a layering regression (`BeYourEyes` should not compile-reference `BYES` namespace).
+- Runtime throws `InvalidOperationException` about `UnityEngine.Input` while Input System package is active:
+  - Run `python tools/check_unity_legacy_input.py`.
+  - Move any `Input.GetKey*` call behind `#if ENABLE_LEGACY_INPUT_MANAGER`.

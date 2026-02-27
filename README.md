@@ -92,6 +92,12 @@ python Gateway/scripts/dev_up.py --gateway-only
 python Gateway/scripts/dev_up.py --with-inference
 ```
 
+Quest 3 smoke one-command launcher (Windows):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/quest3/quest3_smoke.ps1 --usb
+```
+
 Optional hardened profile smoke (still local bind unless you override host):
 
 ```bash
@@ -129,6 +135,7 @@ python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 12
 - Mode switch: `1/2/3` or `F1/F2/F3`
 - Confirm decision: `Y/N` (or XR primary/secondary)
 - Connection panel probes: `Test Ping`, `Read Mode`, `Get Version`
+- `Quest3SmokeScene` runs zero-controller self-test on startup (ping/version/mode/live-loop) and reports `RUNNING/PASS/FAIL` in panel
 
 ### Success signals
 
@@ -245,7 +252,7 @@ python Gateway/scripts/verify_contracts.py --check-lock
 If maintainers decide to align release tags with `VERSION`:
 
 ```bash
-git tag -a v4.93 -m "v4.93" <commit>
+git tag -a v4.94 -m "v4.94" <commit>
 ```
 
 Do not run this automatically unless release approval is explicit.

@@ -1,6 +1,11 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
-## v4.93
+## v4.94
+- Quest3 新增“零控制器自检”闭环：启动后自动执行 `ping/version/mode/live-loop`，并在连接面板显示 `RUNNING/PASS/FAIL` 与关键指标。
+- 输入系统迁移加固：BYES 运行时脚本去除未加条件编译的 `Input.GetKey*` 调用，旧输入仅允许在 `#if ENABLE_LEGACY_INPUT_MANAGER` 内使用。
+- Quest3 运行时新增 XR 子系统护栏：当不存在可用 `XRHandSubsystem` 时自动禁用 `XRInputModalityManager`，避免 HandTracking spam。
+- 新增 Windows 一键脚本 `tools/quest3/quest3_smoke.ps1`，支持 USB/LAN 启动 Gateway 并可自动执行 `adb reverse`。
+- 新增 CI 防回归脚本 `tools/check_unity_legacy_input.py`，阻止旧输入 API 无条件回流。`r`n`r`n## v4.93
 - 修复 Unity 编译失败：移除 `Assets/BeYourEyes/**` 对 `BYES` 命名空间的编译期依赖。
 - 增加分层安全运行时桥接（`GatewayRuntimeContext` + BYES 侧注册），保持功能语义同时解耦 assembly 边界。
 - 新增仓库防回归脚本 `tools/check_unity_layering.py`，并接入 CI，阻止 `Assets/BeYourEyes/**` 再次引入 `using BYES...`。
@@ -113,6 +118,8 @@
   - `scaleDriftProxy`
   - `refViewStrategyDiversityCount`
 - 鎺ュ叆 report/leaderboard/linter/contract gate/matrix summary銆?
+
+
 
 
 

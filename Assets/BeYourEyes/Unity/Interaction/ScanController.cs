@@ -1,6 +1,5 @@
 using System;
 using System.Collections;
-using System.Reflection;
 using BeYourEyes.Adapters;
 using BeYourEyes.Adapters.Networking;
 using BeYourEyes.Core.Events;
@@ -15,12 +14,6 @@ namespace BeYourEyes.Unity.Interaction
     public sealed class ScanController : MonoBehaviour
     {
         private const float NoGatewayPromptThrottleSec = 5f;
-        private static readonly Type KeyboardType = Type.GetType("UnityEngine.InputSystem.Keyboard, Unity.InputSystem");
-        private static readonly PropertyInfo KeyboardCurrentProperty = KeyboardType?.GetProperty("current", BindingFlags.Public | BindingFlags.Static);
-        private static readonly PropertyInfo KeyboardSKeyProperty = KeyboardType?.GetProperty("sKey", BindingFlags.Public | BindingFlags.Instance);
-        private static readonly PropertyInfo KeyboardLKeyProperty = KeyboardType?.GetProperty("lKey", BindingFlags.Public | BindingFlags.Instance);
-        private static readonly Type ButtonControlType = Type.GetType("UnityEngine.InputSystem.Controls.ButtonControl, Unity.InputSystem");
-        private static readonly PropertyInfo ButtonWasPressedThisFrameProperty = ButtonControlType?.GetProperty("wasPressedThisFrame", BindingFlags.Public | BindingFlags.Instance);
 
         public KeyCode scanKey = KeyCode.S;
         public KeyCode liveToggleKey = KeyCode.L;
@@ -54,6 +47,11 @@ namespace BeYourEyes.Unity.Interaction
         private long lastSendTsMs = -1;
         private double lastUploadCostMs = -1d;
         private double lastE2eMs = -1d;
+        private int framesSentCount;
+        private int uploadsOkCount;
+        private int uploadsFailedCount;
+        private int dropBusyCount;
+        private int eventsReceivedCount;
 
         public bool LiveEnabled => liveEnabled;
         public float LiveFps => Mathf.Max(0f, liveFps);
@@ -63,6 +61,11 @@ namespace BeYourEyes.Unity.Interaction
         public double LastE2eMs => lastE2eMs;
         public long LastSendTsMs => lastSendTsMs;
         public long LastAckOrEventTsMs => lastAckOrEventTsMs;
+        public int FramesSentCount => Mathf.Max(0, framesSentCount);
+        public int UploadsOkCount => Mathf.Max(0, uploadsOkCount);
+        public int UploadsFailedCount => Mathf.Max(0, uploadsFailedCount);
+        public int DropBusyCount => Mathf.Max(0, dropBusyCount);
+        public int EventsReceivedCount => Mathf.Max(0, eventsReceivedCount);
 
         private void Awake()
         {
@@ -110,6 +113,7 @@ namespace BeYourEyes.Unity.Interaction
 
         private void EnsureXrFallbackActions()
         {
+#if ENABLE_INPUT_SYSTEM
             if (!enableXrButtons)
             {
                 return;
@@ -130,6 +134,7 @@ namespace BeYourEyes.Unity.Interaction
                     type: InputActionType.Button,
                     binding: "<XRController>{RightHand}/triggerPressed");
             }
+#endif
         }
 
         private void Update()
@@ -166,7 +171,7 @@ namespace BeYourEyes.Unity.Interaction
 
         private void HandleGatewayEvent(JObject evt)
         {
-            if (evt == null || pendingE2eStartTsMs <= 0)
+            if (evt == null)
             {
                 return;
             }
@@ -177,8 +182,14 @@ namespace BeYourEyes.Unity.Interaction
                 return;
             }
 
+            eventsReceivedCount++;
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             lastAckOrEventTsMs = nowMs;
+            if (pendingE2eStartTsMs <= 0)
+            {
+                return;
+            }
+
             lastE2eMs = Math.Max(0d, nowMs - pendingE2eStartTsMs);
             pendingE2eStartTsMs = -1;
         }
@@ -233,6 +244,7 @@ namespace BeYourEyes.Unity.Interaction
             {
                 if (liveDropIfBusy || isLiveTick)
                 {
+                    dropBusyCount++;
                     return;
                 }
             }
@@ -273,6 +285,7 @@ namespace BeYourEyes.Unity.Interaction
         {
             captureInProgress = true;
             inflight++;
+            framesSentCount++;
             var sendTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             lastSendTsMs = sendTsMs;
             byte[] jpg = null;
@@ -312,10 +325,12 @@ namespace BeYourEyes.Unity.Interaction
 
                 if (uploadOk)
                 {
+                    uploadsOkCount++;
                     pendingE2eStartTsMs = sendTsMs;
                 }
                 else
                 {
+                    uploadsFailedCount++;
                     pendingE2eStartTsMs = -1;
                 }
             }
@@ -348,6 +363,19 @@ namespace BeYourEyes.Unity.Interaction
         private void ToggleLive()
         {
             liveEnabled = !liveEnabled;
+            pendingE2eStartTsMs = -1;
+            var status = liveEnabled ? "ON" : "OFF";
+            Debug.Log($"[Scan] live loop {status} (fps={liveFps:0.##}, maxInflight={Mathf.Max(1, liveMaxInflight)})");
+        }
+
+        public void SetLiveEnabled(bool enabled)
+        {
+            if (liveEnabled == enabled)
+            {
+                return;
+            }
+
+            liveEnabled = enabled;
             pendingE2eStartTsMs = -1;
             var status = liveEnabled ? "ON" : "OFF";
             Debug.Log($"[Scan] live loop {status} (fps={liveFps:0.##}, maxInflight={Mathf.Max(1, liveMaxInflight)})");
@@ -390,36 +418,31 @@ namespace BeYourEyes.Unity.Interaction
 
         private bool WasKeyboardKeyPressedThisFrame(KeyCode keyCode)
         {
-            if (keyCode != KeyCode.S && keyCode != KeyCode.L)
+#if ENABLE_INPUT_SYSTEM
+            var keyboard = Keyboard.current;
+            if (keyboard != null)
             {
-                return Input.GetKeyDown(keyCode);
-            }
+                if (keyCode == KeyCode.S)
+                {
+                    return keyboard.sKey.wasPressedThisFrame;
+                }
 
-            if (KeyboardCurrentProperty == null || ButtonWasPressedThisFrameProperty == null)
-            {
-                return Input.GetKeyDown(keyCode);
-            }
+                if (keyCode == KeyCode.L)
+                {
+                    return keyboard.lKey.wasPressedThisFrame;
+                }
 
-            var keyboard = KeyboardCurrentProperty.GetValue(null);
-            if (keyboard == null)
-            {
-                return Input.GetKeyDown(keyCode);
+                if (keyCode == KeyCode.BackQuote)
+                {
+                    return keyboard.backquoteKey.wasPressedThisFrame;
+                }
             }
-
-            PropertyInfo targetKeyProperty = keyCode == KeyCode.L ? KeyboardLKeyProperty : KeyboardSKeyProperty;
-            if (targetKeyProperty == null)
-            {
-                return Input.GetKeyDown(keyCode);
-            }
-
-            var targetKey = targetKeyProperty.GetValue(keyboard);
-            if (targetKey == null)
-            {
-                return Input.GetKeyDown(keyCode);
-            }
-
-            var pressed = ButtonWasPressedThisFrameProperty.GetValue(targetKey);
-            return pressed is bool pressedBool && pressedBool;
+#endif
+#if ENABLE_LEGACY_INPUT_MANAGER
+            return Input.GetKeyDown(keyCode);
+#else
+            return false;
+#endif
         }
 
         private static bool IsInferenceLikeEvent(string eventType)
