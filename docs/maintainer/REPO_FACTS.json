@@ -1,0 +1,41 @@
+{
+  "repo_root": "./",
+  "branch": "feature/unity-skeleton",
+  "working_branch": "docs/audit-readme-refresh",
+  "commit": "c12e0ab4694a4b3d86ac7e19d1e1ddbb983f2c04",
+  "head_subject": "feat(v4.87): add mode change contract+api+events + mode metrics in report/leaderboard/linter/contract gate + unity mode manager v1",
+  "tags": [],
+  "dirty": [
+    " M Assets/Scenes/DemoScene.unity",
+    " M Assets/XR/AndroidXR/AndroidXRSettingsInitializer",
+    " M Packages/packages-lock.json",
+    "?? docs/API_INVENTORY.md",
+    "?? docs/AUDIT_REPO.md",
+    "?? docs/CONFIG_MATRIX.md",
+    "?? docs/OPEN_QUESTIONS_RESOLVED.md",
+    "?? docs/REPO_FACTS.json",
+    "?? docs/RUNBOOK_LOCAL.md",
+    "?? docs/SECURITY_REVIEW.md"
+  ],
+  "unity_version": "6000.3.5f2",
+  "default_enabled_scenes": [
+    "Assets/Scenes/SampleScene.unity"
+  ],
+  "gateway_entry": {
+    "file": "Gateway/main.py",
+    "line": 1731,
+    "symbol": "app = FastAPI(...)"
+  },
+  "ws_endpoint": "/ws/events",
+  "routes_count": 38,
+  "stash_created": "git stash push -u -m \"codex-docs-prep\"",
+  "precheck_commands": [
+    "git branch --show-current",
+    "git rev-parse HEAD",
+    "git show -s --format=%s HEAD",
+    "git tag --list",
+    "git status --porcelain=v1",
+    "Get-Content ProjectSettings/ProjectVersion.txt",
+    "Get-Content ProjectSettings/EditorBuildSettings.asset"
+  ]
+}

@@ -67,6 +67,20 @@ def _env_requirement(req_id: str, env_var: str, notes: str) -> dict[str, Any]:
     )
 
 
+def _env_any_requirement(req_id: str, env_vars: list[str], notes: str) -> dict[str, Any]:
+    names = [str(name).strip() for name in env_vars if str(name).strip()]
+    values = [_clean(os.getenv(name)) for name in names]
+    exists = any(bool(item) for item in values)
+    return _req_entry(
+        req_id=req_id,
+        kind="env_any",
+        path_or_value=("<set>" if exists else None),
+        env_var="|".join(names) if names else None,
+        exists=exists,
+        notes=notes,
+    )
+
+
 def _file_requirement(req_id: str, env_var: str, notes: str) -> dict[str, Any]:
     path_text = _clean(os.getenv(env_var))
     exists = bool(path_text and Path(path_text).expanduser().exists())
@@ -299,7 +313,13 @@ def _planner_component() -> dict[str, Any]:
             )
         )
     elif provider == "llm":
-        required.append(_env_requirement("openai_api_key", "OPENAI_API_KEY", "OpenAI API key for llm planner backend."))
+        required.append(
+            _env_any_requirement(
+                "openai_api_key",
+                ["BYES_PLANNER_LLM_API_KEY", "OPENAI_API_KEY"],
+                "OpenAI API key for llm planner backend (BYES_PLANNER_LLM_API_KEY preferred; OPENAI_API_KEY accepted).",
+            )
+        )
         optional.append(_env_requirement("openai_model", "OPENAI_MODEL", "Optional OpenAI model override."))
     elif provider == "mock":
         warnings.append("planner running in mock mode.")
