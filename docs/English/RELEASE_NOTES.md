@@ -4,6 +4,13 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v4.95
+- Added Quest3 Android batch build entrypoint `BYES.Editor.ByesBuildQuest3.BuildQuest3SmokeApk` and output pipeline to `Builds/Quest3/`.
+- Added one-command local Android build runner `tools/unity/build_quest3_android.cmd` and companion build guide `tools/unity/README_BUILD_ANDROID.md`.
+- Added Unity build log root-cause parser `tools/unity/parse_unity_build_log.py` that extracts earliest true errors with context.
+- Added USB-first Quest3 gateway launcher `tools/quest3/quest3_usb_local_gateway.cmd` (adb reverse + local gateway on port 18000).
+- Updated Quest3 runbook with USB recommended path, WinError 10013 mitigation, and smoke checklist.
+
 ## v4.94
 - Quest3 zero-controller smoke loop: added startup self-test runner (`ping`, `version`, `mode`, short live-loop metrics) with PASS/FAIL summary in runtime panel.
 - Input System migration hardening: removed unguarded legacy `Input.GetKey*` calls from BYES runtime scripts and kept legacy API behind `#if ENABLE_LEGACY_INPUT_MANAGER`.

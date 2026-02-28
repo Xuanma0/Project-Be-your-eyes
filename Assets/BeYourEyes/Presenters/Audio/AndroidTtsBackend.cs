@@ -102,17 +102,17 @@ namespace BeYourEyes.Presenters.Audio
 #if UNITY_ANDROID && !UNITY_EDITOR
         private sealed class TtsInitListener : AndroidJavaProxy
         {
-            private readonly Action<int> onInit;
+            private readonly Action<int> onInitCallback;
 
             public TtsInitListener(Action<int> onInitAction)
                 : base("android.speech.tts.TextToSpeech$OnInitListener")
             {
-                onInit = onInitAction;
+                onInitCallback = onInitAction;
             }
 
             public void onInit(int status)
             {
-                onInit?.Invoke(status);
+                onInitCallback?.Invoke(status);
             }
         }
 #endif

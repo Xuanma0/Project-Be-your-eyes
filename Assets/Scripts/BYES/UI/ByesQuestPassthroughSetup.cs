@@ -39,7 +39,7 @@ namespace BYES.UI
                 return;
             }
 
-            if (UnityEngine.Object.FindObjectOfType(sessionType) != null)
+            if (UnityEngine.Object.FindFirstObjectByType(sessionType) != null)
             {
                 return;
             }
