@@ -6,11 +6,15 @@ for %%I in ("%SCRIPT_DIR%..\..") do set "REPO_ROOT=%%~fI"
 set "LOG_DIR=%REPO_ROOT%\Builds\logs"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 set "LOG_FILE=%LOG_DIR%\unity_build_quest3_android_v4.95.log"
+set "VERSION_FILE=%REPO_ROOT%\VERSION"
+set "VERSION_TMP=%REPO_ROOT%\VERSION.unity-build-tmp"
 
 if defined UNITY_EXE (
   set "UNITY_BIN=%UNITY_EXE%"
 ) else (
-  if exist "C:\Program Files\Unity\Hub\Editor\6000.3.10f1\Editor\Unity.exe" (
+  if exist "D:\6000.3.10f1\Editor\Unity.exe" (
+    set "UNITY_BIN=D:\6000.3.10f1\Editor\Unity.exe"
+  ) else if exist "C:\Program Files\Unity\Hub\Editor\6000.3.10f1\Editor\Unity.exe" (
     set "UNITY_BIN=C:\Program Files\Unity\Hub\Editor\6000.3.10f1\Editor\Unity.exe"
   ) else if exist "D:\Unity\Editor\Unity.exe" (
     set "UNITY_BIN=D:\Unity\Editor\Unity.exe"
@@ -39,11 +43,33 @@ if not exist "%ANDROID_MODULE_DIR%" (
   exit /b 2
 )
 
+if exist "%VERSION_TMP%" (
+  echo [build_quest3_android] Temporary VERSION file already exists: "%VERSION_TMP%"
+  echo Remove it manually before rerunning.
+  exit /b 2
+)
+
+if exist "%VERSION_FILE%" (
+  move /y "%VERSION_FILE%" "%VERSION_TMP%" >nul
+  if errorlevel 1 (
+    echo [build_quest3_android] Failed to relocate VERSION file before build.
+    exit /b 2
+  )
+)
+
 "%UNITY_BIN%" -batchmode -nographics -quit ^
   -projectPath "%REPO_ROOT%" ^
   -executeMethod BYES.Editor.ByesBuildQuest3.BuildQuest3SmokeApk ^
   -logFile "%LOG_FILE%"
 set "UNITY_EXIT=%ERRORLEVEL%"
+
+if exist "%VERSION_TMP%" (
+  move /y "%VERSION_TMP%" "%VERSION_FILE%" >nul
+  if errorlevel 1 (
+    echo [build_quest3_android] WARNING: failed to restore VERSION file from "%VERSION_TMP%".
+    set "UNITY_EXIT=1"
+  )
+)
 
 python "%REPO_ROOT%\tools\unity\parse_unity_build_log.py" "%LOG_FILE%"
 set "PARSE_EXIT=%ERRORLEVEL%"

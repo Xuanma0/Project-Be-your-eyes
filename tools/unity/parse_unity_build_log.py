@@ -4,7 +4,11 @@ import argparse
 import re
 from pathlib import Path
 
-SUCCESS_MARKER = "Build completed with a result of 'Succeeded'"
+SUCCESS_MARKERS = (
+    "Build completed with a result of 'Succeeded'",
+    "Build Finished, Result: Success.",
+    "[ByesBuildQuest3] Result=Succeeded",
+)
 ERROR_PATTERNS = [
     re.compile(r"error\s+CS\d+", re.IGNORECASE),
     re.compile(r"fatal error:", re.IGNORECASE),
@@ -77,7 +81,7 @@ def main() -> int:
 
     lines = args.log_path.read_text(encoding="utf-8", errors="replace").splitlines()
     bee_total, bee_failed = _count_bee_android_failures(lines)
-    succeeded = any(SUCCESS_MARKER in line for line in lines)
+    succeeded = any(any(marker in line for marker in SUCCESS_MARKERS) for line in lines)
     first_error = _find_first_error_line(lines)
 
     report_lines: list[str] = [
