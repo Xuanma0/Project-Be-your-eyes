@@ -4,6 +4,13 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v4.96
+- Added Quest 3 smoke scene auto-installer that ensures `BYES_SmokeRig/BYES_ConnectionPanel` exists in `Quest3SmokeScene`.
+- Added runtime head-locked world-space panel behavior (`ByesHeadLockedPanel`) to keep panel stable in front of the user.
+- Added a prefab-free minimal connection panel (`ByesQuest3ConnectionPanelMinimal`) with Ping / Version / Mode probes and periodic HTTP reachability checks.
+- Added batch entrypoint `BYES.Editor.ByesQuest3SmokeSceneInstaller.InstallFromBatch` for no-click scene installation.
+- Updated Quest runbook with troubleshooting when users only see MODE text but no connection panel.
+
 ## v4.95
 - Added Quest3 Android batch build entrypoint `BYES.Editor.ByesBuildQuest3.BuildQuest3SmokeApk` and output pipeline to `Builds/Quest3/`.
 - Added one-command local Android build runner `tools/unity/build_quest3_android.cmd` and companion build guide `tools/unity/README_BUILD_ANDROID.md`.

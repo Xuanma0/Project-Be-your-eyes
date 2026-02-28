@@ -1,5 +1,12 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v4.96
+- 新增 Quest3 Smoke 场景自动安装器，确保 `Quest3SmokeScene` 内自动存在 `BYES_SmokeRig/BYES_ConnectionPanel`。
+- 新增头锁定世界空间面板脚本 `ByesHeadLockedPanel`，面板自动跟随到用户前方并朝向用户。
+- 新增无 Prefab 依赖的最小连接面板 `ByesQuest3ConnectionPanelMinimal`，支持 `Ping / Version / Mode` 与周期性 HTTP 可达性探测。
+- 新增批处理入口 `BYES.Editor.ByesQuest3SmokeSceneInstaller.InstallFromBatch`，无需手动点菜单即可安装。
+- 更新 Quest3 运行手册，补充“只看到 MODE 文字但没有面板”排查步骤。
+
 ## v4.95
 - 新增 Quest3 Android 批处理构建入口：BYES.Editor.ByesBuildQuest3.BuildQuest3SmokeApk，产物输出到 Builds/Quest3/。
 - 新增本地一键 Android 构建脚本：tools/unity/build_quest3_android.cmd，并补充 tools/unity/README_BUILD_ANDROID.md。

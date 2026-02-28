@@ -58,13 +58,32 @@ python Gateway/scripts/dev_up.py --gateway-only --host 127.0.0.1 --gateway-port 
   - USB mode: `host=127.0.0.1`, `port=18000`
   - LAN mode: `host=<PC LAN IP>`, `port=18000`
 
-## 6) Runtime Controls
+## 6) 如果你只看到 MODE:WALK 但没有面板
+
+1. Verify project version is `v4.96` or newer.
+2. The auto-installed minimal panel defaults to `http://127.0.0.1:18000`.
+3. Ensure adb reverse is active:
+```bash
+adb reverse tcp:18000 tcp:18000
+# optional compatibility mapping
+adb reverse tcp:8000 tcp:18000
+```
+4. Start Gateway on PC:
+```bash
+python -m uvicorn main:app --app-dir Gateway --host 127.0.0.1 --port 18000
+```
+5. In-headset panel buttons:
+   - `Ping`: verifies `/api/ping`
+   - `Version`: verifies `/api/version`
+   - `Mode`: verifies `/api/mode`
+
+## 7) Runtime Controls
 
 - Manual scan: Quest right-hand trigger (desktop fallback `S`).
 - Toggle live loop: Quest right-hand primary button/A (desktop fallback `L`).
 - Mode switch: `Walk/Read/Inspect` panel buttons or `1/2/3` + `F1/F2/F3`.
 
-## 7) Screenshot-Level Smoke Checklist
+## 8) Screenshot-Level Smoke Checklist
 
 Use this checklist for team verification screenshots:
 
@@ -75,7 +94,7 @@ Use this checklist for team verification screenshots:
 - `Frames Sent`: Gateway receives `/api/frame` while live loop runs.
 - `Events Received`: panel/event line updates from `/ws/events`.
 
-## 8) Recommended Capture Defaults
+## 9) Recommended Capture Defaults
 
 - `maxWidth=960`
 - `maxHeight=540`
@@ -83,7 +102,7 @@ Use this checklist for team verification screenshots:
 - `liveMaxInflight=1`
 - `liveDropIfBusy=true`
 
-## 9) Troubleshooting
+## 10) Troubleshooting
 
 - Black passthrough:
   - Check camera alpha = 0 and AR session/camera manager active.
