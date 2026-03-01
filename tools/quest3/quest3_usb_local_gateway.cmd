@@ -47,14 +47,16 @@ if errorlevel 1 (
   echo [quest3_usb_local_gateway] adb reverse failed.
   exit /b 4
 )
+echo [quest3_usb_local_gateway] Active reverse rules:
+"%ADB_BIN%" reverse --list
 
-echo [quest3_usb_local_gateway] Starting gateway window...
+echo [quest3_usb_local_gateway] STEP 1/2: Starting gateway window on 127.0.0.1:%GATEWAY_PORT% ...
 start "BYES-Gateway" cmd /c "cd /d "%REPO_ROOT%\Gateway" && set BYES_INFERENCE_EMIT_WS_V1=1 && set BYES_EMIT_NET_DEBUG=1 && python scripts/dev_up.py --gateway-only --host 127.0.0.1 --gateway-port %GATEWAY_PORT% --no-reload"
 
 echo.
-echo [quest3_usb_local_gateway] Quest connection panel settings:
+echo [quest3_usb_local_gateway] STEP 2/2: In Quest panel use:
 echo   host = 127.0.0.1
 echo   port = %GATEWAY_PORT%
-echo Then click: Ping + Get Version
+echo Then click: SelfTest (or Refresh then SelfTest if status is stale)
 
 exit /b 0

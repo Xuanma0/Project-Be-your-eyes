@@ -4,6 +4,12 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v4.98
+- Quest3 hitch mitigation: capture path now supports async GPU readback with Android-friendly defaults and sync fallback when unsupported/failing.
+- Added Quest runtime hitch telemetry (`Hitch30s`, `WorstDt`, `AvgDt`, `GC delta`) and surfaced capture runtime state (`CaptureHz`, inflight, async on/off) in the floating panel.
+- Quest panel mode controls now actively switch mode (`Walk/Read/Inspect`) via `POST /api/mode` and verify with `GET /api/mode`.
+- Reduced periodic runtime churn in smoke UX: reachability polling throttled to low frequency plus explicit `Refresh` button for manual checks.
+
 ## v4.97
 - Quest3 smoke loop now includes one-tap frame upload and live toggle in the minimal world-space panel (`Scan Once` / `Live Start-Stop`), with panel-side status for HTTP, WS, last upload cost, coarse E2E, and last event type.
 - Quest3 self-test runner was aligned to the practical smoke chain: `ping -> version -> mode -> scan once + ws event` with explicit PASS/FAIL reasons shown in-panel.

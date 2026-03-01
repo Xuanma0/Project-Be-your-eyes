@@ -30,11 +30,7 @@ tools\quest3\quest3_usb_local_gateway.cmd
 ```
 2. On Quest, open `Quest3SmokeScene` app and look at the floating panel in front of you.
 3. Confirm panel base URL is `http://127.0.0.1:18000`.
-4. Click panel buttons in order:
-   - `Ping`
-   - `Version`
-   - `Mode`
-   - `SelfTest`
+4. Click `SelfTest` (single-button smoke). If status looks stale first, click `Refresh` once.
 
 Notes:
 - Script uses `adb reverse tcp:18000 tcp:18000`.
@@ -76,16 +72,15 @@ adb reverse tcp:8000 tcp:18000
 ```bash
 python -m uvicorn main:app --app-dir Gateway --host 127.0.0.1 --port 18000
 ```
-5. In-headset panel buttons:
-   - `Ping`: verifies `/api/ping`
-   - `Version`: verifies `/api/version`
-   - `Mode`: verifies `/api/mode`
+5. In-headset panel:
+   - Preferred: click `SelfTest` only.
+   - Optional manual checks: `Ping` (`/api/ping`), `Version` (`/api/version`), mode buttons (`Walk/Read/Inspect` + `/api/mode`).
 
 ## 7) Runtime Controls
 
 - Manual scan: panel button `Scan Once` (desktop fallback key `S`).
 - Toggle live loop: panel button `Live Start/Stop` (desktop fallback key `L`).
-- Mode switch: `Walk/Read/Inspect` panel buttons or `1/2/3` + `F1/F2/F3`.
+- Mode switch: panel buttons `Walk / Read / Inspect` (desktop fallback `1/2/3` + `F1/F2/F3`).
 
 ## 8) Scan Once / Live Smoke Flow (v4.97)
 
@@ -102,7 +97,24 @@ python -m uvicorn main:app --app-dir Gateway --host 127.0.0.1 --port 18000
 5. Click `Live Stop`.
 6. Click `SelfTest`, expect `SelfTest: PASS`.
 
-## 9) Screenshot-Level Smoke Checklist
+## 9) Diagnosing Periodic Hitch (v4.98)
+
+When users report "every 1 second a brief freeze", check panel metrics with `Live OFF`:
+
+1. Keep scene running for 30 seconds without touching buttons.
+2. Watch panel lines:
+   - `Hitch30s`
+   - `WorstDt`
+   - `GC0/1/2 Δ`
+   - `CaptureHz ... Async: ON/OFF`
+3. Expected for smoke baseline: `Hitch30s <= 1`.
+
+Quick isolation:
+- If `Live OFF` still hitches and `GC0 Δ` jumps, suspect UI/polling/alloc pressure.
+- If hitch spikes happen during `Scan Once` with `Async: OFF`, enable async readback (`BYES_CAPTURE_USE_ASYNC_GPU_READBACK=1`).
+- Use `Refresh` button for manual checks instead of frequent auto polling.
+
+## 10) Screenshot-Level Smoke Checklist
 
 Use this checklist for team verification screenshots:
 
@@ -112,16 +124,21 @@ Use this checklist for team verification screenshots:
 - `Scan Once OK`: `/api/frame` returns success and panel updates upload/event lines.
 - `Live Loop`: panel shows live on/off and metrics update while running.
 - `SelfTest PASS`: panel displays PASS with summary text.
+- `Mode Switch`: click `Walk/Read/Inspect` and verify `Mode:` text changes accordingly.
+- `Hitch Metric`: with live off for 30s, capture `Hitch30s` and `WorstDt` in screenshot.
 
-## 10) Recommended Capture Defaults
+## 11) Recommended Capture Defaults
 
 - `maxWidth=960`
 - `maxHeight=540`
 - `jpegQuality=70`
 - `liveMaxInflight=1`
 - `liveDropIfBusy=true`
+- `BYES_CAPTURE_USE_ASYNC_GPU_READBACK=1` (Quest recommended)
+- `BYES_CAPTURE_TARGET_HZ=1` (smoke default)
+- `BYES_CAPTURE_MAX_INFLIGHT=1`
 
-## 11) Troubleshooting
+## 12) Troubleshooting
 
 - Black passthrough:
   - Check camera alpha = 0 and AR session/camera manager active.

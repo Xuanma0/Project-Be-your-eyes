@@ -1,6 +1,7 @@
 #if UNITY_EDITOR
 using System;
 using BYES.Quest;
+using BYES.Telemetry;
 using BYES.XR;
 using BeYourEyes.Adapters.Networking;
 using BeYourEyes.Unity.Capture;
@@ -94,6 +95,7 @@ namespace BYES.Editor
             var frameCapture = EnsureComponent<FrameCapture>(frameCaptureHost);
             _ = EnsureComponent<GatewayFrameUploader>(frameCaptureHost);
             var scanController = EnsureComponent<ScanController>(frameCaptureHost);
+            _ = EnsureComponent<ByesHitchMonitor>(frameCaptureHost);
 
             ConfigureQuestSmokeDefaults(gatewayClient, grabber, frameCapture, scanController);
 

@@ -1,5 +1,10 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v4.98
+- Quest3 卡顿缓解：采集链路支持 Async GPU Readback（Android 默认启用），不支持时自动回退同步路径。
+- 新增头显内卡顿观测指标：`Hitch30s`、`WorstDt`、`AvgDt`、`GC delta`，并在面板显示采集状态（CaptureHz / inflight / async）。
+- Quest 面板模式按钮可真正切换模式：`Walk / Read / Inspect`，通过 `POST /api/mode` 写入并 `GET /api/mode` 回读验证。
+- 烟测轮询节流：自动探测降低频率，提供显式 `Refresh` 按钮进行手动刷新。
 ## v4.97
 - Quest3 最小连接面板新增 `Scan Once` 与 `Live Start/Stop`，并展示 `HTTP reachable / WS connected / Last Upload(ms) / Last E2E(ms) / Last Event Type`，支持仅手势点击完成闭环验证。
 - Quest3 自检流程更新为 `Ping -> Version -> Mode -> Scan Once + WS event`，并输出明确 `PASS/FAIL` 与失败原因（例如网关不可达、无 WS 回包）。
@@ -145,12 +150,3 @@
   - `scaleDriftProxy`
   - `refViewStrategyDiversityCount`
 - 鎺ュ叆 report/leaderboard/linter/contract gate/matrix summary銆?
-
-
-
-
-
-
-
-
-

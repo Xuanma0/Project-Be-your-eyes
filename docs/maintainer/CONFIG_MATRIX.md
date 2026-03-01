@@ -37,6 +37,9 @@
 | `BYES_EMIT_NET_DEBUG` | Optional debug event emission for `/api/ping` requests (`net.ping`) | `false` | Gateway ping endpoint debug branch | `Gateway/byes/config.py`; `Gateway/main.py` (`ping`) |
 | `BYES_VERSION_OVERRIDE` | Optional `/api/version` override string | empty | Gateway version endpoint helper | `Gateway/byes/version_info.py` (`read_repo_version`) |
 | `BYES_GIT_SHA` | Optional build git sha surfaced in `/api/version` | empty | Gateway version endpoint helper | `Gateway/byes/version_info.py` (`get_build_info`) |
+| `BYES_CAPTURE_USE_ASYNC_GPU_READBACK` | Unity capture path switch for async GPU readback | Android default `1` (fallback to sync when unsupported) | Quest frame capture pipeline | `Assets/BeYourEyes/Unity/Capture/ScreenFrameGrabber.cs` |
+| `BYES_CAPTURE_TARGET_HZ` | Unity capture target hz used by Quest smoke/live defaults | `1` | Quest capture + scan controller | `Assets/BeYourEyes/Unity/Capture/ScreenFrameGrabber.cs`; `Assets/BeYourEyes/Unity/Interaction/ScanController.cs` |
+| `BYES_CAPTURE_MAX_INFLIGHT` | Unity capture in-flight readback cap | `1` | Quest capture + scan controller | `Assets/BeYourEyes/Unity/Capture/ScreenFrameGrabber.cs`; `Assets/BeYourEyes/Unity/Interaction/ScanController.cs` |
 | `BYES_PLANNER_PROVIDER` | Planner provider (`reference`/`llm`/`pov`) | `reference` fallback | Gateway planning | `Gateway/main.py:2582-2585` |
 | `BYES_PLANNER_ENDPOINT` | Planner HTTP endpoint | `http://127.0.0.1:19211/plan` (http backend fallback) | Gateway planner backend | `Gateway/byes/planner_backends/http.py:15` |
 | `BYES_PLANNER_LLM_API_KEY` | Primary LLM auth key (openai mode) | empty | planner_service + model manifest check | `Gateway/services/planner_service/app.py:500-505`; `Gateway/byes/model_manifest.py:317-320` |

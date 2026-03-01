@@ -223,6 +223,27 @@ namespace BeYourEyes.Adapters.Networking
             }
         }
 
+        public void ConfigureProbeRuntime(
+            bool enableHealth,
+            float healthIntervalSec,
+            bool enableReadiness,
+            float readinessIntervalSec,
+            bool restartLoop = true)
+        {
+            enableHealthProbe = enableHealth;
+            healthProbeIntervalSec = Mathf.Max(0.5f, healthIntervalSec);
+            enableExternalReadinessProbe = enableReadiness;
+            readinessProbeIntervalSec = Mathf.Max(0.5f, readinessIntervalSec);
+
+            if (!restartLoop || replayMode)
+            {
+                return;
+            }
+
+            StopHealthProbeLoop();
+            StartHealthProbeLoop();
+        }
+
         public async void ConnectWebSocket()
         {
             if (shuttingDown || wsConnecting || replayMode)

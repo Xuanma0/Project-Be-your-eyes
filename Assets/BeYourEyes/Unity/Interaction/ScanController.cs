@@ -89,6 +89,10 @@ namespace BeYourEyes.Unity.Interaction
         public string LastScanState => string.IsNullOrWhiteSpace(lastScanState) ? "idle" : lastScanState;
         public string LastScanError => string.IsNullOrWhiteSpace(lastScanError) ? string.Empty : lastScanError;
         public string LastEventType => string.IsNullOrWhiteSpace(lastEventType) ? "-" : lastEventType;
+        public bool CaptureSupportsAsyncReadback => frameGrabber != null && frameGrabber.SupportsAsyncGpuReadback;
+        public bool CaptureAsyncReadbackEnabled => frameGrabber != null && frameGrabber.AsyncGpuReadbackEnabled;
+        public int CaptureTargetHz => frameGrabber != null ? frameGrabber.CaptureTargetHz : Mathf.Max(1, Mathf.RoundToInt(liveFps));
+        public int CaptureActiveReadbacks => frameGrabber != null ? frameGrabber.ActiveReadbackRequests : 0;
         public event Action<UploadMetrics> OnUploadFinished;
 
         private void Awake()
@@ -98,6 +102,12 @@ namespace BeYourEyes.Unity.Interaction
             if (frameGrabber == null)
             {
                 frameGrabber = gameObject.AddComponent<ScreenFrameGrabber>();
+            }
+
+            if (frameGrabber != null)
+            {
+                liveFps = Mathf.Max(0.1f, frameGrabber.CaptureTargetHz);
+                liveMaxInflight = Mathf.Max(1, frameGrabber.CaptureMaxInflight);
             }
 
             uploader = GetComponent<GatewayFrameUploader>();
