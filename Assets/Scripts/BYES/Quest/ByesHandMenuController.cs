@@ -30,6 +30,7 @@ namespace BYES.Quest
         [SerializeField] private float baseUiScale = 0.00038f;
         [SerializeField] private float refreshIntervalSec = 0.75f;
         [SerializeField] private bool disableCompetingTemplateMenus = true;
+        [SerializeField] private float defaultGazeDivergenceThresholdDeg = 120f;
 
         private HandMenu _handMenu;
         private MetaSystemGestureDetector _metaGestureDetector;
@@ -152,7 +153,8 @@ namespace BYES.Quest
 
             _handMenu.handMenuUIGameObject = _menuHost;
             _handMenu.handMenuUpDirection = HandMenu.UpDirection.CameraUp;
-            _handMenu.menuHandedness = HandMenu.MenuHandedness.Left;
+            _handMenu.menuHandedness = HandMenu.MenuHandedness.Either;
+            _handMenu.menuVisibleGazeDivergenceThreshold = Mathf.Clamp(defaultGazeDivergenceThresholdDeg, 15f, 180f);
 
             if (disableCompetingTemplateMenus)
             {
@@ -458,7 +460,7 @@ namespace BYES.Quest
             _panel?.SetActionControlsVisible(PlayerPrefs.GetInt(PrefShowFullPanel, 0) == 1);
             _panel?.SetLockToHead(PlayerPrefs.GetInt(PrefLockToHead, 1) == 1);
             _panel?.SetMoveResizeEnabled(PlayerPrefs.GetInt(PrefMoveResize, 0) == 1);
-            ApplyMenuHandPreference((MenuHandPref)PlayerPrefs.GetInt(PrefMenuHand, (int)MenuHandPref.Left));
+            ApplyMenuHandPreference((MenuHandPref)PlayerPrefs.GetInt(PrefMenuHand, (int)MenuHandPref.Either));
         }
 
         private void CycleShortcutHand()

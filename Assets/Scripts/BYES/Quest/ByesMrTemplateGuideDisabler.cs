@@ -20,6 +20,31 @@ namespace BYES.Quest
 
         public static string LastSummary => _lastSummary;
 
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void AutoInstallOnQuest3Scene()
+        {
+            var scene = SceneManager.GetActiveScene();
+            if (!string.Equals(scene.name, "Quest3SmokeScene", System.StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var disabler = FindFirstObjectByType<ByesMrTemplateGuideDisabler>(FindObjectsInactive.Include);
+            if (disabler != null)
+            {
+                if (!disabler.gameObject.activeSelf)
+                {
+                    disabler.gameObject.SetActive(true);
+                }
+
+                disabler.DisableGuideObjects();
+                return;
+            }
+
+            var host = new GameObject("BYES_MrTemplateGuideDisabler_Auto");
+            host.AddComponent<ByesMrTemplateGuideDisabler>();
+        }
+
         private void Awake()
         {
             if (disableOnStart)
@@ -142,10 +167,6 @@ namespace BYES.Quest
             }
 
             var name = go.name ?? string.Empty;
-            if (name.StartsWith("BYES_", System.StringComparison.Ordinal))
-            {
-                return false;
-            }
 
             var components = go.GetComponents<Component>();
             for (var i = 0; i < components.Length; i += 1)
@@ -163,10 +184,16 @@ namespace BYES.Quest
                 }
             }
 
+            if (name.StartsWith("BYES_", System.StringComparison.Ordinal))
+            {
+                return false;
+            }
+
             var lowered = name.ToLowerInvariant();
             if (lowered.Contains("coaching")
                    || lowered.Contains("tutorial player")
                    || lowered.Contains("hand menu setup mr template")
+                   || lowered.Contains("mr interaction setup")
                    || lowered.Contains("player setting")
                    || lowered.Contains("guide")
                    || lowered.Contains("relaunch coaching")
