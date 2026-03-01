@@ -86,7 +86,7 @@ python -m uvicorn main:app --app-dir Gateway --host 127.0.0.1 --port 18000
 
 ## 7.1) Palm-up Menu + Safe Gestures (v5.00)
 
-- Palm-up + menu pinch gesture reveals the hand menu (default left hand).
+- Flip wrist (palm-up, facing yourself) reveals the hand menu automatically (default left hand), no extra pinch required.
 - Gesture shortcuts (right hand):
   - thumb + middle pinch: `Scan Once`
   - thumb + ring pinch: `Live Toggle`

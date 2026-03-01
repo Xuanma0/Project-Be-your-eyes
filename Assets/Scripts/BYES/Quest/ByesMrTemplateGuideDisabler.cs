@@ -5,16 +5,45 @@ using UnityEngine.SceneManagement;
 
 namespace BYES.Quest
 {
-    [DefaultExecutionOrder(-900)]
+    [DefaultExecutionOrder(-2200)]
     public sealed class ByesMrTemplateGuideDisabler : MonoBehaviour
     {
         [SerializeField] private bool disableOnStart = true;
         [SerializeField] private bool includeInactiveSearch = true;
         [SerializeField] private bool verboseLog = true;
+        [SerializeField] private bool repeatForFirstSeconds = true;
+        [SerializeField] private float repeatDurationSec = 5f;
+        [SerializeField] private float repeatIntervalSec = 0.5f;
 
         private static string _lastSummary = "none";
+        private Coroutine _repeatCoroutine;
 
         public static string LastSummary => _lastSummary;
+
+        private void Awake()
+        {
+            if (disableOnStart)
+            {
+                DisableGuideObjects();
+            }
+        }
+
+        private void OnEnable()
+        {
+            if (disableOnStart && repeatForFirstSeconds && _repeatCoroutine == null)
+            {
+                _repeatCoroutine = StartCoroutine(RepeatDisable());
+            }
+        }
+
+        private void OnDisable()
+        {
+            if (_repeatCoroutine != null)
+            {
+                StopCoroutine(_repeatCoroutine);
+                _repeatCoroutine = null;
+            }
+        }
 
         private void Start()
         {
@@ -24,6 +53,18 @@ namespace BYES.Quest
             }
 
             DisableGuideObjects();
+        }
+
+        private System.Collections.IEnumerator RepeatDisable()
+        {
+            var endTs = Time.unscaledTime + Mathf.Max(0f, repeatDurationSec);
+            while (Time.unscaledTime < endTs)
+            {
+                DisableGuideObjects();
+                yield return new WaitForSecondsRealtime(Mathf.Max(0.2f, repeatIntervalSec));
+            }
+
+            _repeatCoroutine = null;
         }
 
         public void DisableGuideObjects()
@@ -106,10 +147,27 @@ namespace BYES.Quest
                 return false;
             }
 
+            var components = go.GetComponents<Component>();
+            for (var i = 0; i < components.Length; i += 1)
+            {
+                var component = components[i];
+                if (component == null)
+                {
+                    continue;
+                }
+
+                var fullName = component.GetType().FullName ?? string.Empty;
+                if (fullName.StartsWith("UnityEngine.XR.Templates.MR.", System.StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
             var lowered = name.ToLowerInvariant();
             return lowered.Contains("coaching")
                    || lowered.Contains("tutorial player")
                    || lowered.Contains("hand menu setup mr template")
+                   || lowered.Contains("player setting")
                    || lowered.Contains("guide")
                    || lowered.Contains("relaunch coaching")
                    || lowered.Contains("resetcoaching");

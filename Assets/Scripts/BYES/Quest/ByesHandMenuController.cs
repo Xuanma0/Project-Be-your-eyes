@@ -29,6 +29,7 @@ namespace BYES.Quest
 
         [SerializeField] private float baseUiScale = 0.00038f;
         [SerializeField] private float refreshIntervalSec = 0.75f;
+        [SerializeField] private bool disableCompetingTemplateMenus = true;
 
         private HandMenu _handMenu;
         private MetaSystemGestureDetector _metaGestureDetector;
@@ -116,25 +117,47 @@ namespace BYES.Quest
                 _handMenu = gameObject.AddComponent<HandMenu>();
             }
 
-            _menuHost = _handMenu.handMenuUIGameObject;
-            if (_menuHost == null)
+            var previousMenuHost = _handMenu.handMenuUIGameObject;
+            Transform hostParent = null;
+            if (previousMenuHost != null && previousMenuHost.transform.parent != null)
+            {
+                hostParent = previousMenuHost.transform.parent;
+            }
+
+            if (hostParent == null)
             {
                 var followNode = transform.Find("OfficialHandMenuRig/Follow GameObject") ?? transform.Find("Follow GameObject");
                 if (followNode != null)
                 {
-                    _menuHost = followNode.gameObject;
+                    hostParent = followNode;
                 }
             }
 
-            if (_menuHost == null)
+            if (hostParent == null)
             {
-                _menuHost = new GameObject("BYES_HandMenuFollow");
-                _menuHost.transform.SetParent(transform, false);
+                hostParent = transform;
+            }
+
+            var byesHost = hostParent.Find("BYES_HandMenuUIRoot");
+            if (byesHost == null)
+            {
+                var created = new GameObject("BYES_HandMenuUIRoot");
+                created.transform.SetParent(hostParent, false);
+                _menuHost = created;
+            }
+            else
+            {
+                _menuHost = byesHost.gameObject;
             }
 
             _handMenu.handMenuUIGameObject = _menuHost;
             _handMenu.handMenuUpDirection = HandMenu.UpDirection.CameraUp;
             _handMenu.menuHandedness = HandMenu.MenuHandedness.Left;
+
+            if (disableCompetingTemplateMenus)
+            {
+                DisableCompetingMenus(previousMenuHost);
+            }
         }
 
         private void EnsureMetaGestureDetector()
@@ -194,7 +217,7 @@ namespace BYES.Quest
             cg.blocksRaycasts = true;
             cg.interactable = true;
 
-            _ = CreateText("Hint", _rootPanel.transform, "Palm-up + pinch to open menu", 28, TextAnchor.MiddleCenter, new Vector2(0.5f, 1f), new Vector2(0f, -34f), new Vector2(820f, 48f));
+            _ = CreateText("Hint", _rootPanel.transform, "Flip wrist palm-up to open menu (no pinch needed)", 28, TextAnchor.MiddleCenter, new Vector2(0.5f, 1f), new Vector2(0f, -34f), new Vector2(820f, 48f));
             _feedbackText = CreateText("Feedback", _rootPanel.transform, "-", 22, TextAnchor.MiddleLeft, new Vector2(0.5f, 0f), new Vector2(0f, 20f), new Vector2(820f, 40f));
 
             BuildPages(_rootPanel.transform);
@@ -340,11 +363,6 @@ namespace BYES.Quest
         private void RefreshStatus()
         {
             ResolveRefs();
-            if (_rootPanel != null)
-            {
-                _rootPanel.SetActive(_systemGestureActive);
-            }
-
             if (_panel == null)
             {
                 return;
@@ -614,6 +632,45 @@ namespace BYES.Quest
             slider.targetGraphic = handleImage;
             slider.onValueChanged.AddListener(v => onChanged?.Invoke(v));
             return slider;
+        }
+
+        private void DisableCompetingMenus(GameObject previousMenuHost)
+        {
+            if (previousMenuHost != null && previousMenuHost != _menuHost)
+            {
+                previousMenuHost.SetActive(false);
+            }
+
+            var allCanvas = FindObjectsByType<Canvas>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            for (var i = 0; i < allCanvas.Length; i += 1)
+            {
+                var canvas = allCanvas[i];
+                if (canvas == null || canvas.transform == null)
+                {
+                    continue;
+                }
+
+                if (_canvas != null && canvas == _canvas)
+                {
+                    continue;
+                }
+
+                var go = canvas.gameObject;
+                var name = go.name ?? string.Empty;
+                var lowered = name.ToLowerInvariant();
+                if (name.StartsWith("BYES_", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (lowered.Contains("player setting")
+                    || lowered.Contains("coaching")
+                    || lowered.Contains("hand menu setup")
+                    || lowered.Contains("mr template"))
+                {
+                    go.SetActive(false);
+                }
+            }
         }
     }
 }
