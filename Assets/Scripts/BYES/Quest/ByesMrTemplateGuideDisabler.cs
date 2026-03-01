@@ -178,7 +178,12 @@ namespace BYES.Quest
                 }
 
                 var fullName = component.GetType().FullName ?? string.Empty;
-                if (fullName.StartsWith("UnityEngine.XR.Templates.MR.", System.StringComparison.Ordinal))
+                // Disable only known onboarding/guide components.
+                // Avoid broad "disable all MR template components" to prevent breaking core XR/camera objects.
+                if (string.Equals(fullName, "UnityEngine.XR.Templates.MR.GoalManager", System.StringComparison.Ordinal)
+                    || string.Equals(fullName, "UnityEngine.XR.Templates.MR.GazeTooltips", System.StringComparison.Ordinal)
+                    || string.Equals(fullName, "UnityEngine.XR.Templates.MR.DebugInfoDisplayController", System.StringComparison.Ordinal)
+                    || string.Equals(fullName, "UnityEngine.XR.Templates.MR.BooleanToggleVisualsController", System.StringComparison.Ordinal))
                 {
                     return true;
                 }
