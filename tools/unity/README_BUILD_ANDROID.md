@@ -25,8 +25,8 @@ If missing, install Android Build Support (SDK/NDK/OpenJDK) for that editor and 
 ## Output
 
 - APK: `Builds/Quest3/BYES_Quest3Smoke_<VERSION>.apk`
-- Build log: `Builds/logs/unity_build_quest3_android_v4.95.log`
-- Summary: `Builds/logs/unity_build_quest3_android_v4.95.summary.txt`
+- Build log: `Builds/logs/unity_build_quest3_android_v4.99.log`
+- Summary: `Builds/logs/unity_build_quest3_android_v4.99.summary.txt`
 
 ## VERSION file compatibility
 

@@ -5,7 +5,7 @@ set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..\..") do set "REPO_ROOT=%%~fI"
 set "LOG_DIR=%REPO_ROOT%\Builds\logs"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
-set "LOG_FILE=%LOG_DIR%\unity_build_quest3_android_v4.95.log"
+set "LOG_FILE=%LOG_DIR%\unity_build_quest3_android_v4.99.log"
 set "VERSION_FILE=%REPO_ROOT%\VERSION"
 set "VERSION_TMP=%REPO_ROOT%\VERSION.unity-build-tmp"
 

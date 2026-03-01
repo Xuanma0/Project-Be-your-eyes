@@ -68,7 +68,7 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = _repo_root()
-    summary_path = repo_root / "Builds" / "logs" / "unity_build_quest3_android_v4.95.summary.txt"
+    summary_path = repo_root / "Builds" / "logs" / "unity_build_quest3_android_v4.99.summary.txt"
 
     if not args.log_path.exists():
         _write_summary(

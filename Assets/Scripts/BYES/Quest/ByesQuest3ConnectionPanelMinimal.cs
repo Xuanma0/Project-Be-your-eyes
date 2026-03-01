@@ -1,7 +1,11 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
+using BYES.Core;
 using BYES.Telemetry;
+using BYES.UI;
 using BeYourEyes.Adapters.Networking;
 using BeYourEyes.Unity.Interaction;
 using UnityEngine;
@@ -25,6 +29,14 @@ namespace BYES.Quest
         [SerializeField] private bool applyLowOverheadGatewayProbeProfile = true;
         [SerializeField] private float lowOverheadHealthProbeIntervalSec = 5f;
         [SerializeField] private bool lowOverheadDisableReadinessProbe = true;
+        [SerializeField] private bool showActionControlsOnAndroid = false;
+        [SerializeField] private bool autoProbeOnAndroid = false;
+        [SerializeField] private float defaultPanelDistance = 0.55f;
+        [SerializeField] private float minPanelDistance = 0.35f;
+        [SerializeField] private float maxPanelDistance = 1.5f;
+        [SerializeField] private float defaultPanelScale = 1f;
+        [SerializeField] private float minPanelScale = 0.7f;
+        [SerializeField] private float maxPanelScale = 1.8f;
 
         private string _baseUrl = DefaultBaseUrl;
         private string _apiKey = string.Empty;
@@ -48,6 +60,7 @@ namespace BYES.Quest
         private ScanController _scanController;
         private ByesQuest3SelfTestRunner _selfTestRunner;
         private ByesHitchMonitor _hitchMonitor;
+        private ByesHeadLockedPanel _headLockedPanel;
 
         private ITextView _baseUrlText;
         private ITextView _reachabilityText;
@@ -66,6 +79,10 @@ namespace BYES.Quest
         private ITextView _rawText;
         private ILabelButton _liveButton;
         private ILabelButton _scanButton;
+        private readonly List<GameObject> _actionControls = new List<GameObject>();
+        private Canvas _runtimeCanvas;
+        private bool _rawVisible = true;
+        private bool _actionControlsVisible = true;
 
         private void Awake()
         {
@@ -78,6 +95,7 @@ namespace BYES.Quest
             BuildRuntimeUi();
             ResolveRefs();
             BindRuntimeEvents();
+            ApplyPanelPresentationDefaults();
             ApplyConnectionConfig(reconnect: true);
             RefreshAllStatusLines();
         }
@@ -166,6 +184,28 @@ namespace BYES.Quest
                     _hitchMonitor = host.AddComponent<ByesHitchMonitor>();
                 }
             }
+
+            if (_headLockedPanel == null)
+            {
+                _headLockedPanel = GetComponent<ByesHeadLockedPanel>();
+            }
+        }
+
+        private void ApplyPanelPresentationDefaults()
+        {
+            _autoProbeEnabled = Application.platform == RuntimePlatform.Android
+                ? autoProbeOnAndroid
+                : true;
+
+            if (_headLockedPanel != null)
+            {
+                _headLockedPanel.SetDistance(defaultPanelDistance);
+                _headLockedPanel.SetPinned(false);
+            }
+
+            SetPanelScale(defaultPanelScale);
+            var showActions = Application.platform == RuntimePlatform.Android ? showActionControlsOnAndroid : true;
+            SetActionControlsVisible(showActions);
         }
 
         private void BindRuntimeEvents()
@@ -256,6 +296,7 @@ namespace BYES.Quest
             canvas.worldCamera = ResolveWorldCamera();
             canvas.additionalShaderChannels = AdditionalCanvasShaderChannels.TexCoord1;
             canvas.sortingOrder = 5000;
+            _runtimeCanvas = canvas;
 
             var canvasRect = canvasGo.GetComponent<RectTransform>();
             canvasRect.sizeDelta = new Vector2(1650f, 1180f);
@@ -290,17 +331,17 @@ namespace BYES.Quest
             _toastText = CreateText("Toast", panel.transform, "-", 34, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 168f), new Vector2(1480f, 72f));
             _rawText = CreateText("Raw", panel.transform, "-", 26, TextAnchor.UpperLeft, new Vector2(0.5f, 0f), new Vector2(0f, 96f), new Vector2(1480f, 124f));
 
-            CreateButton(panel.transform, "PingButton", "Ping", new Vector2(-650f, -1030f), OnPingClicked);
-            CreateButton(panel.transform, "VersionButton", "Version", new Vector2(-420f, -1030f), OnVersionClicked);
-            CreateButton(panel.transform, "ModeReadButton", "Read", new Vector2(-190f, -1030f), () => OnSetModeClicked("read_text"));
-            CreateButton(panel.transform, "ModeWalkButton", "Walk", new Vector2(40f, -1030f), () => OnSetModeClicked("walk"));
-            CreateButton(panel.transform, "ModeInspectButton", "Inspect", new Vector2(270f, -1030f), () => OnSetModeClicked("inspect"));
-            _scanButton = CreateButton(panel.transform, "ScanButton", "Scan Once", new Vector2(500f, -1030f), OnScanClicked);
-            _liveButton = CreateButton(panel.transform, "LiveButton", "Live Start", new Vector2(730f, -1030f), OnLiveClicked);
+            CreateButton(panel.transform, "PingButton", "Ping", new Vector2(-650f, -1030f), OnPingClicked, markAsAction: true);
+            CreateButton(panel.transform, "VersionButton", "Version", new Vector2(-420f, -1030f), OnVersionClicked, markAsAction: true);
+            CreateButton(panel.transform, "ModeReadButton", "Read", new Vector2(-190f, -1030f), () => OnSetModeClicked("read_text"), markAsAction: true);
+            CreateButton(panel.transform, "ModeWalkButton", "Walk", new Vector2(40f, -1030f), () => OnSetModeClicked("walk"), markAsAction: true);
+            CreateButton(panel.transform, "ModeInspectButton", "Inspect", new Vector2(270f, -1030f), () => OnSetModeClicked("inspect"), markAsAction: true);
+            _scanButton = CreateButton(panel.transform, "ScanButton", "Scan Once", new Vector2(500f, -1030f), OnScanClicked, markAsAction: true);
+            _liveButton = CreateButton(panel.transform, "LiveButton", "Live Start", new Vector2(730f, -1030f), OnLiveClicked, markAsAction: true);
 
-            CreateButton(panel.transform, "RefreshButton", "Refresh", new Vector2(-420f, -1110f), OnRefreshClicked);
-            CreateButton(panel.transform, "SelfTestButton", "SelfTest", new Vector2(-190f, -1110f), OnSelfTestClicked);
-            CreateButton(panel.transform, "ReconnectWsButton", "WS Reconnect", new Vector2(40f, -1110f), OnReconnectWsClicked);
+            CreateButton(panel.transform, "RefreshButton", "Refresh", new Vector2(-420f, -1110f), OnRefreshClicked, markAsAction: true);
+            CreateButton(panel.transform, "SelfTestButton", "SelfTest", new Vector2(-190f, -1110f), OnSelfTestClicked, markAsAction: true);
+            CreateButton(panel.transform, "ReconnectWsButton", "WS Reconnect", new Vector2(40f, -1110f), OnReconnectWsClicked, markAsAction: true);
         }
 
         private void OnPingClicked()
@@ -393,6 +434,215 @@ namespace BYES.Quest
 
             ShowToast("WS reconnect requested");
             RefreshAllStatusLines();
+        }
+
+        public bool IsPanelVisible()
+        {
+            return _runtimeCanvas == null || _runtimeCanvas.enabled;
+        }
+
+        public bool IsActionControlsVisible()
+        {
+            return _actionControlsVisible;
+        }
+
+        public bool IsPinned()
+        {
+            return _headLockedPanel != null && _headLockedPanel.IsPinned;
+        }
+
+        public float GetPanelDistance()
+        {
+            return _headLockedPanel != null ? _headLockedPanel.Distance : defaultPanelDistance;
+        }
+
+        public float GetPanelScale()
+        {
+            return transform.localScale.x;
+        }
+
+        public void SetPanelVisible(bool visible)
+        {
+            if (_runtimeCanvas != null)
+            {
+                _runtimeCanvas.enabled = visible;
+            }
+        }
+
+        public void SetActionControlsVisible(bool visible)
+        {
+            _actionControlsVisible = visible;
+            for (var i = 0; i < _actionControls.Count; i += 1)
+            {
+                if (_actionControls[i] != null)
+                {
+                    _actionControls[i].SetActive(visible);
+                }
+            }
+        }
+
+        public void SetPanelScale(float scale)
+        {
+            var clamped = Mathf.Clamp(scale, minPanelScale, maxPanelScale);
+            transform.localScale = Vector3.one * clamped;
+        }
+
+        public void SetPanelDistance(float distance)
+        {
+            if (_headLockedPanel == null)
+            {
+                return;
+            }
+
+            var clamped = Mathf.Clamp(distance, minPanelDistance, maxPanelDistance);
+            _headLockedPanel.SetDistance(clamped);
+        }
+
+        public void SetPinned(bool pinned)
+        {
+            if (_headLockedPanel == null)
+            {
+                return;
+            }
+
+            _headLockedPanel.SetPinned(pinned);
+        }
+
+        public void SnapToDefaultPose()
+        {
+            if (_headLockedPanel != null)
+            {
+                _headLockedPanel.SetDistance(defaultPanelDistance);
+                _headLockedPanel.SetPinned(false);
+                _headLockedPanel.SnapToDefault();
+            }
+
+            SetPanelScale(defaultPanelScale);
+            RefreshAllStatusLines();
+        }
+
+        public void ToggleRawDebugText()
+        {
+            _rawVisible = !_rawVisible;
+            RefreshAllStatusLines();
+        }
+
+        public void ToggleOverlayVisible()
+        {
+            var overlay = FindFirstObjectByType<ByesOverlayRenderer>();
+            if (overlay == null)
+            {
+                overlay = ByesOverlayRenderer.Instance;
+            }
+
+            if (overlay == null)
+            {
+                ShowToast("Overlay missing");
+                return;
+            }
+
+            if (overlay.enabled && overlay.gameObject.activeInHierarchy)
+            {
+                overlay.Hide();
+                overlay.enabled = false;
+                ShowToast("Overlay OFF");
+            }
+            else
+            {
+                overlay.enabled = true;
+                ShowToast("Overlay ON");
+            }
+        }
+
+        public void TriggerPingFromUi()
+        {
+            OnPingClicked();
+        }
+
+        public void TriggerVersionFromUi()
+        {
+            OnVersionClicked();
+        }
+
+        public void TriggerModeReadFromUi()
+        {
+            StartCoroutine(QueryMode());
+        }
+
+        public void TriggerSelfTestFromUi()
+        {
+            OnSelfTestClicked();
+        }
+
+        public void TriggerScanOnceFromUi()
+        {
+            OnScanClicked();
+        }
+
+        public void TriggerToggleLiveFromUi()
+        {
+            OnLiveClicked();
+        }
+
+        public void TriggerRefreshFromUi()
+        {
+            OnRefreshClicked();
+        }
+
+        public void TriggerSetModeWalk()
+        {
+            StartCoroutine(SetMode("walk"));
+        }
+
+        public void TriggerSetModeRead()
+        {
+            StartCoroutine(SetMode("read_text"));
+        }
+
+        public void TriggerSetModeInspect()
+        {
+            StartCoroutine(SetMode("inspect"));
+        }
+
+        public void TriggerCycleMode()
+        {
+            var manager = ByesModeManager.Instance;
+            if (manager == null)
+            {
+                StartCoroutine(SetMode("walk"));
+                return;
+            }
+
+            var current = manager.GetMode();
+            var next = current switch
+            {
+                ByesMode.Walk => ByesMode.ReadText,
+                ByesMode.ReadText => ByesMode.Inspect,
+                _ => ByesMode.Walk,
+            };
+            manager.SetMode(next, "xr");
+            StartCoroutine(SetMode(ByesModeManager.ToApiMode(next)));
+        }
+
+        public string BuildDebugSummary()
+        {
+            return
+                $"baseUrl={_baseUrl}\n" +
+                $"http={(_lastPingRttMs >= 0 ? "reachable" : "unknown")} rttMs={_lastPingRttMs}\n" +
+                $"ws={(_gatewayClient != null && _gatewayClient.IsConnected ? "connected" : "disconnected")}\n" +
+                $"mode={_currentMode}\n" +
+                $"scan={_scanStatus} err={_scanError}\n" +
+                $"event={_lastEventType} ts={_lastEventTsMs}\n" +
+                $"selfTest={_selfTestStatus} summary={_selfTestSummary}\n" +
+                $"hitch={(_hitchMonitor != null ? _hitchMonitor.HitchCount30s : -1)}";
+        }
+
+        public string ExportDebugText()
+        {
+            var path = Path.Combine(Application.persistentDataPath, "byes_quest3_debug.txt");
+            File.WriteAllText(path, BuildDebugSummary());
+            ShowToast("Debug exported");
+            return path;
         }
 
         private void ApplyConnectionConfig(bool reconnect)
@@ -631,8 +881,8 @@ namespace BYES.Quest
             var state = _scanController != null ? _scanController.LastScanState : _scanStatus;
             var err = _scanController != null ? _scanController.LastScanError : _scanError;
             _scanStateText.Set(string.IsNullOrWhiteSpace(err)
-                ? $"Scan: {state}"
-                : $"Scan: {state} ({err})");
+                ? $"Scan: {state} | pinned={IsPinned()} | controls={(_actionControlsVisible ? "on" : "off")}"
+                : $"Scan: {state} ({err}) | pinned={IsPinned()} | controls={(_actionControlsVisible ? "on" : "off")}");
 
             if (_selfTestRunner != null)
             {
@@ -640,6 +890,11 @@ namespace BYES.Quest
                 _selfTestSummary = _selfTestRunner.CurrentSummary;
             }
             _selfTestText.Set($"SelfTest: {_selfTestStatus} | {_selfTestSummary}");
+
+            if (!_rawVisible)
+            {
+                _rawText.Set("(debug hidden)");
+            }
 
             if (string.Equals(_selfTestStatus, "PASS", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(_selfTestStatus, "FAIL", StringComparison.OrdinalIgnoreCase))
@@ -771,7 +1026,7 @@ namespace BYES.Quest
             return new UguiTextView(uiText);
         }
 
-        private ILabelButton CreateButton(Transform parent, string name, string label, Vector2 anchoredPos, Action onClick)
+        private ILabelButton CreateButton(Transform parent, string name, string label, Vector2 anchoredPos, Action onClick, bool markAsAction = false)
         {
             var buttonGo = CreateUiObject(name, parent, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(210f, 74f), anchoredPos);
             var image = buttonGo.AddComponent<Image>();
@@ -782,6 +1037,10 @@ namespace BYES.Quest
             button.onClick.AddListener(() => onClick?.Invoke());
 
             var labelView = CreateText("Label", buttonGo.transform, label, 30, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(190f, 64f));
+            if (markAsAction)
+            {
+                _actionControls.Add(buttonGo);
+            }
             return new RuntimeButton(button, labelView);
         }
 

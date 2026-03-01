@@ -14,7 +14,7 @@ namespace BYES.Editor
     {
         private const string QuestScenePath = "Assets/Scenes/Quest3SmokeScene.unity";
         private const string SampleScenePath = "Assets/Scenes/SampleScene.unity";
-        private const string FallbackVersion = "v4.95";
+        private const string FallbackVersion = "v4.99";
 
         public static void BuildQuest3SmokeApk()
         {

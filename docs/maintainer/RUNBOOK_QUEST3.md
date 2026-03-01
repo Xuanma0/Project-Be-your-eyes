@@ -78,9 +78,26 @@ python -m uvicorn main:app --app-dir Gateway --host 127.0.0.1 --port 18000
 
 ## 7) Runtime Controls
 
-- Manual scan: panel button `Scan Once` (desktop fallback key `S`).
-- Toggle live loop: panel button `Live Start/Stop` (desktop fallback key `L`).
-- Mode switch: panel buttons `Walk / Read / Inspect` (desktop fallback `1/2/3` + `F1/F2/F3`).
+- Quest default (Android): use wrist menu actions (`Actions / Panels / Debug`).
+- Manual scan: wrist menu `Scan Once` (desktop fallback key `S`).
+- Toggle live loop: wrist menu `Live Toggle` (desktop fallback key `L`).
+- Mode switch: wrist menu `Cycle Mode` (desktop fallback `1/2/3` + `F1/F2/F3`).
+- Connection panel remains status-first; action buttons are hidden by default on Android.
+
+## 7.1) Wrist Menu + Gesture Shortcuts (v4.99)
+
+- Palm-up to reveal the wrist menu (default left wrist anchor).
+- Gesture shortcuts (right hand):
+  - thumb + index pinch: `Scan Once`
+  - thumb + middle pinch: `Live Toggle`
+  - thumb + ring pinch: `Cycle Mode`
+- `Panels` group includes:
+  - `Toggle Smoke Panel`
+  - `Pin / Unpin`
+  - `Distance +/-`
+  - `Scale +/-`
+  - `Snap Default`
+- If XR Hands subsystem is unavailable, gesture shortcuts no-op silently; panel/wrist buttons still work.
 
 ## 8) Scan Once / Live Smoke Flow (v4.97)
 
@@ -126,6 +143,14 @@ Use this checklist for team verification screenshots:
 - `SelfTest PASS`: panel displays PASS with summary text.
 - `Mode Switch`: click `Walk/Read/Inspect` and verify `Mode:` text changes accordingly.
 - `Hitch Metric`: with live off for 30s, capture `Hitch30s` and `WorstDt` in screenshot.
+
+## 10.1) No-Low-Buttons Smoke Flow (v4.99)
+
+1. Start USB script: `tools\\quest3\\quest3_usb_local_gateway.cmd`.
+2. Put on Quest and wait until panel shows `HTTP: reachable`.
+3. Palm-up to open wrist menu.
+4. Click `Debug -> Run SelfTest` (or `Actions -> Scan Once` / `Live Toggle` manually).
+5. Confirm panel updates: `WS connected`, `Last Upload`, `Last E2E`, `Last Event`.
 
 ## 11) Recommended Capture Defaults
 

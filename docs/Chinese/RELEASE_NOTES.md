@@ -1,5 +1,12 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v4.99
+- Quest3 烟测交互升级为手腕/手掌菜单（`Actions / Panels / Debug`），默认不再依赖底部蓝色按钮。
+- 新增 XR Hands 手势快捷：右手拇指+食指=`Scan Once`，拇指+中指=`Live Toggle`，拇指+无名指=`Cycle Mode`。
+- 连接面板支持抓取拖拽、Pin/Unpin、距离与缩放调节、`Snap Default` 复位。
+- Quest3 场景安装器自动注入腕部菜单与手势组件，并默认关闭 Coaching/Tutorial UI。
+- 新增编辑器自动打开 `Quest3SmokeScene` 开关，并同步更新 Quest3 runbook。
+
 ## v4.98
 - Quest3 卡顿缓解：采集链路支持 Async GPU Readback（Android 默认启用），不支持时自动回退同步路径。
 - 新增头显内卡顿观测指标：`Hitch30s`、`WorstDt`、`AvgDt`、`GC delta`，并在面板显示采集状态（CaptureHz / inflight / async）。

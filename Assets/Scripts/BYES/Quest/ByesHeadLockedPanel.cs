@@ -4,19 +4,66 @@ namespace BYES.Quest
 {
     public sealed class ByesHeadLockedPanel : MonoBehaviour
     {
-        public float distance = 1.2f;
-        public float yOffset = -0.15f;
+        public float distance = 0.55f;
+        public float yOffset = -0.08f;
         public bool followRotation = true;
         public float smooth = 12f;
         public bool invertFacing = true;
+        public bool pinned = false;
 
         private Camera _targetCamera;
         private int _cameraRetryFrames;
         private bool _initialized;
+        private float _defaultDistance;
+        private float _defaultYOffset;
+
+        private void Awake()
+        {
+            _defaultDistance = distance;
+            _defaultYOffset = yOffset;
+        }
+
+        public bool IsPinned => pinned;
+        public float Distance => distance;
+        public float YOffset => yOffset;
+
+        public void SetPinned(bool value)
+        {
+            pinned = value;
+        }
+
+        public void SetDistance(float value)
+        {
+            distance = Mathf.Clamp(value, 0.25f, 1.8f);
+        }
+
+        public void SetYOffset(float value)
+        {
+            yOffset = Mathf.Clamp(value, -1f, 1f);
+        }
+
+        public void RestoreDefaults()
+        {
+            distance = _defaultDistance;
+            yOffset = _defaultYOffset;
+            pinned = false;
+            _initialized = false;
+        }
+
+        public void SnapToDefault()
+        {
+            _initialized = false;
+            pinned = false;
+        }
 
         private void LateUpdate()
         {
             if (!TryResolveCamera())
+            {
+                return;
+            }
+
+            if (pinned)
             {
                 return;
             }

@@ -377,6 +377,8 @@ Transform:
   - {fileID: 1945439068}
   - {fileID: 1240136667}
   - {fileID: 1035606265}
+  - {fileID: 310424659}
+  - {fileID: 1371165600}
   m_Father: {fileID: 1883757455}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &257810521
@@ -506,6 +508,68 @@ MonoBehaviour:
   m_ShadowLayerMask: 1
   m_RenderingLayers: 1
   m_ShadowRenderingLayers: 1
+--- !u!1001 &310424658
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 160098887}
+    m_Modifications:
+    - target: {fileID: 713100572446803962, guid: 895251833250ed74b9739bb5977ca374, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 713100572446803962, guid: 895251833250ed74b9739bb5977ca374, type: 3}
+      propertyPath: m_LocalPosition.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 713100572446803962, guid: 895251833250ed74b9739bb5977ca374, type: 3}
+      propertyPath: m_LocalPosition.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 713100572446803962, guid: 895251833250ed74b9739bb5977ca374, type: 3}
+      propertyPath: m_LocalRotation.w
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 713100572446803962, guid: 895251833250ed74b9739bb5977ca374, type: 3}
+      propertyPath: m_LocalRotation.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 713100572446803962, guid: 895251833250ed74b9739bb5977ca374, type: 3}
+      propertyPath: m_LocalRotation.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 713100572446803962, guid: 895251833250ed74b9739bb5977ca374, type: 3}
+      propertyPath: m_LocalRotation.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 713100572446803962, guid: 895251833250ed74b9739bb5977ca374, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 713100572446803962, guid: 895251833250ed74b9739bb5977ca374, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 713100572446803962, guid: 895251833250ed74b9739bb5977ca374, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7840040438921633627, guid: 895251833250ed74b9739bb5977ca374, type: 3}
+      propertyPath: m_Name
+      value: BYES_WristMenu
+      objectReference: {fileID: 0}
+    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: 895251833250ed74b9739bb5977ca374, type: 3}
+--- !u!4 &310424659 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 713100572446803962, guid: 895251833250ed74b9739bb5977ca374, type: 3}
+  m_PrefabInstance: {fileID: 310424658}
+  m_PrefabAsset: {fileID: 0}
 --- !u!1001 &357356506
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -517,6 +581,10 @@ PrefabInstance:
     - target: {fileID: 1503989109714432937, guid: dc067c577ec1b854684d789b6e727cc0, type: 3}
       propertyPath: m_Name
       value: Tutorial Player
+      objectReference: {fileID: 0}
+    - target: {fileID: 1503989109714432937, guid: dc067c577ec1b854684d789b6e727cc0, type: 3}
+      propertyPath: m_IsActive
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 3297219238015160179, guid: dc067c577ec1b854684d789b6e727cc0, type: 3}
       propertyPath: m_Camera
@@ -765,6 +833,7 @@ GameObject:
   - component: {fileID: 678042973}
   - component: {fileID: 678042972}
   - component: {fileID: 678042971}
+  - component: {fileID: 678042975}
   m_Layer: 0
   m_Name: BYES_FrameCaptureHost
   m_TagString: Untagged
@@ -891,6 +960,24 @@ MonoBehaviour:
   maxHeight: 540
   jpegQuality: 70
   keepAspect: 1
+  useAsyncGpuReadback: 1
+  captureTargetHz: 1
+  captureMaxInflight: 1
+--- !u!114 &678042975
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 678042969}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7392e652fe77416085dd807be3efe7a5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BYES.Telemetry.ByesHitchMonitor
+  windowSeconds: 30
+  hitchThresholdMs: 30
+  statsRefreshSeconds: 1
 --- !u!114 &678121947 stripped
 MonoBehaviour:
   m_CorrespondingSourceObject: {fileID: 3785574333896180240, guid: b6d57cedc6a73c94aad8ce006a26b41b, type: 3}
@@ -2024,7 +2111,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 3032334164665928405, guid: 66d40221d132d04499855da9ce315f20, type: 3}
       propertyPath: m_IsActive
-      value: 1
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 3032334164665928410, guid: 66d40221d132d04499855da9ce315f20, type: 3}
       propertyPath: m_Enabled
@@ -2061,6 +2148,10 @@ PrefabInstance:
     - target: {fileID: 3032334164735723897, guid: 66d40221d132d04499855da9ce315f20, type: 3}
       propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_Arguments.m_ObjectArgumentAssemblyTypeName
       value: UnityEngine.Object, UnityEngine
+      objectReference: {fileID: 0}
+    - target: {fileID: 3032334164805062083, guid: 66d40221d132d04499855da9ce315f20, type: 3}
+      propertyPath: m_IsActive
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 3032334164805062089, guid: 66d40221d132d04499855da9ce315f20, type: 3}
       propertyPath: m_SizeDelta.y
@@ -2283,6 +2374,55 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 1a2d7d89889b4d94fa1f8d6fe49788e8, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+--- !u!1 &1371165599
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1371165600}
+  - component: {fileID: 1371165601}
+  m_Layer: 0
+  m_Name: BYES_HandGestureShortcuts
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1371165600
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1371165599}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 160098887}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1371165601
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1371165599}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fb0ba0903481433aacb5bccbced7cd09, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BYES.XR.ByesHandGestureShortcuts
+  enabledOnAndroidOnly: 1
+  pinchEnterDistanceM: 0.025
+  pinchReleaseDistanceM: 0.04
+  triggerCooldownSec: 0.5
+  requireOnlyOnePinchAtATime: 1
 --- !u!1 &1615728349
 GameObject:
   m_ObjectHideFlags: 0
@@ -3180,6 +3320,7 @@ GameObject:
   - component: {fileID: 1976724982}
   - component: {fileID: 1976724984}
   - component: {fileID: 1976724983}
+  - component: {fileID: 1976724985}
   m_Layer: 0
   m_Name: BYES_ConnectionPanel
   m_TagString: Untagged
@@ -3214,6 +3355,17 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d075e009284c43cb9dc5eeacbff8f93f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::BYES.Quest.ByesQuest3ConnectionPanelMinimal
+  applyLowOverheadGatewayProbeProfile: 1
+  lowOverheadHealthProbeIntervalSec: 5
+  lowOverheadDisableReadinessProbe: 1
+  showActionControlsOnAndroid: 0
+  autoProbeOnAndroid: 0
+  defaultPanelDistance: 0.55
+  minPanelDistance: 0.35
+  maxPanelDistance: 1.5
+  defaultPanelScale: 1
+  minPanelScale: 0.7
+  maxPanelScale: 1.8
 --- !u!114 &1976724984
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -3231,6 +3383,23 @@ MonoBehaviour:
   followRotation: 1
   smooth: 12
   invertFacing: 1
+  pinned: 0
+--- !u!114 &1976724985
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1976724981}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 52cb621e1a3d47249d807e2995867463, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BYES.Quest.ByesSmokePanelGrabHandle
+  autoConfigure: 1
+  colliderCenter: {x: 0, y: 0, z: 0.01}
+  colliderSize: {x: 0.48, y: 0.34, z: 0.04}
+  keepUnpinnedOnRelease: 1
 --- !u!224 &2001866392 stripped
 RectTransform:
   m_CorrespondingSourceObject: {fileID: 4941219564456579801, guid: dc067c577ec1b854684d789b6e727cc0, type: 3}
@@ -3669,6 +3838,10 @@ PrefabInstance:
     - target: {fileID: 3331091097867770896, guid: b6d57cedc6a73c94aad8ce006a26b41b, type: 3}
       propertyPath: m_Name
       value: Relaunch Coaching Button
+      objectReference: {fileID: 0}
+    - target: {fileID: 3331091097867770896, guid: b6d57cedc6a73c94aad8ce006a26b41b, type: 3}
+      propertyPath: m_IsActive
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 3331091097867770903, guid: b6d57cedc6a73c94aad8ce006a26b41b, type: 3}
       propertyPath: m_AnchorMax.y

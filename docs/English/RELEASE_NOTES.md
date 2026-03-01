@@ -4,6 +4,13 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v4.99
+- Quest3 smoke UX upgraded to a wrist/palm menu flow: grouped actions (`Actions / Panels / Debug`) and no dependency on bottom button controls for Quest operation.
+- Added XR Hands gesture shortcuts on right hand: thumb+index pinch (`Scan Once`), thumb+middle (`Live Toggle`), thumb+ring (`Cycle Mode`) with cooldown/hysteresis and safe no-op fallback when hand subsystem is unavailable.
+- Smoke panel now supports runtime move/adjust operations (grab shell, pin/unpin, distance/scale, snap-to-default) wired to Quest menu actions.
+- Quest smoke installer now auto-injects wrist menu + gesture components and disables coaching/tutorial UI by default in `Quest3SmokeScene`.
+- Added editor auto-open helper for Quest smoke scene (`BYES/Quest3/Auto Open Quest3SmokeScene`) and updated Quest runbook for the new no-controller workflow.
+
 ## v4.98
 - Quest3 hitch mitigation: capture path now supports async GPU readback with Android-friendly defaults and sync fallback when unsupported/failing.
 - Added Quest runtime hitch telemetry (`Hitch30s`, `WorstDt`, `AvgDt`, `GC delta`) and surfaced capture runtime state (`CaptureHz`, inflight, async on/off) in the floating panel.
