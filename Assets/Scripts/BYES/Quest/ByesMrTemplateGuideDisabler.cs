@@ -164,13 +164,60 @@ namespace BYES.Quest
             }
 
             var lowered = name.ToLowerInvariant();
-            return lowered.Contains("coaching")
+            if (lowered.Contains("coaching")
                    || lowered.Contains("tutorial player")
                    || lowered.Contains("hand menu setup mr template")
                    || lowered.Contains("player setting")
                    || lowered.Contains("guide")
                    || lowered.Contains("relaunch coaching")
-                   || lowered.Contains("resetcoaching");
+                   || lowered.Contains("resetcoaching"))
+            {
+                return true;
+            }
+
+            return ContainsPlayerSettingsLabel(go);
+        }
+
+        private static bool ContainsPlayerSettingsLabel(GameObject root)
+        {
+            var components = root.GetComponentsInChildren<Component>(true);
+            for (var i = 0; i < components.Length; i += 1)
+            {
+                var component = components[i];
+                if (component == null)
+                {
+                    continue;
+                }
+
+                var type = component.GetType();
+                var fullName = type.FullName ?? string.Empty;
+                var isTextLike = fullName == "UnityEngine.UI.Text"
+                                 || fullName == "TMPro.TextMeshProUGUI"
+                                 || fullName == "TMPro.TMP_Text";
+                if (!isTextLike)
+                {
+                    continue;
+                }
+
+                var textProperty = type.GetProperty("text");
+                if (textProperty == null)
+                {
+                    continue;
+                }
+
+                var value = textProperty.GetValue(component, null) as string;
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                if (value.IndexOf("player setting", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
     }
 }

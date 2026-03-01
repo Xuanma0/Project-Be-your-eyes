@@ -29,6 +29,8 @@ namespace BYES.Editor
         private const string LegacyWristMenuName = "BYES_WristMenu";
         private const string HandMenuPrefabPath = "Assets/Prefabs/BYES/Quest/BYES_HandMenu.prefab";
         private const string SampleHandMenuRigPrefabPath = "Assets/Samples/XR Interaction Toolkit/3.3.0/Hands Interaction Demo/Prefabs/HandMenuRig.prefab";
+        private const string MrTemplateHandMenuPrefabPath = "Assets/MRTemplateAssets/Prefabs/UI/HandMenuSetupVariant_MRTemplate.prefab";
+        private const string MrTemplateCoachingPrefabPath = "Assets/MRTemplateAssets/Prefabs/UI/CoachingUI.prefab";
 
         [MenuItem("BYES/Quest3/Install Smoke Rig")]
         public static void InstallFromMenu()
@@ -124,13 +126,14 @@ namespace BYES.Editor
             _ = EnsureComponent<ByesHitchMonitor>(frameCaptureHost);
 
             ConfigureQuestSmokeDefaults(gatewayClient, grabber, frameCapture, scanController);
+            var removedTemplateUiCount = RemoveTemplateUiInstances(scene);
             var disabledCoachingCount = DisableCoachingUi(scene);
             EnsureBuildSettingsQuestOnly();
 
             EditorSceneManager.MarkSceneDirty(scene);
             EditorSceneManager.SaveScene(scene);
 
-            Debug.Log($"[ByesQuest3SmokeSceneInstaller] installed at {AppRootName}/{SmokeRigName}/{PanelName} + {HandMenuRootName} + {FrameRigName} + {XrUiGuardName}; coachingDisabled={disabledCoachingCount}");
+            Debug.Log($"[ByesQuest3SmokeSceneInstaller] installed at {AppRootName}/{SmokeRigName}/{PanelName} + {HandMenuRootName} + {FrameRigName} + {XrUiGuardName}; templateUiRemoved={removedTemplateUiCount}; coachingDisabled={disabledCoachingCount}");
         }
 
         private static GameObject FindOrCreateRoot(Scene scene, string name)
@@ -337,6 +340,72 @@ namespace BYES.Editor
             }
 
             return disabled;
+        }
+
+        private static int RemoveTemplateUiInstances(Scene scene)
+        {
+            var removed = 0;
+            var roots = scene.GetRootGameObjects();
+            for (var i = roots.Length - 1; i >= 0; i -= 1)
+            {
+                removed += RemoveTemplateUiRecursive(roots[i].transform);
+            }
+
+            return removed;
+        }
+
+        private static int RemoveTemplateUiRecursive(Transform node)
+        {
+            if (node == null)
+            {
+                return 0;
+            }
+
+            var removed = 0;
+            for (var i = node.childCount - 1; i >= 0; i -= 1)
+            {
+                removed += RemoveTemplateUiRecursive(node.GetChild(i));
+            }
+
+            if (ShouldRemoveTemplateUi(node.gameObject))
+            {
+                UnityEngine.Object.DestroyImmediate(node.gameObject);
+                removed += 1;
+            }
+
+            return removed;
+        }
+
+        private static bool ShouldRemoveTemplateUi(GameObject go)
+        {
+            if (go == null)
+            {
+                return false;
+            }
+
+            var name = go.name ?? string.Empty;
+            if (name.StartsWith("BYES_", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var lowered = name.ToLowerInvariant();
+            if (lowered.Contains("hand menu setup mr template")
+                || lowered.Contains("coaching ui")
+                || lowered.Contains("tutorial player")
+                || lowered.Contains("player setting"))
+            {
+                return true;
+            }
+
+            var prefabPath = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(go);
+            if (string.IsNullOrWhiteSpace(prefabPath))
+            {
+                return false;
+            }
+
+            return string.Equals(prefabPath, MrTemplateHandMenuPrefabPath, StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(prefabPath, MrTemplateCoachingPrefabPath, StringComparison.OrdinalIgnoreCase);
         }
 
         private static int DisableCoachingRecursive(Transform node)
