@@ -8,6 +8,7 @@ namespace BYES.Quest
         public float yOffset = -0.15f;
         public bool followRotation = true;
         public float smooth = 12f;
+        public bool invertFacing = true;
 
         private Camera _targetCamera;
         private int _cameraRetryFrames;
@@ -49,7 +50,8 @@ namespace BYES.Quest
                 return;
             }
 
-            var targetRotation = Quaternion.LookRotation(toCamera.normalized, _targetCamera.transform.up);
+            var facingDirection = invertFacing ? -toCamera.normalized : toCamera.normalized;
+            var targetRotation = Quaternion.LookRotation(facingDirection, _targetCamera.transform.up);
             transform.rotation = _initialized
                 ? Quaternion.Slerp(transform.rotation, targetRotation, t)
                 : targetRotation;
