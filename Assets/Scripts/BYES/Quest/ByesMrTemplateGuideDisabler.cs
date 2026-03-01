@@ -17,6 +17,7 @@ namespace BYES.Quest
 
         private static string _lastSummary = "none";
         private Coroutine _repeatCoroutine;
+        private int _consecutiveNoopPasses;
 
         public static string LastSummary => _lastSummary;
 
@@ -86,6 +87,10 @@ namespace BYES.Quest
             while (Time.unscaledTime < endTs)
             {
                 DisableGuideObjects();
+                if (_consecutiveNoopPasses >= 2)
+                {
+                    break;
+                }
                 yield return new WaitForSecondsRealtime(Mathf.Max(0.2f, repeatIntervalSec));
             }
 
@@ -120,6 +125,14 @@ namespace BYES.Quest
             }
 
             _lastSummary = sb.ToString();
+            if (disabled.Count == 0)
+            {
+                _consecutiveNoopPasses += 1;
+            }
+            else
+            {
+                _consecutiveNoopPasses = 0;
+            }
             if (verboseLog)
             {
                 Debug.Log("[ByesMrTemplateGuideDisabler] " + _lastSummary);
@@ -132,6 +145,8 @@ namespace BYES.Quest
             {
                 return;
             }
+
+            DisableKnownGuideComponents(node.gameObject, disabled);
 
             if (ShouldDisable(node.gameObject))
             {
@@ -167,6 +182,39 @@ namespace BYES.Quest
             }
 
             var name = go.name ?? string.Empty;
+            if (IsCoreXrRigObject(go))
+            {
+                return false;
+            }
+
+            if (name.StartsWith("BYES_", System.StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var lowered = name.ToLowerInvariant();
+            // Keep name rules strict to avoid disabling core XR rig objects.
+            if (string.Equals(lowered, "goal manager", System.StringComparison.Ordinal)
+                   || string.Equals(lowered, "hand menu setup mr template variant", System.StringComparison.Ordinal)
+                   || string.Equals(lowered, "player settings", System.StringComparison.Ordinal)
+                   || string.Equals(lowered, "coaching", System.StringComparison.Ordinal)
+                   || string.Equals(lowered, "coaching ui", System.StringComparison.Ordinal)
+                   || string.Equals(lowered, "relaunch coaching", System.StringComparison.Ordinal)
+                   || string.Equals(lowered, "resetcoaching", System.StringComparison.Ordinal)
+                   || string.Equals(lowered, "tutorial player", System.StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            return ContainsPlayerSettingsLabel(go);
+        }
+
+        private static void DisableKnownGuideComponents(GameObject go, List<string> disabled)
+        {
+            if (go == null)
+            {
+                return;
+            }
 
             var components = go.GetComponents<Component>();
             for (var i = 0; i < components.Length; i += 1)
@@ -178,36 +226,46 @@ namespace BYES.Quest
                 }
 
                 var fullName = component.GetType().FullName ?? string.Empty;
-                // Disable only known onboarding/guide components.
-                // Avoid broad "disable all MR template components" to prevent breaking core XR/camera objects.
                 if (string.Equals(fullName, "UnityEngine.XR.Templates.MR.GoalManager", System.StringComparison.Ordinal)
                     || string.Equals(fullName, "UnityEngine.XR.Templates.MR.GazeTooltips", System.StringComparison.Ordinal)
                     || string.Equals(fullName, "UnityEngine.XR.Templates.MR.DebugInfoDisplayController", System.StringComparison.Ordinal)
-                    || string.Equals(fullName, "UnityEngine.XR.Templates.MR.BooleanToggleVisualsController", System.StringComparison.Ordinal))
+                    || string.Equals(fullName, "UnityEngine.XR.Templates.MR.BooleanToggleVisualsController", System.StringComparison.Ordinal)
+                    || string.Equals(fullName, "UnityEngine.XR.Templates.MR.OcclusionManager", System.StringComparison.Ordinal)
+                    || string.Equals(fullName, "UnityEngine.XR.Templates.MR.SpawnedObjectsManager", System.StringComparison.Ordinal))
+                {
+                    if (component is Behaviour behaviour && behaviour.enabled)
+                    {
+                        behaviour.enabled = false;
+                        disabled.Add(go.name + "::" + component.GetType().Name);
+                    }
+                }
+            }
+        }
+
+        private static bool IsCoreXrRigObject(GameObject go)
+        {
+            var components = go.GetComponents<Component>();
+            for (var i = 0; i < components.Length; i += 1)
+            {
+                var component = components[i];
+                if (component == null)
+                {
+                    continue;
+                }
+
+                var fullName = component.GetType().FullName ?? string.Empty;
+                if (fullName == "Unity.XR.CoreUtils.XROrigin"
+                    || fullName == "UnityEngine.Camera"
+                    || fullName == "UnityEngine.XR.Interaction.Toolkit.XRInteractionManager"
+                    || fullName == "UnityEngine.XR.Interaction.Toolkit.UI.XRUIInputModule"
+                    || fullName == "UnityEngine.XR.Interaction.Toolkit.Inputs.XRInputModalityManager"
+                    || fullName.Contains("OpenXR", System.StringComparison.Ordinal))
                 {
                     return true;
                 }
             }
 
-            if (name.StartsWith("BYES_", System.StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            var lowered = name.ToLowerInvariant();
-            if (lowered.Contains("coaching")
-                   || lowered.Contains("tutorial player")
-                   || lowered.Contains("hand menu setup mr template")
-                   || lowered.Contains("mr interaction setup")
-                   || lowered.Contains("player setting")
-                   || lowered.Contains("guide")
-                   || lowered.Contains("relaunch coaching")
-                   || lowered.Contains("resetcoaching"))
-            {
-                return true;
-            }
-
-            return ContainsPlayerSettingsLabel(go);
+            return false;
         }
 
         private static bool ContainsPlayerSettingsLabel(GameObject root)
