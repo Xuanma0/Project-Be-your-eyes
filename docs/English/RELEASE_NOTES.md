@@ -4,6 +4,12 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v4.96.1
+- Quest3 UI clickability fix: prevent runtime mode overlay from intercepting interactions (Android suppress + non-blocking overlay graphics/raycast settings).
+- Enforced world-space Quest connection panel raycast path: bind camera, raise sorting order, prefer `TrackedDeviceGraphicRaycaster`, and keep panel root interactable.
+- Added runtime XR UI wiring guard (`ByesXrUiWiringGuard`) to normalize EventSystem modules (`XRUIInputModule`) and enable UI interaction on `XRRayInteractor` instances.
+- Updated Quest3 smoke scene installer to auto-place `BYES_XrUiWiringGuard` under `BYES_SmokeRig`.
+
 ## v4.96
 - Added Quest 3 smoke scene auto-installer that ensures `BYES_SmokeRig/BYES_ConnectionPanel` exists in `Quest3SmokeScene`.
 - Added runtime head-locked world-space panel behavior (`ByesHeadLockedPanel`) to keep panel stable in front of the user.

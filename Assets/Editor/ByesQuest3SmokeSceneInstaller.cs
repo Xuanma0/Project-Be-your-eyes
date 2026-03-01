@@ -1,6 +1,7 @@
 #if UNITY_EDITOR
 using System;
 using BYES.Quest;
+using BYES.XR;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -14,6 +15,7 @@ namespace BYES.Editor
         private const string AppRootName = "AppRoot";
         private const string SmokeRigName = "BYES_SmokeRig";
         private const string PanelName = "BYES_ConnectionPanel";
+        private const string XrUiGuardName = "BYES_XrUiWiringGuard";
 
         [MenuItem("BYES/Quest3/Install Smoke Rig")]
         public static void InstallFromMenu()
@@ -50,13 +52,19 @@ namespace BYES.Editor
             panel.transform.localRotation = Quaternion.identity;
             panel.transform.localScale = Vector3.one;
 
+            var xrUiGuard = FindOrCreateChild(smokeRig.transform, XrUiGuardName);
+            xrUiGuard.transform.localPosition = Vector3.zero;
+            xrUiGuard.transform.localRotation = Quaternion.identity;
+            xrUiGuard.transform.localScale = Vector3.one;
+
             _ = EnsureComponent<ByesHeadLockedPanel>(panel);
             _ = EnsureComponent<ByesQuest3ConnectionPanelMinimal>(panel);
+            _ = EnsureComponent<ByesXrUiWiringGuard>(xrUiGuard);
 
             EditorSceneManager.MarkSceneDirty(scene);
             EditorSceneManager.SaveScene(scene);
 
-            Debug.Log($"[ByesQuest3SmokeSceneInstaller] installed at {AppRootName}/{SmokeRigName}/{PanelName}");
+            Debug.Log($"[ByesQuest3SmokeSceneInstaller] installed at {AppRootName}/{SmokeRigName}/{PanelName} + {XrUiGuardName}");
         }
 
         private static GameObject FindOrCreateRoot(Scene scene, string name)

@@ -36,6 +36,11 @@ namespace BYES.UI
             _ = EnsureExists();
         }
 
+        private static bool IsOverlaySuppressedForPlatform()
+        {
+            return Application.platform == RuntimePlatform.Android;
+        }
+
         public static ByesOverlayRenderer EnsureExists()
         {
             if (_instance != null)
@@ -67,6 +72,13 @@ namespace BYES.UI
 
             _instance = this;
             DontDestroyOnLoad(gameObject);
+
+            if (IsOverlaySuppressedForPlatform())
+            {
+                enabled = false;
+                return;
+            }
+
             EnsureUi();
             Hide();
         }
@@ -238,6 +250,11 @@ namespace BYES.UI
 
         private void EnsureUi()
         {
+            if (IsOverlaySuppressedForPlatform())
+            {
+                return;
+            }
+
             if (_canvas != null)
             {
                 return;
@@ -250,7 +267,9 @@ namespace BYES.UI
             _canvas.renderMode = RenderMode.WorldSpace;
             _canvas.worldCamera = Camera.main;
             canvasGo.AddComponent<CanvasScaler>();
-            canvasGo.AddComponent<GraphicRaycaster>();
+            var canvasGroup = canvasGo.AddComponent<CanvasGroup>();
+            canvasGroup.interactable = false;
+            canvasGroup.blocksRaycasts = false;
 
             var canvasRect = canvasGo.GetComponent<RectTransform>();
             canvasRect.sizeDelta = new Vector2(640f, 220f);
@@ -261,6 +280,7 @@ namespace BYES.UI
             panelGo.transform.SetParent(canvasGo.transform, false);
             _panel = panelGo.AddComponent<Image>();
             _panel.color = new Color(0f, 0f, 0f, 0.8f);
+            _panel.raycastTarget = false;
 
             var panelRect = panelGo.GetComponent<RectTransform>();
             panelRect.anchorMin = new Vector2(0f, 0f);
@@ -291,6 +311,7 @@ namespace BYES.UI
 
             _modeText = CreateText("Mode", panelGo.transform, TextAnchor.LowerRight, 18, FontStyle.Normal);
             _modeText.color = new Color(1f, 1f, 1f, 0.9f);
+            _modeText.raycastTarget = false;
             var modeRect = _modeText.GetComponent<RectTransform>();
             modeRect.anchorMin = new Vector2(0.50f, 0.0f);
             modeRect.anchorMax = new Vector2(0.98f, 0.10f);
@@ -312,6 +333,7 @@ namespace BYES.UI
             text.fontSize = size;
             text.fontStyle = style;
             text.color = Color.white;
+            text.raycastTarget = false;
             return text;
         }
 

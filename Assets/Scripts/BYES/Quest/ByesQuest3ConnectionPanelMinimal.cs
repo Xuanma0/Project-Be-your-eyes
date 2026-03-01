@@ -70,8 +70,9 @@ namespace BYES.Quest
 
             var canvas = canvasGo.GetComponent<Canvas>();
             canvas.renderMode = RenderMode.WorldSpace;
-            canvas.worldCamera = Camera.main;
+            canvas.worldCamera = ResolveWorldCamera();
             canvas.additionalShaderChannels = AdditionalCanvasShaderChannels.TexCoord1;
+            canvas.sortingOrder = 5000;
 
             var canvasRect = canvasGo.GetComponent<RectTransform>();
             canvasRect.sizeDelta = new Vector2(1400f, 900f);
@@ -85,6 +86,9 @@ namespace BYES.Quest
             var panel = CreateUiObject("Panel", canvasGo.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(1400f, 900f), Vector2.zero);
             var panelImage = panel.AddComponent<Image>();
             panelImage.color = new Color(0f, 0f, 0f, 0.78f);
+            var panelGroup = panel.AddComponent<CanvasGroup>();
+            panelGroup.blocksRaycasts = true;
+            panelGroup.interactable = true;
 
             _titleText = CreateText("Title", panel.transform, "BYES Quest3 Gateway Panel", 46, TextAnchor.MiddleCenter, new Vector2(0.5f, 1f), new Vector2(0f, -70f), new Vector2(1220f, 90f));
             _baseUrlText = CreateText("BaseUrl", panel.transform, string.Empty, 36, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -180f), new Vector2(1220f, 75f));
@@ -123,11 +127,42 @@ namespace BYES.Quest
             var trackedRaycasterType = Type.GetType("UnityEngine.XR.Interaction.Toolkit.UI.TrackedDeviceGraphicRaycaster, Unity.XR.Interaction.Toolkit");
             if (trackedRaycasterType != null)
             {
-                canvasGo.AddComponent(trackedRaycasterType);
+                if (canvasGo.GetComponent(trackedRaycasterType) == null)
+                {
+                    canvasGo.AddComponent(trackedRaycasterType);
+                }
+
+                var graphicRaycaster = canvasGo.GetComponent<GraphicRaycaster>();
+                if (graphicRaycaster != null)
+                {
+                    graphicRaycaster.enabled = false;
+                }
                 return;
             }
 
-            canvasGo.AddComponent<GraphicRaycaster>();
+            if (canvasGo.GetComponent<GraphicRaycaster>() == null)
+            {
+                canvasGo.AddComponent<GraphicRaycaster>();
+            }
+        }
+
+        private static Camera ResolveWorldCamera()
+        {
+            if (Camera.main != null && Camera.main.isActiveAndEnabled)
+            {
+                return Camera.main;
+            }
+
+            var cameras = Camera.allCameras;
+            for (var i = 0; i < cameras.Length; i += 1)
+            {
+                if (cameras[i] != null && cameras[i].isActiveAndEnabled)
+                {
+                    return cameras[i];
+                }
+            }
+
+            return null;
         }
 
         private static GameObject CreateUiObject(string name, Transform parent, Vector2 anchorMin, Vector2 anchorMax, Vector2 size, Vector2 anchoredPos)

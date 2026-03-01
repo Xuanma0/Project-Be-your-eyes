@@ -1,5 +1,11 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v4.96.1
+- Quest3 UI 可点击修复：MODE Overlay 在 Android 下默认禁用，并且非 Android 下关闭射线拦截，避免遮挡交互。
+- 强化 Quest 连接面板运行时配置：固定 WorldSpace + 主相机绑定 + 高 sortingOrder + 优先 TrackedDeviceGraphicRaycaster + 面板可交互。
+- 新增运行时守护 ByesXrUiWiringGuard：统一 EventSystem 使用 XRUIInputModule，并自动开启 XRRayInteractor 的 UI 交互开关。
+- 更新 Quest3 场景安装器：自动在 BYES_SmokeRig 下安装 BYES_XrUiWiringGuard。
+
 ## v4.96
 - 新增 Quest3 Smoke 场景自动安装器，确保 `Quest3SmokeScene` 内自动存在 `BYES_SmokeRig/BYES_ConnectionPanel`。
 - 新增头锁定世界空间面板脚本 `ByesHeadLockedPanel`，面板自动跟随到用户前方并朝向用户。
@@ -134,6 +140,7 @@
   - `scaleDriftProxy`
   - `refViewStrategyDiversityCount`
 - 鎺ュ叆 report/leaderboard/linter/contract gate/matrix summary銆?
+
 
 
 
