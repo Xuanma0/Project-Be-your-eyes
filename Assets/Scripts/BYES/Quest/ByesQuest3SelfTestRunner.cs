@@ -1,8 +1,6 @@
 ﻿using System;
 using System.Collections;
-using System.Collections.Generic;
 using BYES.Telemetry;
-using BYES.UI;
 using BeYourEyes.Adapters.Networking;
 using BeYourEyes.Unity.Interaction;
 using Newtonsoft.Json.Linq;
@@ -14,25 +12,19 @@ namespace BYES.Quest
 {
     public sealed class ByesQuest3SelfTestRunner : MonoBehaviour
     {
-        private const string PrefHost = "byes.connection.host";
-        private const string PrefPort = "byes.connection.port";
-        private const string PrefUseHttps = "byes.connection.https";
-        private const string PrefApiKey = "byes.connection.api_key";
-
         [SerializeField] private bool autoRunOnStart = true;
-        [SerializeField] private float startupDelaySec = 1.5f;
-        [SerializeField] private int pingSamples = 5;
-        [SerializeField] private float liveDurationSec = 12f;
-        [SerializeField] private bool verifyModeWrite = true;
+        [SerializeField] private float startupDelaySec = 1.2f;
+        [SerializeField] private float scanWaitTimeoutSec = 5f;
         [SerializeField] private bool verboseLogs = true;
 
         private GatewayClient _gatewayClient;
-        private GatewayWsClient _gatewayWsClient;
         private ScanController _scanController;
-        private ByesConnectionPanel _connectionPanel;
         private Coroutine _selfTestRoutine;
         private string _status = "IDLE";
         private string _summary = "-";
+
+        public string CurrentStatus => _status;
+        public string CurrentSummary => _summary;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoInstallOnQuestSmokeScene()
@@ -52,17 +44,11 @@ namespace BYES.Quest
             host.AddComponent<ByesQuest3SelfTestRunner>();
         }
 
-        private void Awake()
-        {
-            ResolveRefs();
-            PushPanelStatus();
-        }
-
         private void Start()
         {
             if (autoRunOnStart)
             {
-                StartSelfTest();
+                StartCoroutine(DelayedAutoRun());
             }
         }
 
@@ -76,259 +62,205 @@ namespace BYES.Quest
             _selfTestRoutine = StartCoroutine(RunSelfTestRoutine());
         }
 
+        private IEnumerator DelayedAutoRun()
+        {
+            yield return new WaitForSecondsRealtime(Mathf.Max(0.1f, startupDelaySec));
+            StartSelfTest();
+        }
+
         private IEnumerator RunSelfTestRoutine()
         {
-            SetStatus("RUNNING", "initializing");
+            SetStatus("RUNNING", "step1 ping");
             ResolveRefs();
-            ApplyPreferredConnection();
-            yield return new WaitForSeconds(Mathf.Max(0.1f, startupDelaySec));
-
-            ResolveRefs();
-            var failures = new List<string>();
-
             if (_gatewayClient == null)
             {
-                failures.Add("GatewayClient missing");
-                FinalizeResult(pass: false, failures, "gateway client missing");
+                Fail("gateway-client missing");
                 _selfTestRoutine = null;
                 yield break;
             }
 
             if (_scanController == null)
             {
-                failures.Add("ScanController missing");
-                FinalizeResult(pass: false, failures, "scan controller missing");
+                Fail("scan-controller missing");
                 _selfTestRoutine = null;
                 yield break;
             }
 
-            var pingRtts = new List<long>();
-            for (var i = 0; i < Math.Max(1, pingSamples); i += 1)
+            var pingOk = false;
+            long pingRttMs = -1;
+            string pingError = string.Empty;
+            yield return PingOnce((ok, rttMs, error) =>
             {
-                var done = false;
-                var ok = false;
-                long rttMs = -1;
-                string error = string.Empty;
-                yield return PingOnce(i + 1, (pingOk, pingRtt, pingError) =>
-                {
-                    ok = pingOk;
-                    rttMs = pingRtt;
-                    error = pingError;
-                    done = true;
-                });
-                if (!done || !ok || rttMs < 0)
-                {
-                    if (!string.IsNullOrWhiteSpace(error))
-                    {
-                        failures.Add($"ping[{i + 1}] {error}");
-                    }
-                    continue;
-                }
-
-                pingRtts.Add(rttMs);
-                yield return new WaitForSeconds(0.1f);
-            }
-
-            long medianPingMs = -1;
-            if (pingRtts.Count > 0)
-            {
-                pingRtts.Sort();
-                medianPingMs = pingRtts[pingRtts.Count / 2];
-            }
-            else
-            {
-                failures.Add("no successful ping");
-            }
-
-            var versionOk = false;
-            string versionText = string.Empty;
-            var versionDone = false;
-            yield return GetJson("/api/version", (ok, obj, error) =>
-            {
-                if (ok && obj != null)
-                {
-                    versionText = (obj.Value<string>("version") ?? string.Empty).Trim();
-                    versionOk = !string.IsNullOrWhiteSpace(versionText);
-                }
-                else
-                {
-                    failures.Add($"version {error}");
-                }
-                versionDone = true;
+                pingOk = ok;
+                pingRttMs = rttMs;
+                pingError = error;
             });
-            if (!versionDone || !versionOk)
+            if (!pingOk)
             {
-                failures.Add("version parse failed");
-            }
-            else if (!string.Equals(versionText, "v4.94", StringComparison.Ordinal))
-            {
-                failures.Add($"version mismatch ({versionText})");
+                Fail($"/api/ping failed: {pingError}");
+                _selfTestRoutine = null;
+                yield break;
             }
 
-            string currentMode = string.Empty;
-            var modeReadOk = false;
-            yield return GetJson($"/api/mode?deviceId={UnityWebRequest.EscapeURL(ByesFrameTelemetry.DeviceId)}", (ok, obj, error) =>
+            SetStatus("RUNNING", "step2 version");
+            var versionOk = false;
+            var versionText = string.Empty;
+            yield return GetJson("/api/version", (ok, obj, error) =>
             {
                 if (!ok || obj == null)
                 {
-                    failures.Add($"read_mode {error}");
+                    versionOk = false;
+                    versionText = string.IsNullOrWhiteSpace(error) ? "request failed" : error;
                     return;
                 }
 
-                currentMode = (obj.Value<string>("mode") ?? string.Empty).Trim();
-                modeReadOk = !string.IsNullOrWhiteSpace(currentMode);
+                versionText = (obj.Value<string>("version") ?? string.Empty).Trim();
+                versionOk = !string.IsNullOrWhiteSpace(versionText);
+                if (!versionOk)
+                {
+                    versionText = "missing version field";
+                }
             });
-            if (!modeReadOk)
+            if (!versionOk)
             {
-                failures.Add("mode read failed");
+                Fail($"/api/version failed: {versionText}");
+                _selfTestRoutine = null;
+                yield break;
             }
 
-            if (verifyModeWrite && modeReadOk)
+            SetStatus("RUNNING", "step3 mode");
+            var modeOk = false;
+            var modeValue = string.Empty;
+            var modePath = $"/api/mode?deviceId={UnityWebRequest.EscapeURL(ByesFrameTelemetry.DeviceId)}";
+            yield return GetJson(modePath, (ok, obj, error) =>
             {
-                var targetMode = string.Equals(currentMode, "walk", StringComparison.OrdinalIgnoreCase)
-                    ? "read_text"
-                    : "walk";
-                var writeDone = false;
-                yield return PostJson("/api/mode", new JObject
+                if (!ok || obj == null)
                 {
-                    ["runId"] = "quest3-selftest",
-                    ["frameSeq"] = 1,
-                    ["mode"] = targetMode,
-                    ["source"] = "system",
-                    ["tsMs"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    ["deviceId"] = ByesFrameTelemetry.DeviceId,
-                }, (ok, _, error) =>
-                {
-                    if (!ok)
-                    {
-                        failures.Add($"mode write {error}");
-                    }
-                    writeDone = true;
-                });
-
-                if (!writeDone)
-                {
-                    failures.Add("mode write timeout");
+                    modeOk = false;
+                    modeValue = string.IsNullOrWhiteSpace(error) ? "request failed" : error;
+                    return;
                 }
-                else
+
+                modeValue = (obj.Value<string>("mode") ?? string.Empty).Trim();
+                modeOk = !string.IsNullOrWhiteSpace(modeValue);
+                if (!modeOk)
                 {
-                    yield return GetJson($"/api/mode?deviceId={UnityWebRequest.EscapeURL(ByesFrameTelemetry.DeviceId)}", (ok, obj, error) =>
-                    {
-                        if (!ok || obj == null)
-                        {
-                            failures.Add($"mode verify {error}");
-                            return;
-                        }
-
-                        var verifiedMode = (obj.Value<string>("mode") ?? string.Empty).Trim();
-                        if (!string.Equals(verifiedMode, targetMode, StringComparison.OrdinalIgnoreCase))
-                        {
-                            failures.Add($"mode verify mismatch ({verifiedMode})");
-                        }
-                    });
+                    modeValue = "missing mode field";
                 }
-            }
-
-            var startFramesSent = _scanController.FramesSentCount;
-            var startUploadOk = _scanController.UploadsOkCount;
-            var startDropBusy = _scanController.DropBusyCount;
-            var startEvents = _scanController.EventsReceivedCount;
-
-            _scanController.SetLiveEnabled(true);
-            yield return new WaitForSeconds(Mathf.Max(5f, liveDurationSec));
-            _scanController.SetLiveEnabled(false);
-            yield return new WaitForSeconds(0.3f);
-
-            var framesSent = Math.Max(0, _scanController.FramesSentCount - startFramesSent);
-            var uploadsOk = Math.Max(0, _scanController.UploadsOkCount - startUploadOk);
-            var dropBusy = Math.Max(0, _scanController.DropBusyCount - startDropBusy);
-            var eventsReceived = Math.Max(0, _scanController.EventsReceivedCount - startEvents);
-            var wsConnected = _gatewayWsClient != null && string.Equals(_gatewayWsClient.ConnectionState, "Connected", StringComparison.Ordinal);
-
-            if (framesSent <= 0)
+            });
+            if (!modeOk)
             {
-                failures.Add("live loop produced zero frames");
-            }
-            if (uploadsOk <= 0)
-            {
-                failures.Add("no successful frame upload");
-            }
-            if (!wsConnected)
-            {
-                failures.Add("ws not connected");
-            }
-            if (eventsReceived <= 0)
-            {
-                failures.Add("no ws inference events during live loop");
+                Fail($"/api/mode failed: {modeValue}");
+                _selfTestRoutine = null;
+                yield break;
             }
 
-            var summary =
-                $"ping_median_ms={medianPingMs}, version={versionText}, frames_sent={framesSent}, uploads_ok={uploadsOk}, events_received={eventsReceived}, drop_busy={dropBusy}, ws_connected={wsConnected}";
-            var pass = failures.Count == 0;
-            FinalizeResult(pass, failures, summary);
+            SetStatus("RUNNING", "step4 scan+ws");
+            var uploadCompleted = false;
+            var uploadSucceeded = false;
+            var uploadError = string.Empty;
+            var wsEventObserved = false;
+            var stepStartedAt = Time.realtimeSinceStartup;
+
+            void UploadHandler(ScanController.UploadMetrics metrics)
+            {
+                uploadCompleted = true;
+                uploadSucceeded = metrics.Ok;
+                uploadError = string.IsNullOrWhiteSpace(metrics.Error) ? string.Empty : metrics.Error.Trim();
+            }
+
+            void WsEventHandler(JObject _)
+            {
+                wsEventObserved = true;
+            }
+
+            _scanController.OnUploadFinished += UploadHandler;
+            _gatewayClient.OnGatewayEvent += WsEventHandler;
+            _scanController.ScanOnceFromUi();
+
+            var timeoutSec = Mathf.Max(1f, scanWaitTimeoutSec);
+            while (Time.realtimeSinceStartup - stepStartedAt < timeoutSec)
+            {
+                if (uploadCompleted && uploadSucceeded && wsEventObserved)
+                {
+                    break;
+                }
+
+                yield return null;
+            }
+
+            _scanController.OnUploadFinished -= UploadHandler;
+            _gatewayClient.OnGatewayEvent -= WsEventHandler;
+
+            if (!uploadCompleted)
+            {
+                Fail("scan upload timeout");
+                _selfTestRoutine = null;
+                yield break;
+            }
+
+            if (!uploadSucceeded)
+            {
+                Fail($"/api/frame failed: {uploadError}");
+                _selfTestRoutine = null;
+                yield break;
+            }
+
+            if (!wsEventObserved)
+            {
+                Fail("WS no events in 5s");
+                _selfTestRoutine = null;
+                yield break;
+            }
+
+            SetStatus("PASS", $"ping={pingRttMs}ms version={versionText} mode={modeValue} scan=ok ws=ok");
+            if (verboseLogs)
+            {
+                Debug.Log($"[ByesQuest3SelfTestRunner] PASS {_summary}");
+            }
+
             _selfTestRoutine = null;
         }
 
-        private void FinalizeResult(bool pass, List<string> failures, string summary)
+        private void Fail(string reason)
         {
-            var finalSummary = summary;
-            if (failures.Count > 0)
-            {
-                finalSummary = string.IsNullOrWhiteSpace(summary)
-                    ? string.Join("; ", failures)
-                    : summary + " | failures=" + string.Join("; ", failures);
-            }
-
-            SetStatus(pass ? "PASS" : "FAIL", finalSummary);
+            SetStatus("FAIL", reason);
             if (verboseLogs)
             {
-                Debug.Log($"[ByesQuest3SelfTestRunner] {_status} {_summary}");
+                Debug.LogWarning($"[ByesQuest3SelfTestRunner] FAIL {_summary}");
             }
         }
 
-        private IEnumerator PingOnce(int seq, Action<bool, long, string> onDone)
+        private IEnumerator PingOnce(Action<bool, long, string> onDone)
         {
             var payload = new JObject
             {
                 ["deviceId"] = ByesFrameTelemetry.DeviceId,
-                ["seq"] = seq,
+                ["seq"] = 1,
                 ["clientSendTsMs"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             };
-            var started = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var done = false;
+            var startedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             yield return SendRequest(
-                method: UnityWebRequest.kHttpVerbPOST,
-                path: "/api/ping",
-                payload: payload,
-                onDone: (ok, response, error) =>
+                UnityWebRequest.kHttpVerbPOST,
+                "/api/ping",
+                payload,
+                (ok, response, error) =>
                 {
-                    var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                    var rtt = Math.Max(0L, now - started);
                     if (!ok || response == null)
                     {
-                        onDone?.Invoke(false, -1, error);
+                        onDone?.Invoke(false, -1, string.IsNullOrWhiteSpace(error) ? "request failed" : error);
+                        return;
                     }
-                    else
-                    {
-                        onDone?.Invoke(true, rtt, string.Empty);
-                    }
-                    done = true;
-                }
-            );
-            if (!done)
-            {
-                onDone?.Invoke(false, -1, "ping request canceled");
-            }
+
+                    var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    var rtt = Math.Max(0L, nowMs - startedAtMs);
+                    onDone?.Invoke(true, rtt, string.Empty);
+                });
         }
 
         private IEnumerator GetJson(string path, Action<bool, JObject, string> onDone)
         {
             yield return SendRequest(UnityWebRequest.kHttpVerbGET, path, null, onDone);
-        }
-
-        private IEnumerator PostJson(string path, JObject payload, Action<bool, JObject, string> onDone)
-        {
-            yield return SendRequest(UnityWebRequest.kHttpVerbPOST, path, payload, onDone);
         }
 
         private IEnumerator SendRequest(string method, string path, JObject payload, Action<bool, JObject, string> onDone)
@@ -383,41 +315,6 @@ namespace BYES.Quest
             }
         }
 
-        private void ApplyPreferredConnection()
-        {
-            ResolveRefs();
-            if (_gatewayClient == null)
-            {
-                return;
-            }
-
-            var host = PlayerPrefs.GetString(PrefHost, string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(host))
-            {
-                host = "127.0.0.1";
-            }
-
-            var portText = PlayerPrefs.GetString(PrefPort, "8000").Trim();
-            if (!int.TryParse(portText, out var port) || port <= 0 || port > 65535)
-            {
-                port = 8000;
-            }
-
-            var useHttps = PlayerPrefs.GetInt(PrefUseHttps, 0) == 1;
-            var apiKey = PlayerPrefs.GetString(PrefApiKey, string.Empty);
-            var scheme = useHttps ? "https" : "http";
-            var wsScheme = useHttps ? "wss" : "ws";
-            var baseUrl = $"{scheme}://{host}:{port}";
-            var wsUrl = $"{wsScheme}://{host}:{port}/ws/events";
-
-            _gatewayClient.SetApiKey(apiKey, reconnect: false);
-            _gatewayClient.SetGatewayEndpoints(baseUrl, wsUrl, reconnect: true);
-            if (_gatewayWsClient != null)
-            {
-                _gatewayWsClient.SetConnectionConfig(wsUrl, apiKey, reconnect: true);
-            }
-        }
-
         private string BuildApiUrl(string path)
         {
             var normalized = string.IsNullOrWhiteSpace(path) ? "/" : path.Trim();
@@ -435,17 +332,10 @@ namespace BYES.Quest
             {
                 _gatewayClient = FindFirstObjectByType<GatewayClient>();
             }
-            if (_gatewayWsClient == null)
-            {
-                _gatewayWsClient = FindFirstObjectByType<GatewayWsClient>();
-            }
+
             if (_scanController == null)
             {
                 _scanController = FindFirstObjectByType<ScanController>();
-            }
-            if (_connectionPanel == null)
-            {
-                _connectionPanel = FindFirstObjectByType<ByesConnectionPanel>();
             }
         }
 
@@ -453,17 +343,6 @@ namespace BYES.Quest
         {
             _status = string.IsNullOrWhiteSpace(status) ? "UNKNOWN" : status.Trim().ToUpperInvariant();
             _summary = string.IsNullOrWhiteSpace(summary) ? "-" : summary.Trim();
-            PushPanelStatus();
-        }
-
-        private void PushPanelStatus()
-        {
-            if (_connectionPanel == null)
-            {
-                _connectionPanel = FindFirstObjectByType<ByesConnectionPanel>();
-            }
-
-            _connectionPanel?.SetSelfTestStatus(_status, _summary);
         }
     }
 }

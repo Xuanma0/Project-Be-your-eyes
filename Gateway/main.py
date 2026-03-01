@@ -1399,6 +1399,7 @@ class GatewayApp:
 
     async def reset_runtime(self) -> dict[str, Any]:
         faults_snapshot = await self.faults.clear_faults()
+        self.mode_state.reset_runtime()
         self.degradation.reset_runtime()
         self.frame_tracker.reset_runtime()
         self.governor.reset_runtime()

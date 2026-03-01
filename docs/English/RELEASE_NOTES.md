@@ -4,6 +4,12 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v4.97
+- Quest3 smoke loop now includes one-tap frame upload and live toggle in the minimal world-space panel (`Scan Once` / `Live Start-Stop`), with panel-side status for HTTP, WS, last upload cost, coarse E2E, and last event type.
+- Quest3 self-test runner was aligned to the practical smoke chain: `ping -> version -> mode -> scan once + ws event` with explicit PASS/FAIL reasons shown in-panel.
+- Quest3 smoke installer now auto-populates `BYES_FrameRig` in `Quest3SmokeScene` and wires `GatewayClient + ScreenFrameGrabber + FrameCapture + GatewayFrameUploader + ScanController` using Quest-friendly defaults.
+- USB smoke launcher now enables WS v1/net debug emission for smoke verification (`BYES_INFERENCE_EMIT_WS_V1=1`, `BYES_EMIT_NET_DEBUG=1`) so Quest can reliably observe WS feedback after scans.
+
 ## v4.96.1
 - Quest3 UI clickability fix: prevent runtime mode overlay from intercepting interactions (Android suppress + non-blocking overlay graphics/raycast settings).
 - Enforced world-space Quest connection panel raycast path: bind camera, raise sorting order, prefer `TrackedDeviceGraphicRaycaster`, and keep panel root interactable.

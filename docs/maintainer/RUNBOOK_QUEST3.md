@@ -28,13 +28,17 @@ This avoids LAN/firewall instability and is the recommended first run.
 ```bat
 tools\quest3\quest3_usb_local_gateway.cmd
 ```
-2. On Quest connection panel:
-   - `host = 127.0.0.1`
-   - `port = 18000`
-3. Click `Save + Connect` -> `Test Ping` -> `Get Version`.
+2. On Quest, open `Quest3SmokeScene` app and look at the floating panel in front of you.
+3. Confirm panel base URL is `http://127.0.0.1:18000`.
+4. Click panel buttons in order:
+   - `Ping`
+   - `Version`
+   - `Mode`
+   - `SelfTest`
 
 Notes:
 - Script uses `adb reverse tcp:18000 tcp:18000`.
+- Script starts Gateway with `BYES_INFERENCE_EMIT_WS_V1=1` and `BYES_EMIT_NET_DEBUG=1` for smoke observability.
 - If adb path is custom, set env `ADB_EXE` before running.
 
 ## 4) LAN Mode (Alternative)
@@ -79,22 +83,37 @@ python -m uvicorn main:app --app-dir Gateway --host 127.0.0.1 --port 18000
 
 ## 7) Runtime Controls
 
-- Manual scan: Quest right-hand trigger (desktop fallback `S`).
-- Toggle live loop: Quest right-hand primary button/A (desktop fallback `L`).
+- Manual scan: panel button `Scan Once` (desktop fallback key `S`).
+- Toggle live loop: panel button `Live Start/Stop` (desktop fallback key `L`).
 - Mode switch: `Walk/Read/Inspect` panel buttons or `1/2/3` + `F1/F2/F3`.
 
-## 8) Screenshot-Level Smoke Checklist
+## 8) Scan Once / Live Smoke Flow (v4.97)
+
+1. Confirm panel shows:
+   - `HTTP: reachable`
+   - `WS: connected`
+2. Click `Scan Once` and wait 1-2 seconds.
+3. Expected panel updates:
+   - `Scan: uploaded` then `event_received` (or similar)
+   - `Last Upload: <N> ms`
+   - `Last Event: <event-type>`
+   - `Last E2E: <N> ms` (coarse)
+4. Click `Live Start` and observe updates for 10-15 seconds.
+5. Click `Live Stop`.
+6. Click `SelfTest`, expect `SelfTest: PASS`.
+
+## 9) Screenshot-Level Smoke Checklist
 
 Use this checklist for team verification screenshots:
 
 - `Ping OK`: RTT value is shown and updates.
 - `Version OK`: `/api/version` returns non-empty version/gitSha.
 - `WS Connected`: panel shows WS connected state.
-- `Live Loop`: panel shows live `on`, fps and inflight values.
-- `Frames Sent`: Gateway receives `/api/frame` while live loop runs.
-- `Events Received`: panel/event line updates from `/ws/events`.
+- `Scan Once OK`: `/api/frame` returns success and panel updates upload/event lines.
+- `Live Loop`: panel shows live on/off and metrics update while running.
+- `SelfTest PASS`: panel displays PASS with summary text.
 
-## 9) Recommended Capture Defaults
+## 10) Recommended Capture Defaults
 
 - `maxWidth=960`
 - `maxHeight=540`
@@ -102,7 +121,7 @@ Use this checklist for team verification screenshots:
 - `liveMaxInflight=1`
 - `liveDropIfBusy=true`
 
-## 10) Troubleshooting
+## 11) Troubleshooting
 
 - Black passthrough:
   - Check camera alpha = 0 and AR session/camera manager active.

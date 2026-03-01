@@ -1,6 +1,8 @@
 using System;
 using System.Collections;
-using System.Text;
+using System.Reflection;
+using BeYourEyes.Adapters.Networking;
+using BeYourEyes.Unity.Interaction;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.Networking;
@@ -11,6 +13,7 @@ namespace BYES.Quest
     public sealed class ByesQuest3ConnectionPanelMinimal : MonoBehaviour
     {
         private const string PrefBaseUrl = "BYES_GATEWAY_BASE_URL";
+        private const string PrefApiKeyLegacy = "byes.connection.api_key";
         private const string DefaultBaseUrl = "http://127.0.0.1:18000";
 
         private const float PingTimeoutSec = 2f;
@@ -18,39 +21,84 @@ namespace BYES.Quest
         private const float ReachabilityIntervalSec = 2f;
 
         private string _baseUrl = DefaultBaseUrl;
+        private string _apiKey = string.Empty;
         private int _pingSeq;
+        private long _lastPingRttMs = -1;
+        private long _lastEventTsMs = -1;
+        private string _lastEventType = "-";
+        private string _scanStatus = "idle";
+        private string _scanError = string.Empty;
+        private string _selfTestStatus = "IDLE";
+        private string _selfTestSummary = "-";
+        private long _toastUntilMs = -1;
         private Coroutine _reachabilityCoroutine;
+        private Coroutine _statusRefreshCoroutine;
 
-        private ITextView _titleText;
+        private GatewayClient _gatewayClient;
+        private GatewayWsClient _gatewayWsClient;
+        private ScanController _scanController;
+        private ByesQuest3SelfTestRunner _selfTestRunner;
+
         private ITextView _baseUrlText;
         private ITextView _reachabilityText;
+        private ITextView _wsText;
         private ITextView _pingText;
         private ITextView _versionText;
         private ITextView _modeText;
+        private ITextView _lastUploadText;
+        private ITextView _lastE2eText;
+        private ITextView _lastEventText;
+        private ITextView _scanStateText;
+        private ITextView _selfTestText;
+        private ITextView _toastText;
         private ITextView _rawText;
+        private ILabelButton _liveButton;
+        private ILabelButton _scanButton;
 
         private void Awake()
         {
             _baseUrl = NormalizeBaseUrl(PlayerPrefs.GetString(PrefBaseUrl, DefaultBaseUrl));
+            _apiKey = string.IsNullOrWhiteSpace(PlayerPrefs.GetString(PrefApiKeyLegacy, string.Empty))
+                ? string.Empty
+                : PlayerPrefs.GetString(PrefApiKeyLegacy, string.Empty).Trim();
+
             EnsureEventSystem();
             BuildRuntimeUi();
-            RefreshBaseUrlLabel();
+            ResolveRefs();
+            BindRuntimeEvents();
+            ApplyConnectionConfig(reconnect: true);
+            RefreshAllStatusLines();
         }
 
         private void OnEnable()
         {
+            ResolveRefs();
+            BindRuntimeEvents();
+            ApplyConnectionConfig(reconnect: true);
             if (_reachabilityCoroutine == null)
             {
                 _reachabilityCoroutine = StartCoroutine(ReachabilityLoop());
+            }
+
+            if (_statusRefreshCoroutine == null)
+            {
+                _statusRefreshCoroutine = StartCoroutine(StatusRefreshLoop());
             }
         }
 
         private void OnDisable()
         {
+            UnbindRuntimeEvents();
             if (_reachabilityCoroutine != null)
             {
                 StopCoroutine(_reachabilityCoroutine);
                 _reachabilityCoroutine = null;
+            }
+
+            if (_statusRefreshCoroutine != null)
+            {
+                StopCoroutine(_statusRefreshCoroutine);
+                _statusRefreshCoroutine = null;
             }
         }
 
@@ -61,6 +109,116 @@ namespace BYES.Quest
                 yield return SendPing(autoProbe: true);
                 yield return new WaitForSecondsRealtime(ReachabilityIntervalSec);
             }
+        }
+
+        private IEnumerator StatusRefreshLoop()
+        {
+            while (enabled)
+            {
+                RefreshAllStatusLines();
+                yield return new WaitForSecondsRealtime(0.2f);
+            }
+        }
+
+        private void ResolveRefs()
+        {
+            if (_gatewayClient == null)
+            {
+                _gatewayClient = FindFirstObjectByType<GatewayClient>();
+            }
+
+            if (_gatewayWsClient == null)
+            {
+                _gatewayWsClient = FindFirstObjectByType<GatewayWsClient>();
+            }
+
+            if (_scanController == null)
+            {
+                _scanController = FindFirstObjectByType<ScanController>();
+            }
+
+            if (_selfTestRunner == null)
+            {
+                _selfTestRunner = FindFirstObjectByType<ByesQuest3SelfTestRunner>();
+            }
+        }
+
+        private void BindRuntimeEvents()
+        {
+            if (_gatewayClient != null)
+            {
+                _gatewayClient.OnGatewayEvent -= HandleGatewayEvent;
+                _gatewayClient.OnGatewayEvent += HandleGatewayEvent;
+            }
+
+            if (_scanController != null)
+            {
+                _scanController.OnUploadFinished -= HandleUploadFinished;
+                _scanController.OnUploadFinished += HandleUploadFinished;
+            }
+        }
+
+        private void UnbindRuntimeEvents()
+        {
+            if (_gatewayClient != null)
+            {
+                _gatewayClient.OnGatewayEvent -= HandleGatewayEvent;
+            }
+
+            if (_scanController != null)
+            {
+                _scanController.OnUploadFinished -= HandleUploadFinished;
+            }
+        }
+
+        private void HandleUploadFinished(ScanController.UploadMetrics metrics)
+        {
+            if (metrics.Ok)
+            {
+                _scanStatus = "uploaded";
+                _scanError = string.Empty;
+                ShowToast("Scan OK");
+            }
+            else
+            {
+                _scanStatus = "failed";
+                _scanError = string.IsNullOrWhiteSpace(metrics.Error) ? "upload failed" : metrics.Error;
+                ShowToast($"Scan Failed: {_scanError}");
+            }
+
+            RefreshAllStatusLines();
+        }
+
+        private void HandleGatewayEvent(Newtonsoft.Json.Linq.JObject evt)
+        {
+            if (evt == null)
+            {
+                return;
+            }
+
+            var type = (evt.Value<string>("type") ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(type))
+            {
+                var name = (evt.Value<string>("name") ?? string.Empty).Trim();
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    type = name;
+                }
+                else
+                {
+                    var category = (evt.Value<string>("category") ?? string.Empty).Trim();
+                    type = string.IsNullOrWhiteSpace(category) ? "event" : category;
+                }
+            }
+
+            _lastEventType = type;
+            _lastEventTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (string.Equals(_scanStatus, "sending", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(_scanStatus, "uploaded", StringComparison.OrdinalIgnoreCase))
+            {
+                _scanStatus = "event_received";
+            }
+            RefreshAllStatusLines();
         }
 
         private void BuildRuntimeUi()
@@ -75,7 +233,7 @@ namespace BYES.Quest
             canvas.sortingOrder = 5000;
 
             var canvasRect = canvasGo.GetComponent<RectTransform>();
-            canvasRect.sizeDelta = new Vector2(1400f, 900f);
+            canvasRect.sizeDelta = new Vector2(1500f, 1050f);
             canvasRect.localScale = Vector3.one * 0.00025f;
             canvasRect.localPosition = Vector3.zero;
             canvasRect.localRotation = Quaternion.identity;
@@ -83,24 +241,314 @@ namespace BYES.Quest
             canvasGo.AddComponent<CanvasScaler>();
             AddBestRaycaster(canvasGo);
 
-            var panel = CreateUiObject("Panel", canvasGo.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(1400f, 900f), Vector2.zero);
+            var panel = CreateUiObject("Panel", canvasGo.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(1500f, 1050f), Vector2.zero);
             var panelImage = panel.AddComponent<Image>();
-            panelImage.color = new Color(0f, 0f, 0f, 0.78f);
+            panelImage.color = new Color(0f, 0f, 0f, 0.8f);
             var panelGroup = panel.AddComponent<CanvasGroup>();
             panelGroup.blocksRaycasts = true;
             panelGroup.interactable = true;
 
-            _titleText = CreateText("Title", panel.transform, "BYES Quest3 Gateway Panel", 46, TextAnchor.MiddleCenter, new Vector2(0.5f, 1f), new Vector2(0f, -70f), new Vector2(1220f, 90f));
-            _baseUrlText = CreateText("BaseUrl", panel.transform, string.Empty, 36, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -180f), new Vector2(1220f, 75f));
-            _reachabilityText = CreateText("Reachability", panel.transform, "HTTP: probing...", 38, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -260f), new Vector2(1220f, 75f));
-            _pingText = CreateText("Ping", panel.transform, "Ping RTT: -", 36, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -335f), new Vector2(1220f, 70f));
-            _versionText = CreateText("Version", panel.transform, "Version: -", 36, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -405f), new Vector2(1220f, 70f));
-            _modeText = CreateText("Mode", panel.transform, "Mode: -", 36, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -475f), new Vector2(1220f, 70f));
-            _rawText = CreateText("Raw", panel.transform, "-", 28, TextAnchor.UpperLeft, new Vector2(0.5f, 0f), new Vector2(0f, 95f), new Vector2(1220f, 160f));
+            _ = CreateText("Title", panel.transform, "BYES Quest3 Smoke Panel", 46, TextAnchor.MiddleCenter, new Vector2(0.5f, 1f), new Vector2(0f, -64f), new Vector2(1320f, 80f));
+            _baseUrlText = CreateText("BaseUrl", panel.transform, "-", 34, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -140f), new Vector2(1320f, 64f));
+            _reachabilityText = CreateText("Reachability", panel.transform, "HTTP: probing...", 34, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -200f), new Vector2(1320f, 64f));
+            _wsText = CreateText("WsStatus", panel.transform, "WS: disconnected", 34, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -260f), new Vector2(1320f, 64f));
+            _pingText = CreateText("Ping", panel.transform, "Ping RTT: -", 34, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -320f), new Vector2(1320f, 64f));
+            _versionText = CreateText("Version", panel.transform, "Version: -", 34, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -380f), new Vector2(1320f, 64f));
+            _modeText = CreateText("Mode", panel.transform, "Mode: -", 34, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -440f), new Vector2(1320f, 64f));
+            _lastUploadText = CreateText("Upload", panel.transform, "Last Upload: -", 34, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -500f), new Vector2(1320f, 64f));
+            _lastE2eText = CreateText("E2E", panel.transform, "Last E2E: -", 34, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -560f), new Vector2(1320f, 64f));
+            _lastEventText = CreateText("Event", panel.transform, "Last Event: -", 34, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -620f), new Vector2(1320f, 64f));
+            _scanStateText = CreateText("ScanState", panel.transform, "Scan: idle", 34, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -680f), new Vector2(1320f, 64f));
+            _selfTestText = CreateText("SelfTest", panel.transform, "SelfTest: IDLE", 34, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -740f), new Vector2(1320f, 64f));
+            _toastText = CreateText("Toast", panel.transform, "-", 36, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 160f), new Vector2(1320f, 72f));
+            _rawText = CreateText("Raw", panel.transform, "-", 28, TextAnchor.UpperLeft, new Vector2(0.5f, 0f), new Vector2(0f, 84f), new Vector2(1320f, 120f));
 
-            CreateButton(panel.transform, "PingButton", "Ping", new Vector2(-360f, -560f), () => StartCoroutine(SendPing(autoProbe: false)));
-            CreateButton(panel.transform, "VersionButton", "Version", new Vector2(0f, -560f), () => StartCoroutine(QueryVersion()));
-            CreateButton(panel.transform, "ModeButton", "Mode", new Vector2(360f, -560f), () => StartCoroutine(QueryMode()));
+            CreateButton(panel.transform, "PingButton", "Ping", new Vector2(-520f, -900f), OnPingClicked);
+            CreateButton(panel.transform, "VersionButton", "Version", new Vector2(-260f, -900f), OnVersionClicked);
+            CreateButton(panel.transform, "ModeButton", "Mode", new Vector2(0f, -900f), OnModeClicked);
+            _scanButton = CreateButton(panel.transform, "ScanButton", "Scan Once", new Vector2(260f, -900f), OnScanClicked);
+            _liveButton = CreateButton(panel.transform, "LiveButton", "Live Start", new Vector2(520f, -900f), OnLiveClicked);
+            CreateButton(panel.transform, "SelfTestButton", "SelfTest", new Vector2(-260f, -980f), OnSelfTestClicked);
+            CreateButton(panel.transform, "ReconnectWsButton", "WS Reconnect", new Vector2(260f, -980f), OnReconnectWsClicked);
+        }
+
+        private void OnPingClicked()
+        {
+            StartCoroutine(SendPing(autoProbe: false));
+        }
+
+        private void OnVersionClicked()
+        {
+            StartCoroutine(QueryVersion());
+        }
+
+        private void OnModeClicked()
+        {
+            StartCoroutine(QueryMode());
+        }
+
+        private void OnScanClicked()
+        {
+            ResolveRefs();
+            if (_scanController == null)
+            {
+                _scanStatus = "failed";
+                _scanError = "scan-controller missing";
+                ShowToast("Scan Failed: scan-controller missing");
+                RefreshAllStatusLines();
+                return;
+            }
+
+            _scanStatus = "sending";
+            _scanError = string.Empty;
+            _scanButton?.SetLabel("SCAN...");
+            _scanController.ScanOnceFromUi();
+            StartCoroutine(ResetButtonLabelAfterDelay(_scanButton, "Scan Once", 1.0f));
+            RefreshAllStatusLines();
+        }
+
+        private void OnLiveClicked()
+        {
+            ResolveRefs();
+            if (_scanController == null)
+            {
+                ShowToast("Live Failed: scan-controller missing");
+                RefreshAllStatusLines();
+                return;
+            }
+
+            _scanController.ToggleLiveFromUi();
+            var liveNow = _scanController.IsLiveEnabled;
+            _scanStatus = liveNow ? "live" : "idle";
+            _liveButton?.SetLabel(liveNow ? "Live Stop" : "Live Start");
+            ShowToast(liveNow ? "Live ON" : "Live OFF");
+            RefreshAllStatusLines();
+        }
+
+        private void OnSelfTestClicked()
+        {
+            ResolveRefs();
+            if (_selfTestRunner == null)
+            {
+                ShowToast("SelfTest Failed: runner missing");
+                return;
+            }
+
+            _selfTestRunner.StartSelfTest();
+            ShowToast("SelfTest RUNNING...");
+        }
+
+        private void OnReconnectWsClicked()
+        {
+            ResolveRefs();
+            ApplyConnectionConfig(reconnect: true);
+            if (_gatewayClient != null)
+            {
+                _gatewayClient.ConnectWebSocket();
+            }
+
+            ShowToast("WS reconnect requested");
+            RefreshAllStatusLines();
+        }
+
+        private void ApplyConnectionConfig(bool reconnect)
+        {
+            ResolveRefs();
+            if (_gatewayClient == null)
+            {
+                return;
+            }
+
+            var wsUrl = BuildWsUrl();
+            _gatewayClient.SetApiKey(_apiKey, reconnect: false);
+            _gatewayClient.SetGatewayEndpoints(_baseUrl, wsUrl, reconnect: reconnect);
+
+            if (_gatewayWsClient != null)
+            {
+                _gatewayWsClient.SetConnectionConfig(wsUrl, _apiKey, reconnect: reconnect);
+            }
+        }
+
+        private IEnumerator ResetButtonLabelAfterDelay(ILabelButton button, string label, float seconds)
+        {
+            if (button == null)
+            {
+                yield break;
+            }
+
+            yield return new WaitForSecondsRealtime(Mathf.Max(0.1f, seconds));
+            button.SetLabel(label);
+        }
+
+        private IEnumerator SendPing(bool autoProbe)
+        {
+            var uri = $"{_baseUrl}/api/ping";
+            var seq = _pingSeq++;
+            var clientSendTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var body = $"{{\"deviceId\":\"quest3-smoke\",\"seq\":{seq},\"clientSendTsMs\":{clientSendTsMs}}}";
+            var bodyBytes = System.Text.Encoding.UTF8.GetBytes(body);
+
+            using var request = new UnityWebRequest(uri, UnityWebRequest.kHttpVerbPOST);
+            request.uploadHandler = new UploadHandlerRaw(bodyBytes);
+            request.downloadHandler = new DownloadHandlerBuffer();
+            request.SetRequestHeader("Content-Type", "application/json");
+            ApplyApiKeyHeader(request);
+            request.timeout = Mathf.CeilToInt(PingTimeoutSec);
+
+            var start = Time.realtimeSinceStartupAsDouble;
+            yield return request.SendWebRequest();
+            var rttMs = Math.Max(0, Mathf.RoundToInt((float)((Time.realtimeSinceStartupAsDouble - start) * 1000.0)));
+
+            if (request.result == UnityWebRequest.Result.Success)
+            {
+                _lastPingRttMs = rttMs;
+                _reachabilityText.Set("HTTP: reachable");
+                if (!autoProbe)
+                {
+                    ShowToast($"Ping OK ({rttMs} ms)");
+                }
+                RefreshAllStatusLines();
+                yield break;
+            }
+
+            _reachabilityText.Set("HTTP: unreachable");
+            if (!autoProbe)
+            {
+                ShowToast($"Ping failed: {request.error}");
+            }
+            RefreshAllStatusLines();
+        }
+
+        private IEnumerator QueryVersion()
+        {
+            var uri = $"{_baseUrl}/api/version";
+            using var request = UnityWebRequest.Get(uri);
+            ApplyApiKeyHeader(request);
+            request.timeout = Mathf.CeilToInt(QueryTimeoutSec);
+            yield return request.SendWebRequest();
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                _versionText.Set("Version: failed");
+                _rawText.Set($"Version error: {request.error}");
+                ShowToast("Version failed");
+                yield break;
+            }
+
+            var payload = request.downloadHandler.text ?? string.Empty;
+            try
+            {
+                var parsed = JsonUtility.FromJson<VersionResponse>(payload);
+                if (parsed != null && !string.IsNullOrWhiteSpace(parsed.version))
+                {
+                    var sha = string.IsNullOrWhiteSpace(parsed.gitSha) ? "-" : parsed.gitSha;
+                    _versionText.Set($"Version: {parsed.version} / {sha}");
+                    _rawText.Set("Version OK");
+                    ShowToast("Version OK");
+                    yield break;
+                }
+            }
+            catch
+            {
+            }
+
+            _versionText.Set("Version: raw");
+            _rawText.Set(payload);
+        }
+
+        private IEnumerator QueryMode()
+        {
+            var uri = $"{_baseUrl}/api/mode";
+            using var request = UnityWebRequest.Get(uri);
+            ApplyApiKeyHeader(request);
+            request.timeout = Mathf.CeilToInt(QueryTimeoutSec);
+            yield return request.SendWebRequest();
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                _modeText.Set("Mode: failed");
+                _rawText.Set($"Mode error: {request.error}");
+                ShowToast("Mode failed");
+                yield break;
+            }
+
+            var payload = request.downloadHandler.text ?? string.Empty;
+            try
+            {
+                var parsed = JsonUtility.FromJson<ModeResponse>(payload);
+                if (parsed != null && !string.IsNullOrWhiteSpace(parsed.mode))
+                {
+                    _modeText.Set($"Mode: {parsed.mode}");
+                    _rawText.Set("Mode OK");
+                    ShowToast("Mode OK");
+                    yield break;
+                }
+            }
+            catch
+            {
+            }
+
+            _modeText.Set("Mode: raw");
+            _rawText.Set(payload);
+        }
+
+        private void RefreshAllStatusLines()
+        {
+            ResolveRefs();
+            if (_scanController != null)
+            {
+                _liveButton?.SetLabel(_scanController.IsLiveEnabled ? "Live Stop" : "Live Start");
+            }
+            else
+            {
+                _liveButton?.SetLabel("Live Start");
+            }
+
+            var wsConnected = (_gatewayClient != null && _gatewayClient.IsConnected)
+                              || (_gatewayWsClient != null && string.Equals(_gatewayWsClient.ConnectionState, "Connected", StringComparison.Ordinal));
+            _baseUrlText.Set($"Base URL: {_baseUrl} (apiKey: {(string.IsNullOrWhiteSpace(_apiKey) ? "not-set" : "set")})");
+            _wsText.Set($"WS: {(wsConnected ? "connected" : "disconnected")}");
+            _pingText.Set(_lastPingRttMs >= 0 ? $"Ping RTT: {_lastPingRttMs} ms" : "Ping RTT: -");
+
+            var uploadText = "Last Upload: -";
+            var e2eText = "Last E2E: -";
+            if (_scanController != null)
+            {
+                uploadText = _scanController.LastUploadCostMs >= 0
+                    ? $"Last Upload: {_scanController.LastUploadCostMs:0} ms"
+                    : "Last Upload: -";
+                e2eText = _scanController.LastE2eMs >= 0
+                    ? $"Last E2E: {_scanController.LastE2eMs:0} ms"
+                    : "Last E2E: -";
+            }
+            _lastUploadText.Set(uploadText);
+            _lastE2eText.Set(e2eText);
+
+            var eventTs = _lastEventTsMs > 0 ? $" @{_lastEventTsMs}" : string.Empty;
+            _lastEventText.Set($"Last Event: {_lastEventType}{eventTs}");
+
+            var state = _scanController != null ? _scanController.LastScanState : _scanStatus;
+            var err = _scanController != null ? _scanController.LastScanError : _scanError;
+            _scanStateText.Set(string.IsNullOrWhiteSpace(err)
+                ? $"Scan: {state}"
+                : $"Scan: {state} ({err})");
+
+            if (_selfTestRunner != null)
+            {
+                _selfTestStatus = _selfTestRunner.CurrentStatus;
+                _selfTestSummary = _selfTestRunner.CurrentSummary;
+            }
+            _selfTestText.Set($"SelfTest: {_selfTestStatus} | {_selfTestSummary}");
+
+            if (_toastUntilMs > 0 && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > _toastUntilMs)
+            {
+                _toastUntilMs = -1;
+                _toastText.Set("-");
+            }
+        }
+
+        private void ShowToast(string message)
+        {
+            _toastUntilMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 1800;
+            _toastText.Set(string.IsNullOrWhiteSpace(message) ? "-" : message.Trim());
         }
 
         private static void EnsureEventSystem()
@@ -111,15 +559,21 @@ namespace BYES.Quest
             }
 
             var eventSystemGo = new GameObject("EventSystem", typeof(EventSystem));
+            var xrUiType = Type.GetType("UnityEngine.XR.Interaction.Toolkit.UI.XRUIInputModule, Unity.XR.Interaction.Toolkit");
+            if (xrUiType != null)
+            {
+                eventSystemGo.AddComponent(xrUiType);
+                return;
+            }
+
             var inputSystemModuleType = Type.GetType("UnityEngine.InputSystem.UI.InputSystemUIInputModule, Unity.InputSystem");
             if (inputSystemModuleType != null)
             {
                 eventSystemGo.AddComponent(inputSystemModuleType);
+                return;
             }
-            else
-            {
-                eventSystemGo.AddComponent<StandaloneInputModule>();
-            }
+
+            eventSystemGo.AddComponent<StandaloneInputModule>();
         }
 
         private static void AddBestRaycaster(GameObject canvasGo)
@@ -208,9 +662,9 @@ namespace BYES.Quest
             return new UguiTextView(uiText);
         }
 
-        private void CreateButton(Transform parent, string name, string label, Vector2 anchoredPos, Action onClick)
+        private ILabelButton CreateButton(Transform parent, string name, string label, Vector2 anchoredPos, Action onClick)
         {
-            var buttonGo = CreateUiObject(name, parent, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(320f, 110f), anchoredPos);
+            var buttonGo = CreateUiObject(name, parent, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(230f, 84f), anchoredPos);
             var image = buttonGo.AddComponent<Image>();
             image.color = new Color(0.22f, 0.55f, 0.94f, 0.95f);
 
@@ -218,113 +672,34 @@ namespace BYES.Quest
             button.targetGraphic = image;
             button.onClick.AddListener(() => onClick?.Invoke());
 
-            _ = CreateText("Label", buttonGo.transform, label, 42, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(280f, 90f));
+            var labelView = CreateText("Label", buttonGo.transform, label, 34, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(210f, 72f));
+            return new RuntimeButton(button, labelView);
         }
 
-        private IEnumerator SendPing(bool autoProbe)
+        private void ApplyApiKeyHeader(UnityWebRequest request)
         {
-            var uri = $"{_baseUrl}/api/ping";
-            var seq = _pingSeq++;
-            var clientSendTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var body = $"{{\"deviceId\":\"quest3-smoke\",\"seq\":{seq},\"clientSendTsMs\":{clientSendTsMs}}}";
-            var bodyBytes = Encoding.UTF8.GetBytes(body);
-
-            using var request = new UnityWebRequest(uri, UnityWebRequest.kHttpVerbPOST);
-            request.uploadHandler = new UploadHandlerRaw(bodyBytes);
-            request.downloadHandler = new DownloadHandlerBuffer();
-            request.SetRequestHeader("Content-Type", "application/json");
-            request.timeout = Mathf.CeilToInt(PingTimeoutSec);
-
-            var start = Time.realtimeSinceStartupAsDouble;
-            yield return request.SendWebRequest();
-            var rttMs = Math.Max(0, Mathf.RoundToInt((float)((Time.realtimeSinceStartupAsDouble - start) * 1000.0)));
-
-            if (request.result == UnityWebRequest.Result.Success)
+            if (request == null || string.IsNullOrWhiteSpace(_apiKey))
             {
-                _pingText.Set($"Ping RTT: {rttMs} ms");
-                _reachabilityText.Set("HTTP: reachable");
-                if (!autoProbe)
-                {
-                    _rawText.Set("Ping OK");
-                }
-                yield break;
+                return;
             }
 
-            _reachabilityText.Set("HTTP: unreachable");
-            if (!autoProbe)
-            {
-                _rawText.Set($"Ping failed: {request.error}");
-            }
+            request.SetRequestHeader("X-BYES-API-Key", _apiKey.Trim());
         }
 
-        private IEnumerator QueryVersion()
+        private string BuildWsUrl()
         {
-            var uri = $"{_baseUrl}/api/version";
-            using var request = UnityWebRequest.Get(uri);
-            request.timeout = Mathf.CeilToInt(QueryTimeoutSec);
-            yield return request.SendWebRequest();
-            if (request.result != UnityWebRequest.Result.Success)
+            if (!Uri.TryCreate(_baseUrl, UriKind.Absolute, out var uri))
             {
-                _versionText.Set("Version: failed");
-                _rawText.Set($"Version error: {request.error}");
-                yield break;
+                return "ws://127.0.0.1:18000/ws/events";
             }
 
-            var payload = request.downloadHandler.text ?? string.Empty;
-            try
+            var wsScheme = string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase) ? "wss" : "ws";
+            var builder = new UriBuilder(uri)
             {
-                var parsed = JsonUtility.FromJson<VersionResponse>(payload);
-                if (parsed != null && !string.IsNullOrWhiteSpace(parsed.version))
-                {
-                    var sha = string.IsNullOrWhiteSpace(parsed.gitSha) ? "-" : parsed.gitSha;
-                    _versionText.Set($"Version: {parsed.version} / {sha}");
-                    _rawText.Set("Version OK");
-                    yield break;
-                }
-            }
-            catch
-            {
-            }
-
-            _versionText.Set("Version: raw");
-            _rawText.Set(payload);
-        }
-
-        private IEnumerator QueryMode()
-        {
-            var uri = $"{_baseUrl}/api/mode";
-            using var request = UnityWebRequest.Get(uri);
-            request.timeout = Mathf.CeilToInt(QueryTimeoutSec);
-            yield return request.SendWebRequest();
-            if (request.result != UnityWebRequest.Result.Success)
-            {
-                _modeText.Set("Mode: failed");
-                _rawText.Set($"Mode error: {request.error}");
-                yield break;
-            }
-
-            var payload = request.downloadHandler.text ?? string.Empty;
-            try
-            {
-                var parsed = JsonUtility.FromJson<ModeResponse>(payload);
-                if (parsed != null && !string.IsNullOrWhiteSpace(parsed.mode))
-                {
-                    _modeText.Set($"Mode: {parsed.mode}");
-                    _rawText.Set("Mode OK");
-                    yield break;
-                }
-            }
-            catch
-            {
-            }
-
-            _modeText.Set("Mode: raw");
-            _rawText.Set(payload);
-        }
-
-        private void RefreshBaseUrlLabel()
-        {
-            _baseUrlText.Set($"Base URL: {_baseUrl}");
+                Scheme = wsScheme,
+                Path = "/ws/events",
+            };
+            return builder.Uri.ToString().TrimEnd('/');
         }
 
         private static string NormalizeBaseUrl(string value)
@@ -358,6 +733,33 @@ namespace BYES.Quest
             void Set(string value);
         }
 
+        private interface ILabelButton
+        {
+            void SetLabel(string value);
+        }
+
+        private sealed class RuntimeButton : ILabelButton
+        {
+            private readonly Button _button;
+            private readonly ITextView _label;
+
+            public RuntimeButton(Button button, ITextView label)
+            {
+                _button = button;
+                _label = label;
+            }
+
+            public void SetLabel(string value)
+            {
+                if (_button == null)
+                {
+                    return;
+                }
+
+                _label?.Set(value ?? string.Empty);
+            }
+        }
+
         private sealed class UguiTextView : ITextView
         {
             private readonly Text _text;
@@ -379,10 +781,10 @@ namespace BYES.Quest
         private sealed class TmpTextView : ITextView
         {
             private readonly Component _component;
-            private readonly System.Reflection.PropertyInfo _textProperty;
-            private readonly System.Reflection.PropertyInfo _fontSizeProperty;
-            private readonly System.Reflection.PropertyInfo _colorProperty;
-            private readonly System.Reflection.PropertyInfo _alignmentProperty;
+            private readonly PropertyInfo _textProperty;
+            private readonly PropertyInfo _fontSizeProperty;
+            private readonly PropertyInfo _colorProperty;
+            private readonly PropertyInfo _alignmentProperty;
 
             public TmpTextView(Component component, string value, int fontSize)
             {
@@ -413,7 +815,7 @@ namespace BYES.Quest
                     }
                     catch
                     {
-                        // ignore enum parse failures for package/version differences
+                        // ignore package/version enum mismatch
                     }
 
                     if (centerValue != null)

@@ -13,6 +13,22 @@ namespace BeYourEyes.Unity.Interaction
 {
     public sealed class ScanController : MonoBehaviour
     {
+        public readonly struct UploadMetrics
+        {
+            public UploadMetrics(double uploadMs, double e2eMs, bool ok, string error)
+            {
+                UploadMs = uploadMs;
+                E2eMs = e2eMs;
+                Ok = ok;
+                Error = string.IsNullOrWhiteSpace(error) ? string.Empty : error.Trim();
+            }
+
+            public double UploadMs { get; }
+            public double E2eMs { get; }
+            public bool Ok { get; }
+            public string Error { get; }
+        }
+
         private const float NoGatewayPromptThrottleSec = 5f;
 
         public KeyCode scanKey = KeyCode.S;
@@ -42,6 +58,9 @@ namespace BeYourEyes.Unity.Interaction
         private long lastAckOrEventTsMs = -1;
         private bool captureInProgress;
         private bool liveEnabled;
+        private string lastScanState = "idle";
+        private string lastScanError = string.Empty;
+        private string lastEventType = "-";
         private int inflight;
         private long pendingE2eStartTsMs = -1;
         private long lastSendTsMs = -1;
@@ -54,6 +73,7 @@ namespace BeYourEyes.Unity.Interaction
         private int eventsReceivedCount;
 
         public bool LiveEnabled => liveEnabled;
+        public bool IsLiveEnabled => liveEnabled;
         public float LiveFps => Mathf.Max(0f, liveFps);
         public int InflightCount => Mathf.Max(0, inflight);
         public int LiveMaxInflight => Mathf.Max(1, liveMaxInflight);
@@ -66,6 +86,10 @@ namespace BeYourEyes.Unity.Interaction
         public int UploadsFailedCount => Mathf.Max(0, uploadsFailedCount);
         public int DropBusyCount => Mathf.Max(0, dropBusyCount);
         public int EventsReceivedCount => Mathf.Max(0, eventsReceivedCount);
+        public string LastScanState => string.IsNullOrWhiteSpace(lastScanState) ? "idle" : lastScanState;
+        public string LastScanError => string.IsNullOrWhiteSpace(lastScanError) ? string.Empty : lastScanError;
+        public string LastEventType => string.IsNullOrWhiteSpace(lastEventType) ? "-" : lastEventType;
+        public event Action<UploadMetrics> OnUploadFinished;
 
         private void Awake()
         {
@@ -177,7 +201,26 @@ namespace BeYourEyes.Unity.Interaction
             }
 
             var type = (evt.Value<string>("type") ?? string.Empty).Trim().ToLowerInvariant();
-            if (!IsInferenceLikeEvent(type))
+            if (string.IsNullOrWhiteSpace(type))
+            {
+                var name = (evt.Value<string>("name") ?? string.Empty).Trim().ToLowerInvariant();
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    type = name;
+                }
+                else
+                {
+                    var category = (evt.Value<string>("category") ?? string.Empty).Trim().ToLowerInvariant();
+                    type = string.IsNullOrWhiteSpace(category) ? "event" : category;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(type))
+            {
+                lastEventType = type;
+            }
+
+            if (!IsScanRelevantEvent(type))
             {
                 return;
             }
@@ -192,6 +235,7 @@ namespace BeYourEyes.Unity.Interaction
 
             lastE2eMs = Math.Max(0d, nowMs - pendingE2eStartTsMs);
             pendingE2eStartTsMs = -1;
+            EmitUploadMetrics(ok: true, error: string.Empty);
         }
 
         private bool IsGatewayConnected()
@@ -286,11 +330,14 @@ namespace BeYourEyes.Unity.Interaction
             captureInProgress = true;
             inflight++;
             framesSentCount++;
+            lastScanState = "sending";
+            lastScanError = string.Empty;
             var sendTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             lastSendTsMs = sendTsMs;
             byte[] jpg = null;
             var uploadOk = false;
             var uploadCostMs = 0L;
+            var uploadError = string.Empty;
 
             try
             {
@@ -300,6 +347,10 @@ namespace BeYourEyes.Unity.Interaction
                 if (jpg == null || jpg.Length == 0)
                 {
                     Debug.LogWarning("[Scan] frame capture failed");
+                    lastScanState = "failed";
+                    lastScanError = "capture failed";
+                    uploadsFailedCount++;
+                    EmitUploadMetrics(ok: false, error: lastScanError);
                     yield break;
                 }
 
@@ -327,11 +378,18 @@ namespace BeYourEyes.Unity.Interaction
                 {
                     uploadsOkCount++;
                     pendingE2eStartTsMs = sendTsMs;
+                    lastScanState = "uploaded";
+                    lastScanError = string.Empty;
+                    EmitUploadMetrics(ok: true, error: string.Empty);
                 }
                 else
                 {
                     uploadsFailedCount++;
                     pendingE2eStartTsMs = -1;
+                    uploadError = "upload failed";
+                    lastScanState = "failed";
+                    lastScanError = uploadError;
+                    EmitUploadMetrics(ok: false, error: uploadError);
                 }
             }
             finally
@@ -366,6 +424,7 @@ namespace BeYourEyes.Unity.Interaction
             pendingE2eStartTsMs = -1;
             var status = liveEnabled ? "ON" : "OFF";
             Debug.Log($"[Scan] live loop {status} (fps={liveFps:0.##}, maxInflight={Mathf.Max(1, liveMaxInflight)})");
+            lastScanState = liveEnabled ? "live" : "idle";
         }
 
         public void SetLiveEnabled(bool enabled)
@@ -379,6 +438,17 @@ namespace BeYourEyes.Unity.Interaction
             pendingE2eStartTsMs = -1;
             var status = liveEnabled ? "ON" : "OFF";
             Debug.Log($"[Scan] live loop {status} (fps={liveFps:0.##}, maxInflight={Mathf.Max(1, liveMaxInflight)})");
+            lastScanState = liveEnabled ? "live" : "idle";
+        }
+
+        public void ToggleLiveFromUi()
+        {
+            SetLiveEnabled(!liveEnabled);
+        }
+
+        public void ScanOnceFromUi()
+        {
+            TrySendFrame(isLiveTick: false);
         }
 
         private bool WasLiveTogglePressedThisFrame()
@@ -445,7 +515,7 @@ namespace BeYourEyes.Unity.Interaction
 #endif
         }
 
-        private static bool IsInferenceLikeEvent(string eventType)
+        private static bool IsScanRelevantEvent(string eventType)
         {
             switch (eventType)
             {
@@ -456,10 +526,24 @@ namespace BeYourEyes.Unity.Interaction
                 case "slam_pose":
                 case "action_plan":
                 case "prompt":
+                case "frame.input":
+                case "frame.ack":
+                case "debug":
+                case "event":
                     return true;
                 default:
                     return false;
             }
+        }
+
+        private void EmitUploadMetrics(bool ok, string error)
+        {
+            OnUploadFinished?.Invoke(new UploadMetrics(
+                uploadMs: lastUploadCostMs,
+                e2eMs: lastE2eMs,
+                ok: ok,
+                error: error
+            ));
         }
     }
 }

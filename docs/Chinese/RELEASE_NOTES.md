@@ -1,5 +1,10 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v4.97
+- Quest3 最小连接面板新增 `Scan Once` 与 `Live Start/Stop`，并展示 `HTTP reachable / WS connected / Last Upload(ms) / Last E2E(ms) / Last Event Type`，支持仅手势点击完成闭环验证。
+- Quest3 自检流程更新为 `Ping -> Version -> Mode -> Scan Once + WS event`，并输出明确 `PASS/FAIL` 与失败原因（例如网关不可达、无 WS 回包）。
+- Quest3 场景安装器升级：自动在 `Quest3SmokeScene` 注入 `BYES_FrameRig`，包含 `GatewayClient + ScreenFrameGrabber + FrameCapture + GatewayFrameUploader + ScanController`，默认参数针对烟测带宽与背压。
+- USB 一键脚本默认开启 `BYES_INFERENCE_EMIT_WS_V1=1` 与 `BYES_EMIT_NET_DEBUG=1`，提高 Scan 后 WS 回包可观测性。
 ## v4.96.1
 - Quest3 UI 可点击修复：MODE Overlay 在 Android 下默认禁用，并且非 Android 下关闭射线拦截，避免遮挡交互。
 - 强化 Quest 连接面板运行时配置：固定 WorldSpace + 主相机绑定 + 高 sortingOrder + 优先 TrackedDeviceGraphicRaycaster + 面板可交互。
@@ -140,6 +145,7 @@
   - `scaleDriftProxy`
   - `refViewStrategyDiversityCount`
 - 鎺ュ叆 report/leaderboard/linter/contract gate/matrix summary銆?
+
 
 
 

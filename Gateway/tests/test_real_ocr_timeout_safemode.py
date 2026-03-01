@@ -116,21 +116,37 @@ def test_real_ocr_timeout_noncritical_stays_out_of_safemode() -> None:
     with TestClient(app) as client:
         _speedup_mock_tools()
         _ensure_stub_real_ocr()
-        client.post("/api/dev/reset")
-        client.post("/api/dev/intent", json={"intent": "scan_text", "durationMs": 20000})
-
-        capture = _CaptureConnection()
-        original_connections = gateway.connections
-        gateway.connections = capture  # type: ignore[assignment]
+        original_safe_mode_no_ws = gateway.config.safe_mode_without_ws_client
+        object.__setattr__(gateway.config, "safe_mode_without_ws_client", False)
         try:
-            before = _parse_metrics(client.get("/metrics").text)
-            set_fault = client.post("/api/fault/set", json={"tool": "real_ocr", "mode": "timeout", "value": True})
-            assert set_fault.status_code == 200
-            _send_frames(client, 50)
-            after = _wait_completed(client, before, 50)
+            reset = client.post("/api/dev/reset")
+            assert reset.status_code == 200, reset.text
+            intent = client.post("/api/dev/intent", json={"intent": "scan_text", "durationMs": 20000})
+            assert intent.status_code == 200, intent.text
+
+            capture = _CaptureConnection()
+            original_connections = gateway.connections
+            gateway.connections = capture  # type: ignore[assignment]
+            try:
+                before = _parse_metrics(client.get("/metrics").text)
+                set_fault = client.post("/api/fault/set", json={"tool": "real_ocr", "mode": "timeout", "value": True})
+                assert set_fault.status_code == 200
+                _send_frames(client, 50)
+                after = _wait_completed(client, before, 50)
+                timeout_deadline = time.time() + 3.0
+                while (
+                    _metric_with_labels(after, "byes_tool_timeout_total", {"tool": "real_ocr"})
+                    - _metric_with_labels(before, "byes_tool_timeout_total", {"tool": "real_ocr"})
+                    <= 0
+                    and time.time() < timeout_deadline
+                ):
+                    time.sleep(0.05)
+                    after = _parse_metrics(client.get("/metrics").text)
+            finally:
+                client.post("/api/fault/clear")
+                gateway.connections = original_connections  # type: ignore[assignment]
         finally:
-            client.post("/api/fault/clear")
-            gateway.connections = original_connections  # type: ignore[assignment]
+            object.__setattr__(gateway.config, "safe_mode_without_ws_client", original_safe_mode_no_ws)
 
         frame_received_delta = _metric_total(after, "byes_frame_received_total") - _metric_total(
             before, "byes_frame_received_total"

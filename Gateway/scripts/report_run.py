@@ -21,6 +21,23 @@ GATEWAY_ROOT = THIS_DIR.parent
 if str(GATEWAY_ROOT) not in sys.path:
     sys.path.insert(0, str(GATEWAY_ROOT))
 
+
+def _set_blas_thread_env_defaults() -> None:
+    """Keep subprocess report generation memory-stable under pytest xdist."""
+    for key in (
+        "OPENBLAS_NUM_THREADS",
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "BLIS_NUM_THREADS",
+    ):
+        if not os.getenv(key):
+            os.environ[key] = "1"
+
+
+_set_blas_thread_env_defaults()
+
 from byes.quality_metrics import (  # noqa: E402
     compute_seg_metrics,
     compute_seg_tracking_metrics,

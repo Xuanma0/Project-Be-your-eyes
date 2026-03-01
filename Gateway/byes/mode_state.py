@@ -128,6 +128,10 @@ class ModeStateStore:
         self._device_modes: OrderedDict[str, _ModeEntry] = OrderedDict()
         self._run_modes: OrderedDict[str, _ModeEntry] = OrderedDict()
 
+    def reset_runtime(self) -> None:
+        self._device_modes.clear()
+        self._run_modes.clear()
+
     @staticmethod
     def _normalize_key(value: str | None) -> str | None:
         token = str(value or "").strip()

@@ -64,7 +64,8 @@ def wait_completed_delta(client: TestClient, before: dict[SeriesKey, float], exp
     while time.time() < deadline:
         current = parse_metrics(client.get("/metrics").text)
         completed = metric_total(current, "byes_frame_completed_total") - metric_total(before, "byes_frame_completed_total")
-        if completed >= expected:
+        received = metric_total(current, "byes_frame_received_total") - metric_total(before, "byes_frame_received_total")
+        if completed >= expected and received >= expected:
             return current
         time.sleep(0.1)
     return parse_metrics(client.get("/metrics").text)

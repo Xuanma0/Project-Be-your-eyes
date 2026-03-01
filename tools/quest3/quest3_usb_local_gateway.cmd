@@ -49,7 +49,7 @@ if errorlevel 1 (
 )
 
 echo [quest3_usb_local_gateway] Starting gateway window...
-start "BYES-Gateway" cmd /c "cd /d "%REPO_ROOT%\Gateway" && python scripts/dev_up.py --gateway-only --host 127.0.0.1 --gateway-port %GATEWAY_PORT% --no-reload"
+start "BYES-Gateway" cmd /c "cd /d "%REPO_ROOT%\Gateway" && set BYES_INFERENCE_EMIT_WS_V1=1 && set BYES_EMIT_NET_DEBUG=1 && python scripts/dev_up.py --gateway-only --host 127.0.0.1 --gateway-port %GATEWAY_PORT% --no-reload"
 
 echo.
 echo [quest3_usb_local_gateway] Quest connection panel settings:

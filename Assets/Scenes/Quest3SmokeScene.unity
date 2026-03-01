@@ -375,6 +375,8 @@ Transform:
   m_Children:
   - {fileID: 1976724982}
   - {fileID: 1945439068}
+  - {fileID: 1240136667}
+  - {fileID: 1035606265}
   m_Father: {fileID: 1883757455}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &257810521
@@ -750,6 +752,145 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 9085046f02f69544eb97fd06b6048fe2, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+--- !u!1 &678042969
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 678042970}
+  - component: {fileID: 678042974}
+  - component: {fileID: 678042973}
+  - component: {fileID: 678042972}
+  - component: {fileID: 678042971}
+  m_Layer: 0
+  m_Name: BYES_FrameCaptureHost
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &678042970
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 678042969}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1240136667}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &678042971
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 678042969}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: aba1c40ed90627346b03af6ccb12ed4a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: BeYourEyes.Unity::BeYourEyes.Unity.Interaction.ScanController
+  scanKey: 115
+  liveToggleKey: 108
+  minIntervalSec: 1
+  liveEnabledDefault: 0
+  liveFps: 1
+  liveMaxInflight: 1
+  liveMinIntervalOverrideSec: 0
+  liveDropIfBusy: 1
+  enableXrButtons: 1
+  rightLiveToggleAction: {fileID: 0}
+  rightPrimaryButtonAction: {fileID: 0}
+  rightTriggerButtonAction: {fileID: 0}
+--- !u!114 &678042972
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 678042969}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 15e2b339a56f93c43b0da924b7c5a7df, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: BeYourEyes.Unity::BeYourEyes.Adapters.Networking.GatewayFrameUploader
+  baseUrl: http://127.0.0.1:8000
+  apiKey: 
+--- !u!114 &678042973
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 678042969}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 651746f4c4c7422b886a9bc9cda4631b, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: BeYourEyes.Unity::BeYourEyes.Unity.Capture.FrameCapture
+  captureCamera: {fileID: 0}
+  gatewayClient: {fileID: 0}
+  localSafetyFallback: {fileID: 0}
+  captureWidth: 960
+  captureHeight: 540
+  normalFps: 5
+  degradedFps: 3
+  throttledFps: 1
+  safeModeFps: 1
+  normalJpegQuality: 70
+  degradedJpegQuality: 60
+  throttledJpegQuality: 50
+  safeModeJpegQuality: 40
+  ttlMs: 3000
+  keyframeSelector:
+    normalMinIntervalMs: 200
+    normalMaxIntervalMs: 1000
+    throttledMinIntervalMs: 400
+    throttledMaxIntervalMs: 1500
+    degradedMinIntervalMs: 600
+    degradedMaxIntervalMs: 2000
+    safeModeMinIntervalMs: 1000
+    safeModeMaxIntervalMs: 2500
+    angleThresholdDeg: 6
+    positionThresholdM: 0.1
+    busyDropStreakThreshold: 5
+  busyDropThreshold: 8
+  busyDropFpsScale: 0.5
+  includePose: 1
+  autoStart: 0
+  enableScanTextRoi: 1
+  scanTextRoiWidthRatio: 0.5
+  scanTextRoiHeightRatio: 0.5
+  scanTextRoiMinQuality: 75
+  safeModeScanTextRoiQuality: 60
+  scanTextStreamMinIntervalMs: 200
+  limitedModeMinIntervalMs: 1500
+  limitedModeQualityDrop: 10
+--- !u!114 &678042974
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 678042969}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fdad569c9a633e74ab0663c892e057ad, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: BeYourEyes.Unity::BeYourEyes.Unity.Capture.ScreenFrameGrabber
+  maxWidth: 960
+  maxHeight: 540
+  jpegQuality: 70
+  keepAspect: 1
 --- !u!114 &678121947 stripped
 MonoBehaviour:
   m_CorrespondingSourceObject: {fileID: 3785574333896180240, guid: b6d57cedc6a73c94aad8ce006a26b41b, type: 3}
@@ -1060,6 +1201,54 @@ GameObject:
   m_CorrespondingSourceObject: {fileID: 3574300426059452741, guid: b6d57cedc6a73c94aad8ce006a26b41b, type: 3}
   m_PrefabInstance: {fileID: 3375922771489076479}
   m_PrefabAsset: {fileID: 0}
+--- !u!1 &1035606264
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1035606265}
+  - component: {fileID: 1035606266}
+  m_Layer: 0
+  m_Name: BYES_Quest3SelfTestRunner
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1035606265
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1035606264}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 160098887}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1035606266
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1035606264}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c180763c74af4aaa8383edd4974f76e2, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BYES.Quest.ByesQuest3SelfTestRunner
+  autoRunOnStart: 1
+  startupDelaySec: 1.2
+  scanWaitTimeoutSec: 5
+  verboseLogs: 1
 --- !u!1 &1069081909
 GameObject:
   m_ObjectHideFlags: 0
@@ -1195,6 +1384,39 @@ GameObject:
   m_CorrespondingSourceObject: {fileID: 2287730480037448999, guid: b6d57cedc6a73c94aad8ce006a26b41b, type: 3}
   m_PrefabInstance: {fileID: 3375922771489076479}
   m_PrefabAsset: {fileID: 0}
+--- !u!1 &1240136666
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1240136667}
+  m_Layer: 0
+  m_Name: BYES_FrameRig
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1240136667
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1240136666}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children:
+  - {fileID: 678042970}
+  - {fileID: 2008326030}
+  m_Father: {fileID: 160098887}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1241364534 stripped
 GameObject:
   m_CorrespondingSourceObject: {fileID: 919132149155446097, guid: 996bc95e1b6dfc847aead2de66dc4a91, type: 3}
@@ -3014,6 +3236,71 @@ RectTransform:
   m_CorrespondingSourceObject: {fileID: 4941219564456579801, guid: dc067c577ec1b854684d789b6e727cc0, type: 3}
   m_PrefabInstance: {fileID: 357356506}
   m_PrefabAsset: {fileID: 0}
+--- !u!1 &2008326029
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 2008326030}
+  - component: {fileID: 2008326031}
+  m_Layer: 0
+  m_Name: BYES_GatewayClient
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &2008326030
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2008326029}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1240136667}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &2008326031
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2008326029}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 585723af8f8446f3849195559b228f05, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: BeYourEyes.Unity::BeYourEyes.Adapters.Networking.GatewayClient
+  baseUrl: http://127.0.0.1:18000
+  wsUrl: ws://127.0.0.1:18000/ws/events
+  apiKey: 
+  sessionId: default
+  connectOnEnable: 1
+  autoReconnect: 1
+  reconnectMinDelaySec: 0.5
+  reconnectMaxDelaySec: 8
+  verboseLogs: 1
+  frameOkLogEvery: 30
+  enableHealthProbe: 1
+  healthProbeIntervalSec: 1
+  healthProbeStaleThresholdMs: 1500
+  enableExternalReadinessProbe: 1
+  readinessProbeIntervalSec: 2
+  probeFailureThreshold: 2
+  eventGuard:
+    allowedReorderSeq: 2
+    defaultEventTtlMs: 1500
+  localSafetyFallback: {fileID: 0}
+  defaultAskQuestion: What is in front of me?
 --- !u!1 &2066117192 stripped
 GameObject:
   m_CorrespondingSourceObject: {fileID: 8893227839204258060, guid: 66d40221d132d04499855da9ce315f20, type: 3}
