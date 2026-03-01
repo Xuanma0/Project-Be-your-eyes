@@ -7,6 +7,7 @@ using BYES.UI;
 using BYES.XR;
 using BeYourEyes.Unity.Interaction;
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.InputSystem;
 using UnityEngine.UI;
 using UnityEngine.XR.Interaction.Toolkit.Interactors;
@@ -76,7 +77,7 @@ namespace BYES.Quest
         {
             ResolveRefs();
             EnsureOfficialHandMenu();
-            EnsureMetaGestureDetector();
+            TryEnsureMetaGestureDetector();
             BuildRuntimeUi();
             LoadPrefsAndApply();
             SetPage("home");
@@ -162,20 +163,45 @@ namespace BYES.Quest
             }
         }
 
-        private void EnsureMetaGestureDetector()
+        private void TryEnsureMetaGestureDetector()
         {
-            _metaGestureDetector = GetComponent<MetaSystemGestureDetector>();
-            if (_metaGestureDetector == null)
+            try
             {
-                _metaGestureDetector = gameObject.AddComponent<MetaSystemGestureDetector>();
-            }
+                // Reuse detector from the official HandMenuRig sample. Avoid creating one at runtime,
+                // which can be partially uninitialized on device and break startup.
+                _metaGestureDetector = GetComponentInChildren<MetaSystemGestureDetector>(true);
+                if (_metaGestureDetector == null)
+                {
+                    Debug.LogWarning("[ByesHandMenuController] MetaSystemGestureDetector not found. System-gesture conflict isolation disabled.");
+                    return;
+                }
 
-            var action = new InputAction("BYES_MetaAimFlags", InputActionType.Value, "<MetaAimHand>{LeftHand}/aimFlags", expectedControlType: "Integer");
-            _metaGestureDetector.aimFlagsAction = new InputActionProperty(action);
-            _metaGestureDetector.systemGestureStarted.RemoveListener(OnSystemGestureStarted);
-            _metaGestureDetector.systemGestureEnded.RemoveListener(OnSystemGestureEnded);
-            _metaGestureDetector.systemGestureStarted.AddListener(OnSystemGestureStarted);
-            _metaGestureDetector.systemGestureEnded.AddListener(OnSystemGestureEnded);
+                var started = _metaGestureDetector.systemGestureStarted;
+                if (started == null)
+                {
+                    started = new UnityEvent();
+                    _metaGestureDetector.systemGestureStarted = started;
+                }
+
+                var ended = _metaGestureDetector.systemGestureEnded;
+                if (ended == null)
+                {
+                    ended = new UnityEvent();
+                    _metaGestureDetector.systemGestureEnded = ended;
+                }
+
+                started.RemoveListener(OnSystemGestureStarted);
+                started.AddListener(OnSystemGestureStarted);
+
+                ended.RemoveListener(OnSystemGestureEnded);
+                ended.AddListener(OnSystemGestureEnded);
+            }
+            catch (Exception ex)
+            {
+                // Never allow menu wiring to crash app startup on device.
+                _metaGestureDetector = null;
+                Debug.LogWarning("[ByesHandMenuController] Failed to wire MetaSystemGestureDetector safely: " + ex.Message);
+            }
         }
 
         private void BuildRuntimeUi()
@@ -328,7 +354,14 @@ namespace BYES.Quest
             {
                 PlayerPrefs.SetInt(PrefPassthrough, value ? 1 : 0);
                 PlayerPrefs.Save();
-                _passthroughSetup?.SetEnabled(value);
+                if (value)
+                {
+                    ByesQuestPassthroughSetup.EnsureInstance().SetEnabled(true);
+                }
+                else
+                {
+                    _passthroughSetup?.SetEnabled(false);
+                }
             });
             _uiScaleSlider = CreateSlider(page, new Vector2(0f, -185f), 0.6f, 1.4f, value =>
             {
@@ -456,7 +489,15 @@ namespace BYES.Quest
             _shortcuts?.SetShortcutsEnabled(PlayerPrefs.GetInt(PrefGestureEnabled, 1) == 1);
             _shortcuts?.SetShortcutHand((ByesHandGestureShortcuts.ShortcutHand)PlayerPrefs.GetInt(PrefShortcutHand, (int)ByesHandGestureShortcuts.ShortcutHand.RightOnly));
             _shortcuts?.SetConflictMode((ByesHandGestureShortcuts.ConflictMode)PlayerPrefs.GetInt(PrefConflictMode, (int)ByesHandGestureShortcuts.ConflictMode.Safe));
-            _passthroughSetup?.SetEnabled(PlayerPrefs.GetInt(PrefPassthrough, 1) == 1);
+            var passthroughEnabled = PlayerPrefs.GetInt(PrefPassthrough, 1) == 1;
+            if (passthroughEnabled)
+            {
+                ByesQuestPassthroughSetup.EnsureInstance().SetEnabled(true);
+            }
+            else
+            {
+                _passthroughSetup?.SetEnabled(false);
+            }
             _panel?.SetActionControlsVisible(PlayerPrefs.GetInt(PrefShowFullPanel, 0) == 1);
             _panel?.SetLockToHead(PlayerPrefs.GetInt(PrefLockToHead, 1) == 1);
             _panel?.SetMoveResizeEnabled(PlayerPrefs.GetInt(PrefMoveResize, 0) == 1);

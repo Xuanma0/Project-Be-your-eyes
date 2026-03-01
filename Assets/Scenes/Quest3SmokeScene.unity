@@ -1069,7 +1069,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: c180763c74af4aaa8383edd4974f76e2, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::BYES.Quest.ByesQuest3SelfTestRunner
-  autoRunOnStart: 1
+  autoRunOnStart: 0
   startupDelaySec: 1.2
   scanWaitTimeoutSec: 5
   verboseLogs: 1

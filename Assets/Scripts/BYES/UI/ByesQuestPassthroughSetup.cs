@@ -6,9 +6,10 @@ namespace BYES.UI
 {
     public sealed class ByesQuestPassthroughSetup : MonoBehaviour
     {
+        private const string PrefAutoInstall = "BYES_PASSTHROUGH_AUTOINSTALL";
         private static bool _missingArFoundationLogged;
         private static ByesQuestPassthroughSetup _instance;
-        private bool _isEnabled = true;
+        private bool _isEnabled;
         private Camera _camera;
         private Behaviour _cameraManager;
         private Behaviour _cameraBackground;
@@ -16,11 +17,29 @@ namespace BYES.UI
         public static ByesQuestPassthroughSetup Instance => _instance ?? FindFirstObjectByType<ByesQuestPassthroughSetup>();
         public bool IsEnabled => _isEnabled;
 
+        public static ByesQuestPassthroughSetup EnsureInstance()
+        {
+            var existing = Instance;
+            if (existing != null)
+            {
+                return existing;
+            }
+
+            var host = new GameObject("BYES_Quest3PassthroughSetup");
+            return host.AddComponent<ByesQuestPassthroughSetup>();
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoInstallOnQuestSmokeScene()
         {
             var scene = SceneManager.GetActiveScene();
             if (!string.Equals(scene.name, "Quest3SmokeScene", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            // Keep startup stable on Quest: passthrough helper is opt-in unless explicitly enabled.
+            if (PlayerPrefs.GetInt(PrefAutoInstall, 0) != 1)
             {
                 return;
             }
