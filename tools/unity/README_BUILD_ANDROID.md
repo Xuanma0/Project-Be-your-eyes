@@ -25,8 +25,8 @@ If missing, install Android Build Support (SDK/NDK/OpenJDK) for that editor and 
 ## Output
 
 - APK: `Builds/Quest3/BYES_Quest3Smoke_<VERSION>.apk`
-- Build log: `Builds/logs/unity_build_quest3_android_v4.99.log`
-- Summary: `Builds/logs/unity_build_quest3_android_v4.99.summary.txt`
+- Build log: `Builds/logs/unity_build_quest3_android.log`
+- Summary: `Builds/logs/unity_build_quest3_android.summary.txt`
 
 ## VERSION file compatibility
 
@@ -37,7 +37,7 @@ The script temporarily renames `VERSION` before Unity build and restores it imme
 
 After Unity batch build, `tools/unity/parse_unity_build_log.py` runs automatically and extracts:
 
-- earliest true error line (`error CS*`, `fatal error:`, `ld.lld:`, `undefined symbol/reference`, `BuildFailedException`)
+- earliest true error line (`error CS*`, `fatal error:`, `ld.lld:`, `undefined symbol/reference`, `BuildFailedException`, Gradle `BUILD FAILED`, `Java heap space`)
 - ±80 lines context around root cause
 - Bee Android failure counts
 

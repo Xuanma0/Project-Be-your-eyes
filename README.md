@@ -136,6 +136,10 @@ python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 12
 - Confirm decision: `Y/N` (or XR primary/secondary)
 - Connection panel probes: `Test Ping`, `Read Mode`, `Get Version`
 - `Quest3SmokeScene` runs zero-controller self-test on startup (ping/version/mode/live-loop) and reports `RUNNING/PASS/FAIL` in panel
+- v5.00 Quest default entry: palm-up + pinch opens official hand menu (`Connection / Actions / Mode / Panels / Settings / Debug`)
+- Gesture shortcuts default to `Safe` mode (no trigger while menu/system gesture/UI/grab conflict is active)
+- Smoke panel move/resize is now explicit opt-in from hand menu (`Panels -> Enable Move/Resize`)
+- Passthrough can be toggled from hand menu (`Settings -> Passthrough`)
 
 ### Success signals
 
@@ -252,7 +256,7 @@ python Gateway/scripts/verify_contracts.py --check-lock
 If maintainers decide to align release tags with `VERSION`:
 
 ```bash
-git tag -a v4.99 -m "v4.99" <commit>
+git tag -a v5.00 -m "v5.00" <commit>
 ```
 
 Do not run this automatically unless release approval is explicit.

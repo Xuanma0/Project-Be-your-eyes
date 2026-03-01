@@ -5,7 +5,7 @@ set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..\..") do set "REPO_ROOT=%%~fI"
 set "LOG_DIR=%REPO_ROOT%\Builds\logs"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
-set "LOG_FILE=%LOG_DIR%\unity_build_quest3_android_v4.99.log"
+set "LOG_FILE=%LOG_DIR%\unity_build_quest3_android.log"
 set "VERSION_FILE=%REPO_ROOT%\VERSION"
 set "VERSION_TMP=%REPO_ROOT%\VERSION.unity-build-tmp"
 
@@ -33,7 +33,18 @@ if not exist "%UNITY_BIN%" (
   exit /b 2
 )
 
+if not defined BYES_GRADLE_XMX (
+  set "BYES_GRADLE_XMX=6144m"
+)
+if defined GRADLE_OPTS (
+  set "GRADLE_OPTS=%GRADLE_OPTS% -Dorg.gradle.jvmargs=-Xmx%BYES_GRADLE_XMX%"
+) else (
+  set "GRADLE_OPTS=-Dorg.gradle.jvmargs=-Xmx%BYES_GRADLE_XMX%"
+)
+set "ORG_GRADLE_PROJECT_org.gradle.jvmargs=-Xmx%BYES_GRADLE_XMX%"
+
 echo [build_quest3_android] UNITY_BIN=%UNITY_BIN%
+echo [build_quest3_android] GRADLE_OPTS=%GRADLE_OPTS%
 for %%I in ("%UNITY_BIN%") do set "UNITY_DIR=%%~dpI"
 set "ANDROID_MODULE_DIR=%UNITY_DIR%Data\\PlaybackEngines\\AndroidPlayer"
 if not exist "%ANDROID_MODULE_DIR%" (

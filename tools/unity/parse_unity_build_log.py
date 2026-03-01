@@ -19,14 +19,13 @@ ERROR_PATTERNS = [
     re.compile(r"BuildFailedException", re.IGNORECASE),
     re.compile(r"Switching to AndroidPlayer is disabled", re.IGNORECASE),
     re.compile(r"Android build target is not supported", re.IGNORECASE),
+    re.compile(r"Build Finished,\s*Result:\s*Failure", re.IGNORECASE),
+    re.compile(r"BUILD FAILED", re.IGNORECASE),
+    re.compile(r"FAILURE:\s*Build failed with an exception", re.IGNORECASE),
+    re.compile(r"Java heap space", re.IGNORECASE),
 ]
 BEE_ANDROID_PATTERN = re.compile(r"Building\s+Library\\Bee\\artifacts\\Android", re.IGNORECASE)
 FAILED_PATTERN = re.compile(r"failed", re.IGNORECASE)
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
-
 
 def _find_first_error_line(lines: list[str]) -> int | None:
     for index, line in enumerate(lines):
@@ -67,8 +66,7 @@ def main() -> int:
     parser.add_argument("log_path", type=Path)
     args = parser.parse_args()
 
-    repo_root = _repo_root()
-    summary_path = repo_root / "Builds" / "logs" / "unity_build_quest3_android_v4.99.summary.txt"
+    summary_path = args.log_path.with_suffix(".summary.txt")
 
     if not args.log_path.exists():
         _write_summary(

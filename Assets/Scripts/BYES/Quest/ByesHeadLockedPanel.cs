@@ -10,12 +10,14 @@ namespace BYES.Quest
         public float smooth = 12f;
         public bool invertFacing = true;
         public bool pinned = false;
+        public bool lockToHead = true;
 
         private Camera _targetCamera;
         private int _cameraRetryFrames;
         private bool _initialized;
         private float _defaultDistance;
         private float _defaultYOffset;
+        private bool _temporaryUnlock;
 
         private void Awake()
         {
@@ -24,12 +26,36 @@ namespace BYES.Quest
         }
 
         public bool IsPinned => pinned;
+        public bool IsLockToHeadEnabled => lockToHead;
         public float Distance => distance;
         public float YOffset => yOffset;
 
         public void SetPinned(bool value)
         {
             pinned = value;
+        }
+
+        public void SetLockToHead(bool value)
+        {
+            lockToHead = value;
+            if (lockToHead)
+            {
+                _initialized = false;
+            }
+        }
+
+        public void BeginTemporaryUnlock()
+        {
+            _temporaryUnlock = true;
+        }
+
+        public void EndTemporaryUnlock()
+        {
+            _temporaryUnlock = false;
+            if (lockToHead && !pinned)
+            {
+                _initialized = false;
+            }
         }
 
         public void SetDistance(float value)
@@ -47,13 +73,18 @@ namespace BYES.Quest
             distance = _defaultDistance;
             yOffset = _defaultYOffset;
             pinned = false;
+            lockToHead = true;
+            _temporaryUnlock = false;
             _initialized = false;
         }
 
         public void SnapToDefault()
         {
             _initialized = false;
-            pinned = false;
+            if (lockToHead)
+            {
+                pinned = false;
+            }
         }
 
         private void LateUpdate()
@@ -63,7 +94,7 @@ namespace BYES.Quest
                 return;
             }
 
-            if (pinned)
+            if (!lockToHead || pinned || _temporaryUnlock)
             {
                 return;
             }

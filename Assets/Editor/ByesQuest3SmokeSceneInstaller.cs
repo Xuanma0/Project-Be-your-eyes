@@ -24,9 +24,11 @@ namespace BYES.Editor
         private const string FrameCaptureHostName = "BYES_FrameCaptureHost";
         private const string GatewayClientHostName = "BYES_GatewayClient";
         private const string SelfTestHostName = "BYES_Quest3SelfTestRunner";
-        private const string WristMenuName = "BYES_WristMenu";
-        private const string GestureShortcutsName = "BYES_HandGestureShortcuts";
-        private const string WristMenuPrefabPath = "Assets/Prefabs/BYES/Quest/BYES_WristMenu.prefab";
+        private const string HandMenuRootName = "BYES_HandMenuRoot";
+        private const string GuideDisablerName = "BYES_MrTemplateGuideDisabler";
+        private const string LegacyWristMenuName = "BYES_WristMenu";
+        private const string HandMenuPrefabPath = "Assets/Prefabs/BYES/Quest/BYES_HandMenu.prefab";
+        private const string SampleHandMenuRigPrefabPath = "Assets/Samples/XR Interaction Toolkit/3.3.0/Hands Interaction Demo/Prefabs/HandMenuRig.prefab";
 
         [MenuItem("BYES/Quest3/Install Smoke Rig")]
         public static void InstallFromMenu()
@@ -63,16 +65,22 @@ namespace BYES.Editor
             panel.transform.localRotation = Quaternion.identity;
             panel.transform.localScale = Vector3.one;
 
-            var wristMenuPrefab = EnsureWristMenuPrefab();
-            var wristMenu = EnsureWristMenuInstance(smokeRig.transform, wristMenuPrefab);
-            wristMenu.transform.localPosition = Vector3.zero;
-            wristMenu.transform.localRotation = Quaternion.identity;
-            wristMenu.transform.localScale = Vector3.one;
+            var legacyWristMenu = smokeRig.transform.Find(LegacyWristMenuName);
+            if (legacyWristMenu != null)
+            {
+                UnityEngine.Object.DestroyImmediate(legacyWristMenu.gameObject);
+            }
 
-            var gestureShortcuts = FindOrCreateChild(smokeRig.transform, GestureShortcutsName);
-            gestureShortcuts.transform.localPosition = Vector3.zero;
-            gestureShortcuts.transform.localRotation = Quaternion.identity;
-            gestureShortcuts.transform.localScale = Vector3.one;
+            var handMenuPrefab = EnsureHandMenuPrefab();
+            var handMenuRoot = EnsureHandMenuInstance(smokeRig.transform, handMenuPrefab);
+            handMenuRoot.transform.localPosition = Vector3.zero;
+            handMenuRoot.transform.localRotation = Quaternion.identity;
+            handMenuRoot.transform.localScale = Vector3.one;
+
+            var guideDisablerHost = FindOrCreateChild(smokeRig.transform, GuideDisablerName);
+            guideDisablerHost.transform.localPosition = Vector3.zero;
+            guideDisablerHost.transform.localRotation = Quaternion.identity;
+            guideDisablerHost.transform.localScale = Vector3.one;
 
             var xrUiGuard = FindOrCreateChild(smokeRig.transform, XrUiGuardName);
             xrUiGuard.transform.localPosition = Vector3.zero;
@@ -102,9 +110,9 @@ namespace BYES.Editor
             _ = EnsureComponent<ByesHeadLockedPanel>(panel);
             _ = EnsureComponent<ByesQuest3ConnectionPanelMinimal>(panel);
             _ = EnsureComponent<ByesSmokePanelGrabHandle>(panel);
-            _ = EnsureComponent<ByesWristMenuController>(wristMenu);
-            _ = EnsureComponent<ByesWristMenuAnchor>(wristMenu);
-            _ = EnsureComponent<ByesHandGestureShortcuts>(gestureShortcuts);
+            _ = EnsureComponent<ByesHandMenuController>(handMenuRoot);
+            _ = EnsureComponent<ByesHandGestureShortcuts>(handMenuRoot);
+            _ = EnsureComponent<ByesMrTemplateGuideDisabler>(guideDisablerHost);
             _ = EnsureComponent<ByesXrUiWiringGuard>(xrUiGuard);
             _ = EnsureComponent<ByesQuest3SelfTestRunner>(selfTestHost);
 
@@ -117,11 +125,12 @@ namespace BYES.Editor
 
             ConfigureQuestSmokeDefaults(gatewayClient, grabber, frameCapture, scanController);
             var disabledCoachingCount = DisableCoachingUi(scene);
+            EnsureBuildSettingsQuestOnly();
 
             EditorSceneManager.MarkSceneDirty(scene);
             EditorSceneManager.SaveScene(scene);
 
-            Debug.Log($"[ByesQuest3SmokeSceneInstaller] installed at {AppRootName}/{SmokeRigName}/{PanelName} + {WristMenuName} + {FrameRigName} + {XrUiGuardName}; coachingDisabled={disabledCoachingCount}");
+            Debug.Log($"[ByesQuest3SmokeSceneInstaller] installed at {AppRootName}/{SmokeRigName}/{PanelName} + {HandMenuRootName} + {FrameRigName} + {XrUiGuardName}; coachingDisabled={disabledCoachingCount}");
         }
 
         private static GameObject FindOrCreateRoot(Scene scene, string name)
@@ -218,36 +227,76 @@ namespace BYES.Editor
                 SetFloatIfExists(so, "defaultPanelScale", 1f);
                 so.ApplyModifiedPropertiesWithoutUndo();
             }
+
+            var grabHandle = UnityEngine.Object.FindFirstObjectByType<ByesSmokePanelGrabHandle>();
+            if (grabHandle != null)
+            {
+                var so = new SerializedObject(grabHandle);
+                SetBoolIfExists(so, "moveResizeEnabled", false);
+                SetBoolIfExists(so, "restoreHeadLockAfterRelease", true);
+                so.ApplyModifiedPropertiesWithoutUndo();
+            }
+
+            var headLockedPanel = UnityEngine.Object.FindFirstObjectByType<ByesHeadLockedPanel>();
+            if (headLockedPanel != null)
+            {
+                var so = new SerializedObject(headLockedPanel);
+                SetBoolIfExists(so, "lockToHead", true);
+                so.ApplyModifiedPropertiesWithoutUndo();
+            }
+
+            var shortcut = UnityEngine.Object.FindFirstObjectByType<ByesHandGestureShortcuts>();
+            if (shortcut != null)
+            {
+                var so = new SerializedObject(shortcut);
+                SetBoolIfExists(so, "shortcutsEnabled", true);
+                SetIntIfExists(so, "shortcutHand", 0);
+                SetIntIfExists(so, "conflictMode", 0);
+                so.ApplyModifiedPropertiesWithoutUndo();
+            }
         }
 
-        private static GameObject EnsureWristMenuPrefab()
+        private static GameObject EnsureHandMenuPrefab()
         {
             EnsureFolder("Assets/Prefabs");
             EnsureFolder("Assets/Prefabs/BYES");
             EnsureFolder("Assets/Prefabs/BYES/Quest");
 
-            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(WristMenuPrefabPath);
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(HandMenuPrefabPath);
             if (prefab != null)
             {
                 return prefab;
             }
 
-            var temp = new GameObject(WristMenuName);
-            temp.AddComponent<ByesWristMenuController>();
-            temp.AddComponent<ByesWristMenuAnchor>();
-            var saved = PrefabUtility.SaveAsPrefabAsset(temp, WristMenuPrefabPath);
+            var temp = new GameObject(HandMenuRootName);
+            temp.AddComponent<ByesHandMenuController>();
+
+            var sampleRig = AssetDatabase.LoadAssetAtPath<GameObject>(SampleHandMenuRigPrefabPath);
+            if (sampleRig != null)
+            {
+                var sampleInstance = PrefabUtility.InstantiatePrefab(sampleRig, temp.transform) as GameObject;
+                if (sampleInstance != null)
+                {
+                    sampleInstance.name = "OfficialHandMenuRig";
+                    sampleInstance.transform.localPosition = Vector3.zero;
+                    sampleInstance.transform.localRotation = Quaternion.identity;
+                    sampleInstance.transform.localScale = Vector3.one;
+                }
+            }
+
+            var saved = PrefabUtility.SaveAsPrefabAsset(temp, HandMenuPrefabPath);
             UnityEngine.Object.DestroyImmediate(temp);
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
             return saved;
         }
 
-        private static GameObject EnsureWristMenuInstance(Transform parent, GameObject prefab)
+        private static GameObject EnsureHandMenuInstance(Transform parent, GameObject prefab)
         {
-            var existing = parent.Find(WristMenuName);
+            var existing = parent.Find(HandMenuRootName);
             if (prefab == null)
             {
-                return existing != null ? existing.gameObject : FindOrCreateChild(parent, WristMenuName);
+                return existing != null ? existing.gameObject : FindOrCreateChild(parent, HandMenuRootName);
             }
 
             if (existing == null)
@@ -255,11 +304,11 @@ namespace BYES.Editor
                 var instantiated = PrefabUtility.InstantiatePrefab(prefab, parent) as GameObject;
                 if (instantiated != null)
                 {
-                    instantiated.name = WristMenuName;
+                    instantiated.name = HandMenuRootName;
                     return instantiated;
                 }
 
-                return FindOrCreateChild(parent, WristMenuName);
+                return FindOrCreateChild(parent, HandMenuRootName);
             }
 
             var source = PrefabUtility.GetCorrespondingObjectFromSource(existing.gameObject);
@@ -272,11 +321,11 @@ namespace BYES.Editor
             var replacement = PrefabUtility.InstantiatePrefab(prefab, parent) as GameObject;
             if (replacement != null)
             {
-                replacement.name = WristMenuName;
+                replacement.name = HandMenuRootName;
                 return replacement;
             }
 
-            return FindOrCreateChild(parent, WristMenuName);
+            return FindOrCreateChild(parent, HandMenuRootName);
         }
 
         private static int DisableCoachingUi(Scene scene)
@@ -314,6 +363,15 @@ namespace BYES.Editor
             }
 
             return disabled;
+        }
+
+        private static void EnsureBuildSettingsQuestOnly()
+        {
+            var scenes = new[]
+            {
+                new EditorBuildSettingsScene(ScenePath, true),
+            };
+            EditorBuildSettings.scenes = scenes;
         }
 
         private static void EnsureFolder(string path)

@@ -7,6 +7,14 @@ namespace BYES.UI
     public sealed class ByesQuestPassthroughSetup : MonoBehaviour
     {
         private static bool _missingArFoundationLogged;
+        private static ByesQuestPassthroughSetup _instance;
+        private bool _isEnabled = true;
+        private Camera _camera;
+        private Behaviour _cameraManager;
+        private Behaviour _cameraBackground;
+
+        public static ByesQuestPassthroughSetup Instance => _instance ?? FindFirstObjectByType<ByesQuestPassthroughSetup>();
+        public bool IsEnabled => _isEnabled;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoInstallOnQuestSmokeScene()
@@ -26,8 +34,16 @@ namespace BYES.UI
 
         private void Awake()
         {
+            if (_instance != null && _instance != this)
+            {
+                Destroy(gameObject);
+                return;
+            }
+
+            _instance = this;
             EnsureArSession();
             EnsureCameraPassthroughSettings();
+            SetEnabled(_isEnabled);
         }
 
         private static void EnsureArSession()
@@ -82,6 +98,65 @@ namespace BYES.UI
             if (cam.GetComponent(cameraBackgroundType) == null)
             {
                 cam.gameObject.AddComponent(cameraBackgroundType);
+            }
+        }
+
+        public void SetEnabled(bool enabled)
+        {
+            _isEnabled = enabled;
+            ApplyPassthroughState();
+        }
+
+        private void ApplyPassthroughState()
+        {
+            ResolveCameraAndComponents();
+            if (_camera == null)
+            {
+                return;
+            }
+
+            _camera.clearFlags = CameraClearFlags.SolidColor;
+            var color = _camera.backgroundColor;
+            color.a = _isEnabled ? 0f : 1f;
+            _camera.backgroundColor = color;
+
+            if (_cameraManager != null)
+            {
+                _cameraManager.enabled = _isEnabled;
+            }
+
+            if (_cameraBackground != null)
+            {
+                _cameraBackground.enabled = _isEnabled;
+            }
+        }
+
+        private void ResolveCameraAndComponents()
+        {
+            if (_camera == null || !_camera.isActiveAndEnabled)
+            {
+                _camera = Camera.main;
+                if (_camera == null)
+                {
+                    _camera = FindFirstObjectByType<Camera>();
+                }
+            }
+
+            if (_camera == null)
+            {
+                return;
+            }
+
+            var cameraManagerType = ResolveType("UnityEngine.XR.ARFoundation.ARCameraManager, Unity.XR.ARFoundation");
+            var cameraBackgroundType = ResolveType("UnityEngine.XR.ARFoundation.ARCameraBackground, Unity.XR.ARFoundation");
+            if (cameraManagerType != null && _cameraManager == null)
+            {
+                _cameraManager = _camera.GetComponent(cameraManagerType) as Behaviour;
+            }
+
+            if (cameraBackgroundType != null && _cameraBackground == null)
+            {
+                _cameraBackground = _camera.GetComponent(cameraBackgroundType) as Behaviour;
             }
         }
 

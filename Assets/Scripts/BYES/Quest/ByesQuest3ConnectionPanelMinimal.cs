@@ -61,6 +61,7 @@ namespace BYES.Quest
         private ByesQuest3SelfTestRunner _selfTestRunner;
         private ByesHitchMonitor _hitchMonitor;
         private ByesHeadLockedPanel _headLockedPanel;
+        private ByesSmokePanelGrabHandle _grabHandle;
 
         private ITextView _baseUrlText;
         private ITextView _reachabilityText;
@@ -188,6 +189,11 @@ namespace BYES.Quest
             if (_headLockedPanel == null)
             {
                 _headLockedPanel = GetComponent<ByesHeadLockedPanel>();
+            }
+
+            if (_grabHandle == null)
+            {
+                _grabHandle = GetComponent<ByesSmokePanelGrabHandle>();
             }
         }
 
@@ -622,6 +628,78 @@ namespace BYES.Quest
             };
             manager.SetMode(next, "xr");
             StartCoroutine(SetMode(ByesModeManager.ToApiMode(next)));
+        }
+
+        public string GetBaseUrl()
+        {
+            return _baseUrl;
+        }
+
+        public string GetDeviceId()
+        {
+            return ByesFrameTelemetry.DeviceId;
+        }
+
+        public bool IsWsConnected()
+        {
+            return (_gatewayClient != null && _gatewayClient.IsConnected)
+                   || (_gatewayWsClient != null && string.Equals(_gatewayWsClient.ConnectionState, "Connected", StringComparison.Ordinal));
+        }
+
+        public string GetCurrentModeText()
+        {
+            return string.IsNullOrWhiteSpace(_currentMode) ? "-" : _currentMode;
+        }
+
+        public long GetLastUploadMs()
+        {
+            return _scanController != null ? Convert.ToInt64(Math.Round(_scanController.LastUploadCostMs)) : -1;
+        }
+
+        public long GetLastE2eMs()
+        {
+            return _scanController != null ? Convert.ToInt64(Math.Round(_scanController.LastE2eMs)) : -1;
+        }
+
+        public string GetLastEventType()
+        {
+            return string.IsNullOrWhiteSpace(_lastEventType) ? "-" : _lastEventType;
+        }
+
+        public bool IsLockToHead()
+        {
+            return _headLockedPanel != null && _headLockedPanel.IsLockToHeadEnabled;
+        }
+
+        public void SetLockToHead(bool value)
+        {
+            if (_headLockedPanel == null)
+            {
+                return;
+            }
+
+            _headLockedPanel.SetLockToHead(value);
+            if (value)
+            {
+                _headLockedPanel.SetPinned(false);
+            }
+            RefreshAllStatusLines();
+        }
+
+        public bool IsMoveResizeEnabled()
+        {
+            return _grabHandle != null && _grabHandle.IsMoveResizeEnabled;
+        }
+
+        public void SetMoveResizeEnabled(bool enabled)
+        {
+            if (_grabHandle == null)
+            {
+                return;
+            }
+
+            _grabHandle.SetMoveResizeEnabled(enabled);
+            RefreshAllStatusLines();
         }
 
         public string BuildDebugSummary()

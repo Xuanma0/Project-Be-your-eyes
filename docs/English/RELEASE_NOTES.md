@@ -4,6 +4,14 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v5.00
+- Switched Quest entry interaction from custom wrist buttons to an official palm-up hand menu flow (XRI `HandMenu` + `MetaSystemGestureDetector`) with multi-page navigation.
+- Added grouped menu pages (`Connection / Actions / Mode / Panels / Settings / Debug`) with mode roundtrip controls, panel management, debug copy/export, and passthrough toggle.
+- Added safe gesture shortcut model with conflict isolation: shortcuts run only when menu is hidden, no grab/UI conflict is active, and system gesture is not active.
+- Added explicit smoke panel move/resize mode gate (default OFF), lock-to-head toggle, and reset pose/scale operations to avoid accidental panel drag while pinching UI.
+- Added runtime guide disabler to suppress MR Template coaching/guide menu objects in `Quest3SmokeScene` by default.
+- Updated scene installer to wire `BYES_HandMenuRoot`, `ByesMrTemplateGuideDisabler`, and enforce `Quest3SmokeScene` as the only build scene by default.
+
 ## v4.99
 - Quest3 smoke UX upgraded to a wrist/palm menu flow: grouped actions (`Actions / Panels / Debug`) and no dependency on bottom button controls for Quest operation.
 - Added XR Hands gesture shortcuts on right hand: thumb+index pinch (`Scan Once`), thumb+middle (`Live Toggle`), thumb+ring (`Cycle Mode`) with cooldown/hysteresis and safe no-op fallback when hand subsystem is unavailable.

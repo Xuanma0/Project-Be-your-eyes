@@ -1,5 +1,13 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v5.00
+- Quest 主入口交互切换为官方手掌菜单流程（XRI `HandMenu` + `MetaSystemGestureDetector`），替代旧自定义 wrist button 逻辑。
+- 手菜单支持多级分组页：`Connection / Actions / Mode / Panels / Settings / Debug`，包含 mode 设置与回读、panel 控制、debug 导出、passthrough 开关。
+- 新增 Safe 手势快捷模式：仅在菜单隐藏、无 UI/grab 冲突、无系统手势活跃时触发。
+- Smoke Panel 新增显式 Move/Resize 开关（默认关）、LockToHead、Reset Pose/Scale，减少 pinch 误拖动。
+- Quest3SmokeScene 新增 MR Template Guide/Coaching 运行时禁用器，默认隐藏干扰组件。
+- 场景安装器更新：自动配置 `BYES_HandMenuRoot` + `ByesMrTemplateGuideDisabler`，并默认将 Build Settings 收敛为 `Quest3SmokeScene`。
+
 ## v4.99
 - Quest3 烟测交互升级为手腕/手掌菜单（`Actions / Panels / Debug`），默认不再依赖底部蓝色按钮。
 - 新增 XR Hands 手势快捷：右手拇指+食指=`Scan Once`，拇指+中指=`Live Toggle`，拇指+无名指=`Cycle Mode`。

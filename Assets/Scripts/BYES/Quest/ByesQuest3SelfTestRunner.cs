@@ -155,6 +155,21 @@ namespace BYES.Quest
                 yield break;
             }
 
+            SetStatus("RUNNING", "step3b mode roundtrip");
+            var modeRoundtripOk = false;
+            var roundtripError = string.Empty;
+            yield return VerifyModeRoundtrip((ok, error) =>
+            {
+                modeRoundtripOk = ok;
+                roundtripError = error;
+            });
+            if (!modeRoundtripOk)
+            {
+                Fail($"mode roundtrip failed: {roundtripError}");
+                _selfTestRoutine = null;
+                yield break;
+            }
+
             SetStatus("RUNNING", "step4 scan+ws");
             var uploadCompleted = false;
             var uploadSucceeded = false;
@@ -261,6 +276,97 @@ namespace BYES.Quest
         private IEnumerator GetJson(string path, Action<bool, JObject, string> onDone)
         {
             yield return SendRequest(UnityWebRequest.kHttpVerbGET, path, null, onDone);
+        }
+
+        private IEnumerator VerifyModeRoundtrip(Action<bool, string> onDone)
+        {
+            var deviceId = ByesFrameTelemetry.DeviceId;
+            var readOk = false;
+            var readErr = string.Empty;
+            yield return PostMode("read_text", deviceId, (ok, error) =>
+            {
+                readOk = ok;
+                readErr = error;
+            });
+            if (!readOk)
+            {
+                onDone?.Invoke(false, readErr);
+                yield break;
+            }
+
+            var readBackOk = false;
+            var readBackErr = string.Empty;
+            yield return ValidateMode(deviceId, "read_text", (ok, error) =>
+            {
+                readBackOk = ok;
+                readBackErr = error;
+            });
+            if (!readBackOk)
+            {
+                onDone?.Invoke(false, readBackErr);
+                yield break;
+            }
+
+            var walkOk = false;
+            var walkErr = string.Empty;
+            yield return PostMode("walk", deviceId, (ok, error) =>
+            {
+                walkOk = ok;
+                walkErr = error;
+            });
+            if (!walkOk)
+            {
+                onDone?.Invoke(false, walkErr);
+                yield break;
+            }
+
+            var walkBackOk = false;
+            var walkBackErr = string.Empty;
+            yield return ValidateMode(deviceId, "walk", (ok, error) =>
+            {
+                walkBackOk = ok;
+                walkBackErr = error;
+            });
+            onDone?.Invoke(walkBackOk, walkBackOk ? string.Empty : walkBackErr);
+        }
+
+        private IEnumerator PostMode(string mode, string deviceId, Action<bool, string> onDone)
+        {
+            var payload = new JObject
+            {
+                ["runId"] = "quest3-smoke",
+                ["frameSeq"] = 1,
+                ["mode"] = mode,
+                ["source"] = "selftest",
+                ["tsMs"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ["deviceId"] = deviceId,
+            };
+            yield return SendRequest(UnityWebRequest.kHttpVerbPOST, "/api/mode", payload, (ok, _, error) =>
+            {
+                onDone?.Invoke(ok, ok ? string.Empty : (string.IsNullOrWhiteSpace(error) ? "set mode failed" : error));
+            });
+        }
+
+        private IEnumerator ValidateMode(string deviceId, string expectedMode, Action<bool, string> onDone)
+        {
+            var path = $"/api/mode?deviceId={UnityWebRequest.EscapeURL(deviceId)}";
+            yield return GetJson(path, (ok, obj, error) =>
+            {
+                if (!ok || obj == null)
+                {
+                    onDone?.Invoke(false, string.IsNullOrWhiteSpace(error) ? "mode readback failed" : error);
+                    return;
+                }
+
+                var actual = (obj.Value<string>("mode") ?? string.Empty).Trim().ToLowerInvariant();
+                if (string.Equals(actual, expectedMode, StringComparison.Ordinal))
+                {
+                    onDone?.Invoke(true, string.Empty);
+                    return;
+                }
+
+                onDone?.Invoke(false, $"expected {expectedMode}, got {actual}");
+            });
         }
 
         private IEnumerator SendRequest(string method, string path, JObject payload, Action<bool, JObject, string> onDone)

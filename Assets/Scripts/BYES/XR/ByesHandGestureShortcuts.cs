@@ -5,30 +5,61 @@ using BYES.Quest;
 using BeYourEyes.Unity.Interaction;
 using UnityEngine;
 using UnityEngine.XR.Hands;
+using UnityEngine.XR.Interaction.Toolkit.Interactors;
 
 namespace BYES.XR
 {
     public sealed class ByesHandGestureShortcuts : MonoBehaviour
     {
+        public enum ShortcutHand
+        {
+            RightOnly = 0,
+            LeftOnly = 1,
+            Both = 2,
+        }
+
+        public enum ConflictMode
+        {
+            Safe = 0,
+            Advanced = 1,
+        }
+
         [SerializeField] private bool enabledOnAndroidOnly = true;
-        [SerializeField] private float pinchEnterDistanceM = 0.025f;
+        [SerializeField] private bool shortcutsEnabled = true;
+        [SerializeField] private ShortcutHand shortcutHand = ShortcutHand.RightOnly;
+        [SerializeField] private ConflictMode conflictMode = ConflictMode.Safe;
+        [SerializeField] private float pinchEnterDistanceM = 0.022f;
         [SerializeField] private float pinchReleaseDistanceM = 0.04f;
         [SerializeField] private float triggerCooldownSec = 0.5f;
-        [SerializeField] private bool requireOnlyOnePinchAtATime = true;
+        [SerializeField] private float palmFacingCameraDotThreshold = 0.2f;
+        [SerializeField] private int triggerHistoryCapacity = 5;
 
         private static readonly List<XRHandSubsystem> Subsystems = new List<XRHandSubsystem>();
+        private static readonly List<string> TriggerHistory = new List<string>(8);
 
         private XRHandSubsystem _subsystem;
         private ByesQuest3ConnectionPanelMinimal _panel;
         private ScanController _scanController;
+        private ByesHandMenuController _handMenu;
+        private ByesSmokePanelGrabHandle _grabHandle;
 
-        private bool _indexPinched;
         private bool _middlePinched;
         private bool _ringPinched;
+        private bool _pinkyPinched;
         private float _lastTriggerTime = -10f;
+        private bool _systemGestureActive;
+
+        public bool ShortcutsEnabled => shortcutsEnabled;
+        public ShortcutHand ActiveShortcutHand => shortcutHand;
+        public ConflictMode ActiveConflictMode => conflictMode;
 
         private void Update()
         {
+            if (!shortcutsEnabled)
+            {
+                return;
+            }
+
             if (enabledOnAndroidOnly && Application.platform != RuntimePlatform.Android)
             {
                 return;
@@ -40,72 +71,116 @@ namespace BYES.XR
                 return;
             }
 
-            var hand = subsystem.rightHand;
+            switch (shortcutHand)
+            {
+                case ShortcutHand.LeftOnly:
+                    ProcessHand(subsystem.leftHand);
+                    break;
+                case ShortcutHand.Both:
+                    ProcessHand(subsystem.rightHand);
+                    ProcessHand(subsystem.leftHand);
+                    break;
+                default:
+                    ProcessHand(subsystem.rightHand);
+                    break;
+            }
+        }
+
+        public void SetShortcutsEnabled(bool enabled)
+        {
+            shortcutsEnabled = enabled;
+        }
+
+        public void SetShortcutHand(ShortcutHand hand)
+        {
+            shortcutHand = hand;
+        }
+
+        public void SetConflictMode(ConflictMode mode)
+        {
+            conflictMode = mode;
+        }
+
+        public void SetSystemGestureActive(bool active)
+        {
+            _systemGestureActive = active;
+        }
+
+        public string GetRecentTriggersAsText()
+        {
+            return TriggerHistory.Count == 0 ? "-" : string.Join(" | ", TriggerHistory);
+        }
+
+        private void ProcessHand(XRHand hand)
+        {
             if (!hand.isTracked)
             {
-                _indexPinched = false;
                 _middlePinched = false;
                 _ringPinched = false;
+                _pinkyPinched = false;
                 return;
             }
 
-            if (!TryGetTipDistance(hand, XRHandJointID.IndexTip, out var indexDistance)
-                || !TryGetTipDistance(hand, XRHandJointID.MiddleTip, out var middleDistance)
-                || !TryGetTipDistance(hand, XRHandJointID.RingTip, out var ringDistance))
+            if (conflictMode == ConflictMode.Safe && !IsSafeToTrigger(hand))
+            {
+                _middlePinched = false;
+                _ringPinched = false;
+                _pinkyPinched = false;
+                return;
+            }
+
+            if (!TryGetTipDistance(hand, XRHandJointID.MiddleTip, out var middleDistance)
+                || !TryGetTipDistance(hand, XRHandJointID.RingTip, out var ringDistance)
+                || !TryGetTipDistance(hand, XRHandJointID.LittleTip, out var pinkyDistance))
             {
                 return;
             }
 
-            var indexTriggered = UpdatePinchState(indexDistance, ref _indexPinched);
             var middleTriggered = UpdatePinchState(middleDistance, ref _middlePinched);
             var ringTriggered = UpdatePinchState(ringDistance, ref _ringPinched);
+            var pinkyTriggered = UpdatePinchState(pinkyDistance, ref _pinkyPinched);
 
             if (Time.unscaledTime - _lastTriggerTime < triggerCooldownSec)
             {
                 return;
             }
 
-            if (requireOnlyOnePinchAtATime)
+            var triggerCount = (middleTriggered ? 1 : 0) + (ringTriggered ? 1 : 0) + (pinkyTriggered ? 1 : 0);
+            if (triggerCount != 1)
             {
-                var triggeredCount = (indexTriggered ? 1 : 0) + (middleTriggered ? 1 : 0) + (ringTriggered ? 1 : 0);
-                if (triggeredCount != 1)
-                {
-                    return;
-                }
-            }
-
-            if (indexTriggered)
-            {
-                TriggerScanOnce();
-                _lastTriggerTime = Time.unscaledTime;
                 return;
             }
 
             if (middleTriggered)
             {
-                TriggerToggleLive();
+                TriggerScanOnce();
                 _lastTriggerTime = Time.unscaledTime;
+                RecordTrigger("thumb+middle=scan");
                 return;
             }
 
             if (ringTriggered)
             {
+                TriggerToggleLive();
+                _lastTriggerTime = Time.unscaledTime;
+                RecordTrigger("thumb+ring=live");
+                return;
+            }
+
+            if (pinkyTriggered)
+            {
                 TriggerCycleMode();
                 _lastTriggerTime = Time.unscaledTime;
+                RecordTrigger("thumb+pinky=mode");
             }
         }
 
         private void ResolveRefs()
         {
-            if (_panel == null)
-            {
-                _panel = FindFirstObjectByType<ByesQuest3ConnectionPanelMinimal>();
-            }
-
-            if (_scanController == null)
-            {
-                _scanController = FindFirstObjectByType<ScanController>();
-            }
+            _panel ??= FindFirstObjectByType<ByesQuest3ConnectionPanelMinimal>();
+            _scanController ??= FindFirstObjectByType<ScanController>();
+            _handMenu ??= FindFirstObjectByType<ByesHandMenuController>();
+            _grabHandle ??= FindFirstObjectByType<ByesSmokePanelGrabHandle>();
         }
 
         private bool TryResolveSubsystem(out XRHandSubsystem subsystem)
@@ -172,10 +247,7 @@ namespace BYES.XR
                 return;
             }
 
-            if (_scanController != null)
-            {
-                _scanController.ScanOnceFromUi();
-            }
+            _scanController?.ScanOnceFromUi();
         }
 
         private void TriggerToggleLive()
@@ -186,10 +258,7 @@ namespace BYES.XR
                 return;
             }
 
-            if (_scanController != null)
-            {
-                _scanController.ToggleLiveFromUi();
-            }
+            _scanController?.ToggleLiveFromUi();
         }
 
         private void TriggerCycleMode()
@@ -214,6 +283,65 @@ namespace BYES.XR
                 _ => ByesMode.Walk,
             };
             modeManager.SetMode(next, "xr");
+        }
+
+        private bool IsSafeToTrigger(XRHand hand)
+        {
+            if (_systemGestureActive)
+            {
+                return false;
+            }
+
+            if (_handMenu != null && (_handMenu.IsMenuVisible() || _handMenu.IsSystemGestureActive()))
+            {
+                return false;
+            }
+
+            if (_grabHandle != null && _grabHandle.IsGrabInProgress)
+            {
+                return false;
+            }
+
+            var rayInteractors = FindObjectsByType<XRRayInteractor>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            for (var i = 0; i < rayInteractors.Length; i += 1)
+            {
+                var interactor = rayInteractors[i];
+                if (interactor == null || !interactor.enabled)
+                {
+                    continue;
+                }
+
+                if (interactor.hasHover || interactor.hasSelection)
+                {
+                    return false;
+                }
+            }
+
+            var palmJoint = hand.GetJoint(XRHandJointID.Palm);
+            if (!palmJoint.TryGetPose(out var palmPose))
+            {
+                return false;
+            }
+
+            var camera = Camera.main;
+            if (camera == null)
+            {
+                return false;
+            }
+
+            var toCamera = (camera.transform.position - palmPose.position).normalized;
+            var facingDot = Vector3.Dot(palmPose.forward, toCamera);
+            return facingDot >= palmFacingCameraDotThreshold;
+        }
+
+        private void RecordTrigger(string label)
+        {
+            var entry = $"{DateTimeOffset.UtcNow:HH:mm:ss}-{label}";
+            TriggerHistory.Add(entry);
+            while (TriggerHistory.Count > Mathf.Max(1, triggerHistoryCapacity))
+            {
+                TriggerHistory.RemoveAt(0);
+            }
         }
     }
 }

@@ -78,26 +78,34 @@ python -m uvicorn main:app --app-dir Gateway --host 127.0.0.1 --port 18000
 
 ## 7) Runtime Controls
 
-- Quest default (Android): use wrist menu actions (`Actions / Panels / Debug`).
-- Manual scan: wrist menu `Scan Once` (desktop fallback key `S`).
-- Toggle live loop: wrist menu `Live Toggle` (desktop fallback key `L`).
-- Mode switch: wrist menu `Cycle Mode` (desktop fallback `1/2/3` + `F1/F2/F3`).
+- Quest default (Android): use official palm-up hand menu (`Connection / Actions / Mode / Panels / Settings / Debug`).
+- Manual scan: hand menu `Actions -> Scan Once` (desktop fallback key `S`).
+- Toggle live loop: hand menu `Actions -> Live Toggle` (desktop fallback key `L`).
+- Mode switch: hand menu `Mode -> Walk / Read / Inspect` or `Cycle`.
 - Connection panel remains status-first; action buttons are hidden by default on Android.
 
-## 7.1) Wrist Menu + Gesture Shortcuts (v4.99)
+## 7.1) Palm-up Menu + Safe Gestures (v5.00)
 
-- Palm-up to reveal the wrist menu (default left wrist anchor).
+- Palm-up + menu pinch gesture reveals the hand menu (default left hand).
 - Gesture shortcuts (right hand):
-  - thumb + index pinch: `Scan Once`
-  - thumb + middle pinch: `Live Toggle`
-  - thumb + ring pinch: `Cycle Mode`
-- `Panels` group includes:
+  - thumb + middle pinch: `Scan Once`
+  - thumb + ring pinch: `Live Toggle`
+  - thumb + little pinch: `Cycle Mode`
+- `Settings` group controls:
+  - `Gesture Shortcuts` enable/disable
+  - `Shortcut Hand`: RightOnly / LeftOnly / Both
+  - `Conflict Mode`: Safe / Advanced
+  - `Menu Hand`: Left / Right / Either
+  - `Passthrough` toggle
+- `Panels` group controls:
   - `Toggle Smoke Panel`
-  - `Pin / Unpin`
-  - `Distance +/-`
-  - `Scale +/-`
+  - `LockToHead`
+  - `Enable Move/Resize` (default OFF)
   - `Snap Default`
-- If XR Hands subsystem is unavailable, gesture shortcuts no-op silently; panel/wrist buttons still work.
+- Safe mode conflict isolation:
+  - no shortcut triggers when hand menu is visible
+  - no shortcut triggers during system gesture
+  - no shortcut triggers while UI hover/select or panel grab is active
 
 ## 8) Scan Once / Live Smoke Flow (v4.97)
 
@@ -144,13 +152,26 @@ Use this checklist for team verification screenshots:
 - `Mode Switch`: click `Walk/Read/Inspect` and verify `Mode:` text changes accordingly.
 - `Hitch Metric`: with live off for 30s, capture `Hitch30s` and `WorstDt` in screenshot.
 
-## 10.1) No-Low-Buttons Smoke Flow (v4.99)
+## 10.1) No-Low-Buttons Smoke Flow (v5.00)
 
 1. Start USB script: `tools\\quest3\\quest3_usb_local_gateway.cmd`.
 2. Put on Quest and wait until panel shows `HTTP: reachable`.
-3. Palm-up to open wrist menu.
+3. Palm-up + pinch to open hand menu.
 4. Click `Debug -> Run SelfTest` (or `Actions -> Scan Once` / `Live Toggle` manually).
 5. Confirm panel updates: `WS connected`, `Last Upload`, `Last E2E`, `Last Event`.
+
+## 10.2) Hand Menu Troubleshooting (v5.00)
+
+- Menu mirrored/backward text:
+  - re-run installer (`BYES/Quest3/Install Smoke Rig`) and ensure `BYES_HandMenuRoot/OfficialHandMenuRig` exists.
+- Menu does not appear:
+  - verify hand tracking is active and try palm-up + menu pinch gesture.
+  - check `ByesXrUiWiringGuard` and `MetaSystemGestureDetector` are active in scene.
+- Menu appears but cannot click:
+  - ensure EventSystem uses `XRUIInputModule` only.
+  - ensure menu canvas has `TrackedDeviceGraphicRaycaster`.
+- Gesture shortcuts conflict:
+  - set `Settings -> Conflict Mode -> Safe` and keep `Gesture Shortcuts` enabled.
 
 ## 11) Recommended Capture Defaults
 
