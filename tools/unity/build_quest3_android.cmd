@@ -43,8 +43,13 @@ if defined GRADLE_OPTS (
 )
 set "ORG_GRADLE_PROJECT_org.gradle.jvmargs=-Xmx%BYES_GRADLE_XMX%"
 
+if not defined BYES_ANDROID_BUILD_CLEAN (
+  set "BYES_ANDROID_BUILD_CLEAN=1"
+)
+
 echo [build_quest3_android] UNITY_BIN=%UNITY_BIN%
 echo [build_quest3_android] GRADLE_OPTS=%GRADLE_OPTS%
+echo [build_quest3_android] BYES_ANDROID_BUILD_CLEAN=%BYES_ANDROID_BUILD_CLEAN%
 for %%I in ("%UNITY_BIN%") do set "UNITY_DIR=%%~dpI"
 set "ANDROID_MODULE_DIR=%UNITY_DIR%Data\\PlaybackEngines\\AndroidPlayer"
 if not exist "%ANDROID_MODULE_DIR%" (
@@ -66,6 +71,14 @@ if exist "%VERSION_FILE%" (
     echo [build_quest3_android] Failed to relocate VERSION file before build.
     exit /b 2
   )
+)
+
+if "%BYES_ANDROID_BUILD_CLEAN%"=="1" (
+  echo [build_quest3_android] Cleaning Android build caches...
+  if exist "%REPO_ROOT%\Library\Bee\artifacts\Android" rmdir /s /q "%REPO_ROOT%\Library\Bee\artifacts\Android"
+  if exist "%REPO_ROOT%\Library\Bee\Android" rmdir /s /q "%REPO_ROOT%\Library\Bee\Android"
+  if exist "%REPO_ROOT%\.utmp" rmdir /s /q "%REPO_ROOT%\.utmp"
+  if exist "%REPO_ROOT%\Project-Be-your-eyes_BurstDebugInformation_DoNotShip" rmdir /s /q "%REPO_ROOT%\Project-Be-your-eyes_BurstDebugInformation_DoNotShip"
 )
 
 "%UNITY_BIN%" -batchmode -nographics -quit ^

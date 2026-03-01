@@ -22,6 +22,13 @@ If not found, the script exits with code `2` and prints how to set `UNITY_EXE`.
 The script also verifies `Data/PlaybackEngines/AndroidPlayer` exists under the selected editor.
 If missing, install Android Build Support (SDK/NDK/OpenJDK) for that editor and rerun.
 
+## Stability notes (v5.00)
+
+- The script defaults to `BYES_ANDROID_BUILD_CLEAN=1` and clears Android Bee/IL2CPP temp caches before build.
+- This helps when Unity Console shows many `il2cppOutput/cpp/*.cpp failed with output` lines without a clear first error.
+- To skip cache clean for faster incremental iterations:
+  - `set BYES_ANDROID_BUILD_CLEAN=0`
+
 ## Output
 
 - APK: `Builds/Quest3/BYES_Quest3Smoke_<VERSION>.apk`

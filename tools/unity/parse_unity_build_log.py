@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import argparse
+import os
 import re
 from pathlib import Path
 
@@ -23,6 +24,10 @@ ERROR_PATTERNS = [
     re.compile(r"BUILD FAILED", re.IGNORECASE),
     re.compile(r"FAILURE:\s*Build failed with an exception", re.IGNORECASE),
     re.compile(r"Java heap space", re.IGNORECASE),
+    re.compile(r"clang(\+\+)?\.exe: error", re.IGNORECASE),
+    re.compile(r"no such file or directory", re.IGNORECASE),
+    re.compile(r"C\+\+ compiler exited with code", re.IGNORECASE),
+    re.compile(r"Access is denied", re.IGNORECASE),
 ]
 BEE_ANDROID_PATTERN = re.compile(r"Building\s+Library\\Bee\\artifacts\\Android", re.IGNORECASE)
 FAILED_PATTERN = re.compile(r"failed", re.IGNORECASE)
@@ -59,6 +64,14 @@ def _render_context(lines: list[str], error_index: int, context_size: int = 80) 
 def _write_summary(summary_path: Path, content: str) -> None:
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(content, encoding="utf-8")
+
+
+def _editor_log_path() -> Path | None:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        return None
+    candidate = Path(local_app_data) / "Unity" / "Editor" / "Editor.log"
+    return candidate if candidate.exists() else None
 
 
 def main() -> int:
@@ -102,6 +115,20 @@ def main() -> int:
         report_lines.append(_render_context(lines, first_error))
         _write_summary(summary_path, "\n".join(report_lines) + "\n")
         return 1
+
+    editor_log = _editor_log_path()
+    if editor_log is not None:
+        editor_lines = editor_log.read_text(encoding="utf-8", errors="replace").splitlines()
+        editor_error = _find_first_error_line(editor_lines)
+        if editor_error is not None:
+            report_lines.append("status=FAILED")
+            report_lines.append("root_cause_source=Editor.log")
+            report_lines.append(f"editor_log_path={editor_log}")
+            report_lines.append(f"first_error_line={editor_error + 1}")
+            report_lines.append("--- root cause context (+/-80 lines) ---")
+            report_lines.append(_render_context(editor_lines, editor_error))
+            _write_summary(summary_path, "\n".join(report_lines) + "\n")
+            return 1
 
     report_lines.append("status=FAILED")
     report_lines.append("root_cause=NOT_FOUND")
