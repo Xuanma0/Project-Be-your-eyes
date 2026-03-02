@@ -391,9 +391,9 @@ namespace BYES.Quest
                 ApplyUiScale(value);
                 SetFeedback($"UI Scale {value:0.00}x");
             });
-            _scaleText = CreateText("ScaleText", page, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 168f), new Vector2(760f, 32f));
-            _settingsText = CreateText("SettingsText", page, "-", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 130f), new Vector2(780f, 32f));
-            CreateButton(page, "Back", new Vector2(0f, -250f), () => { SetPage("home"); SetFeedback("Home"); });
+            _scaleText = CreateText("ScaleText", page, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -150f), new Vector2(760f, 32f));
+            _settingsText = CreateText("SettingsText", page, "-", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -235f), new Vector2(780f, 32f));
+            CreateButton(page, "Back", new Vector2(0f, -295f), () => { SetPage("home"); SetFeedback("Home"); });
         }
 
         private void BuildDebug(Transform page)
@@ -707,17 +707,26 @@ namespace BYES.Quest
 
         private static Slider CreateSlider(Transform parent, Vector2 pos, float min, float max, Action<float> onChanged)
         {
-            var go = CreateUiObject("ScaleSlider", parent, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(560f, 48f), pos);
-            var bg = CreateUiObject("Bg", go.transform, new Vector2(0f, 0.5f), new Vector2(1f, 0.5f), new Vector2(560f, 12f), Vector2.zero);
-            bg.AddComponent<Image>().color = new Color(0.2f, 0.2f, 0.2f, 0.9f);
-            var fill = CreateUiObject("Fill", go.transform, new Vector2(0f, 0.5f), new Vector2(1f, 0.5f), new Vector2(560f, 12f), Vector2.zero);
-            fill.AddComponent<Image>().color = new Color(0.15f, 0.5f, 0.9f, 0.95f);
-            var handle = CreateUiObject("Handle", go.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(22f, 22f), Vector2.zero);
+            var go = CreateUiObject("ScaleSlider", parent, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(520f, 64f), pos);
+            go.AddComponent<Image>().color = new Color(0.10f, 0.14f, 0.22f, 0.92f);
+
+            var track = CreateUiObject("Track", go.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(470f, 16f), Vector2.zero);
+            track.AddComponent<Image>().color = new Color(0.18f, 0.20f, 0.24f, 1f);
+
+            var fillArea = CreateUiObject("FillArea", go.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(470f, 16f), Vector2.zero);
+            var fill = CreateUiObject("Fill", fillArea.transform, new Vector2(0f, 0f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero);
+            fill.AddComponent<Image>().color = new Color(0.10f, 0.45f, 0.85f, 0.9f);
+
+            var handleSlide = CreateUiObject("HandleSlideArea", go.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(470f, 40f), Vector2.zero);
+            var handle = CreateUiObject("Handle", handleSlide.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(36f, 36f), Vector2.zero);
             var handleImage = handle.AddComponent<Image>();
             handleImage.color = Color.white;
+
             var slider = go.AddComponent<Slider>();
             slider.minValue = min;
             slider.maxValue = max;
+            slider.direction = Slider.Direction.LeftToRight;
+            slider.wholeNumbers = false;
             slider.fillRect = fill.GetComponent<RectTransform>();
             slider.handleRect = handle.GetComponent<RectTransform>();
             slider.targetGraphic = handleImage;

@@ -9,6 +9,7 @@ using BYES.UI;
 using BYES.XR;
 using BeYourEyes.Adapters.Networking;
 using BeYourEyes.Unity.Interaction;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.Networking;
@@ -20,6 +21,7 @@ namespace BYES.Quest
     {
         private const string PrefBaseUrl = "BYES_GATEWAY_BASE_URL";
         private const string PrefApiKeyLegacy = "byes.connection.api_key";
+        private const string PrefQuestDeviceId = "BYES_QUEST_DEVICE_ID";
         private const string DefaultBaseUrl = "http://127.0.0.1:18000";
 
         private const float PingTimeoutSec = 2f;
@@ -41,6 +43,7 @@ namespace BYES.Quest
 
         private string _baseUrl = DefaultBaseUrl;
         private string _apiKey = string.Empty;
+        private string _deviceId = string.Empty;
         private int _pingSeq;
         private int _modeSeq = 1;
         private long _lastPingRttMs = -1;
@@ -93,6 +96,7 @@ namespace BYES.Quest
             _apiKey = string.IsNullOrWhiteSpace(PlayerPrefs.GetString(PrefApiKeyLegacy, string.Empty))
                 ? string.Empty
                 : PlayerPrefs.GetString(PrefApiKeyLegacy, string.Empty).Trim();
+            _deviceId = ResolveStableDeviceId();
 
             EnsureEventSystem();
             BuildRuntimeUi();
@@ -666,7 +670,7 @@ namespace BYES.Quest
 
         public string GetDeviceId()
         {
-            return ByesFrameTelemetry.DeviceId;
+            return string.IsNullOrWhiteSpace(_deviceId) ? "quest3-unknown" : _deviceId;
         }
 
         public bool IsWsConnected()
@@ -735,6 +739,7 @@ namespace BYES.Quest
         {
             return
                 $"baseUrl={_baseUrl}\n" +
+                $"deviceId={GetDeviceId()}\n" +
                 $"http={(_lastPingRttMs >= 0 ? "reachable" : "unknown")} rttMs={_lastPingRttMs}\n" +
                 $"ws={(_gatewayClient != null && _gatewayClient.IsConnected ? "connected" : "disconnected")}\n" +
                 $"mode={_currentMode}\n" +
@@ -796,8 +801,13 @@ namespace BYES.Quest
             var uri = $"{_baseUrl}/api/ping";
             var seq = _pingSeq++;
             var clientSendTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var body = $"{{\"deviceId\":\"{ByesFrameTelemetry.DeviceId}\",\"seq\":{seq},\"clientSendTsMs\":{clientSendTsMs}}}";
-            var bodyBytes = System.Text.Encoding.UTF8.GetBytes(body);
+            var payload = new JObject
+            {
+                ["deviceId"] = GetDeviceId(),
+                ["seq"] = seq,
+                ["clientSendTsMs"] = clientSendTsMs,
+            };
+            var bodyBytes = System.Text.Encoding.UTF8.GetBytes(payload.ToString(Newtonsoft.Json.Formatting.None));
 
             using var request = new UnityWebRequest(uri, UnityWebRequest.kHttpVerbPOST);
             request.uploadHandler = new UploadHandlerRaw(bodyBytes);
@@ -868,7 +878,8 @@ namespace BYES.Quest
 
         private IEnumerator QueryMode()
         {
-            var uri = $"{_baseUrl}/api/mode?deviceId={UnityWebRequest.EscapeURL(ByesFrameTelemetry.DeviceId)}";
+            var escapedDeviceId = UnityWebRequest.EscapeURL(GetDeviceId());
+            var uri = $"{_baseUrl}/api/mode?deviceId={escapedDeviceId}";
             using var request = UnityWebRequest.Get(uri);
             ApplyApiKeyHeader(request);
             request.timeout = Mathf.CeilToInt(QueryTimeoutSec);
@@ -908,18 +919,18 @@ namespace BYES.Quest
             var uri = $"{_baseUrl}/api/mode";
             var tsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var safeFrameSeq = Math.Max(1, _modeSeq++);
-            var body =
-                "{" +
-                "\"runId\":\"quest3-smoke\"," +
-                $"\"frameSeq\":{safeFrameSeq}," +
-                $"\"mode\":\"{normalized}\"," +
-                "\"source\":\"xr\"," +
-                $"\"tsMs\":{tsMs}," +
-                $"\"deviceId\":\"{ByesFrameTelemetry.DeviceId}\"" +
-                "}";
+            var payload = new JObject
+            {
+                ["runId"] = "quest3-smoke",
+                ["frameSeq"] = safeFrameSeq,
+                ["mode"] = normalized,
+                ["source"] = "xr",
+                ["tsMs"] = tsMs,
+                ["deviceId"] = GetDeviceId(),
+            };
 
             using var request = new UnityWebRequest(uri, UnityWebRequest.kHttpVerbPOST);
-            request.uploadHandler = new UploadHandlerRaw(System.Text.Encoding.UTF8.GetBytes(body));
+            request.uploadHandler = new UploadHandlerRaw(System.Text.Encoding.UTF8.GetBytes(payload.ToString(Newtonsoft.Json.Formatting.None)));
             request.downloadHandler = new DownloadHandlerBuffer();
             request.timeout = Mathf.CeilToInt(QueryTimeoutSec);
             request.SetRequestHeader("Content-Type", "application/json");
@@ -936,7 +947,22 @@ namespace BYES.Quest
             SyncLocalModeState(normalized);
             _modeText.Set($"Mode: {_currentMode}");
             ShowToast($"Set mode -> {normalized}");
-            yield return QueryMode();
+            var readbackOk = false;
+            for (var attempt = 0; attempt < 3; attempt += 1)
+            {
+                yield return QueryMode();
+                if (string.Equals(_currentMode, normalized, StringComparison.OrdinalIgnoreCase))
+                {
+                    readbackOk = true;
+                    break;
+                }
+                yield return new WaitForSecondsRealtime(0.2f);
+            }
+
+            if (!readbackOk)
+            {
+                ShowToast($"Mode readback mismatch (want {normalized}, got {_currentMode})");
+            }
         }
 
         private void RefreshAllStatusLines()
@@ -1204,6 +1230,26 @@ namespace BYES.Quest
                 default:
                     return "walk";
             }
+        }
+
+        private static string ResolveStableDeviceId()
+        {
+            var fromTelemetry = (ByesFrameTelemetry.DeviceId ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(fromTelemetry))
+            {
+                return fromTelemetry;
+            }
+
+            var cached = PlayerPrefs.GetString(PrefQuestDeviceId, string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(cached))
+            {
+                return cached;
+            }
+
+            var generated = Guid.NewGuid().ToString("N");
+            PlayerPrefs.SetString(PrefQuestDeviceId, generated);
+            PlayerPrefs.Save();
+            return generated;
         }
 
         private void SyncLocalModeState(string apiMode)

@@ -19,6 +19,7 @@ namespace BYES.Quest
 
         private GatewayClient _gatewayClient;
         private ScanController _scanController;
+        private ByesQuest3ConnectionPanelMinimal _panel;
         private Coroutine _selfTestRoutine;
         private string _status = "IDLE";
         private string _summary = "-";
@@ -131,7 +132,7 @@ namespace BYES.Quest
             SetStatus("RUNNING", "step3 mode");
             var modeOk = false;
             var modeValue = string.Empty;
-            var modePath = $"/api/mode?deviceId={UnityWebRequest.EscapeURL(ByesFrameTelemetry.DeviceId)}";
+            var modePath = $"/api/mode?deviceId={UnityWebRequest.EscapeURL(GetDeviceIdForSelfTest())}";
             yield return GetJson(modePath, (ok, obj, error) =>
             {
                 if (!ok || obj == null)
@@ -250,7 +251,7 @@ namespace BYES.Quest
         {
             var payload = new JObject
             {
-                ["deviceId"] = ByesFrameTelemetry.DeviceId,
+                ["deviceId"] = GetDeviceIdForSelfTest(),
                 ["seq"] = 1,
                 ["clientSendTsMs"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             };
@@ -280,7 +281,7 @@ namespace BYES.Quest
 
         private IEnumerator VerifyModeRoundtrip(Action<bool, string> onDone)
         {
-            var deviceId = ByesFrameTelemetry.DeviceId;
+            var deviceId = GetDeviceIdForSelfTest();
             var readOk = false;
             var readErr = string.Empty;
             yield return PostMode("read_text", deviceId, (ok, error) =>
@@ -349,24 +350,42 @@ namespace BYES.Quest
 
         private IEnumerator ValidateMode(string deviceId, string expectedMode, Action<bool, string> onDone)
         {
-            var path = $"/api/mode?deviceId={UnityWebRequest.EscapeURL(deviceId)}";
-            yield return GetJson(path, (ok, obj, error) =>
+            var retries = 5;
+            string lastError = "mode readback failed";
+            for (var attempt = 0; attempt < retries; attempt += 1)
             {
-                if (!ok || obj == null)
+                var done = false;
+                var success = false;
+                var path = $"/api/mode?deviceId={UnityWebRequest.EscapeURL(deviceId)}";
+                yield return GetJson(path, (ok, obj, error) =>
                 {
-                    onDone?.Invoke(false, string.IsNullOrWhiteSpace(error) ? "mode readback failed" : error);
-                    return;
-                }
+                    done = true;
+                    if (!ok || obj == null)
+                    {
+                        lastError = string.IsNullOrWhiteSpace(error) ? "mode readback failed" : error;
+                        return;
+                    }
 
-                var actual = (obj.Value<string>("mode") ?? string.Empty).Trim().ToLowerInvariant();
-                if (string.Equals(actual, expectedMode, StringComparison.Ordinal))
+                    var actual = (obj.Value<string>("mode") ?? string.Empty).Trim().ToLowerInvariant();
+                    if (string.Equals(actual, expectedMode, StringComparison.Ordinal))
+                    {
+                        success = true;
+                        return;
+                    }
+
+                    lastError = $"expected {expectedMode}, got {actual}";
+                });
+
+                if (done && success)
                 {
                     onDone?.Invoke(true, string.Empty);
-                    return;
+                    yield break;
                 }
 
-                onDone?.Invoke(false, $"expected {expectedMode}, got {actual}");
-            });
+                yield return new WaitForSecondsRealtime(0.2f);
+            }
+
+            onDone?.Invoke(false, lastError);
         }
 
         private IEnumerator SendRequest(string method, string path, JObject payload, Action<bool, JObject, string> onDone)
@@ -443,6 +462,29 @@ namespace BYES.Quest
             {
                 _scanController = FindFirstObjectByType<ScanController>();
             }
+
+            if (_panel == null)
+            {
+                _panel = FindFirstObjectByType<ByesQuest3ConnectionPanelMinimal>();
+            }
+        }
+
+        private string GetDeviceIdForSelfTest()
+        {
+            ResolveRefs();
+            var fromPanel = _panel != null ? (_panel.GetDeviceId() ?? string.Empty).Trim() : string.Empty;
+            if (!string.IsNullOrWhiteSpace(fromPanel))
+            {
+                return fromPanel;
+            }
+
+            var fromTelemetry = (ByesFrameTelemetry.DeviceId ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(fromTelemetry))
+            {
+                return fromTelemetry;
+            }
+
+            return "quest3-selftest";
         }
 
         private void SetStatus(string status, string summary)
