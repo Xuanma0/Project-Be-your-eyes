@@ -6,6 +6,7 @@ using System.Reflection;
 using BYES.Core;
 using BYES.Telemetry;
 using BYES.UI;
+using BYES.XR;
 using BeYourEyes.Adapters.Networking;
 using BeYourEyes.Unity.Interaction;
 using UnityEngine;
@@ -30,7 +31,7 @@ namespace BYES.Quest
         [SerializeField] private float lowOverheadHealthProbeIntervalSec = 5f;
         [SerializeField] private bool lowOverheadDisableReadinessProbe = true;
         [SerializeField] private bool showActionControlsOnAndroid = false;
-        [SerializeField] private bool autoProbeOnAndroid = false;
+        [SerializeField] private bool autoProbeOnAndroid = true;
         [SerializeField] private float defaultPanelDistance = 0.55f;
         [SerializeField] private float minPanelDistance = 0.35f;
         [SerializeField] private float maxPanelDistance = 1.5f;
@@ -62,6 +63,7 @@ namespace BYES.Quest
         private ByesHitchMonitor _hitchMonitor;
         private ByesHeadLockedPanel _headLockedPanel;
         private ByesSmokePanelGrabHandle _grabHandle;
+        private ByesHandGestureShortcuts _shortcuts;
 
         private ITextView _baseUrlText;
         private ITextView _reachabilityText;
@@ -195,13 +197,18 @@ namespace BYES.Quest
             {
                 _grabHandle = GetComponent<ByesSmokePanelGrabHandle>();
             }
+
+            if (_shortcuts == null)
+            {
+                _shortcuts = FindFirstObjectByType<ByesHandGestureShortcuts>();
+            }
         }
 
         private void ApplyPanelPresentationDefaults()
         {
             _autoProbeEnabled = Application.platform == RuntimePlatform.Android
-                ? autoProbeOnAndroid
-                : true;
+                ? true
+                : autoProbeOnAndroid;
 
             if (_headLockedPanel != null)
             {
@@ -212,6 +219,11 @@ namespace BYES.Quest
             SetPanelScale(defaultPanelScale);
             var showActions = Application.platform == RuntimePlatform.Android ? showActionControlsOnAndroid : true;
             SetActionControlsVisible(showActions);
+
+            if (_autoProbeEnabled && isActiveAndEnabled)
+            {
+                StartCoroutine(SendPing(autoProbe: true));
+            }
         }
 
         private void BindRuntimeEvents()
@@ -227,6 +239,12 @@ namespace BYES.Quest
                 _scanController.OnUploadFinished -= HandleUploadFinished;
                 _scanController.OnUploadFinished += HandleUploadFinished;
             }
+
+            if (_shortcuts != null)
+            {
+                _shortcuts.OnShortcutTriggered -= HandleShortcutTriggered;
+                _shortcuts.OnShortcutTriggered += HandleShortcutTriggered;
+            }
         }
 
         private void UnbindRuntimeEvents()
@@ -239,6 +257,11 @@ namespace BYES.Quest
             if (_scanController != null)
             {
                 _scanController.OnUploadFinished -= HandleUploadFinished;
+            }
+
+            if (_shortcuts != null)
+            {
+                _shortcuts.OnShortcutTriggered -= HandleShortcutTriggered;
             }
         }
 
@@ -289,6 +312,13 @@ namespace BYES.Quest
             {
                 _scanStatus = "event_received";
             }
+            RefreshAllStatusLines();
+        }
+
+        private void HandleShortcutTriggered(string action)
+        {
+            var label = string.IsNullOrWhiteSpace(action) ? "unknown" : action.Trim().ToLowerInvariant();
+            ShowToast("Gesture: " + label);
             RefreshAllStatusLines();
         }
 
@@ -626,7 +656,6 @@ namespace BYES.Quest
                 ByesMode.ReadText => ByesMode.Inspect,
                 _ => ByesMode.Walk,
             };
-            manager.SetMode(next, "xr");
             StartCoroutine(SetMode(ByesModeManager.ToApiMode(next)));
         }
 
@@ -858,7 +887,7 @@ namespace BYES.Quest
                 var parsed = JsonUtility.FromJson<ModeResponse>(payload);
                 if (parsed != null && !string.IsNullOrWhiteSpace(parsed.mode))
                 {
-                    _currentMode = parsed.mode.Trim();
+                    SyncLocalModeState(parsed.mode);
                     _modeText.Set($"Mode: {_currentMode}");
                     _rawText.Set("Mode OK");
                     ShowToast("Mode OK");
@@ -904,6 +933,8 @@ namespace BYES.Quest
                 yield break;
             }
 
+            SyncLocalModeState(normalized);
+            _modeText.Set($"Mode: {_currentMode}");
             ShowToast($"Set mode -> {normalized}");
             yield return QueryMode();
         }
@@ -1172,6 +1203,28 @@ namespace BYES.Quest
                     return normalized;
                 default:
                     return "walk";
+            }
+        }
+
+        private void SyncLocalModeState(string apiMode)
+        {
+            var normalized = NormalizeMode(apiMode);
+            _currentMode = normalized;
+
+            var mode = normalized switch
+            {
+                "read_text" => ByesMode.ReadText,
+                "inspect" => ByesMode.Inspect,
+                _ => ByesMode.Walk,
+            };
+
+            var state = ByesSystemState.Instance;
+            state?.SetMode(mode);
+
+            var manager = ByesModeManager.Instance;
+            if (manager != null)
+            {
+                manager.SetModeLocal(mode);
             }
         }
 

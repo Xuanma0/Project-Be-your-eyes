@@ -85,6 +85,13 @@ namespace BYES.Quest
 
         private void OnEnable()
         {
+            ResolveRefs();
+            if (_shortcuts != null)
+            {
+                _shortcuts.OnShortcutTriggered -= HandleShortcutTriggered;
+                _shortcuts.OnShortcutTriggered += HandleShortcutTriggered;
+            }
+
             if (_refreshRoutine == null)
             {
                 _refreshRoutine = StartCoroutine(RefreshLoop());
@@ -93,6 +100,11 @@ namespace BYES.Quest
 
         private void OnDisable()
         {
+            if (_shortcuts != null)
+            {
+                _shortcuts.OnShortcutTriggered -= HandleShortcutTriggered;
+            }
+
             if (_refreshRoutine != null)
             {
                 StopCoroutine(_refreshRoutine);
@@ -279,12 +291,12 @@ namespace BYES.Quest
 
         private void BuildHome(Transform page)
         {
-            CreateButton(page, "Connection", new Vector2(-200f, 200f), () => SetPage("connection"));
-            CreateButton(page, "Actions", new Vector2(0f, 200f), () => SetPage("actions"));
-            CreateButton(page, "Mode", new Vector2(200f, 200f), () => SetPage("mode"));
-            CreateButton(page, "Panels", new Vector2(-200f, 120f), () => SetPage("panels"));
-            CreateButton(page, "Settings", new Vector2(0f, 120f), () => SetPage("settings"));
-            CreateButton(page, "Debug", new Vector2(200f, 120f), () => SetPage("debug"));
+            CreateButton(page, "Connection", new Vector2(-200f, 200f), () => { SetPage("connection"); SetFeedback("Connection page"); });
+            CreateButton(page, "Actions", new Vector2(0f, 200f), () => { SetPage("actions"); SetFeedback("Actions page"); });
+            CreateButton(page, "Mode", new Vector2(200f, 200f), () => { SetPage("mode"); SetFeedback("Mode page"); });
+            CreateButton(page, "Panels", new Vector2(-200f, 120f), () => { SetPage("panels"); SetFeedback("Panels page"); });
+            CreateButton(page, "Settings", new Vector2(0f, 120f), () => { SetPage("settings"); SetFeedback("Settings page"); });
+            CreateButton(page, "Debug", new Vector2(200f, 120f), () => { SetPage("debug"); SetFeedback("Debug page"); });
         }
 
         private void BuildConnection(Transform page)
@@ -295,48 +307,55 @@ namespace BYES.Quest
                 PlayerPrefs.SetInt(PrefShowFullPanel, value ? 1 : 0);
                 PlayerPrefs.Save();
                 _panel?.SetActionControlsVisible(value);
+                SetFeedback("Full panel " + (value ? "ON" : "OFF"));
             });
-            CreateButton(page, "Refresh", new Vector2(-120f, -120f), () => _panel?.TriggerRefreshFromUi());
-            CreateButton(page, "Back", new Vector2(120f, -120f), () => SetPage("home"));
+            CreateButton(page, "Refresh", new Vector2(-120f, -120f), () => { _panel?.TriggerRefreshFromUi(); SetFeedback("Connection refresh"); });
+            CreateButton(page, "Back", new Vector2(120f, -120f), () => { SetPage("home"); SetFeedback("Home"); });
         }
 
         private void BuildActions(Transform page)
         {
-            CreateButton(page, "Scan Once", new Vector2(0f, 190f), () => _panel?.TriggerScanOnceFromUi());
-            CreateButton(page, "Live Toggle", new Vector2(0f, 110f), () => _panel?.TriggerToggleLiveFromUi());
-            CreateButton(page, "Run SelfTest", new Vector2(0f, 30f), () => _panel?.TriggerSelfTestFromUi());
-            CreateButton(page, "Export Debug", new Vector2(0f, -50f), () => _panel?.ExportDebugText());
-            CreateButton(page, "Back", new Vector2(0f, -180f), () => SetPage("home"));
+            CreateButton(page, "Scan Once", new Vector2(0f, 190f), () => { _panel?.TriggerScanOnceFromUi(); SetFeedback("Scan once"); });
+            CreateButton(page, "Live Toggle", new Vector2(0f, 110f), () => { _panel?.TriggerToggleLiveFromUi(); SetFeedback("Live toggled"); });
+            CreateButton(page, "Run SelfTest", new Vector2(0f, 30f), () => { _panel?.TriggerSelfTestFromUi(); SetFeedback("SelfTest started"); });
+            CreateButton(page, "Export Debug", new Vector2(0f, -50f), () => { _panel?.ExportDebugText(); SetFeedback("Debug exported"); });
+            CreateButton(page, "Back", new Vector2(0f, -180f), () => { SetPage("home"); SetFeedback("Home"); });
         }
 
         private void BuildMode(Transform page)
         {
             _modeText = CreateText("Mode", page, "Mode: -", 24, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, 170f), new Vector2(760f, 42f));
-            CreateButton(page, "Walk", new Vector2(-200f, 60f), () => _panel?.TriggerSetModeWalk());
-            CreateButton(page, "Read", new Vector2(0f, 60f), () => _panel?.TriggerSetModeRead());
-            CreateButton(page, "Inspect", new Vector2(200f, 60f), () => _panel?.TriggerSetModeInspect());
-            CreateButton(page, "Readback", new Vector2(-120f, -60f), () => _panel?.TriggerModeReadFromUi());
-            CreateButton(page, "Cycle", new Vector2(120f, -60f), () => _panel?.TriggerCycleMode());
-            CreateButton(page, "Back", new Vector2(0f, -180f), () => SetPage("home"));
+            CreateButton(page, "Walk", new Vector2(-200f, 60f), () => { _panel?.TriggerSetModeWalk(); SetFeedback("Mode -> walk"); });
+            CreateButton(page, "Read", new Vector2(0f, 60f), () => { _panel?.TriggerSetModeRead(); SetFeedback("Mode -> read_text"); });
+            CreateButton(page, "Inspect", new Vector2(200f, 60f), () => { _panel?.TriggerSetModeInspect(); SetFeedback("Mode -> inspect"); });
+            CreateButton(page, "Readback", new Vector2(-120f, -60f), () => { _panel?.TriggerModeReadFromUi(); SetFeedback("Mode readback"); });
+            CreateButton(page, "Cycle", new Vector2(120f, -60f), () => { _panel?.TriggerCycleMode(); SetFeedback("Mode cycle"); });
+            CreateButton(page, "Back", new Vector2(0f, -180f), () => { SetPage("home"); SetFeedback("Home"); });
         }
 
         private void BuildPanels(Transform page)
         {
-            CreateToggle(page, "Smoke Panel Visible", new Vector2(0f, 170f), value => _panel?.SetPanelVisible(value));
+            CreateToggle(page, "Smoke Panel Visible", new Vector2(0f, 170f), value =>
+            {
+                _panel?.SetPanelVisible(value);
+                SetFeedback("Panel visible " + (value ? "ON" : "OFF"));
+            });
             _lockToHeadToggle = CreateToggle(page, "Smoke Panel LockToHead", new Vector2(0f, 90f), value =>
             {
                 PlayerPrefs.SetInt(PrefLockToHead, value ? 1 : 0);
                 PlayerPrefs.Save();
                 _panel?.SetLockToHead(value);
+                SetFeedback("LockToHead " + (value ? "ON" : "OFF"));
             });
             _moveResizeToggle = CreateToggle(page, "Enable Move/Resize", new Vector2(0f, 10f), value =>
             {
                 PlayerPrefs.SetInt(PrefMoveResize, value ? 1 : 0);
                 PlayerPrefs.Save();
                 _panel?.SetMoveResizeEnabled(value);
+                SetFeedback("Move/Resize " + (value ? "ON" : "OFF"));
             });
-            CreateButton(page, "Reset Pose/Scale", new Vector2(0f, -70f), () => _panel?.SnapToDefaultPose());
-            CreateButton(page, "Back", new Vector2(0f, -180f), () => SetPage("home"));
+            CreateButton(page, "Reset Pose/Scale", new Vector2(0f, -70f), () => { _panel?.SnapToDefaultPose(); SetFeedback("Panel reset"); });
+            CreateButton(page, "Back", new Vector2(0f, -180f), () => { SetPage("home"); SetFeedback("Home"); });
         }
 
         private void BuildSettings(Transform page)
@@ -346,6 +365,7 @@ namespace BYES.Quest
                 PlayerPrefs.SetInt(PrefGestureEnabled, value ? 1 : 0);
                 PlayerPrefs.Save();
                 _shortcuts?.SetShortcutsEnabled(value);
+                SetFeedback("Shortcuts " + (value ? "ON" : "OFF"));
             });
             CreateButton(page, "Shortcut Hand", new Vector2(0f, 95f), CycleShortcutHand);
             CreateButton(page, "Conflict Mode", new Vector2(0f, 25f), CycleConflictMode);
@@ -362,16 +382,18 @@ namespace BYES.Quest
                 {
                     _passthroughSetup?.SetEnabled(false);
                 }
+                SetFeedback("Passthrough " + (value ? "ON" : "OFF"));
             });
             _uiScaleSlider = CreateSlider(page, new Vector2(0f, -185f), 0.6f, 1.4f, value =>
             {
                 PlayerPrefs.SetFloat(PrefUiScale, value);
                 PlayerPrefs.Save();
                 ApplyUiScale(value);
+                SetFeedback($"UI Scale {value:0.00}x");
             });
-            _scaleText = CreateText("ScaleText", page, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 92f), new Vector2(760f, 30f));
-            _settingsText = CreateText("SettingsText", page, "-", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 58f), new Vector2(760f, 30f));
-            CreateButton(page, "Back", new Vector2(0f, -275f), () => SetPage("home"));
+            _scaleText = CreateText("ScaleText", page, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 168f), new Vector2(760f, 32f));
+            _settingsText = CreateText("SettingsText", page, "-", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 130f), new Vector2(780f, 32f));
+            CreateButton(page, "Back", new Vector2(0f, -250f), () => { SetPage("home"); SetFeedback("Home"); });
         }
 
         private void BuildDebug(Transform page)
@@ -382,8 +404,8 @@ namespace BYES.Quest
                 GUIUtility.systemCopyBuffer = (_panel != null ? _panel.BuildDebugSummary() : "panel missing") + "\nGestures=" + (_shortcuts != null ? _shortcuts.GetRecentTriggersAsText() : "-");
                 SetFeedback("Debug copied");
             });
-            CreateButton(page, "Refresh", new Vector2(120f, -170f), RefreshStatus);
-            CreateButton(page, "Back", new Vector2(0f, -260f), () => SetPage("home"));
+            CreateButton(page, "Refresh", new Vector2(120f, -170f), () => { RefreshStatus(); SetFeedback("Debug refresh"); });
+            CreateButton(page, "Back", new Vector2(0f, -260f), () => { SetPage("home"); SetFeedback("Home"); });
         }
 
         private IEnumerator RefreshLoop()
@@ -469,6 +491,11 @@ namespace BYES.Quest
             }
 
             _shortcuts?.SetSystemGestureActive(suppressUi);
+        }
+
+        private void HandleShortcutTriggered(string action)
+        {
+            SetFeedback("Gesture: " + (string.IsNullOrWhiteSpace(action) ? "unknown" : action));
         }
 
         private void LoadPrefsAndApply()
@@ -633,6 +660,16 @@ namespace BYES.Quest
             image.color = new Color(0.2f, 0.5f, 0.9f, 0.95f);
             var button = go.AddComponent<Button>();
             button.targetGraphic = image;
+            button.transition = Selectable.Transition.ColorTint;
+            var colors = button.colors;
+            colors.normalColor = new Color(0.2f, 0.5f, 0.9f, 0.95f);
+            colors.highlightedColor = new Color(0.30f, 0.64f, 1.0f, 1.0f);
+            colors.pressedColor = new Color(0.14f, 0.34f, 0.70f, 1.0f);
+            colors.selectedColor = colors.highlightedColor;
+            colors.disabledColor = new Color(0.25f, 0.25f, 0.25f, 0.7f);
+            colors.colorMultiplier = 1f;
+            colors.fadeDuration = 0.05f;
+            button.colors = colors;
             button.onClick.AddListener(() => onClick?.Invoke());
             var text = CreateText("Label", go.transform, label, 22, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(230f, 48f));
             text.raycastTarget = false;
@@ -641,18 +678,29 @@ namespace BYES.Quest
 
         private static Toggle CreateToggle(Transform parent, string label, Vector2 pos, Action<bool> onChanged)
         {
-            var go = CreateUiObject(label.Replace(" ", string.Empty), parent, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(520f, 50f), pos);
-            var bg = CreateUiObject("Bg", go.transform, new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(34f, 34f), new Vector2(-230f, 0f));
-            var bgImage = bg.AddComponent<Image>();
-            bgImage.color = new Color(0.2f, 0.2f, 0.2f, 0.95f);
-            var check = CreateUiObject("Check", bg.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(22f, 22f), Vector2.zero);
-            var checkImage = check.AddComponent<Image>();
-            checkImage.color = new Color(0.1f, 0.7f, 0.2f, 0.95f);
-            var labelText = CreateText("Label", go.transform, label, 21, TextAnchor.MiddleLeft, new Vector2(0.5f, 0.5f), new Vector2(30f, 0f), new Vector2(420f, 44f));
+            var go = CreateUiObject(label.Replace(" ", string.Empty), parent, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(640f, 66f), pos);
+            var rowImage = go.AddComponent<Image>();
+            rowImage.color = new Color(0.13f, 0.20f, 0.31f, 0.95f);
+            var labelText = CreateText("Label", go.transform, label, 23, TextAnchor.MiddleLeft, new Vector2(0.5f, 0.5f), new Vector2(-36f, 0f), new Vector2(520f, 58f));
             labelText.raycastTarget = false;
+            var box = CreateUiObject("Box", go.transform, new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(48f, 48f), new Vector2(-24f, 0f));
+            var boxImage = box.AddComponent<Image>();
+            boxImage.color = new Color(0.18f, 0.18f, 0.18f, 0.98f);
+            var check = CreateUiObject("Check", box.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(34f, 34f), Vector2.zero);
+            var checkImage = check.AddComponent<Image>();
+            checkImage.color = new Color(0.1f, 0.8f, 0.25f, 1f);
             var toggle = go.AddComponent<Toggle>();
-            toggle.targetGraphic = bgImage;
+            toggle.targetGraphic = rowImage;
             toggle.graphic = checkImage;
+            toggle.transition = Selectable.Transition.ColorTint;
+            var colors = toggle.colors;
+            colors.normalColor = new Color(0.13f, 0.20f, 0.31f, 0.95f);
+            colors.highlightedColor = new Color(0.20f, 0.30f, 0.44f, 1f);
+            colors.pressedColor = new Color(0.10f, 0.16f, 0.24f, 1f);
+            colors.selectedColor = colors.highlightedColor;
+            colors.disabledColor = new Color(0.22f, 0.22f, 0.22f, 0.7f);
+            colors.fadeDuration = 0.05f;
+            toggle.colors = colors;
             toggle.onValueChanged.AddListener(v => onChanged?.Invoke(v));
             return toggle;
         }

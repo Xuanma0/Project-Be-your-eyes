@@ -11,6 +11,8 @@ namespace BYES.XR
 {
     public sealed class ByesHandGestureShortcuts : MonoBehaviour
     {
+        public event Action<string> OnShortcutTriggered;
+
         public enum ShortcutHand
         {
             RightOnly = 0,
@@ -156,6 +158,7 @@ namespace BYES.XR
                 TriggerScanOnce();
                 _lastTriggerTime = Time.unscaledTime;
                 RecordTrigger("thumb+middle=scan");
+                OnShortcutTriggered?.Invoke("scan");
                 return;
             }
 
@@ -164,6 +167,7 @@ namespace BYES.XR
                 TriggerToggleLive();
                 _lastTriggerTime = Time.unscaledTime;
                 RecordTrigger("thumb+ring=live");
+                OnShortcutTriggered?.Invoke("live");
                 return;
             }
 
@@ -172,6 +176,7 @@ namespace BYES.XR
                 TriggerCycleMode();
                 _lastTriggerTime = Time.unscaledTime;
                 RecordTrigger("thumb+pinky=mode");
+                OnShortcutTriggered?.Invoke("mode");
             }
         }
 
