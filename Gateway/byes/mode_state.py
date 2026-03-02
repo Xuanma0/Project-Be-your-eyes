@@ -121,6 +121,7 @@ class ModeStateStore:
         max_entries: int = 256,
         ttl_ms: int = 30 * 60 * 1000,
         max_clock_skew_ms: int = 10 * 60 * 1000,
+        explicit_mode_hold_ms: int = 0,
     ) -> None:
         normalized_default = normalize_mode_value(default_mode) or "walk"
         self.default_mode = normalized_default
@@ -129,6 +130,9 @@ class ModeStateStore:
         # Device clocks on standalone headsets can drift; clamp stale/future client ts
         # to server-now so mode entries are not purged immediately.
         self.max_clock_skew_ms = max(0, int(max_clock_skew_ms))
+        # Protect explicit mode switches from frame-meta rollback.
+        # 0 means "never allow frame to override explicit mode".
+        self.explicit_mode_hold_ms = max(0, int(explicit_mode_hold_ms))
         self._device_modes: OrderedDict[str, _ModeEntry] = OrderedDict()
         self._run_modes: OrderedDict[str, _ModeEntry] = OrderedDict()
 
@@ -169,6 +173,17 @@ class ModeStateStore:
 
     def _upsert(self, bucket: OrderedDict[str, _ModeEntry], key: str, mode: str, ts_ms: int, source: str) -> None:
         previous = bucket.get(key)
+        if previous is not None and source == "frame" and previous.mode != mode:
+            previous_source = str(previous.source or "").strip().lower()
+            source_is_explicit = previous_source in {"hotkey", "xr", "system", "unity"}
+            if source_is_explicit:
+                if self.explicit_mode_hold_ms <= 0:
+                    bucket.move_to_end(key, last=True)
+                    return
+                age_ms = max(0, int(ts_ms) - int(previous.updated_at_ms))
+                if age_ms < self.explicit_mode_hold_ms:
+                    bucket.move_to_end(key, last=True)
+                    return
         changed = previous is None or previous.mode != mode
         pending_changed = bool(previous.changed) if previous is not None else False
         bucket[key] = _ModeEntry(
