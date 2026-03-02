@@ -366,37 +366,37 @@ namespace BYES.Quest
 
         private void BuildSettings(Transform page)
         {
-            _gestureEnabledToggle = CreateToggle(page, "Gesture Shortcuts Enabled", new Vector2(0f, 170f), value =>
+            _gestureEnabledToggle = CreateToggle(page, "Gesture Shortcuts Enabled", new Vector2(0f, 190f), value =>
             {
                 PlayerPrefs.SetInt(PrefGestureEnabled, value ? 1 : 0);
                 PlayerPrefs.Save();
                 _shortcuts?.SetShortcutsEnabled(value);
                 SetFeedback("Shortcuts " + (value ? "ON" : "OFF"));
             });
-            CreateButton(page, "Shortcut Hand", new Vector2(0f, 105f), CycleShortcutHand);
-            CreateButton(page, "Conflict Mode", new Vector2(0f, 35f), CycleConflictMode);
-            CreateButton(page, "Menu Hand", new Vector2(0f, -35f), CycleMenuHand);
-            _autoSpeakOcrToggle = CreateToggle(page, "Auto Speak OCR", new Vector2(0f, -95f), value =>
+            CreateButton(page, "Shortcut Hand", new Vector2(0f, 128f), CycleShortcutHand);
+            CreateButton(page, "Conflict Mode", new Vector2(0f, 66f), CycleConflictMode);
+            CreateButton(page, "Menu Hand", new Vector2(0f, 4f), CycleMenuHand);
+            _autoSpeakOcrToggle = CreateToggle(page, "Auto Speak OCR", new Vector2(0f, -58f), value =>
             {
                 _panel?.SetAutoSpeakOcr(value);
                 SetFeedback("AutoSpeak OCR " + (value ? "ON" : "OFF"));
             });
-            _ocrVerboseToggle = CreateToggle(page, "OCR Verbose", new Vector2(0f, -155f), value =>
+            _ocrVerboseToggle = CreateToggle(page, "OCR Verbose", new Vector2(0f, -116f), value =>
             {
                 _panel?.SetOcrVerbose(value);
                 SetFeedback("OCR Verbose " + (value ? "ON" : "OFF"));
             });
-            _autoSpeakDetToggle = CreateToggle(page, "Auto Speak DET", new Vector2(0f, -215f), value =>
+            _autoSpeakDetToggle = CreateToggle(page, "Auto Speak DET", new Vector2(0f, -174f), value =>
             {
                 _panel?.SetAutoSpeakDet(value);
                 SetFeedback("AutoSpeak DET " + (value ? "ON" : "OFF"));
             });
-            _autoSpeakRiskToggle = CreateToggle(page, "Auto Speak RISK", new Vector2(0f, -275f), value =>
+            _autoSpeakRiskToggle = CreateToggle(page, "Auto Speak RISK", new Vector2(0f, -232f), value =>
             {
                 _panel?.SetAutoSpeakRisk(value);
                 SetFeedback("AutoSpeak RISK " + (value ? "ON" : "OFF"));
             });
-            _passthroughToggle = CreateToggle(page, "Passthrough", new Vector2(0f, -335f), value =>
+            _passthroughToggle = CreateToggle(page, "Passthrough", new Vector2(0f, -290f), value =>
             {
                 PlayerPrefs.SetInt(PrefPassthrough, value ? 1 : 0);
                 PlayerPrefs.Save();
@@ -410,16 +410,16 @@ namespace BYES.Quest
                 }
                 SetFeedback("Passthrough " + (value ? "ON" : "OFF"));
             });
-            _uiScaleSlider = CreateSlider(page, new Vector2(0f, -395f), 0.6f, 1.4f, value =>
+            _uiScaleSlider = CreateSlider(page, new Vector2(0f, -352f), 0.6f, 1.4f, value =>
             {
                 PlayerPrefs.SetFloat(PrefUiScale, value);
                 PlayerPrefs.Save();
                 ApplyUiScale(value);
                 SetFeedback($"UI Scale {value:0.00}x");
             });
-            _scaleText = CreateText("ScaleText", page, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -430f), new Vector2(760f, 32f));
-            _settingsText = CreateText("SettingsText", page, "-", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -470f), new Vector2(780f, 32f));
-            CreateButton(page, "Back", new Vector2(0f, -530f), () => { SetPage("home"); SetFeedback("Home"); });
+            _scaleText = CreateText("ScaleText", page, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -398f), new Vector2(760f, 32f));
+            _settingsText = CreateText("SettingsText", page, "-", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -438f), new Vector2(780f, 32f));
+            CreateButton(page, "Back", new Vector2(0f, -500f), () => { SetPage("home"); SetFeedback("Home"); });
         }
 
         private void BuildDebug(Transform page)
@@ -741,18 +741,22 @@ namespace BYES.Quest
 
         private static Slider CreateSlider(Transform parent, Vector2 pos, float min, float max, Action<float> onChanged)
         {
-            var go = CreateUiObject("ScaleSlider", parent, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(520f, 64f), pos);
+            var go = CreateUiObject("ScaleSlider", parent, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(460f, 74f), pos);
             go.AddComponent<Image>().color = new Color(0.10f, 0.14f, 0.22f, 0.92f);
 
-            var track = CreateUiObject("Track", go.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(470f, 16f), Vector2.zero);
-            track.AddComponent<Image>().color = new Color(0.18f, 0.20f, 0.24f, 1f);
+            var track = CreateUiObject("Track", go.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(400f, 16f), Vector2.zero);
+            var trackImage = track.AddComponent<Image>();
+            trackImage.color = new Color(0.18f, 0.20f, 0.24f, 1f);
 
-            var fillArea = CreateUiObject("FillArea", go.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(470f, 16f), Vector2.zero);
-            var fill = CreateUiObject("Fill", fillArea.transform, new Vector2(0f, 0f), new Vector2(1f, 1f), Vector2.zero, Vector2.zero);
-            fill.AddComponent<Image>().color = new Color(0.10f, 0.45f, 0.85f, 0.9f);
+            var fillArea = CreateUiObject("FillArea", go.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(400f, 16f), Vector2.zero);
+            var fill = CreateUiObject("Fill", fillArea.transform, new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(0f, 0f), Vector2.zero);
+            var fillRect = fill.GetComponent<RectTransform>();
+            fillRect.pivot = new Vector2(0f, 0.5f);
+            var fillImage = fill.AddComponent<Image>();
+            fillImage.color = new Color(0.10f, 0.45f, 0.85f, 0.9f);
 
-            var handleSlide = CreateUiObject("HandleSlideArea", go.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(470f, 40f), Vector2.zero);
-            var handle = CreateUiObject("Handle", handleSlide.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(36f, 36f), Vector2.zero);
+            var handleSlide = CreateUiObject("HandleSlideArea", go.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(420f, 56f), Vector2.zero);
+            var handle = CreateUiObject("Handle", handleSlide.transform, new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(56f, 56f), Vector2.zero);
             var handleImage = handle.AddComponent<Image>();
             handleImage.color = Color.white;
 
@@ -761,9 +765,17 @@ namespace BYES.Quest
             slider.maxValue = max;
             slider.direction = Slider.Direction.LeftToRight;
             slider.wholeNumbers = false;
-            slider.fillRect = fill.GetComponent<RectTransform>();
+            slider.fillRect = fillRect;
             slider.handleRect = handle.GetComponent<RectTransform>();
             slider.targetGraphic = handleImage;
+            slider.transition = Selectable.Transition.ColorTint;
+            var colors = slider.colors;
+            colors.normalColor = Color.white;
+            colors.highlightedColor = new Color(0.9f, 0.95f, 1f, 1f);
+            colors.pressedColor = new Color(0.75f, 0.85f, 1f, 1f);
+            colors.selectedColor = colors.highlightedColor;
+            colors.disabledColor = new Color(0.5f, 0.5f, 0.5f, 0.7f);
+            slider.colors = colors;
             slider.onValueChanged.AddListener(v => onChanged?.Invoke(v));
             return slider;
         }

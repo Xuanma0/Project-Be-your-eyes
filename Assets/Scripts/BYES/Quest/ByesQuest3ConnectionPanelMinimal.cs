@@ -106,6 +106,8 @@ namespace BYES.Quest
         private ITextView _rawText;
         private ILabelButton _liveButton;
         private ILabelButton _scanButton;
+        private Toggle _liveToggle;
+        private bool _suppressLiveToggleCallback;
         private readonly List<GameObject> _actionControls = new List<GameObject>();
         private Canvas _runtimeCanvas;
         private bool _rawVisible = true;
@@ -343,11 +345,13 @@ namespace BYES.Quest
             _lastEventTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var lowered = _lastEventType.Trim().ToLowerInvariant();
             var payload = evt["payload"] as JObject;
-            if (string.Equals(lowered, "ocr.read", StringComparison.Ordinal))
+            if (string.Equals(lowered, "ocr.read", StringComparison.Ordinal)
+                || string.Equals(lowered, "ocr", StringComparison.Ordinal))
             {
                 UpdateOcrFromEvent(payload);
             }
-            else if (string.Equals(lowered, "det.objects", StringComparison.Ordinal))
+            else if (string.Equals(lowered, "det.objects", StringComparison.Ordinal)
+                     || string.Equals(lowered, "det", StringComparison.Ordinal))
             {
                 UpdateDetFromEvent(payload);
             }
@@ -623,6 +627,7 @@ namespace BYES.Quest
             CreateButton(panel.transform, "ModeInspectButton", "Inspect", new Vector2(270f, -1030f), () => OnSetModeClicked("inspect"), markAsAction: true);
             _scanButton = CreateButton(panel.transform, "ScanButton", "Scan Once", new Vector2(500f, -1030f), OnScanClicked, markAsAction: true);
             _liveButton = CreateButton(panel.transform, "LiveButton", "Live Start", new Vector2(730f, -1030f), OnLiveClicked, markAsAction: true);
+            _liveToggle = CreateLiveToggle(panel.transform, "LiveToggle", "Live", new Vector2(730f, -1110f), OnLiveToggleChanged, markAsAction: true);
 
             CreateButton(panel.transform, "RefreshButton", "Refresh", new Vector2(-420f, -1110f), OnRefreshClicked, markAsAction: true);
             CreateButton(panel.transform, "SelfTestButton", "SelfTest", new Vector2(-190f, -1110f), OnSelfTestClicked, markAsAction: true);
@@ -686,12 +691,17 @@ namespace BYES.Quest
                 return;
             }
 
-            _scanController.ToggleLiveFromUi();
-            var liveNow = _scanController.IsLiveEnabled;
-            _scanStatus = liveNow ? "live" : "idle";
-            _liveButton?.SetLabel(liveNow ? "Live Stop" : "Live Start");
-            ShowToast(liveNow ? "Live ON" : "Live OFF");
-            RefreshAllStatusLines();
+            SetLiveEnabledFromUi(!_scanController.IsLiveEnabled);
+        }
+
+        private void OnLiveToggleChanged(bool enabled)
+        {
+            if (_suppressLiveToggleCallback)
+            {
+                return;
+            }
+
+            SetLiveEnabledFromUi(enabled);
         }
 
         private void OnSelfTestClicked()
@@ -877,6 +887,7 @@ namespace BYES.Quest
             _scanStatus = "sending";
             _scanError = string.Empty;
             ShowToast("ReadText trigger");
+            RefreshAllStatusLines();
         }
 
         public void TriggerDetectObjectsOnceFromUi()
@@ -892,6 +903,7 @@ namespace BYES.Quest
             _scanStatus = "sending";
             _scanError = string.Empty;
             ShowToast("Detect trigger");
+            RefreshAllStatusLines();
         }
 
         public void TriggerDepthRiskOnceFromUi()
@@ -907,6 +919,7 @@ namespace BYES.Quest
             _scanStatus = "sending";
             _scanError = string.Empty;
             ShowToast("Depth/Risk trigger");
+            RefreshAllStatusLines();
         }
 
         public void TriggerToggleLiveFromUi()
@@ -1298,13 +1311,20 @@ namespace BYES.Quest
         private void RefreshAllStatusLines()
         {
             ResolveRefs();
+            var liveEnabled = _scanController != null && _scanController.IsLiveEnabled;
             if (_scanController != null)
             {
-                _liveButton?.SetLabel(_scanController.IsLiveEnabled ? "Live Stop" : "Live Start");
+                _liveButton?.SetLabel(liveEnabled ? "Live Stop" : "Live Start");
             }
             else
             {
                 _liveButton?.SetLabel("Live Start");
+            }
+            if (_liveToggle != null)
+            {
+                _suppressLiveToggleCallback = true;
+                _liveToggle.SetIsOnWithoutNotify(liveEnabled);
+                _suppressLiveToggleCallback = false;
             }
 
             var wsConnected = (_gatewayClient != null && _gatewayClient.IsConnected)
@@ -1353,8 +1373,8 @@ namespace BYES.Quest
             var state = _scanController != null ? _scanController.LastScanState : _scanStatus;
             var err = _scanController != null ? _scanController.LastScanError : _scanError;
             _scanStateText.Set(string.IsNullOrWhiteSpace(err)
-                ? $"Scan: {state} | pinned={IsPinned()} | controls={(_actionControlsVisible ? "on" : "off")}"
-                : $"Scan: {state} ({err}) | pinned={IsPinned()} | controls={(_actionControlsVisible ? "on" : "off")}");
+                ? $"Scan: {state} | live={(liveEnabled ? "ON" : "OFF")} | pinned={IsPinned()} | controls={(_actionControlsVisible ? "on" : "off")}"
+                : $"Scan: {state} ({err}) | live={(liveEnabled ? "ON" : "OFF")} | pinned={IsPinned()} | controls={(_actionControlsVisible ? "on" : "off")}");
 
             if (_selfTestRunner != null)
             {
@@ -1385,6 +1405,23 @@ namespace BYES.Quest
         {
             _toastUntilMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 1800;
             _toastText.Set(string.IsNullOrWhiteSpace(message) ? "-" : message.Trim());
+        }
+
+        private void SetLiveEnabledFromUi(bool enabled)
+        {
+            ResolveRefs();
+            if (_scanController == null)
+            {
+                ShowToast("Live Failed: scan-controller missing");
+                RefreshAllStatusLines();
+                return;
+            }
+
+            _scanController.SetLiveEnabled(enabled);
+            _scanStatus = enabled ? "live" : "idle";
+            _liveButton?.SetLabel(enabled ? "Live Stop" : "Live Start");
+            ShowToast(enabled ? "Live ON" : "Live OFF");
+            RefreshAllStatusLines();
         }
 
         private static void EnsureEventSystem()
@@ -1516,6 +1553,45 @@ namespace BYES.Quest
             return new RuntimeButton(button, labelView);
         }
 
+        private Toggle CreateLiveToggle(Transform parent, string name, string label, Vector2 anchoredPos, Action<bool> onChanged, bool markAsAction = false)
+        {
+            var rowGo = CreateUiObject(name, parent, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(210f, 74f), anchoredPos);
+            var rowImage = rowGo.AddComponent<Image>();
+            rowImage.color = new Color(0.12f, 0.20f, 0.33f, 0.95f);
+
+            var labelView = CreateText("Label", rowGo.transform, label, 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 0.5f), new Vector2(-24f, 0f), new Vector2(130f, 56f));
+            labelView.Set(label);
+
+            var box = CreateUiObject("Box", rowGo.transform, new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(44f, 44f), new Vector2(-20f, 0f));
+            var boxImage = box.AddComponent<Image>();
+            boxImage.color = new Color(0.17f, 0.17f, 0.17f, 0.98f);
+
+            var check = CreateUiObject("Check", box.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(30f, 30f), Vector2.zero);
+            var checkImage = check.AddComponent<Image>();
+            checkImage.color = new Color(0.08f, 0.78f, 0.24f, 1f);
+
+            var toggle = rowGo.AddComponent<Toggle>();
+            toggle.targetGraphic = rowImage;
+            toggle.graphic = checkImage;
+            toggle.transition = Selectable.Transition.ColorTint;
+            var colors = toggle.colors;
+            colors.normalColor = new Color(0.12f, 0.20f, 0.33f, 0.95f);
+            colors.highlightedColor = new Color(0.20f, 0.30f, 0.46f, 1f);
+            colors.pressedColor = new Color(0.10f, 0.15f, 0.24f, 1f);
+            colors.selectedColor = colors.highlightedColor;
+            colors.disabledColor = new Color(0.25f, 0.25f, 0.25f, 0.7f);
+            colors.fadeDuration = 0.05f;
+            toggle.colors = colors;
+            toggle.onValueChanged.AddListener(value => onChanged?.Invoke(value));
+
+            if (markAsAction)
+            {
+                _actionControls.Add(rowGo);
+            }
+
+            return toggle;
+        }
+
         private void ApplyApiKeyHeader(UnityWebRequest request)
         {
             if (request == null || string.IsNullOrWhiteSpace(_apiKey))
@@ -1561,9 +1637,10 @@ namespace BYES.Quest
             switch (normalized)
             {
                 case "walk":
+                case "read":
                 case "read_text":
                 case "inspect":
-                    return normalized;
+                    return normalized == "read" ? "read_text" : normalized;
                 default:
                     return "walk";
             }

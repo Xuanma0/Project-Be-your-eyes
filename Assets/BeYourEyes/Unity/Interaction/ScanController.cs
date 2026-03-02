@@ -265,7 +265,7 @@ namespace BeYourEyes.Unity.Interaction
             return gatewayClient != null && gatewayClient.IsConnected;
         }
 
-        private void TrySendFrame(bool isLiveTick)
+        private void TrySendFrame(bool isLiveTick, bool ignoreInterval = false)
         {
             if (captureInProgress)
             {
@@ -284,12 +284,12 @@ namespace BeYourEyes.Unity.Interaction
             }
 
             var nowSec = Time.unscaledTimeAsDouble;
-            if (!isLiveTick && nowSec - lastManualScanAtSec < minIntervalSec)
+            if (!ignoreInterval && !isLiveTick && nowSec - lastManualScanAtSec < minIntervalSec)
             {
                 return;
             }
 
-            if (isLiveTick && nowSec - lastLiveTickAtSec < ResolveLiveIntervalSec())
+            if (!ignoreInterval && isLiveTick && nowSec - lastLiveTickAtSec < ResolveLiveIntervalSec())
             {
                 return;
             }
@@ -469,19 +469,19 @@ namespace BeYourEyes.Unity.Interaction
         public void ReadTextOnceFromUi()
         {
             pendingForcedTargets = new[] {"ocr"};
-            TrySendFrame(isLiveTick: false);
+            TrySendFrame(isLiveTick: false, ignoreInterval: true);
         }
 
         public void DetectObjectsOnceFromUi()
         {
             pendingForcedTargets = new[] {"det"};
-            TrySendFrame(isLiveTick: false);
+            TrySendFrame(isLiveTick: false, ignoreInterval: true);
         }
 
         public void DepthRiskOnceFromUi()
         {
             pendingForcedTargets = new[] {"depth", "risk"};
-            TrySendFrame(isLiveTick: false);
+            TrySendFrame(isLiveTick: false, ignoreInterval: true);
         }
 
         public void ScanOnceWithTargetsFromUi(string[] targets)
@@ -494,7 +494,7 @@ namespace BeYourEyes.Unity.Interaction
             {
                 pendingForcedTargets = targets;
             }
-            TrySendFrame(isLiveTick: false);
+            TrySendFrame(isLiveTick: false, ignoreInterval: true);
         }
 
         private bool WasLiveTogglePressedThisFrame()
@@ -566,10 +566,15 @@ namespace BeYourEyes.Unity.Interaction
             switch (eventType)
             {
                 case "risk":
+                case "risk.fused":
                 case "ocr":
+                case "ocr.read":
                 case "seg":
                 case "depth":
+                case "depth.estimate":
                 case "slam_pose":
+                case "det":
+                case "det.objects":
                 case "action_plan":
                 case "prompt":
                 case "frame.input":

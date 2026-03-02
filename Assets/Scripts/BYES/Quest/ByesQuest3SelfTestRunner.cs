@@ -144,8 +144,18 @@ namespace BYES.Quest
             {
                 if (!ok || obj == null)
                 {
+                    var normalizedError = string.IsNullOrWhiteSpace(error) ? "request failed" : error;
+                    // Backward compatibility: older gateway builds may not expose /api/capabilities.
+                    // Treat 404 as non-fatal and continue with the remaining functional checks.
+                    if (normalizedError.IndexOf("404", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        capabilitiesOk = true;
+                        capabilitiesText = "legacy gateway (no /api/capabilities)";
+                        return;
+                    }
+
                     capabilitiesOk = false;
-                    capabilitiesText = string.IsNullOrWhiteSpace(error) ? "request failed" : error;
+                    capabilitiesText = normalizedError;
                     return;
                 }
 
@@ -226,7 +236,7 @@ namespace BYES.Quest
             var ocrStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             yield return RunScanStep(
                 () => _scanController.ReadTextOnceFromUi(),
-                expectedEventNames: new[] {"ocr.read"},
+                expectedEventNames: new[] {"ocr.read", "ocr"},
                 timeoutSec: Mathf.Max(5f, scanWaitTimeoutSec + 3f),
                 onDone: (ok, error) =>
                 {
@@ -247,7 +257,7 @@ namespace BYES.Quest
             var detStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             yield return RunScanStep(
                 () => _scanController.DetectObjectsOnceFromUi(),
-                expectedEventNames: new[] {"det.objects"},
+                expectedEventNames: new[] {"det.objects", "det"},
                 timeoutSec: Mathf.Max(5f, scanWaitTimeoutSec + 3f),
                 onDone: (ok, error) =>
                 {
@@ -453,6 +463,8 @@ namespace BYES.Quest
 
         private IEnumerator PostMode(string mode, string deviceId, Action<bool, string> onDone)
         {
+            var requestOk = false;
+            var requestError = string.Empty;
             var payload = new JObject
             {
                 ["runId"] = "quest3-smoke",
@@ -464,8 +476,46 @@ namespace BYES.Quest
             };
             yield return SendRequest(UnityWebRequest.kHttpVerbPOST, "/api/mode", payload, (ok, _, error) =>
             {
-                onDone?.Invoke(ok, ok ? string.Empty : (string.IsNullOrWhiteSpace(error) ? "set mode failed" : error));
+                requestOk = ok;
+                requestError = ok ? string.Empty : (string.IsNullOrWhiteSpace(error) ? "set mode failed" : error);
             });
+
+            if (requestOk)
+            {
+                onDone?.Invoke(true, string.Empty);
+                yield break;
+            }
+
+            // Backward compatibility: some builds still use "read" instead of "read_text".
+            if (string.Equals(mode, "read_text", StringComparison.OrdinalIgnoreCase))
+            {
+                var accepted = false;
+                var failure = string.Empty;
+                yield return SendRequest(UnityWebRequest.kHttpVerbPOST, "/api/mode", new JObject
+                {
+                    ["runId"] = "quest3-smoke",
+                    ["frameSeq"] = 1,
+                    ["mode"] = "read",
+                    ["source"] = "selftest",
+                    ["tsMs"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    ["deviceId"] = deviceId,
+                }, (ok, _, error) =>
+                {
+                    accepted = ok;
+                    failure = error;
+                });
+
+                if (accepted)
+                {
+                    onDone?.Invoke(true, string.Empty);
+                    yield break;
+                }
+
+                onDone?.Invoke(false, string.IsNullOrWhiteSpace(failure) ? requestError : failure);
+                yield break;
+            }
+
+            onDone?.Invoke(false, requestError);
         }
 
         private IEnumerator ValidateMode(string deviceId, string expectedMode, Action<bool, string> onDone)
@@ -486,7 +536,7 @@ namespace BYES.Quest
                         return;
                     }
 
-                    var actual = (obj.Value<string>("mode") ?? string.Empty).Trim().ToLowerInvariant();
+                    var actual = NormalizeModeToken(obj.Value<string>("mode"));
                     if (string.Equals(actual, expectedMode, StringComparison.Ordinal))
                     {
                         success = true;
@@ -506,6 +556,17 @@ namespace BYES.Quest
             }
 
             onDone?.Invoke(false, lastError);
+        }
+
+        private static string NormalizeModeToken(string mode)
+        {
+            var normalized = string.IsNullOrWhiteSpace(mode) ? "walk" : mode.Trim().ToLowerInvariant();
+            if (string.Equals(normalized, "read", StringComparison.Ordinal))
+            {
+                return "read_text";
+            }
+
+            return normalized;
         }
 
         private IEnumerator SendRequest(string method, string path, JObject payload, Action<bool, JObject, string> onDone)
