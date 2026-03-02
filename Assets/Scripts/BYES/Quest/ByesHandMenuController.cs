@@ -60,6 +60,10 @@ namespace BYES.Quest
         private Toggle _passthroughToggle;
         private Toggle _lockToHeadToggle;
         private Toggle _moveResizeToggle;
+        private Toggle _autoSpeakOcrToggle;
+        private Toggle _autoSpeakDetToggle;
+        private Toggle _autoSpeakRiskToggle;
+        private Toggle _ocrVerboseToggle;
         private Slider _uiScaleSlider;
 
         private bool _systemGestureActive;
@@ -237,7 +241,7 @@ namespace BYES.Quest
             _canvas.worldCamera = Camera.main;
             _canvas.sortingOrder = 6200;
             var rect = canvasGo.GetComponent<RectTransform>();
-            rect.sizeDelta = new Vector2(900f, 820f);
+            rect.sizeDelta = new Vector2(960f, 1300f);
             rect.localScale = Vector3.one * baseUiScale;
 
             var trackedType = Type.GetType("UnityEngine.XR.Interaction.Toolkit.UI.TrackedDeviceGraphicRaycaster, Unity.XR.Interaction.Toolkit");
@@ -250,7 +254,7 @@ namespace BYES.Quest
                 canvasGo.AddComponent<GraphicRaycaster>();
             }
 
-            _rootPanel = CreateUiObject("PanelRoot", canvasGo.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(880f, 800f), Vector2.zero);
+            _rootPanel = CreateUiObject("PanelRoot", canvasGo.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(920f, 1260f), Vector2.zero);
             var bg = _rootPanel.AddComponent<Image>();
             bg.color = new Color(0f, 0f, 0f, 0.82f);
             var cg = _rootPanel.AddComponent<CanvasGroup>();
@@ -284,7 +288,7 @@ namespace BYES.Quest
 
         private GameObject CreatePage(Transform root, string title)
         {
-            var page = CreateUiObject("Page_" + title, root, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(840f, 680f), new Vector2(0f, -34f));
+            var page = CreateUiObject("Page_" + title, root, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(860f, 1120f), new Vector2(0f, -34f));
             _ = CreateText("Title", page.transform, title, 30, TextAnchor.MiddleCenter, new Vector2(0.5f, 1f), new Vector2(0f, -40f), new Vector2(760f, 50f));
             return page;
         }
@@ -317,9 +321,11 @@ namespace BYES.Quest
         {
             CreateButton(page, "Scan Once", new Vector2(0f, 190f), () => { _panel?.TriggerScanOnceFromUi(); SetFeedback("Scan once"); });
             CreateButton(page, "Live Toggle", new Vector2(0f, 110f), () => { _panel?.TriggerToggleLiveFromUi(); SetFeedback("Live toggled"); });
-            CreateButton(page, "Run SelfTest", new Vector2(0f, 30f), () => { _panel?.TriggerSelfTestFromUi(); SetFeedback("SelfTest started"); });
-            CreateButton(page, "Export Debug", new Vector2(0f, -50f), () => { _panel?.ExportDebugText(); SetFeedback("Debug exported"); });
-            CreateButton(page, "Back", new Vector2(0f, -180f), () => { SetPage("home"); SetFeedback("Home"); });
+            CreateButton(page, "Read Text Once", new Vector2(0f, 30f), () => { _panel?.TriggerReadTextOnceFromUi(); SetFeedback("OCR once"); });
+            CreateButton(page, "Detect Once", new Vector2(0f, -50f), () => { _panel?.TriggerDetectObjectsOnceFromUi(); SetFeedback("DET once"); });
+            CreateButton(page, "Run SelfTest", new Vector2(-140f, -130f), () => { _panel?.TriggerSelfTestFromUi(); SetFeedback("SelfTest started"); });
+            CreateButton(page, "Export Debug", new Vector2(140f, -130f), () => { _panel?.ExportDebugText(); SetFeedback("Debug exported"); });
+            CreateButton(page, "Back", new Vector2(0f, -220f), () => { SetPage("home"); SetFeedback("Home"); });
         }
 
         private void BuildMode(Transform page)
@@ -367,10 +373,30 @@ namespace BYES.Quest
                 _shortcuts?.SetShortcutsEnabled(value);
                 SetFeedback("Shortcuts " + (value ? "ON" : "OFF"));
             });
-            CreateButton(page, "Shortcut Hand", new Vector2(0f, 95f), CycleShortcutHand);
-            CreateButton(page, "Conflict Mode", new Vector2(0f, 25f), CycleConflictMode);
-            CreateButton(page, "Menu Hand", new Vector2(0f, -45f), CycleMenuHand);
-            _passthroughToggle = CreateToggle(page, "Passthrough", new Vector2(0f, -115f), value =>
+            CreateButton(page, "Shortcut Hand", new Vector2(0f, 105f), CycleShortcutHand);
+            CreateButton(page, "Conflict Mode", new Vector2(0f, 35f), CycleConflictMode);
+            CreateButton(page, "Menu Hand", new Vector2(0f, -35f), CycleMenuHand);
+            _autoSpeakOcrToggle = CreateToggle(page, "Auto Speak OCR", new Vector2(0f, -95f), value =>
+            {
+                _panel?.SetAutoSpeakOcr(value);
+                SetFeedback("AutoSpeak OCR " + (value ? "ON" : "OFF"));
+            });
+            _ocrVerboseToggle = CreateToggle(page, "OCR Verbose", new Vector2(0f, -155f), value =>
+            {
+                _panel?.SetOcrVerbose(value);
+                SetFeedback("OCR Verbose " + (value ? "ON" : "OFF"));
+            });
+            _autoSpeakDetToggle = CreateToggle(page, "Auto Speak DET", new Vector2(0f, -215f), value =>
+            {
+                _panel?.SetAutoSpeakDet(value);
+                SetFeedback("AutoSpeak DET " + (value ? "ON" : "OFF"));
+            });
+            _autoSpeakRiskToggle = CreateToggle(page, "Auto Speak RISK", new Vector2(0f, -275f), value =>
+            {
+                _panel?.SetAutoSpeakRisk(value);
+                SetFeedback("AutoSpeak RISK " + (value ? "ON" : "OFF"));
+            });
+            _passthroughToggle = CreateToggle(page, "Passthrough", new Vector2(0f, -335f), value =>
             {
                 PlayerPrefs.SetInt(PrefPassthrough, value ? 1 : 0);
                 PlayerPrefs.Save();
@@ -384,16 +410,16 @@ namespace BYES.Quest
                 }
                 SetFeedback("Passthrough " + (value ? "ON" : "OFF"));
             });
-            _uiScaleSlider = CreateSlider(page, new Vector2(0f, -185f), 0.6f, 1.4f, value =>
+            _uiScaleSlider = CreateSlider(page, new Vector2(0f, -395f), 0.6f, 1.4f, value =>
             {
                 PlayerPrefs.SetFloat(PrefUiScale, value);
                 PlayerPrefs.Save();
                 ApplyUiScale(value);
                 SetFeedback($"UI Scale {value:0.00}x");
             });
-            _scaleText = CreateText("ScaleText", page, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -150f), new Vector2(760f, 32f));
-            _settingsText = CreateText("SettingsText", page, "-", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -235f), new Vector2(780f, 32f));
-            CreateButton(page, "Back", new Vector2(0f, -295f), () => { SetPage("home"); SetFeedback("Home"); });
+            _scaleText = CreateText("ScaleText", page, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -430f), new Vector2(760f, 32f));
+            _settingsText = CreateText("SettingsText", page, "-", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -470f), new Vector2(780f, 32f));
+            CreateButton(page, "Back", new Vector2(0f, -530f), () => { SetPage("home"); SetFeedback("Home"); });
         }
 
         private void BuildDebug(Transform page)
@@ -445,6 +471,10 @@ namespace BYES.Quest
             {
                 SetText(_settingsText, $"Shortcuts={(_shortcuts.ShortcutsEnabled ? "ON" : "OFF")} Hand={_shortcuts.ActiveShortcutHand} Conflict={_shortcuts.ActiveConflictMode}");
             }
+            _autoSpeakOcrToggle?.SetIsOnWithoutNotify(_panel.AutoSpeakOcrEnabled);
+            _autoSpeakDetToggle?.SetIsOnWithoutNotify(_panel.AutoSpeakDetEnabled);
+            _autoSpeakRiskToggle?.SetIsOnWithoutNotify(_panel.AutoSpeakRiskEnabled);
+            _ocrVerboseToggle?.SetIsOnWithoutNotify(_panel.OcrVerboseEnabled);
 
             SetText(_scaleText, $"UI Scale: {(_uiScaleSlider != null ? _uiScaleSlider.value : 1f):0.00}x");
             _lockToHeadToggle?.SetIsOnWithoutNotify(_panel.IsLockToHead());
@@ -505,6 +535,10 @@ namespace BYES.Quest
             _passthroughToggle?.SetIsOnWithoutNotify(PlayerPrefs.GetInt(PrefPassthrough, 1) == 1);
             _lockToHeadToggle?.SetIsOnWithoutNotify(PlayerPrefs.GetInt(PrefLockToHead, 1) == 1);
             _moveResizeToggle?.SetIsOnWithoutNotify(PlayerPrefs.GetInt(PrefMoveResize, 0) == 1);
+            _autoSpeakOcrToggle?.SetIsOnWithoutNotify(_panel != null && _panel.AutoSpeakOcrEnabled);
+            _autoSpeakDetToggle?.SetIsOnWithoutNotify(_panel != null && _panel.AutoSpeakDetEnabled);
+            _autoSpeakRiskToggle?.SetIsOnWithoutNotify(_panel != null && _panel.AutoSpeakRiskEnabled);
+            _ocrVerboseToggle?.SetIsOnWithoutNotify(_panel != null && _panel.OcrVerboseEnabled);
 
             var uiScale = PlayerPrefs.GetFloat(PrefUiScale, 1f);
             if (_uiScaleSlider != null)

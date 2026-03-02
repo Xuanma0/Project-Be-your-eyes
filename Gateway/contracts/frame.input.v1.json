@@ -66,6 +66,23 @@
             "inspect",
             null
           ]
+        },
+        "targets": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string",
+            "enum": [
+              "ocr",
+              "risk",
+              "det",
+              "seg",
+              "depth",
+              "slam"
+            ]
+          }
         }
       },
       "required": []

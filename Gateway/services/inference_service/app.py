@@ -11,10 +11,11 @@ from fastapi import FastAPI, HTTPException
 from PIL import Image
 from pydantic import BaseModel
 
-from services.inference_service.providers.base import OCRProvider, RiskProvider, SegProvider, DepthProvider, SlamProvider
+from services.inference_service.providers.base import OCRProvider, RiskProvider, SegProvider, DetProvider, DepthProvider, SlamProvider
 from services.inference_service.providers import (
     create_ocr_provider,
     create_seg_provider,
+    create_det_provider,
     create_depth_provider,
     create_slam_provider,
 )
@@ -48,6 +49,7 @@ _OCR_PROVIDER: OCRProvider | None = None
 _RISK_PROVIDER: RiskProvider | None = None
 _DEPTH_PROVIDER: RiskDepthProvider | None = None
 _SEG_PROVIDER: SegProvider | None = None
+_DET_PROVIDER: DetProvider | None = None
 _TOOL_DEPTH_PROVIDER: DepthProvider | None = None
 _SLAM_PROVIDER: SlamProvider | None = None
 
@@ -106,6 +108,11 @@ def _select_seg_provider() -> SegProvider:
     return create_seg_provider(name=name)
 
 
+def _select_det_provider() -> DetProvider:
+    name = str(os.getenv("BYES_SERVICE_DET_PROVIDER", "mock")).strip().lower()
+    return create_det_provider(name=name)
+
+
 def _select_tool_depth_provider() -> DepthProvider:
     name = str(os.getenv("BYES_SERVICE_DEPTH_PROVIDER", "mock")).strip().lower()
     if name not in {"mock", "http"}:
@@ -150,6 +157,14 @@ def get_seg_provider() -> SegProvider:
     return _SEG_PROVIDER
 
 
+def get_det_provider() -> DetProvider:
+    global _DET_PROVIDER  # noqa: PLW0603
+    if _DET_PROVIDER is None:
+        _DET_PROVIDER = _select_det_provider()
+        print(f"[inference_service] selected DET provider={_DET_PROVIDER.name} model={_DET_PROVIDER.model}")
+    return _DET_PROVIDER
+
+
 def get_tool_depth_provider() -> DepthProvider:
     global _TOOL_DEPTH_PROVIDER  # noqa: PLW0603
     if _TOOL_DEPTH_PROVIDER is None:
@@ -175,6 +190,7 @@ def _startup_provider() -> None:
     get_ocr_provider()
     get_risk_provider()
     get_seg_provider()
+    get_det_provider()
     get_slam_provider()
 
 
@@ -184,6 +200,7 @@ def healthz() -> dict[str, Any]:
     risk_provider = get_risk_provider()
     depth_provider = get_depth_provider()
     seg_provider = get_seg_provider()
+    det_provider = get_det_provider()
     depth_tool_provider = get_tool_depth_provider()
     slam_provider = get_slam_provider()
     return {
@@ -196,6 +213,8 @@ def healthz() -> dict[str, Any]:
         "depthModel": depth_provider.model,
         "segProvider": seg_provider.name,
         "segModel": seg_provider.model,
+        "detProvider": det_provider.name,
+        "detModel": det_provider.model,
         "depthToolProvider": depth_tool_provider.name,
         "depthToolModel": depth_tool_provider.model,
         "slamProvider": slam_provider.name,
@@ -271,6 +290,53 @@ def infer_ocr(request: InferenceRequest) -> dict[str, Any]:
         pass
     if warnings_count > 0:
         response["warningsCount"] = int(warnings_count)
+    return response
+
+
+@app.post("/det")
+def infer_det(request: InferenceRequest) -> dict[str, Any]:
+    started = _now_ms()
+    image = _decode_pil_image(request.image_b64)
+    provider = get_det_provider()
+    targets = [str(item).strip() for item in (request.targets or []) if str(item).strip()]
+    prompt = dict(request.prompt) if isinstance(request.prompt, dict) else None
+    try:
+        try:
+            result = provider.infer(image, request.frameSeq, request.runId, targets=targets or None, prompt=prompt)
+        except TypeError:
+            result = provider.infer(image, request.frameSeq)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"det_infer_failed:{exc.__class__.__name__}") from exc
+
+    model = str(result.get("model", provider.model)).strip() or provider.model
+    latency_ms = max(0, _now_ms() - started)
+    backend = str(result.get("backend", provider.name)).strip().lower() or provider.name
+    endpoint = result.get("endpoint", getattr(provider, "endpoint", None))
+    endpoint_text = str(endpoint).strip() if endpoint is not None else ""
+    objects, warnings_count = _normalize_det_objects(result.get("objects"))
+    top_k = _to_nonnegative_int(result.get("topK")) or 5
+    response: dict[str, Any] = {
+        "schemaVersion": "byes.det.v1",
+        "runId": request.runId,
+        "frameSeq": request.frameSeq,
+        "objects": objects,
+        "objectsCount": len(objects),
+        "topK": max(1, top_k),
+        "latencyMs": latency_ms,
+        "model": model,
+        "backend": backend,
+        "endpoint": endpoint_text or None,
+    }
+    image_width = _to_positive_int(result.get("imageWidth"))
+    image_height = _to_positive_int(result.get("imageHeight"))
+    if image_width is not None:
+        response["imageWidth"] = image_width
+    if image_height is not None:
+        response["imageHeight"] = image_height
+    if warnings_count > 0:
+        response["warningsCount"] = warnings_count
     return response
 
 
@@ -717,6 +783,59 @@ def _normalize_ocr_lines(
                 out["bbox"] = [x0, y0, x1, y1]
         normalized.append(out)
     return normalized, warnings_count
+
+
+def _normalize_det_objects(raw_objects: Any) -> tuple[list[dict[str, Any]], int]:
+    warnings_count = 0
+    objects: list[dict[str, Any]] = []
+    if not isinstance(raw_objects, list):
+        return objects, 1
+    for row in raw_objects:
+        if not isinstance(row, dict):
+            warnings_count += 1
+            continue
+        label = str(row.get("label", "")).strip() or "unknown"
+        conf = _to_float(row.get("conf"))
+        if conf is None:
+            warnings_count += 1
+            conf = 0.0
+        conf = max(0.0, min(1.0, conf))
+        box_raw = row.get("box_xyxy")
+        box_norm_raw = row.get("box_norm")
+        if not (isinstance(box_raw, list) and len(box_raw) == 4):
+            warnings_count += 1
+            box_raw = [0.0, 0.0, 1.0, 1.0]
+        try:
+            box = [float(v) for v in box_raw]
+        except Exception:
+            warnings_count += 1
+            box = [0.0, 0.0, 1.0, 1.0]
+        normalized: dict[str, Any] = {"label": label, "conf": conf, "box_xyxy": box}
+        if isinstance(box_norm_raw, list) and len(box_norm_raw) == 4:
+            try:
+                normalized["box_norm"] = [max(0.0, min(1.0, float(v))) for v in box_norm_raw]
+            except Exception:
+                warnings_count += 1
+        objects.append(normalized)
+    objects.sort(key=lambda item: float(item.get("conf", 0.0)), reverse=True)
+    return objects, warnings_count
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _to_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except Exception:
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
 
 
 def _to_nonnegative_int(value: Any) -> int:

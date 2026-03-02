@@ -33,6 +33,15 @@ class SegResult:
 
 
 @dataclass(slots=True)
+class DetResult:
+    objects: list[dict[str, Any]] = field(default_factory=list)
+    latency_ms: int | None = None
+    status: str = "ok"
+    error: str | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class DepthResult:
     grid: dict[str, Any] | None = None
     latency_ms: int | None = None
@@ -92,6 +101,23 @@ class SegBackend(Protocol):
         prompt: dict[str, Any] | None = None,
         tracking: bool | None = None,
     ) -> SegResult:
+        ...
+
+
+class DetBackend(Protocol):
+    name: str
+    model_id: str | None
+    endpoint: str | None
+
+    async def infer(
+        self,
+        image_bytes: bytes,
+        frame_seq: int | None,
+        ts_ms: int,
+        run_id: str | None = None,
+        targets: list[str] | None = None,
+        prompt: dict[str, Any] | None = None,
+    ) -> DetResult:
         ...
 
 

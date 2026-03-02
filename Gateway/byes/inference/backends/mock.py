@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult, SlamResult
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DetResult, DepthResult, SlamResult
 
 
 def _now_ms() -> int:
@@ -105,6 +105,40 @@ class MockSegBackend:
                 "targetsCount": len(normalized_targets),
                 "targetsUsed": normalized_targets,
                 "trackingUsed": bool(tracking),
+            },
+        )
+
+
+class MockDetBackend:
+    name = "mock"
+
+    def __init__(self, model_id: str = "mock-det") -> None:
+        self.model_id: str | None = str(model_id or "").strip() or "mock-det"
+        self.endpoint: str | None = None
+
+    async def infer(
+        self,
+        image_bytes: bytes,
+        frame_seq: int | None,
+        ts_ms: int,
+        run_id: str | None = None,
+        targets: list[str] | None = None,
+        prompt: dict[str, Any] | None = None,
+    ) -> DetResult:
+        started = _now_ms()
+        del image_bytes, frame_seq, ts_ms, run_id, targets, prompt
+        latency = max(0, _now_ms() - started)
+        objects = [{"label": "person", "conf": 0.82, "box_xyxy": [96.0, 72.0, 332.0, 446.0]}]
+        return DetResult(
+            objects=objects,
+            latency_ms=latency,
+            status="ok",
+            payload={
+                "schemaVersion": "byes.det.v1",
+                "objects": objects,
+                "objectsCount": len(objects),
+                "topK": 5,
+                "backend": self.name,
             },
         )
 

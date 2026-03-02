@@ -31,9 +31,16 @@ from byes.frame_tracker import FrameTracker
 from byes.fusion import FusionEngine
 from byes.governor import SloGovernor
 from byes.intent import IntentManager
-from byes.inference.event_emitters import emit_ocr_events, emit_risk_events, emit_seg_events, emit_depth_events, emit_slam_pose_events
-from byes.inference.registry import get_ocr_backend, get_risk_backend, get_seg_backend, get_depth_backend, get_slam_backend
-from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult, SlamResult
+from byes.inference.event_emitters import (
+    emit_ocr_events,
+    emit_risk_events,
+    emit_seg_events,
+    emit_det_events,
+    emit_depth_events,
+    emit_slam_pose_events,
+)
+from byes.inference.registry import get_ocr_backend, get_risk_backend, get_seg_backend, get_det_backend, get_depth_backend, get_slam_backend
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DetResult, DepthResult, SlamResult
 from byes.inference.prompt_budget import normalize_prompt, pack_prompt
 from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events
 from byes.inference.slam_context import DEFAULT_SLAM_CONTEXT_BUDGET, build_slam_context_pack
@@ -249,6 +256,44 @@ def _runtime_contract_defaults() -> dict[str, Any]:
             "checkScript": "python Gateway/scripts/verify_models.py --json",
         },
     }
+
+
+def _default_mode_profile_json(config: GatewayConfig) -> str:
+    walk_ocr_stride = max(1, int(max(config.throttled_ocr_every_n_frames, 4)))
+    walk_det_stride = max(1, int(max(config.throttled_det_every_n_frames, 3)))
+    walk_depth_stride = max(1, int(max(config.throttled_depth_every_n_frames, 2)))
+    payload = {
+        "default": {
+            "risk": {"every_n_frames": 1},
+            "ocr": {"every_n_frames": walk_ocr_stride},
+            "det": {"every_n_frames": walk_det_stride},
+            "depth": {"every_n_frames": walk_depth_stride},
+            "seg": {"every_n_frames": 4},
+            "slam": {"every_n_frames": 2},
+        },
+        "walk": {
+            "risk": {"every_n_frames": 1},
+            "ocr": {"every_n_frames": walk_ocr_stride},
+            "det": {"every_n_frames": walk_det_stride},
+            "depth": {"every_n_frames": walk_depth_stride},
+            "slam": {"every_n_frames": 2},
+        },
+        "read_text": {
+            "risk": {"every_n_frames": 2},
+            "ocr": {"every_n_frames": 1},
+            "det": {"every_n_frames": max(2, walk_det_stride)},
+            "depth": {"every_n_frames": max(2, walk_depth_stride)},
+            "slam": {"every_n_frames": 4},
+        },
+        "inspect": {
+            "risk": {"every_n_frames": 1},
+            "ocr": {"every_n_frames": max(2, walk_ocr_stride)},
+            "det": {"every_n_frames": 1},
+            "depth": {"every_n_frames": max(2, walk_depth_stride)},
+            "slam": {"every_n_frames": 2},
+        },
+    }
+    return json.dumps(payload, ensure_ascii=False)
 
 
 class MockEvent(BaseModel):
@@ -577,6 +622,7 @@ class GatewayApp:
         self.ocr_backend = get_ocr_backend(self.config)
         self.risk_backend = get_risk_backend(self.config)
         self.seg_backend = get_seg_backend(self.config)
+        self.det_backend = get_det_backend(self.config)
         self.depth_backend = get_depth_backend(self.config)
         self.slam_backend = get_slam_backend(self.config)
         self.costmap_fuser = CostmapFuser()
@@ -621,6 +667,7 @@ class GatewayApp:
         self.ocr_backend = get_ocr_backend(self.config)
         self.risk_backend = get_risk_backend(self.config)
         self.seg_backend = get_seg_backend(self.config)
+        self.det_backend = get_det_backend(self.config)
         self.depth_backend = get_depth_backend(self.config)
         self.slam_backend = get_slam_backend(self.config)
         self._inference_events.clear()
@@ -927,6 +974,7 @@ class GatewayApp:
         fired_targets: list[str] = []
         skipped_targets: list[str] = []
         force_heavy_once = mode_changed
+        forced_targets = _resolve_forced_targets(meta)
 
         run_ocr = bool(self.config.inference_enable_ocr) and should_run_mode_target(
             frame_seq=event_frame_seq,
@@ -935,6 +983,8 @@ class GatewayApp:
             profile=self.mode_profile,
             force_on_mode_change=force_heavy_once,
         )
+        if "ocr" in forced_targets and bool(self.config.inference_enable_ocr):
+            run_ocr = True
         if bool(self.config.inference_enable_ocr) and not run_ocr:
             skipped_targets.append("ocr")
         if run_ocr:
@@ -971,6 +1021,8 @@ class GatewayApp:
             profile=self.mode_profile,
             force_on_mode_change=False,
         )
+        if "risk" in forced_targets and bool(self.config.inference_enable_risk):
+            run_risk = True
         if bool(self.config.inference_enable_risk) and not run_risk:
             skipped_targets.append("risk")
         if run_risk:
@@ -998,6 +1050,49 @@ class GatewayApp:
                 endpoint=getattr(self.risk_backend, "endpoint", None),
             )
 
+        run_det = bool(self.config.inference_enable_det) and should_run_mode_target(
+            frame_seq=event_frame_seq,
+            mode=mode,
+            target="det",
+            profile=self.mode_profile,
+            force_on_mode_change=force_heavy_once,
+        )
+        if "det" in forced_targets and bool(self.config.inference_enable_det):
+            run_det = True
+        if bool(self.config.inference_enable_det) and not run_det:
+            skipped_targets.append("det")
+        if run_det:
+            fired_targets.append("det")
+            det_started_ms = _now_ms()
+            try:
+                det_result = await self.det_backend.infer(
+                    frame_bytes,
+                    seq,
+                    ts_ms,
+                    run_id=run_id,
+                    targets=None,
+                    prompt=None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                det_result = DetResult(
+                    status="error",
+                    error=exc.__class__.__name__,
+                    payload={"reason": exc.__class__.__name__, "objectsCount": 0},
+                    latency_ms=max(0, _now_ms() - det_started_ms),
+                )
+            await emit_det_events(
+                det_result,
+                frame_seq=event_frame_seq,
+                ts_ms=_now_ms(),
+                started_ts_ms=det_started_ms,
+                sink=self._emit_inference_event,
+                run_id=run_id,
+                component=component,
+                backend=getattr(self.det_backend, "name", None),
+                model=getattr(self.det_backend, "model_id", None),
+                endpoint=getattr(self.det_backend, "endpoint", None),
+            )
+
         run_depth = bool(self.config.inference_enable_depth) and should_run_mode_target(
             frame_seq=event_frame_seq,
             mode=mode,
@@ -1005,6 +1100,8 @@ class GatewayApp:
             profile=self.mode_profile,
             force_on_mode_change=force_heavy_once,
         )
+        if "depth" in forced_targets and bool(self.config.inference_enable_depth):
+            run_depth = True
         if bool(self.config.inference_enable_depth) and not run_depth:
             skipped_targets.append("depth")
         if run_depth:
@@ -1053,6 +1150,23 @@ class GatewayApp:
             depth_backend_for_costmap = depth_backend_name
             depth_model_for_costmap = depth_model_id
             depth_endpoint_for_costmap = depth_endpoint
+            fused_risk_payload = _build_depth_fused_risk_payload(depth_payload_for_costmap)
+            if fused_risk_payload is not None:
+                await self._emit_inference_event(
+                    {
+                        "schemaVersion": "byes.event.v1",
+                        "tsMs": _now_ms(),
+                        "runId": run_id,
+                        "frameSeq": event_frame_seq,
+                        "component": component,
+                        "category": "tool",
+                        "name": "risk.fused",
+                        "phase": "result",
+                        "status": "ok",
+                        "latencyMs": 0,
+                        "payload": fused_risk_payload,
+                    }
+                )
 
         run_seg = bool(self.config.inference_enable_seg) and should_run_mode_target(
             frame_seq=event_frame_seq,
@@ -1061,6 +1175,8 @@ class GatewayApp:
             profile=self.mode_profile,
             force_on_mode_change=force_heavy_once,
         )
+        if "seg" in forced_targets and bool(self.config.inference_enable_seg):
+            run_seg = True
         if bool(self.config.inference_enable_seg) and not run_seg:
             skipped_targets.append("seg")
         if run_seg:
@@ -1150,6 +1266,8 @@ class GatewayApp:
             profile=self.mode_profile,
             force_on_mode_change=force_heavy_once,
         )
+        if "slam" in forced_targets and bool(self.config.inference_enable_slam):
+            run_slam = True
         if bool(self.config.inference_enable_slam) and not run_slam:
             skipped_targets.append("slam")
         if run_slam:
@@ -2169,6 +2287,7 @@ async def frame(
         or str((meta_json.get("frameMeta") if isinstance(meta_json.get("frameMeta"), dict) else {}).get("mode", "")).strip()
         or str(mode or "").strip()
     )
+    forced_targets = sorted(_resolve_forced_targets(meta_json))
     frame_input_payload = _build_frame_input_payload(
         run_id=run_id,
         frame_seq=event_frame_seq,
@@ -2177,6 +2296,7 @@ async def frame(
         device_time_base=raw_time_base,
         device_id=device_id,
         mode=raw_mode,
+        targets=forced_targets,
     )
     frame_input_event = _build_byes_event(
         run_id=run_id,
@@ -2394,6 +2514,69 @@ async def ping(request: PingRequest) -> dict[str, Any]:
 @app.get("/api/version")
 async def api_version() -> dict[str, Any]:
     return get_build_info(profile=gateway.config.gateway_profile)
+
+
+@app.get("/api/capabilities")
+async def api_capabilities() -> dict[str, Any]:
+    build = get_build_info(profile=gateway.config.gateway_profile)
+    available_providers = {
+        "ocr": {
+            "backend": getattr(gateway.ocr_backend, "name", "unknown"),
+            "model": getattr(gateway.ocr_backend, "model_id", None),
+            "endpoint": getattr(gateway.ocr_backend, "endpoint", None),
+            "enabled": bool(gateway.config.inference_enable_ocr),
+        },
+        "risk": {
+            "backend": getattr(gateway.risk_backend, "name", "unknown"),
+            "model": getattr(gateway.risk_backend, "model_id", None),
+            "endpoint": getattr(gateway.risk_backend, "endpoint", None),
+            "enabled": bool(gateway.config.inference_enable_risk),
+        },
+        "det": {
+            "backend": getattr(gateway.det_backend, "name", "unknown"),
+            "model": getattr(gateway.det_backend, "model_id", None),
+            "endpoint": getattr(gateway.det_backend, "endpoint", None),
+            "enabled": bool(gateway.config.inference_enable_det),
+        },
+        "depth": {
+            "backend": getattr(gateway.depth_backend, "name", "unknown"),
+            "model": getattr(gateway.depth_backend, "model_id", None),
+            "endpoint": getattr(gateway.depth_backend, "endpoint", None),
+            "enabled": bool(gateway.config.inference_enable_depth),
+        },
+        "seg": {
+            "backend": getattr(gateway.seg_backend, "name", "unknown"),
+            "model": getattr(gateway.seg_backend, "model_id", None),
+            "endpoint": getattr(gateway.seg_backend, "endpoint", None),
+            "enabled": bool(gateway.config.inference_enable_seg),
+        },
+        "slam": {
+            "backend": getattr(gateway.slam_backend, "name", "unknown"),
+            "model": getattr(gateway.slam_backend, "model_id", None),
+            "endpoint": getattr(gateway.slam_backend, "endpoint", None),
+            "enabled": bool(gateway.config.inference_enable_slam),
+        },
+    }
+    enabled_flags = {
+        "ocr": bool(gateway.config.inference_enable_ocr),
+        "risk": bool(gateway.config.inference_enable_risk),
+        "det": bool(gateway.config.inference_enable_det),
+        "depth": bool(gateway.config.inference_enable_depth),
+        "seg": bool(gateway.config.inference_enable_seg),
+        "slam": bool(gateway.config.inference_enable_slam),
+        "costmap": bool(gateway.config.inference_enable_costmap),
+        "costmapFused": bool(gateway.config.inference_enable_costmap_fused),
+    }
+    return {
+        "version": build.get("version"),
+        "gitSha": build.get("gitSha"),
+        "startedTsMs": build.get("startedTsMs"),
+        "uptimeSec": build.get("uptimeSec"),
+        "profile": gateway.config.gateway_profile,
+        "available_providers": available_providers,
+        "enabled_flags": enabled_flags,
+        "mode_profile": gateway.mode_profile.profiles if gateway.mode_profile is not None else None,
+    }
 
 
 @app.post("/api/fault/set")
@@ -4804,6 +4987,122 @@ def _normalize_mode_value(value: Any) -> str | None:
     return normalize_mode_token(value)
 
 
+_FORCED_TARGETS_ALLOWED = {"ocr", "risk", "det", "seg", "depth", "slam"}
+
+
+def _normalize_target_token(value: Any) -> str | None:
+    token = str(value or "").strip().lower()
+    if token in _FORCED_TARGETS_ALLOWED:
+        return token
+    return None
+
+
+def _resolve_forced_targets(meta: dict[str, Any]) -> set[str]:
+    targets: set[str] = set()
+
+    def collect(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                token = _normalize_target_token(item)
+                if token is not None:
+                    targets.add(token)
+        elif isinstance(value, str):
+            for piece in value.split(","):
+                token = _normalize_target_token(piece)
+                if token is not None:
+                    targets.add(token)
+
+    collect(meta.get("targets"))
+    collect(meta.get("forceTargets"))
+    frame_meta = meta.get("frameMeta")
+    if isinstance(frame_meta, dict):
+        collect(frame_meta.get("targets"))
+        collect(frame_meta.get("forceTargets"))
+    return targets
+
+
+def _build_depth_fused_risk_payload(depth_payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(depth_payload, dict):
+        return None
+    grid = depth_payload.get("grid")
+    if not isinstance(grid, dict):
+        return None
+    size = grid.get("size")
+    values = grid.get("values")
+    if not (isinstance(size, list) and len(size) == 2 and isinstance(values, list)):
+        return None
+    try:
+        gw = int(size[0])
+        gh = int(size[1])
+    except Exception:
+        return None
+    if gw <= 0 or gh <= 0 or len(values) != gw * gh:
+        return None
+    values_m: list[float] = []
+    for raw in values:
+        try:
+            mm = float(raw)
+        except Exception:
+            continue
+        if mm <= 0:
+            continue
+        values_m.append(mm / 1000.0)
+    if not values_m:
+        return {
+            "available": False,
+            "reason": "no_depth_values",
+            "suggested_dir": "stop",
+        }
+
+    cols = {"left": [], "center": [], "right": []}
+    for y in range(gh):
+        for x in range(gw):
+            idx = y * gw + x
+            try:
+                mm = float(values[idx])
+            except Exception:
+                continue
+            if mm <= 0:
+                continue
+            m = mm / 1000.0
+            if x < gw / 3.0:
+                cols["left"].append(m)
+            elif x < (2.0 * gw / 3.0):
+                cols["center"].append(m)
+            else:
+                cols["right"].append(m)
+
+    left_min = min(cols["left"]) if cols["left"] else float("inf")
+    center_min = min(cols["center"]) if cols["center"] else float("inf")
+    right_min = min(cols["right"]) if cols["right"] else float("inf")
+    global_min = min(left_min, center_min, right_min)
+
+    if center_min < 0.8:
+        if left_min < 1.0 and right_min < 1.0:
+            suggested = "stop"
+        else:
+            suggested = "left" if left_min > right_min else "right"
+    elif global_min < 0.6:
+        suggested = "stop"
+    else:
+        suggested = "forward"
+
+    payload: dict[str, Any] = {
+        "available": True,
+        "min_depth_m": round(global_min, 3) if global_min != float("inf") else None,
+        "left_min_m": round(left_min, 3) if left_min != float("inf") else None,
+        "center_min_m": round(center_min, 3) if center_min != float("inf") else None,
+        "right_min_m": round(right_min, 3) if right_min != float("inf") else None,
+        "suggested_dir": suggested,
+        "unit": "m",
+    }
+    for key in ("backend", "model", "endpoint"):
+        value = depth_payload.get(key)
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
 def _build_frame_input_payload(
     *,
     run_id: str,
@@ -4813,12 +5112,14 @@ def _build_frame_input_payload(
     device_time_base: str | None,
     device_id: str | None,
     mode: str | None,
+    targets: list[str] | None = None,
 ) -> dict[str, Any]:
     normalized_time_base = str(device_time_base or "").strip().lower()
     if normalized_time_base not in {"unix_ms", "monotonic_ms"}:
         normalized_time_base = None
     normalized_device_id = str(device_id or "").strip() or None
     normalized_mode = _normalize_mode_value(mode)
+    normalized_targets = [token for token in (targets or []) if _normalize_target_token(token) is not None]
     return {
         "schemaVersion": "frame.input.v1",
         "runId": str(run_id or "").strip() or "unknown-run",
@@ -4829,6 +5130,7 @@ def _build_frame_input_payload(
             "deviceTimeBase": normalized_time_base,
             "deviceId": normalized_device_id,
             "mode": normalized_mode,
+            "targets": normalized_targets or None,
         },
     }
 

@@ -98,6 +98,12 @@ Quest 3 smoke one-command launcher (Windows):
 powershell -ExecutionPolicy Bypass -File tools/quest3/quest3_smoke.ps1 --usb
 ```
 
+Quest 3 v5.01 real-stack launcher (USB + gateway + inference providers):
+
+```bat
+tools\quest3\quest3_usb_realstack_v5_01.cmd
+```
+
 Optional hardened profile smoke (still local bind unless you override host):
 
 ```bash
@@ -137,6 +143,7 @@ python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 12
 - Connection panel probes: `Test Ping`, `Read Mode`, `Get Version`
 - `Quest3SmokeScene` runs zero-controller self-test on startup (ping/version/mode/live-loop) and reports `RUNNING/PASS/FAIL` in panel
 - v5.00 Quest default entry: palm-up + pinch opens official hand menu (`Connection / Actions / Mode / Panels / Settings / Debug`)
+- v5.01 actions in hand menu include `Read Text Once` and `Detect Once`, and panel shows `Last OCR / Last DET / Last RISK` with age.
 - Gesture shortcuts default to `Safe` mode (no trigger while menu/system gesture/UI/grab conflict is active)
 - Smoke panel move/resize is now explicit opt-in from hand menu (`Panels -> Enable Move/Resize`)
 - Passthrough can be toggled from hand menu (`Settings -> Passthrough`)
@@ -159,6 +166,7 @@ Typical local baseline:
 - `BYES_RISK_BACKEND=mock`
 - `BYES_SEG_BACKEND=mock`
 - `BYES_DEPTH_BACKEND=mock`
+- `BYES_DET_BACKEND=mock`
 - `BYES_SLAM_BACKEND=mock`
 - `GATEWAY_SEND_ENVELOPE=false`
 - `BYES_INFERENCE_EMIT_WS_V1=false`
@@ -184,6 +192,13 @@ Gateway guardrails (optional):
 - `BYES_EMIT_MODE_PROFILE_DEBUG=0/1` (emit `mode.profile` debug events for stride verification)
 - `BYES_VERSION_OVERRIDE` (optional version string override for `/api/version`)
 - `BYES_GIT_SHA` (optional build sha exposed by `/api/version`)
+
+Optional real providers for v5.01:
+
+- OCR (PaddleOCR): `python -m pip install -r Gateway/services/inference_service/requirements-paddleocr.txt`
+- DET (Ultralytics): `python -m pip install -r Gateway/services/inference_service/requirements-ultralytics.txt`
+- Depth ONNX: `python -m pip install -r Gateway/services/inference_service/requirements-onnx-depth.txt`
+- If real provider dependencies/model files are missing, service endpoints return `503` with explicit guidance and the stack can still run with mock/reference backends.
 
 ## 5) Data & Evaluation Flow
 
@@ -256,7 +271,7 @@ python Gateway/scripts/verify_contracts.py --check-lock
 If maintainers decide to align release tags with `VERSION`:
 
 ```bash
-git tag -a v5.00 -m "v5.00" <commit>
+git tag -a v5.01 -m "v5.01" <commit>
 ```
 
 Do not run this automatically unless release approval is explicit.

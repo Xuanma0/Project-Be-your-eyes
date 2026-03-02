@@ -8,6 +8,7 @@ using BYES.Telemetry;
 using BYES.UI;
 using BYES.XR;
 using BeYourEyes.Adapters.Networking;
+using BeYourEyes.Presenters.Audio;
 using BeYourEyes.Unity.Interaction;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
@@ -22,6 +23,10 @@ namespace BYES.Quest
         private const string PrefBaseUrl = "BYES_GATEWAY_BASE_URL";
         private const string PrefApiKeyLegacy = "byes.connection.api_key";
         private const string PrefQuestDeviceId = "BYES_QUEST_DEVICE_ID";
+        private const string PrefAutoSpeakOcr = "BYES_AUTOSPEAK_OCR";
+        private const string PrefAutoSpeakDet = "BYES_AUTOSPEAK_DET";
+        private const string PrefAutoSpeakRisk = "BYES_AUTOSPEAK_RISK";
+        private const string PrefOcrVerbose = "BYES_OCR_VERBOSE";
         private const string DefaultBaseUrl = "http://127.0.0.1:18000";
 
         private const float PingTimeoutSec = 2f;
@@ -54,8 +59,20 @@ namespace BYES.Quest
         private string _selfTestStatus = "IDLE";
         private string _selfTestSummary = "-";
         private string _currentMode = "-";
+        private string _lastOcrText = "-";
+        private long _lastOcrTsMs = -1;
+        private string _lastDetText = "-";
+        private long _lastDetTsMs = -1;
+        private string _lastRiskText = "-";
+        private long _lastRiskTsMs = -1;
         private long _toastUntilMs = -1;
         private bool _autoProbeEnabled = true;
+        private bool _autoSpeakOcr;
+        private bool _autoSpeakDet;
+        private bool _autoSpeakRisk;
+        private bool _ocrVerbose;
+        private long _lastSpokenAtMs = -1;
+        private string _lastSpokenDigest = string.Empty;
         private Coroutine _reachabilityCoroutine;
         private Coroutine _statusRefreshCoroutine;
 
@@ -64,6 +81,7 @@ namespace BYES.Quest
         private ScanController _scanController;
         private ByesQuest3SelfTestRunner _selfTestRunner;
         private ByesHitchMonitor _hitchMonitor;
+        private SpeechOrchestrator _speechOrchestrator;
         private ByesHeadLockedPanel _headLockedPanel;
         private ByesSmokePanelGrabHandle _grabHandle;
         private ByesHandGestureShortcuts _shortcuts;
@@ -77,6 +95,9 @@ namespace BYES.Quest
         private ITextView _lastUploadText;
         private ITextView _lastE2eText;
         private ITextView _lastEventText;
+        private ITextView _lastOcrTextView;
+        private ITextView _lastDetTextView;
+        private ITextView _lastRiskTextView;
         private ITextView _scanStateText;
         private ITextView _selfTestText;
         private ITextView _captureText;
@@ -97,6 +118,10 @@ namespace BYES.Quest
                 ? string.Empty
                 : PlayerPrefs.GetString(PrefApiKeyLegacy, string.Empty).Trim();
             _deviceId = ResolveStableDeviceId();
+            _autoSpeakOcr = PlayerPrefs.GetInt(PrefAutoSpeakOcr, 1) == 1;
+            _autoSpeakDet = PlayerPrefs.GetInt(PrefAutoSpeakDet, 0) == 1;
+            _autoSpeakRisk = PlayerPrefs.GetInt(PrefAutoSpeakRisk, 1) == 1;
+            _ocrVerbose = PlayerPrefs.GetInt(PrefOcrVerbose, 0) == 1;
 
             EnsureEventSystem();
             BuildRuntimeUi();
@@ -206,6 +231,11 @@ namespace BYES.Quest
             {
                 _shortcuts = FindFirstObjectByType<ByesHandGestureShortcuts>();
             }
+
+            if (_speechOrchestrator == null)
+            {
+                _speechOrchestrator = FindFirstObjectByType<SpeechOrchestrator>();
+            }
         }
 
         private void ApplyPanelPresentationDefaults()
@@ -311,6 +341,21 @@ namespace BYES.Quest
 
             _lastEventType = type;
             _lastEventTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var lowered = _lastEventType.Trim().ToLowerInvariant();
+            var payload = evt["payload"] as JObject;
+            if (string.Equals(lowered, "ocr.read", StringComparison.Ordinal))
+            {
+                UpdateOcrFromEvent(payload);
+            }
+            else if (string.Equals(lowered, "det.objects", StringComparison.Ordinal))
+            {
+                UpdateDetFromEvent(payload);
+            }
+            else if (string.Equals(lowered, "risk.fused", StringComparison.Ordinal)
+                     || string.Equals(lowered, "risk.hazards", StringComparison.Ordinal))
+            {
+                UpdateRiskFromEvent(payload, lowered);
+            }
             if (string.Equals(_scanStatus, "sending", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(_scanStatus, "uploaded", StringComparison.OrdinalIgnoreCase))
             {
@@ -324,6 +369,203 @@ namespace BYES.Quest
             var label = string.IsNullOrWhiteSpace(action) ? "unknown" : action.Trim().ToLowerInvariant();
             ShowToast("Gesture: " + label);
             RefreshAllStatusLines();
+        }
+
+        private void UpdateOcrFromEvent(JObject payload)
+        {
+            if (payload == null)
+            {
+                return;
+            }
+
+            var source = payload;
+            var nested = payload["result"] as JObject;
+            if (nested != null && string.IsNullOrWhiteSpace(payload.Value<string>("text")) && payload["lines"] == null)
+            {
+                source = nested;
+            }
+
+            var text = ((source.Value<string>("text") ?? string.Empty).Trim());
+            if (string.IsNullOrWhiteSpace(text) && nested != null)
+            {
+                text = (nested.Value<string>("text") ?? string.Empty).Trim();
+            }
+
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                var lines = source["lines"] as JArray ?? nested?["lines"] as JArray;
+                if (lines != null)
+                {
+                    var parts = new List<string>();
+                    for (var i = 0; i < lines.Count; i += 1)
+                    {
+                        var token = lines[i];
+                        if (token == null)
+                        {
+                            continue;
+                        }
+                        string lineText;
+                        if (token.Type == JTokenType.String)
+                        {
+                            lineText = (token.Value<string>() ?? string.Empty).Trim();
+                        }
+                        else
+                        {
+                            var row = token as JObject;
+                            lineText = row != null
+                                ? (row.Value<string>("text") ?? row.Value<string>("content") ?? string.Empty).Trim()
+                                : string.Empty;
+                        }
+                        if (!string.IsNullOrWhiteSpace(lineText))
+                        {
+                            parts.Add(lineText);
+                        }
+                        if (parts.Count >= (_ocrVerbose ? 5 : 2))
+                        {
+                            break;
+                        }
+                    }
+                    text = string.Join(" | ", parts);
+                }
+            }
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                text = "-";
+            }
+
+            if (text.Length > 200)
+            {
+                text = text.Substring(0, 200) + "...";
+            }
+
+            _lastOcrText = text;
+            _lastOcrTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (_autoSpeakOcr)
+            {
+                SpeakWithGuard("OCR " + text);
+            }
+        }
+
+        private void UpdateDetFromEvent(JObject payload)
+        {
+            if (payload == null)
+            {
+                return;
+            }
+
+            var labels = new List<string>();
+            var objects = payload["objects"] as JArray;
+            if (objects == null && payload["result"] is JObject nested && nested["objects"] is JArray nestedObjects)
+            {
+                objects = nestedObjects;
+            }
+            if (objects != null)
+            {
+                for (var i = 0; i < objects.Count; i += 1)
+                {
+                    var row = objects[i] as JObject;
+                    if (row == null)
+                    {
+                        continue;
+                    }
+                    var label = (row.Value<string>("label") ?? string.Empty).Trim();
+                    if (!string.IsNullOrWhiteSpace(label))
+                    {
+                        labels.Add(label);
+                    }
+                    if (labels.Count >= 3)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            _lastDetText = labels.Count > 0 ? string.Join(", ", labels) : "none";
+            _lastDetTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (_autoSpeakDet && labels.Count > 0)
+            {
+                SpeakWithGuard("Detected " + string.Join(", ", labels));
+            }
+        }
+
+        private void UpdateRiskFromEvent(JObject payload, string eventName)
+        {
+            if (payload == null)
+            {
+                return;
+            }
+            var source = payload;
+            if (payload["result"] is JObject nested)
+            {
+                source = nested;
+            }
+
+            if (string.Equals(eventName, "risk.fused", StringComparison.Ordinal))
+            {
+                var center = source.Value<double?>("center_min_m");
+                var suggested = (source.Value<string>("suggested_dir") ?? string.Empty).Trim();
+                if (center.HasValue)
+                {
+                    _lastRiskText = $"center={center.Value:0.00}m dir={suggested}";
+                }
+                else
+                {
+                    _lastRiskText = $"dir={suggested}";
+                }
+            }
+            else
+            {
+                var hazards = source["hazards"] as JArray;
+                if (hazards != null && hazards.Count > 0)
+                {
+                    var first = hazards[0] as JObject;
+                    if (first != null)
+                    {
+                        var kind = (first.Value<string>("hazardKind") ?? "hazard").Trim();
+                        var severity = (first.Value<string>("severity") ?? string.Empty).Trim();
+                        _lastRiskText = string.IsNullOrWhiteSpace(severity) ? kind : $"{kind}/{severity}";
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(_lastRiskText))
+            {
+                _lastRiskText = "-";
+            }
+            _lastRiskTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (_autoSpeakRisk)
+            {
+                SpeakWithGuard("Risk " + _lastRiskText);
+            }
+        }
+
+        private void SpeakWithGuard(string text)
+        {
+            var normalized = string.IsNullOrWhiteSpace(text) ? string.Empty : text.Trim();
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                return;
+            }
+
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (_lastSpokenAtMs > 0 && nowMs - _lastSpokenAtMs < 2000)
+            {
+                return;
+            }
+
+            var digest = normalized.ToLowerInvariant();
+            if (string.Equals(digest, _lastSpokenDigest, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            ResolveRefs();
+            if (_speechOrchestrator != null)
+            {
+                _speechOrchestrator.SpeakLocalHint(normalized);
+                _lastSpokenAtMs = nowMs;
+                _lastSpokenDigest = digest;
+            }
         }
 
         private void BuildRuntimeUi()
@@ -364,10 +606,13 @@ namespace BYES.Quest
             _lastUploadText = CreateText("Upload", panel.transform, "Last Upload: -", 32, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -474f), new Vector2(1480f, 62f));
             _lastE2eText = CreateText("E2E", panel.transform, "Last E2E: -", 32, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -530f), new Vector2(1480f, 62f));
             _lastEventText = CreateText("Event", panel.transform, "Last Event: -", 32, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -586f), new Vector2(1480f, 62f));
-            _scanStateText = CreateText("ScanState", panel.transform, "Scan: idle", 32, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -642f), new Vector2(1480f, 62f));
-            _selfTestText = CreateText("SelfTest", panel.transform, "SelfTest: IDLE", 32, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -698f), new Vector2(1480f, 62f));
-            _captureText = CreateText("CaptureStats", panel.transform, "Capture: -", 30, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -754f), new Vector2(1480f, 62f));
-            _hitchText = CreateText("HitchStats", panel.transform, "Hitch30s: -", 30, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -808f), new Vector2(1480f, 62f));
+            _lastOcrTextView = CreateText("LastOCR", panel.transform, "Last OCR: -", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -642f), new Vector2(1480f, 62f));
+            _lastDetTextView = CreateText("LastDET", panel.transform, "Last DET: -", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -696f), new Vector2(1480f, 62f));
+            _lastRiskTextView = CreateText("LastRISK", panel.transform, "Last RISK: -", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -750f), new Vector2(1480f, 62f));
+            _scanStateText = CreateText("ScanState", panel.transform, "Scan: idle", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -804f), new Vector2(1480f, 62f));
+            _selfTestText = CreateText("SelfTest", panel.transform, "SelfTest: IDLE", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -858f), new Vector2(1480f, 62f));
+            _captureText = CreateText("CaptureStats", panel.transform, "Capture: -", 26, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -910f), new Vector2(1480f, 62f));
+            _hitchText = CreateText("HitchStats", panel.transform, "Hitch30s: -", 26, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -962f), new Vector2(1480f, 62f));
             _toastText = CreateText("Toast", panel.transform, "-", 34, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 168f), new Vector2(1480f, 72f));
             _rawText = CreateText("Raw", panel.transform, "-", 26, TextAnchor.UpperLeft, new Vector2(0.5f, 0f), new Vector2(0f, 96f), new Vector2(1480f, 124f));
 
@@ -619,9 +864,91 @@ namespace BYES.Quest
             OnScanClicked();
         }
 
+        public void TriggerReadTextOnceFromUi()
+        {
+            ResolveRefs();
+            if (_scanController == null)
+            {
+                ShowToast("ReadText Failed: scan missing");
+                return;
+            }
+
+            _scanController.ReadTextOnceFromUi();
+            _scanStatus = "sending";
+            _scanError = string.Empty;
+            ShowToast("ReadText trigger");
+        }
+
+        public void TriggerDetectObjectsOnceFromUi()
+        {
+            ResolveRefs();
+            if (_scanController == null)
+            {
+                ShowToast("Detect Failed: scan missing");
+                return;
+            }
+
+            _scanController.DetectObjectsOnceFromUi();
+            _scanStatus = "sending";
+            _scanError = string.Empty;
+            ShowToast("Detect trigger");
+        }
+
+        public void TriggerDepthRiskOnceFromUi()
+        {
+            ResolveRefs();
+            if (_scanController == null)
+            {
+                ShowToast("Depth/Risk Failed: scan missing");
+                return;
+            }
+
+            _scanController.DepthRiskOnceFromUi();
+            _scanStatus = "sending";
+            _scanError = string.Empty;
+            ShowToast("Depth/Risk trigger");
+        }
+
         public void TriggerToggleLiveFromUi()
         {
             OnLiveClicked();
+        }
+
+        public bool AutoSpeakOcrEnabled => _autoSpeakOcr;
+        public bool AutoSpeakDetEnabled => _autoSpeakDet;
+        public bool AutoSpeakRiskEnabled => _autoSpeakRisk;
+        public bool OcrVerboseEnabled => _ocrVerbose;
+
+        public void SetAutoSpeakOcr(bool enabled)
+        {
+            _autoSpeakOcr = enabled;
+            PlayerPrefs.SetInt(PrefAutoSpeakOcr, enabled ? 1 : 0);
+            PlayerPrefs.Save();
+            ShowToast("AutoSpeak OCR " + (enabled ? "ON" : "OFF"));
+        }
+
+        public void SetAutoSpeakDet(bool enabled)
+        {
+            _autoSpeakDet = enabled;
+            PlayerPrefs.SetInt(PrefAutoSpeakDet, enabled ? 1 : 0);
+            PlayerPrefs.Save();
+            ShowToast("AutoSpeak DET " + (enabled ? "ON" : "OFF"));
+        }
+
+        public void SetAutoSpeakRisk(bool enabled)
+        {
+            _autoSpeakRisk = enabled;
+            PlayerPrefs.SetInt(PrefAutoSpeakRisk, enabled ? 1 : 0);
+            PlayerPrefs.Save();
+            ShowToast("AutoSpeak RISK " + (enabled ? "ON" : "OFF"));
+        }
+
+        public void SetOcrVerbose(bool enabled)
+        {
+            _ocrVerbose = enabled;
+            PlayerPrefs.SetInt(PrefOcrVerbose, enabled ? 1 : 0);
+            PlayerPrefs.Save();
+            ShowToast("OCR Verbose " + (enabled ? "ON" : "OFF"));
         }
 
         public void TriggerRefreshFromUi()
@@ -745,6 +1072,9 @@ namespace BYES.Quest
                 $"mode={_currentMode}\n" +
                 $"scan={_scanStatus} err={_scanError}\n" +
                 $"event={_lastEventType} ts={_lastEventTsMs}\n" +
+                $"ocr={_lastOcrText} ts={_lastOcrTsMs}\n" +
+                $"det={_lastDetText} ts={_lastDetTsMs}\n" +
+                $"risk={_lastRiskText} ts={_lastRiskTsMs}\n" +
                 $"selfTest={_selfTestStatus} summary={_selfTestSummary}\n" +
                 $"hitch={(_hitchMonitor != null ? _hitchMonitor.HitchCount30s : -1)}";
         }
@@ -1012,6 +1342,13 @@ namespace BYES.Quest
 
             var eventTs = _lastEventTsMs > 0 ? $" @{_lastEventTsMs}" : string.Empty;
             _lastEventText.Set($"Last Event: {_lastEventType}{eventTs}");
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var ocrAge = _lastOcrTsMs > 0 ? $"{Math.Max(0, nowMs - _lastOcrTsMs)}ms" : "-";
+            var detAge = _lastDetTsMs > 0 ? $"{Math.Max(0, nowMs - _lastDetTsMs)}ms" : "-";
+            var riskAge = _lastRiskTsMs > 0 ? $"{Math.Max(0, nowMs - _lastRiskTsMs)}ms" : "-";
+            _lastOcrTextView?.Set($"Last OCR: {_lastOcrText} | Age: {ocrAge}");
+            _lastDetTextView?.Set($"Last DET: {_lastDetText} | Age: {detAge}");
+            _lastRiskTextView?.Set($"Last RISK: {_lastRiskText} | Age: {riskAge}");
 
             var state = _scanController != null ? _scanController.LastScanState : _scanStatus;
             var err = _scanController != null ? _scanController.LastScanError : _scanError;

@@ -71,6 +71,7 @@ namespace BeYourEyes.Unity.Interaction
         private int uploadsFailedCount;
         private int dropBusyCount;
         private int eventsReceivedCount;
+        private string[] pendingForcedTargets;
 
         public bool LiveEnabled => liveEnabled;
         public bool IsLiveEnabled => liveEnabled;
@@ -337,6 +338,8 @@ namespace BeYourEyes.Unity.Interaction
 
         private IEnumerator ScanOnce()
         {
+            var forcedTargets = pendingForcedTargets;
+            pendingForcedTargets = null;
             captureInProgress = true;
             inflight++;
             framesSentCount++;
@@ -374,9 +377,11 @@ namespace BeYourEyes.Unity.Interaction
                     uploader.baseUrl = gatewayClient.BaseUrl;
                     uploader.SetApiKey(gatewayClient.ApiKey);
                 }
+                var metaJson = BuildUploadMetaJson(sendTsMs, forcedTargets);
 
                 yield return uploader.UploadFrame(
                     jpg,
+                    metaJson,
                     onCompleted: (ok, elapsedMs) =>
                     {
                         uploadOk = ok;
@@ -458,6 +463,37 @@ namespace BeYourEyes.Unity.Interaction
 
         public void ScanOnceFromUi()
         {
+            TrySendFrame(isLiveTick: false);
+        }
+
+        public void ReadTextOnceFromUi()
+        {
+            pendingForcedTargets = new[] {"ocr"};
+            TrySendFrame(isLiveTick: false);
+        }
+
+        public void DetectObjectsOnceFromUi()
+        {
+            pendingForcedTargets = new[] {"det"};
+            TrySendFrame(isLiveTick: false);
+        }
+
+        public void DepthRiskOnceFromUi()
+        {
+            pendingForcedTargets = new[] {"depth", "risk"};
+            TrySendFrame(isLiveTick: false);
+        }
+
+        public void ScanOnceWithTargetsFromUi(string[] targets)
+        {
+            if (targets == null || targets.Length == 0)
+            {
+                pendingForcedTargets = null;
+            }
+            else
+            {
+                pendingForcedTargets = targets;
+            }
             TrySendFrame(isLiveTick: false);
         }
 
@@ -554,6 +590,45 @@ namespace BeYourEyes.Unity.Interaction
                 ok: ok,
                 error: error
             ));
+        }
+
+        private string BuildUploadMetaJson(long captureTsMs, string[] forcedTargets)
+        {
+            var mode = GatewayRuntimeContext.ResolveApiMode();
+            var runId = gatewayClient != null ? (gatewayClient.SessionId ?? string.Empty).Trim() : string.Empty;
+            if (string.IsNullOrWhiteSpace(runId))
+            {
+                runId = "quest3-smoke";
+            }
+
+            var payload = new JObject
+            {
+                ["runId"] = runId,
+                ["deviceId"] = GatewayRuntimeContext.DeviceId,
+                ["deviceTimeBase"] = GatewayRuntimeContext.DeviceTimeBase,
+                ["captureTsMs"] = captureTsMs,
+                ["mode"] = string.IsNullOrWhiteSpace(mode) ? "walk" : mode.Trim(),
+            };
+
+            if (forcedTargets != null && forcedTargets.Length > 0)
+            {
+                var arr = new JArray();
+                for (var i = 0; i < forcedTargets.Length; i += 1)
+                {
+                    var token = string.IsNullOrWhiteSpace(forcedTargets[i]) ? string.Empty : forcedTargets[i].Trim().ToLowerInvariant();
+                    if (token == "ocr" || token == "risk" || token == "det" || token == "seg" || token == "depth" || token == "slam")
+                    {
+                        arr.Add(token);
+                    }
+                }
+
+                if (arr.Count > 0)
+                {
+                    payload["targets"] = arr;
+                }
+            }
+
+            return payload.ToString(Newtonsoft.Json.Formatting.None);
         }
     }
 }

@@ -1,5 +1,13 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v5.01
+- inference_service 新增真实 OCR provider（PaddleOCR）：`BYES_SERVICE_OCR_PROVIDER=paddleocr`，缺依赖时返回明确 `503` 提示。
+- inference_service 新增真实 DET provider（Ultralytics YOLO）：`BYES_SERVICE_DET_PROVIDER=ultralytics`，统一输出 `det.objects` 事件。
+- Gateway `/api/frame` 增强：支持 `meta.targets` 强制单次目标（OCR/DET/DEPTH/RISK 等），并新增 `GET /api/capabilities` 供 Quest 面板与自检读取能力状态。
+- 新增深度融合风险事件 `risk.fused`（基于 depth grid 的左右/中间最小距离与建议方向）。
+- Quest 面板新增可用输出：`Last OCR/DET/RISK + Age(ms)`；增加 `Read Text Once / Detect Once`；支持 `AutoSpeak OCR/DET/RISK` 与 `OCR Verbose`（带去重+冷却保护）。
+- 新增一键脚本 `tools/quest3/quest3_usb_realstack_v5_01.cmd`：USB reverse + 启动 gateway/inference + 依赖缺失提示。
+
 ## v5.00
 - Quest 主入口交互切换为官方手掌菜单流程（XRI `HandMenu` + `MetaSystemGestureDetector`），替代旧自定义 wrist button 逻辑。
 - 手菜单支持多级分组页：`Connection / Actions / Mode / Panels / Settings / Debug`，包含 mode 设置与回读、panel 控制、debug 导出、passthrough 开关。

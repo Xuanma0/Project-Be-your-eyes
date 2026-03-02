@@ -28,6 +28,10 @@ This avoids LAN/firewall instability and is the recommended first run.
 ```bat
 tools\quest3\quest3_usb_local_gateway.cmd
 ```
+   Real providers (OCR/DET/Depth) one-command launcher:
+```bat
+tools\quest3\quest3_usb_realstack_v5_01.cmd
+```
 2. On Quest, open `Quest3SmokeScene` app and look at the floating panel in front of you.
 3. Confirm panel base URL is `http://127.0.0.1:18000`.
 4. Click `SelfTest` (single-button smoke). If status looks stale first, click `Refresh` once.
@@ -36,6 +40,8 @@ Notes:
 - Script uses `adb reverse tcp:18000 tcp:18000`.
 - Script starts Gateway with `BYES_INFERENCE_EMIT_WS_V1=1` and `BYES_EMIT_NET_DEBUG=1` for smoke observability.
 - If adb path is custom, set env `ADB_EXE` before running.
+- Real-stack script starts Gateway + inference_service and sets `BYES_SERVICE_OCR_PROVIDER=paddleocr`, `BYES_SERVICE_DET_PROVIDER=ultralytics`, `BYES_SERVICE_DEPTH_PROVIDER=onnx`.
+- If optional dependencies or model path are missing, capabilities/selftest will show explicit failure reason instead of silent success.
 
 ## 4) LAN Mode (Alternative)
 
@@ -122,6 +128,22 @@ python -m uvicorn main:app --app-dir Gateway --host 127.0.0.1 --port 18000
 5. Click `Live Stop`.
 6. Click `SelfTest`, expect `SelfTest: PASS`.
 
+## 8.1) v5.01 Real OCR/DET/RISK Flow (USB)
+
+1. Run `tools\quest3\quest3_usb_realstack_v5_01.cmd` on PC.
+2. In Quest hand menu, run `SelfTest` and verify:
+   - `Step3 /api/capabilities` returns provider info.
+   - `depth+risk`, `ocr`, `det` steps all pass.
+3. Manual action checks:
+   - `Actions -> Read Text Once`: panel updates `Last OCR` and `Age`.
+   - `Actions -> Detect Once`: panel updates `Last DET` and `Age`.
+   - `Scan Once` or short `Live`: panel updates `Last RISK` and `Age`.
+4. Toggle speech behavior in hand menu settings:
+   - `Auto Speak OCR / DET / RISK`
+   - `OCR Verbose`
+5. Verify busy protection:
+   - repeated identical OCR/risk text should not spam TTS within cooldown window.
+
 ## 9) Diagnosing Periodic Hitch (v4.98)
 
 When users report "every 1 second a brief freeze", check panel metrics with `Live OFF`:
@@ -183,6 +205,20 @@ Use this checklist for team verification screenshots:
 - `BYES_CAPTURE_USE_ASYNC_GPU_READBACK=1` (Quest recommended)
 - `BYES_CAPTURE_TARGET_HZ=1` (smoke default)
 - `BYES_CAPTURE_MAX_INFLIGHT=1`
+
+## 11.1) Optional Real Provider Dependency Install
+
+```bash
+python -m pip install -r Gateway/services/inference_service/requirements-paddleocr.txt
+python -m pip install -r Gateway/services/inference_service/requirements-ultralytics.txt
+python -m pip install -r Gateway/services/inference_service/requirements-onnx-depth.txt
+```
+
+If depth provider is ONNX, set model path before running real-stack:
+
+```bash
+set BYES_SERVICE_DEPTH_ONNX_PATH=D:\models\depth_anything_v2_small.onnx
+```
 
 ## 12) Troubleshooting
 

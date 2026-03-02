@@ -10,11 +10,13 @@
 | `BYES_RISK_BACKEND` | Risk backend selector | `mock` | Gateway inference config | `Gateway/byes/config.py:470` |
 | `BYES_SEG_BACKEND` | Segmentation backend selector | `mock` | Gateway inference config | `Gateway/byes/config.py:471` |
 | `BYES_DEPTH_BACKEND` | Depth backend selector | `mock` | Gateway inference config | `Gateway/byes/config.py:472` |
+| `BYES_DET_BACKEND` | Detection backend selector | `mock` | Gateway inference config | `Gateway/byes/config.py` (`inference_det_backend`) |
 | `BYES_SLAM_BACKEND` | SLAM backend selector | `mock` | Gateway inference config | `Gateway/byes/config.py:473` |
 | `BYES_SERVICE_OCR_ENDPOINT` | OCR service endpoint | `http://127.0.0.1:9001/ocr` | Gateway inference config | `Gateway/byes/config.py:476` |
 | `BYES_RISK_HTTP_URL` | Risk HTTP endpoint | `http://127.0.0.1:9002/risk` | Gateway inference config | `Gateway/byes/config.py:478` |
 | `BYES_SEG_HTTP_URL` | Seg HTTP endpoint | `http://127.0.0.1:9003/seg` | Gateway inference config | `Gateway/byes/config.py:479` |
 | `BYES_DEPTH_HTTP_URL` | Depth HTTP endpoint | `http://127.0.0.1:9004/depth` | Gateway inference config | `Gateway/byes/config.py:480` |
+| `BYES_DET_HTTP_URL` | DET HTTP endpoint | `http://127.0.0.1:9006/det` | Gateway inference config | `Gateway/byes/config.py` (`inference_det_http_url`) |
 | `BYES_SLAM_HTTP_URL` | SLAM HTTP endpoint | `http://127.0.0.1:9005/slam/pose` | Gateway inference config | `Gateway/byes/config.py:481` |
 | `GATEWAY_SEND_ENVELOPE` | WS payload mode: envelope vs legacy | `false` | Gateway WS emitter | `Gateway/byes/config.py:344`, `Gateway/main.py:1695-1699` |
 | `BYES_INFERENCE_EMIT_WS_V1` | Directly emit `byes.event.v1` rows to WS | `false` | Gateway inference event bridge | `Gateway/byes/config.py:559`, `Gateway/main.py:737-744` |
@@ -37,6 +39,15 @@
 | `BYES_EMIT_NET_DEBUG` | Optional debug event emission for `/api/ping` requests (`net.ping`) | `false` | Gateway ping endpoint debug branch | `Gateway/byes/config.py`; `Gateway/main.py` (`ping`) |
 | `BYES_VERSION_OVERRIDE` | Optional `/api/version` override string | empty | Gateway version endpoint helper | `Gateway/byes/version_info.py` (`read_repo_version`) |
 | `BYES_GIT_SHA` | Optional build git sha surfaced in `/api/version` | empty | Gateway version endpoint helper | `Gateway/byes/version_info.py` (`get_build_info`) |
+| `BYES_SERVICE_OCR_PROVIDER` | inference_service OCR provider selector (`mock|reference|http|tesseract|paddleocr`) | `mock` | inference_service OCR router | `Gateway/services/inference_service/app.py` (`_select_ocr_provider`) |
+| `BYES_SERVICE_OCR_LANG` | PaddleOCR language code (`ch|en|...`) | `ch` | inference_service PaddleOCR provider | `Gateway/services/inference_service/providers/paddleocr_ocr.py` |
+| `BYES_SERVICE_OCR_USE_GPU` | PaddleOCR GPU toggle | `0` | inference_service PaddleOCR provider | `Gateway/services/inference_service/providers/paddleocr_ocr.py` |
+| `BYES_SERVICE_DET_PROVIDER` | inference_service DET provider selector (`mock|ultralytics`) | `mock` | inference_service DET router | `Gateway/services/inference_service/app.py` (`_select_det_provider`) |
+| `BYES_SERVICE_DET_MODEL` | Ultralytics model id/path | `yolo26` | inference_service Ultralytics provider | `Gateway/services/inference_service/providers/ultralytics_det.py` |
+| `BYES_SERVICE_DET_CONF` | Ultralytics confidence threshold | `0.25` | inference_service Ultralytics provider | `Gateway/services/inference_service/providers/ultralytics_det.py` |
+| `BYES_SERVICE_DET_IMGSZ` | Ultralytics inference image size | `640` | inference_service Ultralytics provider | `Gateway/services/inference_service/providers/ultralytics_det.py` |
+| `BYES_SERVICE_DEPTH_PROVIDER` | inference_service depth provider selector (`none|synth|onnx|midas|http`) | `none` | inference_service depth router | `Gateway/services/inference_service/app.py` (`_select_depth_provider`) |
+| `BYES_SERVICE_DEPTH_ONNX_PATH` | ONNX depth model file path (required when depth provider is `onnx`) | empty | inference_service ONNX depth provider | `Gateway/services/inference_service/providers/onnx_depth.py` |
 | `BYES_CAPTURE_USE_ASYNC_GPU_READBACK` | Unity capture path switch for async GPU readback | Android default `1` (fallback to sync when unsupported) | Quest frame capture pipeline | `Assets/BeYourEyes/Unity/Capture/ScreenFrameGrabber.cs` |
 | `BYES_CAPTURE_TARGET_HZ` | Unity capture target hz used by Quest smoke/live defaults | `1` | Quest capture + scan controller | `Assets/BeYourEyes/Unity/Capture/ScreenFrameGrabber.cs`; `Assets/BeYourEyes/Unity/Interaction/ScanController.cs` |
 | `BYES_CAPTURE_MAX_INFLIGHT` | Unity capture in-flight readback cap | `1` | Quest capture + scan controller | `Assets/BeYourEyes/Unity/Capture/ScreenFrameGrabber.cs`; `Assets/BeYourEyes/Unity/Interaction/ScanController.cs` |

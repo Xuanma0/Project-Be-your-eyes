@@ -39,7 +39,9 @@
 - `map.costmap_fused`
 - `seg.segment`
 - `seg.prompt`
+- `det.objects`
 - `depth.estimate`
+- `risk.fused`
 - `slam.pose`
 - `frame.input`
 - `frame.ack`
@@ -187,7 +189,57 @@
 }
 ```
 
-### 6) SLAM pose result
+### 6) Detection objects result
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000000990,
+  "frameSeq": 1,
+  "component": "gateway",
+  "category": "tool",
+  "name": "det.objects",
+  "phase": "result",
+  "status": "ok",
+  "latencyMs": 55,
+  "payload": {
+    "schemaVersion": "byes.det.v1",
+    "backend": "http",
+    "model": "yolo11n",
+    "endpoint": "http://127.0.0.1:19120/det",
+    "objects": [
+      {"label": "person", "conf": 0.91, "box_xyxy": [120, 80, 380, 620]}
+    ],
+    "objectsCount": 1,
+    "topK": 5
+  }
+}
+```
+
+### 7) Fused risk from depth grid
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000001010,
+  "frameSeq": 1,
+  "component": "gateway",
+  "category": "tool",
+  "name": "risk.fused",
+  "phase": "result",
+  "status": "ok",
+  "latencyMs": 0,
+  "payload": {
+    "available": true,
+    "min_depth_m": 0.78,
+    "left_min_m": 1.02,
+    "center_min_m": 0.78,
+    "right_min_m": 0.95,
+    "suggested_dir": "left",
+    "unit": "m"
+  }
+}
+```
+
+### 8) SLAM pose result
 ```json
 {
   "schemaVersion": "byes.event.v1",
@@ -219,3 +271,4 @@
 - `payload.meta.refViewStrategy` is optional and used for temporal-consistency analysis/reporting.
 - Single-frame depth metrics (`absRel`, `rmse`, `delta1`) remain unchanged.
 - Temporal metrics are report-level aggregates from consecutive `depth.estimate` events (`quality.depthTemporal`), not new event names.
+

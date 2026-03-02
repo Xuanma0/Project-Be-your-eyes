@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from services.inference_service.providers.base import OCRProvider, RiskProvider, SegProvider, DepthProvider, SlamProvider
+from services.inference_service.providers.base import OCRProvider, RiskProvider, SegProvider, DetProvider, DepthProvider, SlamProvider
 from services.inference_service.providers.depth_base import DepthMap, DepthProvider as RiskDepthProvider
 from services.inference_service.providers.depth_midas import MidasOnnxDepthProvider
 from services.inference_service.providers.depth_none import NoneDepthProvider
@@ -13,6 +13,7 @@ from services.inference_service.providers.http_depth import HttpDepthProvider
 from services.inference_service.providers.http_ocr import HttpOcrProvider
 from services.inference_service.providers.http_slam import HttpSlamProvider
 from services.inference_service.providers.heuristic_risk import HeuristicRiskProvider
+from services.inference_service.providers.mock_det import MockDetProvider
 from services.inference_service.providers.mock_seg import MockSegProvider
 from services.inference_service.providers.mock_depth import MockDepthProvider
 from services.inference_service.providers.mock_ocr import MockOcrProvider
@@ -21,6 +22,7 @@ from services.inference_service.providers.paddleocr_ocr import PaddleOcrProvider
 from services.inference_service.providers.reference_ocr import ReferenceOcrProvider
 from services.inference_service.providers.reference_risk import ReferenceRiskProvider
 from services.inference_service.providers.tesseract_ocr import TesseractOcrProvider
+from services.inference_service.providers.ultralytics_det import UltralyticsDetProvider
 
 
 def create_ocr_provider(name: str | None = None) -> OCRProvider:
@@ -57,6 +59,14 @@ def create_seg_provider(name: str | None = None) -> SegProvider:
     return MockSegProvider(model_id=model_id)
 
 
+def create_det_provider(name: str | None = None) -> DetProvider:
+    provider = str(name or os.getenv("BYES_SERVICE_DET_PROVIDER", "mock")).strip().lower()
+    model_id = str(os.getenv("BYES_SERVICE_DET_MODEL_ID", "")).strip() or None
+    if provider == "ultralytics":
+        return UltralyticsDetProvider()
+    return MockDetProvider(model_id=model_id)
+
+
 def create_depth_provider(name: str | None = None) -> DepthProvider:
     provider = str(name or os.getenv("BYES_SERVICE_DEPTH_PROVIDER", "mock")).strip().lower()
     if provider not in {"mock", "http"}:
@@ -91,6 +101,7 @@ __all__ = [
     "OCRProvider",
     "RiskProvider",
     "SegProvider",
+    "DetProvider",
     "DepthProvider",
     "SlamProvider",
     "RiskDepthProvider",
@@ -106,6 +117,9 @@ __all__ = [
     "MockSegProvider",
     "HttpSegProvider",
     "create_seg_provider",
+    "MockDetProvider",
+    "UltralyticsDetProvider",
+    "create_det_provider",
     "MockDepthProvider",
     "HttpDepthProvider",
     "create_depth_provider",

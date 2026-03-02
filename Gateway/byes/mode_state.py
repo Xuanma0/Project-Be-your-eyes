@@ -6,7 +6,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
-_ALLOWED_TARGETS = {"risk", "ocr", "seg", "depth", "slam"}
+_ALLOWED_TARGETS = {"risk", "ocr", "det", "seg", "depth", "slam"}
 _MODE_ALIASES = {
     "walk": "walk",
     "nav": "walk",

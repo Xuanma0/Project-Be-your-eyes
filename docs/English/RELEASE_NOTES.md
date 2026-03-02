@@ -4,6 +4,14 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v5.01
+- Added real OCR provider path in `inference_service` via PaddleOCR (`BYES_SERVICE_OCR_PROVIDER=paddleocr`) with normalized `ocr.read` payloads and dependency-missing 503 diagnostics.
+- Added real DET provider path in `inference_service` via Ultralytics YOLO (`BYES_SERVICE_DET_PROVIDER=ultralytics`) and normalized `det.objects` events.
+- Extended `/api/frame` inference orchestration with forced target metadata (`meta.targets`) and added Gateway capabilities endpoint `GET /api/capabilities` for runtime panel/self-test diagnostics.
+- Added depth-based fused risk event emission (`risk.fused`) from depth grid payload as a lightweight hazard fallback.
+- Quest output usability upgrades: panel now shows `Last OCR/DET/RISK + Age(ms)`, supports `Read Text Once`/`Detect Once`, and autospeak toggles with cooldown+dedupe guard.
+- Added USB real-stack launcher `tools/quest3/quest3_usb_realstack_v5_01.cmd` for one-command `adb reverse + gateway+inference` startup and dependency hints.
+
 ## v5.00
 - Switched Quest entry interaction from custom wrist buttons to an official palm-up hand menu flow (XRI `HandMenu` + `MetaSystemGestureDetector`) with multi-page navigation.
 - Added grouped menu pages (`Connection / Actions / Mode / Panels / Settings / Debug`) with mode roundtrip controls, panel management, debug copy/export, and passthrough toggle.
