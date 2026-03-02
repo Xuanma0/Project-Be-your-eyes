@@ -559,6 +559,38 @@ namespace BYES.Quest
                     yield break;
                 }
 
+                // Compatibility fallback: some gateway builds still store mode in default bucket
+                // and ignore device-specific key on readback.
+                var globalDone = false;
+                var globalSuccess = false;
+                yield return GetJson("/api/mode", (ok, obj, error) =>
+                {
+                    globalDone = true;
+                    if (!ok || obj == null)
+                    {
+                        if (!string.IsNullOrWhiteSpace(error))
+                        {
+                            lastError = error;
+                        }
+                        return;
+                    }
+
+                    var globalMode = NormalizeModeToken(obj.Value<string>("mode"));
+                    if (string.Equals(globalMode, expectedMode, StringComparison.Ordinal))
+                    {
+                        globalSuccess = true;
+                        return;
+                    }
+
+                    lastError = $"expected {expectedMode}, got {globalMode}";
+                });
+
+                if (globalDone && globalSuccess)
+                {
+                    onDone?.Invoke(true, string.Empty);
+                    yield break;
+                }
+
                 yield return new WaitForSecondsRealtime(0.2f);
             }
 

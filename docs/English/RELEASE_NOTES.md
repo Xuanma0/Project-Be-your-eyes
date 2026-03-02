@@ -4,6 +4,13 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v5.02
+- Added promptable `Find` path on top of real DET stack: Gateway now supports `find` via DET prompt overrides and Quest hand menu exposes one-tap find presets (`door`, `exit sign`, `stairs`, `elevator`, `restroom`, `person`).
+- Added Gateway frame-cache assist endpoint `POST /api/assist` so OCR/DET/FIND/RISK/DEPTH actions can run against the latest cached frame (no mandatory re-upload from Quest when cache is fresh).
+- Added Gateway recording endpoints `POST /api/record/start` and `POST /api/record/stop`; recording writes Quest run-package artifacts (`frames`, `frames_meta.jsonl`, `events/events_v1.jsonl`, `manifest.json`) under `runs/quest_recordings/`.
+- Quest panel now surfaces `Last FIND` and `Guidance` with age, and adds FIND/autospeak/guidance controls with speech dedupe/cooldown protection.
+- Added one-command USB launcher `tools/quest3/quest3_usb_realstack_v5_02.cmd` for adb reverse + gateway + inference real-stack profile and dependency diagnostics.
+
 ## v5.01
 - Added real OCR provider path in `inference_service` via PaddleOCR (`BYES_SERVICE_OCR_PROVIDER=paddleocr`) with normalized `ocr.read` payloads and dependency-missing 503 diagnostics.
 - Added real DET provider path in `inference_service` via Ultralytics YOLO (`BYES_SERVICE_DET_PROVIDER=ultralytics`) and normalized `det.objects` events.

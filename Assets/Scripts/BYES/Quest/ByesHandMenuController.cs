@@ -63,6 +63,8 @@ namespace BYES.Quest
         private Toggle _autoSpeakOcrToggle;
         private Toggle _autoSpeakDetToggle;
         private Toggle _autoSpeakRiskToggle;
+        private Toggle _autoSpeakFindToggle;
+        private Toggle _autoGuidanceToggle;
         private Toggle _ocrVerboseToggle;
         private Slider _uiScaleSlider;
 
@@ -323,9 +325,18 @@ namespace BYES.Quest
             CreateButton(page, "Live Toggle", new Vector2(0f, 110f), () => { _panel?.TriggerToggleLiveFromUi(); SetFeedback("Live toggled"); });
             CreateButton(page, "Read Text Once", new Vector2(0f, 30f), () => { _panel?.TriggerReadTextOnceFromUi(); SetFeedback("OCR once"); });
             CreateButton(page, "Detect Once", new Vector2(0f, -50f), () => { _panel?.TriggerDetectObjectsOnceFromUi(); SetFeedback("DET once"); });
-            CreateButton(page, "Run SelfTest", new Vector2(-140f, -130f), () => { _panel?.TriggerSelfTestFromUi(); SetFeedback("SelfTest started"); });
-            CreateButton(page, "Export Debug", new Vector2(140f, -130f), () => { _panel?.ExportDebugText(); SetFeedback("Debug exported"); });
-            CreateButton(page, "Back", new Vector2(0f, -220f), () => { SetPage("home"); SetFeedback("Home"); });
+            CreateButton(page, "Run SelfTest", new Vector2(-260f, -130f), () => { _panel?.TriggerSelfTestFromUi(); SetFeedback("SelfTest started"); });
+            CreateButton(page, "Rec Start", new Vector2(0f, -130f), () => { _panel?.TriggerStartRecordFromUi(); SetFeedback("Record start"); });
+            CreateButton(page, "Rec Stop", new Vector2(260f, -130f), () => { _panel?.TriggerStopRecordFromUi(); SetFeedback("Record stop"); });
+
+            CreateButton(page, "Find Door", new Vector2(-260f, -210f), () => { _panel?.TriggerFindConceptFromUi("door"); SetFeedback("Find door"); });
+            CreateButton(page, "Find Exit", new Vector2(0f, -210f), () => { _panel?.TriggerFindConceptFromUi("exit sign"); SetFeedback("Find exit sign"); });
+            CreateButton(page, "Find Stairs", new Vector2(260f, -210f), () => { _panel?.TriggerFindConceptFromUi("stairs"); SetFeedback("Find stairs"); });
+            CreateButton(page, "Find Elevator", new Vector2(-260f, -290f), () => { _panel?.TriggerFindConceptFromUi("elevator"); SetFeedback("Find elevator"); });
+            CreateButton(page, "Find Restroom", new Vector2(0f, -290f), () => { _panel?.TriggerFindConceptFromUi("restroom"); SetFeedback("Find restroom"); });
+            CreateButton(page, "Find Person", new Vector2(260f, -290f), () => { _panel?.TriggerFindConceptFromUi("person"); SetFeedback("Find person"); });
+            CreateButton(page, "Export Debug", new Vector2(0f, -370f), () => { _panel?.ExportDebugText(); SetFeedback("Debug exported"); });
+            CreateButton(page, "Back", new Vector2(0f, -450f), () => { SetPage("home"); SetFeedback("Home"); });
         }
 
         private void BuildMode(Transform page)
@@ -396,7 +407,17 @@ namespace BYES.Quest
                 _panel?.SetAutoSpeakRisk(value);
                 SetFeedback("AutoSpeak RISK " + (value ? "ON" : "OFF"));
             });
-            _passthroughToggle = CreateToggle(page, "Passthrough", new Vector2(0f, -290f), value =>
+            _autoSpeakFindToggle = CreateToggle(page, "Auto Speak FIND", new Vector2(0f, -290f), value =>
+            {
+                _panel?.SetAutoSpeakFind(value);
+                SetFeedback("AutoSpeak FIND " + (value ? "ON" : "OFF"));
+            });
+            _autoGuidanceToggle = CreateToggle(page, "Auto Guidance", new Vector2(0f, -348f), value =>
+            {
+                _panel?.SetAutoGuidance(value);
+                SetFeedback("Auto Guidance " + (value ? "ON" : "OFF"));
+            });
+            _passthroughToggle = CreateToggle(page, "Passthrough", new Vector2(0f, -406f), value =>
             {
                 PlayerPrefs.SetInt(PrefPassthrough, value ? 1 : 0);
                 PlayerPrefs.Save();
@@ -410,16 +431,16 @@ namespace BYES.Quest
                 }
                 SetFeedback("Passthrough " + (value ? "ON" : "OFF"));
             });
-            _uiScaleSlider = CreateSlider(page, new Vector2(0f, -352f), 0.6f, 1.4f, value =>
+            _uiScaleSlider = CreateSlider(page, new Vector2(0f, -464f), 0.6f, 1.4f, value =>
             {
                 PlayerPrefs.SetFloat(PrefUiScale, value);
                 PlayerPrefs.Save();
                 ApplyUiScale(value);
                 SetFeedback($"UI Scale {value:0.00}x");
             });
-            _scaleText = CreateText("ScaleText", page, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -398f), new Vector2(760f, 32f));
-            _settingsText = CreateText("SettingsText", page, "-", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -438f), new Vector2(780f, 32f));
-            CreateButton(page, "Back", new Vector2(0f, -500f), () => { SetPage("home"); SetFeedback("Home"); });
+            _scaleText = CreateText("ScaleText", page, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -510f), new Vector2(760f, 32f));
+            _settingsText = CreateText("SettingsText", page, "-", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -548f), new Vector2(780f, 32f));
+            CreateButton(page, "Back", new Vector2(0f, -602f), () => { SetPage("home"); SetFeedback("Home"); });
         }
 
         private void BuildDebug(Transform page)
@@ -462,6 +483,8 @@ namespace BYES.Quest
             _sb.Clear();
             _sb.Append("UploadMs=").Append(_panel.GetLastUploadMs()).Append("  E2E=").Append(_panel.GetLastE2eMs()).Append('\n');
             _sb.Append("LastEvent=").Append(_panel.GetLastEventType()).Append('\n');
+            _sb.Append("LastFind=").Append(_panel.GetLastFindText()).Append('\n');
+            _sb.Append("Guidance=").Append(_panel.GetGuidanceText()).Append('\n');
             _sb.Append("SelfTest=").Append(_selfTestRunner != null ? _selfTestRunner.CurrentStatus : "-").Append('\n');
             _sb.Append("Gestures=").Append(_shortcuts != null ? _shortcuts.GetRecentTriggersAsText() : "-").Append('\n');
             _sb.Append("GuideDisabler=").Append(ByesMrTemplateGuideDisabler.LastSummary);
@@ -474,6 +497,8 @@ namespace BYES.Quest
             _autoSpeakOcrToggle?.SetIsOnWithoutNotify(_panel.AutoSpeakOcrEnabled);
             _autoSpeakDetToggle?.SetIsOnWithoutNotify(_panel.AutoSpeakDetEnabled);
             _autoSpeakRiskToggle?.SetIsOnWithoutNotify(_panel.AutoSpeakRiskEnabled);
+            _autoSpeakFindToggle?.SetIsOnWithoutNotify(_panel.AutoSpeakFindEnabled);
+            _autoGuidanceToggle?.SetIsOnWithoutNotify(_panel.AutoGuidanceEnabled);
             _ocrVerboseToggle?.SetIsOnWithoutNotify(_panel.OcrVerboseEnabled);
 
             SetText(_scaleText, $"UI Scale: {(_uiScaleSlider != null ? _uiScaleSlider.value : 1f):0.00}x");
@@ -538,6 +563,8 @@ namespace BYES.Quest
             _autoSpeakOcrToggle?.SetIsOnWithoutNotify(_panel != null && _panel.AutoSpeakOcrEnabled);
             _autoSpeakDetToggle?.SetIsOnWithoutNotify(_panel != null && _panel.AutoSpeakDetEnabled);
             _autoSpeakRiskToggle?.SetIsOnWithoutNotify(_panel != null && _panel.AutoSpeakRiskEnabled);
+            _autoSpeakFindToggle?.SetIsOnWithoutNotify(_panel != null && _panel.AutoSpeakFindEnabled);
+            _autoGuidanceToggle?.SetIsOnWithoutNotify(_panel != null && _panel.AutoGuidanceEnabled);
             _ocrVerboseToggle?.SetIsOnWithoutNotify(_panel != null && _panel.OcrVerboseEnabled);
 
             var uiScale = PlayerPrefs.GetFloat(PrefUiScale, 1f);

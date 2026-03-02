@@ -1,4 +1,11 @@
-﻿Current development version is defined by `VERSION`; this file records historical milestones only.
+Current development version is defined by `VERSION`; this file records historical milestones only.
+
+## v5.02
+- Promptable Find：在 real DET 基础上增加概念查找（Find Door / Exit Sign / Stairs / Elevator / Restroom / Person）。
+- Gateway 新增 `POST /api/assist`：复用最近帧缓存执行 `ocr/det/find/risk/depth/seg`，Quest 无需重复上传帧。
+- Gateway 新增录制链路：`POST /api/record/start` 与 `POST /api/record/stop`，生成可回放 run package（含 `frames_meta.jsonl` 与 `events/events_v1.jsonl`）。
+- Quest 面板新增 `Last FIND` 与 `Guidance`（含 Age），并支持 `Auto Speak FIND / Auto Guidance`（去重与冷却保护）。
+- 新增一键脚本 `tools/quest3/quest3_usb_realstack_v5_02.cmd`：USB reverse + gateway + inference + 能力检查提示。
 
 ## v5.01
 - inference_service 新增真实 OCR provider（PaddleOCR）：`BYES_SERVICE_OCR_PROVIDER=paddleocr`，缺依赖时返回明确 `503` 提示。

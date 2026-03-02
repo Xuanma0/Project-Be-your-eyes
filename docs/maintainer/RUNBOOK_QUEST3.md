@@ -32,6 +32,10 @@ tools\quest3\quest3_usb_local_gateway.cmd
 ```bat
 tools\quest3\quest3_usb_realstack_v5_01.cmd
 ```
+   v5.02 pilot launcher (assist/find/record enabled):
+```bat
+tools\quest3\quest3_usb_realstack_v5_02.cmd
+```
 2. On Quest, open `Quest3SmokeScene` app and look at the floating panel in front of you.
 3. Confirm panel base URL is `http://127.0.0.1:18000`.
 4. Click `SelfTest` (single-button smoke). If status looks stale first, click `Refresh` once.
@@ -143,6 +147,31 @@ python -m uvicorn main:app --app-dir Gateway --host 127.0.0.1 --port 18000
    - `OCR Verbose`
 5. Verify busy protection:
    - repeated identical OCR/risk text should not spam TTS within cooldown window.
+
+## 8.2) v5.02 Find + Assist + Record Flow (USB)
+
+1. Run:
+```bat
+tools\quest3\quest3_usb_realstack_v5_02.cmd
+```
+2. In Quest wrist menu:
+   - `Actions -> Find Door` (or Exit/Stairs/Elevator/Restroom/Person)
+   - Panel should update `Last FIND` and `Age`.
+3. Verify assist path:
+   - If cache is fresh, `/api/assist` is used (no extra frame upload required).
+   - If cache miss occurs, client falls back to one-shot frame upload.
+4. Record-and-replay loop:
+   - `Actions -> Rec Start`
+   - run a short flow (`Scan Once`, `Find`, optional `Live`)
+   - `Actions -> Rec Stop`
+5. Check PC terminal/log:
+   - `/api/record/start` 200
+   - `/api/record/stop` 200 and `recordingPath`
+6. Replay generated package:
+```bash
+python Gateway/scripts/replay_run_package.py --run-package <recordingPath> --reset
+python Gateway/scripts/report_run.py --run-package <recordingPath>
+```
 
 ## 9) Diagnosing Periodic Hitch (v4.98)
 

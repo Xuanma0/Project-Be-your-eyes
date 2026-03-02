@@ -31,18 +31,61 @@ def _env_int(name: str, default: int) -> int:
         return int(default)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _split_prompt_csv(text: str) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for token in str(text or "").split(","):
+        value = token.strip()
+        key = value.lower()
+        if not value or key in seen:
+            continue
+        seen.add(key)
+        labels.append(value)
+    return labels
+
+
+def _normalize_polygon(raw: Any, *, max_points: int = 128) -> list[list[float]] | None:
+    if raw is None:
+        return None
+    rows = raw.tolist() if hasattr(raw, "tolist") else raw
+    if not isinstance(rows, list):
+        return None
+    out: list[list[float]] = []
+    for item in rows:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        try:
+            x = float(item[0])
+            y = float(item[1])
+        except Exception:
+            continue
+        out.append([x, y])
+        if len(out) >= max_points:
+            break
+    return out if out else None
+
+
 class UltralyticsDetProvider:
     name = "ultralytics"
 
     def __init__(self) -> None:
+        model_path_env = str(os.getenv("BYES_SERVICE_DET_MODEL_PATH", "")).strip()
         model_env = str(os.getenv("BYES_SERVICE_DET_MODEL", "")).strip()
         model_id_env = str(os.getenv("BYES_SERVICE_DET_MODEL_ID", "")).strip()
-        self.model = model_env or model_id_env or "yolo26"
+        self.model = model_path_env or model_env or model_id_env or "yolo26"
         self.endpoint: str | None = None
         self.conf = _clamp_float(_env_float("BYES_SERVICE_DET_CONF", 0.25), 0.01, 0.99)
         self.imgsz = max(64, _env_int("BYES_SERVICE_DET_IMGSZ", 640))
         self.top_k = max(1, _env_int("BYES_SERVICE_DET_TOP_K", 5))
         self.device = str(os.getenv("BYES_SERVICE_DET_DEVICE", "")).strip() or None
+        self.open_vocab_enabled = _env_bool("BYES_SERVICE_DET_OPENVOCAB", False)
+        self.prompt_default = str(os.getenv("BYES_SERVICE_DET_PROMPT_DEFAULT", "")).strip()
+        self.include_masks = _env_bool("BYES_SERVICE_DET_INCLUDE_MASK", True)
         self._engine: Any | None = None
 
     def _resolve_model_ref(self) -> str:
@@ -74,6 +117,44 @@ class UltralyticsDetProvider:
         self._engine = YOLO(model_ref)
         return self._engine
 
+    def _extract_prompt_labels(self, prompt: dict[str, Any] | None) -> list[str]:
+        if not isinstance(prompt, dict):
+            return _split_prompt_csv(self.prompt_default)
+        labels_raw = prompt.get("labels", prompt.get("classes", prompt.get("names")))
+        if isinstance(labels_raw, list):
+            out: list[str] = []
+            seen: set[str] = set()
+            for item in labels_raw:
+                token = str(item or "").strip()
+                key = token.lower()
+                if not token or key in seen:
+                    continue
+                seen.add(key)
+                out.append(token)
+            if out:
+                return out
+        text = str(prompt.get("text", prompt.get("prompt", ""))).strip()
+        if text:
+            return _split_prompt_csv(text)
+        return _split_prompt_csv(self.prompt_default)
+
+    @staticmethod
+    def _apply_open_vocab_classes(engine: Any, labels: list[str]) -> str | None:
+        if not labels:
+            return None
+        holders = [engine, getattr(engine, "model", None)]
+        for holder in holders:
+            if holder is None:
+                continue
+            setter = getattr(holder, "set_classes", None)
+            if callable(setter):
+                try:
+                    setter(labels)
+                    return None
+                except Exception as exc:  # noqa: BLE001
+                    return f"openvocab_set_classes_failed:{exc.__class__.__name__}"
+        return "openvocab_set_classes_unavailable"
+
     def infer(
         self,
         image: Image.Image,
@@ -82,9 +163,17 @@ class UltralyticsDetProvider:
         targets: list[str] | None = None,
         prompt: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        del frame_seq, run_id, targets, prompt
+        del frame_seq, run_id, targets
         engine = self._get_engine()
         width, height = image.size
+        prompt_labels = self._extract_prompt_labels(prompt)
+        open_vocab = bool(self.open_vocab_enabled or prompt_labels)
+        warnings: list[str] = []
+        if open_vocab:
+            warning = self._apply_open_vocab_classes(engine, prompt_labels)
+            if warning:
+                warnings.append(warning)
+
         kwargs: dict[str, Any] = {
             "conf": float(self.conf),
             "imgsz": int(self.imgsz),
@@ -109,6 +198,13 @@ class UltralyticsDetProvider:
         pred = predictions[0]
         boxes = getattr(pred, "boxes", None)
         names = getattr(pred, "names", {}) or {}
+        mask_polygons: list[list[list[float]] | None] = []
+        if self.include_masks:
+            masks = getattr(pred, "masks", None)
+            masks_xy = getattr(masks, "xy", None) if masks is not None else None
+            if isinstance(masks_xy, list):
+                for polygon in masks_xy:
+                    mask_polygons.append(_normalize_polygon(polygon))
         objects: list[dict[str, Any]] = []
 
         if boxes is not None:
@@ -163,6 +259,26 @@ class UltralyticsDetProvider:
         objects.sort(key=lambda row: float(row.get("conf", 0.0)), reverse=True)
         if len(objects) > self.top_k:
             objects = objects[: self.top_k]
+        if mask_polygons:
+            for idx, row in enumerate(objects):
+                if idx >= len(mask_polygons):
+                    break
+                poly = mask_polygons[idx]
+                if not poly:
+                    continue
+                norm_points: list[list[float]] = []
+                for point in poly:
+                    norm_points.append(
+                        [
+                            _clamp_float(point[0] / max(1.0, float(width)), 0.0, 1.0),
+                            _clamp_float(point[1] / max(1.0, float(height)), 0.0, 1.0),
+                        ]
+                    )
+                row["mask"] = {
+                    "format": "polygon_v1",
+                    "points": poly,
+                    "pointsNorm": norm_points,
+                }
 
         return {
             "schemaVersion": "byes.det.v1",
@@ -174,4 +290,8 @@ class UltralyticsDetProvider:
             "backend": self.name,
             "model": self.model,
             "endpoint": self.endpoint,
+            "openVocab": bool(open_vocab),
+            "promptUsed": prompt_labels if prompt_labels else None,
+            "warningsCount": len(warnings),
+            "warnings": warnings or None,
         }

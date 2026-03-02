@@ -72,6 +72,7 @@ namespace BeYourEyes.Unity.Interaction
         private int dropBusyCount;
         private int eventsReceivedCount;
         private string[] pendingForcedTargets;
+        private JObject pendingDetPrompt;
 
         public bool LiveEnabled => liveEnabled;
         public bool IsLiveEnabled => liveEnabled;
@@ -340,6 +341,8 @@ namespace BeYourEyes.Unity.Interaction
         {
             var forcedTargets = pendingForcedTargets;
             pendingForcedTargets = null;
+            var detPrompt = pendingDetPrompt;
+            pendingDetPrompt = null;
             captureInProgress = true;
             inflight++;
             framesSentCount++;
@@ -377,7 +380,7 @@ namespace BeYourEyes.Unity.Interaction
                     uploader.baseUrl = gatewayClient.BaseUrl;
                     uploader.SetApiKey(gatewayClient.ApiKey);
                 }
-                var metaJson = BuildUploadMetaJson(sendTsMs, forcedTargets);
+                var metaJson = BuildUploadMetaJson(sendTsMs, forcedTargets, detPrompt);
 
                 yield return uploader.UploadFrame(
                     jpg,
@@ -475,12 +478,14 @@ namespace BeYourEyes.Unity.Interaction
         public void DetectObjectsOnceFromUi()
         {
             pendingForcedTargets = new[] {"det"};
+            pendingDetPrompt = null;
             TrySendFrame(isLiveTick: false, ignoreInterval: true);
         }
 
         public void DepthRiskOnceFromUi()
         {
             pendingForcedTargets = new[] {"depth", "risk"};
+            pendingDetPrompt = null;
             TrySendFrame(isLiveTick: false, ignoreInterval: true);
         }
 
@@ -494,6 +499,20 @@ namespace BeYourEyes.Unity.Interaction
             {
                 pendingForcedTargets = targets;
             }
+            pendingDetPrompt = null;
+            TrySendFrame(isLiveTick: false, ignoreInterval: true);
+        }
+
+        public void FindConceptOnceFromUi(string promptText)
+        {
+            pendingForcedTargets = new[] {"det"};
+            var normalized = string.IsNullOrWhiteSpace(promptText) ? string.Empty : promptText.Trim();
+            pendingDetPrompt = new JObject
+            {
+                ["text"] = normalized,
+                ["openVocab"] = true,
+                ["task"] = "find",
+            };
             TrySendFrame(isLiveTick: false, ignoreInterval: true);
         }
 
@@ -597,7 +616,7 @@ namespace BeYourEyes.Unity.Interaction
             ));
         }
 
-        private string BuildUploadMetaJson(long captureTsMs, string[] forcedTargets)
+        private string BuildUploadMetaJson(long captureTsMs, string[] forcedTargets, JObject detPrompt)
         {
             var mode = GatewayRuntimeContext.ResolveApiMode();
             var runId = gatewayClient != null ? (gatewayClient.SessionId ?? string.Empty).Trim() : string.Empty;
@@ -631,6 +650,11 @@ namespace BeYourEyes.Unity.Interaction
                 {
                     payload["targets"] = arr;
                 }
+            }
+
+            if (detPrompt != null)
+            {
+                payload["prompt"] = detPrompt;
             }
 
             return payload.ToString(Newtonsoft.Json.Formatting.None);

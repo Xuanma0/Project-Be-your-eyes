@@ -329,6 +329,11 @@ def infer_det(request: InferenceRequest) -> dict[str, Any]:
         "backend": backend,
         "endpoint": endpoint_text or None,
     }
+    if "openVocab" in result:
+        response["openVocab"] = bool(result.get("openVocab"))
+    prompt_used = result.get("promptUsed")
+    if isinstance(prompt_used, list):
+        response["promptUsed"] = [str(item).strip() for item in prompt_used if str(item).strip()]
     image_width = _to_positive_int(result.get("imageWidth"))
     image_height = _to_positive_int(result.get("imageHeight"))
     if image_width is not None:
@@ -816,9 +821,53 @@ def _normalize_det_objects(raw_objects: Any) -> tuple[list[dict[str, Any]], int]
                 normalized["box_norm"] = [max(0.0, min(1.0, float(v))) for v in box_norm_raw]
             except Exception:
                 warnings_count += 1
+        mask = _normalize_det_mask(row.get("mask"))
+        if isinstance(mask, dict):
+            normalized["mask"] = mask
+        elif row.get("mask") is not None:
+            warnings_count += 1
         objects.append(normalized)
     objects.sort(key=lambda item: float(item.get("conf", 0.0)), reverse=True)
     return objects, warnings_count
+
+
+def _normalize_det_mask(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    fmt = str(raw.get("format", "")).strip()
+    if fmt != "polygon_v1":
+        return None
+    points_raw = raw.get("points")
+    if not isinstance(points_raw, list):
+        return None
+    points: list[list[float]] = []
+    for item in points_raw:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            return None
+        try:
+            x = float(item[0])
+            y = float(item[1])
+        except Exception:
+            return None
+        points.append([x, y])
+    if len(points) < 3:
+        return None
+    out: dict[str, Any] = {"format": "polygon_v1", "points": points}
+    points_norm_raw = raw.get("pointsNorm")
+    if isinstance(points_norm_raw, list):
+        points_norm: list[list[float]] = []
+        for item in points_norm_raw:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            try:
+                nx = max(0.0, min(1.0, float(item[0])))
+                ny = max(0.0, min(1.0, float(item[1])))
+            except Exception:
+                continue
+            points_norm.append([nx, ny])
+        if points_norm:
+            out["pointsNorm"] = points_norm
+    return out
 
 
 def _to_float(value: Any) -> float | None:

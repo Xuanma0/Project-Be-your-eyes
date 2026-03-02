@@ -27,6 +27,7 @@ from byes.confirm_manager import ConfirmManager
 from byes.degradation import DegradationManager, DegradationState
 from byes.action_gate import ActionPlanGate
 from byes.faults import FaultManager
+from byes.frame_cache import FrameCache
 from byes.frame_tracker import FrameTracker
 from byes.fusion import FusionEngine
 from byes.governor import SloGovernor
@@ -87,6 +88,7 @@ from byes.schemas.pov_ir_schema import validate_pov_ir
 from byes.model_manifest import build_model_manifest
 from byes.middleware.rate_limit import RateLimitConfig, RateLimitMiddleware
 from byes.middleware.request_size_limit import RequestSizeLimitMiddleware, RequestSizeLimits
+from byes.recording import RecordingManager
 from scripts.report_run import generate_report_outputs, load_run_package, safe_extract_zip
 
 
@@ -484,8 +486,8 @@ class FrameAckRequest(BaseModel):
 class ModeChangeRequest(BaseModel):
     runId: str
     frameSeq: int
-    mode: Literal["walk", "read_text", "inspect"]
-    source: Literal["hotkey", "xr", "system"] = "system"
+    mode: str
+    source: str = "system"
     tsMs: int | None = None
     deviceId: str | None = None
     runPackage: str | None = None
@@ -498,6 +500,16 @@ class ModeChangeRequest(BaseModel):
             raise ValueError("frameSeq must be >= 1")
         if self.tsMs is not None and int(self.tsMs) < 0:
             raise ValueError("tsMs must be >= 0")
+        normalized_mode = normalize_mode_token(self.mode)
+        if normalized_mode is None:
+            raise ValueError("mode must be one of: walk, read, read_text, inspect")
+        self.mode = normalized_mode
+        source = str(self.source or "system").strip().lower() or "system"
+        if source == "unity":
+            source = "xr"
+        if source not in {"hotkey", "xr", "system"}:
+            source = "system"
+        self.source = source
         return self
 
 
@@ -513,6 +525,46 @@ class PingRequest(BaseModel):
         if self.clientSendTsMs is not None and int(self.clientSendTsMs) < 0:
             raise ValueError("clientSendTsMs must be >= 0")
         return self
+
+
+class AssistRequest(BaseModel):
+    deviceId: str | None = None
+    action: Literal["ocr", "det", "find", "risk", "depth", "seg", "slam"] | None = None
+    targets: list[str] | None = None
+    prompt: str | dict[str, Any] | None = None
+    roi: dict[str, Any] | None = None
+    maxAgeMs: int | None = 1500
+    runId: str | None = None
+    mode: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_assist(self) -> "AssistRequest":
+        has_targets = isinstance(self.targets, list) and len(self.targets) > 0
+        has_action = not str(self.action or "").strip() == ""
+        if not has_targets and not has_action:
+            raise ValueError("action or targets is required")
+        if self.maxAgeMs is not None and int(self.maxAgeMs) < 0:
+            raise ValueError("maxAgeMs must be >= 0")
+        return self
+
+
+class RecordStartRequest(BaseModel):
+    deviceId: str | None = None
+    note: str | None = None
+    maxSec: int | None = 120
+    maxFrames: int | None = 0
+
+    @model_validator(mode="after")
+    def _validate_record_start(self) -> "RecordStartRequest":
+        if self.maxSec is not None and int(self.maxSec) < 0:
+            raise ValueError("maxSec must be >= 0")
+        if self.maxFrames is not None and int(self.maxFrames) < 0:
+            raise ValueError("maxFrames must be >= 0")
+        return self
+
+
+class RecordStopRequest(BaseModel):
+    deviceId: str | None = None
 
 
 class ConfirmResponseRequest(BaseModel):
@@ -660,6 +712,10 @@ class GatewayApp:
         self.run_packages_root = Path(__file__).resolve().parent / "artifacts" / "run_packages"
         self.run_packages_index_path = self.run_packages_root / "index.json"
         self._run_packages_lock = asyncio.Lock()
+        assist_cache_ttl_ms = max(200, int(os.getenv("BYES_ASSIST_CACHE_TTL_MS", "2000") or "2000"))
+        assist_cache_max_entries = max(1, int(os.getenv("BYES_ASSIST_CACHE_MAX_ENTRIES", "16") or "16"))
+        self.frame_cache = FrameCache(ttl_ms=assist_cache_ttl_ms, max_entries=assist_cache_max_entries)
+        self.recording = RecordingManager(run_packages_root=self.run_packages_root)
         self.pov_store = PovStore()
 
     async def startup(self) -> None:
@@ -671,6 +727,8 @@ class GatewayApp:
         self.depth_backend = get_depth_backend(self.config)
         self.slam_backend = get_slam_backend(self.config)
         self._inference_events.clear()
+        self.frame_cache.reset()
+        self.recording.reset()
         self.costmap_fuser.reset()
         self.dynamic_mask_cache.reset()
         self._external_readiness = {}
@@ -804,11 +862,13 @@ class GatewayApp:
     async def _emit_inference_event(self, event: dict[str, Any]) -> None:
         if not isinstance(event, dict):
             return
-        self._inference_events.append(dict(event))
+        event_copy = dict(event)
+        self._inference_events.append(event_copy)
         if len(self._inference_events) > self._inference_events_limit:
             self._inference_events = self._inference_events[-self._inference_events_limit :]
+        self.recording.on_event(event_copy)
         if self.config.inference_emit_ws_events_v1:
-            await self.connections.broadcast_json(event)
+            await self.connections.broadcast_json(event_copy)
 
     @staticmethod
     def _extract_run_id(meta: dict[str, Any]) -> str | None:
@@ -975,6 +1035,7 @@ class GatewayApp:
         skipped_targets: list[str] = []
         force_heavy_once = mode_changed
         forced_targets = _resolve_forced_targets(meta)
+        det_targets_override, det_prompt_override = _resolve_det_overrides(meta)
 
         run_ocr = bool(self.config.inference_enable_ocr) and should_run_mode_target(
             frame_seq=event_frame_seq,
@@ -1070,8 +1131,8 @@ class GatewayApp:
                     seq,
                     ts_ms,
                     run_id=run_id,
-                    targets=None,
-                    prompt=None,
+                    targets=det_targets_override,
+                    prompt=det_prompt_override,
                 )
             except Exception as exc:  # noqa: BLE001
                 det_result = DetResult(
@@ -1529,6 +1590,8 @@ class GatewayApp:
         self.fusion.reset_runtime()
         self.scheduler.reset_runtime()
         self._inference_events.clear()
+        self.frame_cache.reset()
+        self.recording.reset()
         self.costmap_fuser.reset()
         self.dynamic_mask_cache.reset()
         with _FRAME_E2E_STATE_LOCK:
@@ -2288,6 +2351,29 @@ async def frame(
         or str(mode or "").strip()
     )
     forced_targets = sorted(_resolve_forced_targets(meta_json))
+    cache_device_id = device_id or "default"
+    try:
+        gateway.frame_cache.set(
+            device_id=cache_device_id,
+            frame_seq=seq,
+            frame_bytes=frame_bytes,
+            meta=meta_json,
+            run_id=run_id,
+            capture_ts_ms=capture_ts_ms,
+        )
+    except Exception:
+        pass
+    try:
+        gateway.recording.on_frame(
+            device_id=cache_device_id,
+            run_id=run_id,
+            frame_seq=seq,
+            frame_bytes=frame_bytes,
+            meta=meta_json,
+            recv_ts_ms=recv_ts_ms,
+        )
+    except Exception:
+        pass
     frame_input_payload = _build_frame_input_payload(
         run_id=run_id,
         frame_seq=event_frame_seq,
@@ -2576,7 +2662,146 @@ async def api_capabilities() -> dict[str, Any]:
         "available_providers": available_providers,
         "enabled_flags": enabled_flags,
         "mode_profile": gateway.mode_profile.profiles if gateway.mode_profile is not None else None,
+        "features": {
+            "assist": True,
+            "recording": True,
+            "findPromptable": True,
+        },
     }
+
+
+@app.post("/api/assist")
+async def api_assist(request: Request, payload: AssistRequest) -> dict[str, Any]:
+    device_id = str(payload.deviceId or "").strip() or "default"
+    max_age_ms = 1500 if payload.maxAgeMs is None else max(100, int(payload.maxAgeMs))
+    cached = gateway.frame_cache.get(device_id=device_id, max_age_ms=max_age_ms)
+    if cached is None:
+        raise HTTPException(status_code=404, detail="assist_cache_miss")
+
+    targets = _resolve_assist_targets(payload.action, payload.targets)
+    if not targets:
+        raise HTTPException(status_code=400, detail="assist_targets_empty")
+
+    meta_json = dict(cached.meta or {})
+    meta_json["deviceId"] = device_id
+    meta_json["runId"] = str(payload.runId or "").strip() or str(cached.run_id or "unknown-run")
+    meta_json["targets"] = list(targets)
+    meta_json["forceTargets"] = list(targets)
+
+    normalized_mode = _normalize_mode_value(payload.mode)
+    if normalized_mode:
+        meta_json["mode"] = normalized_mode
+
+    if isinstance(payload.roi, dict):
+        meta_json["roi"] = dict(payload.roi)
+
+    if "det" in targets:
+        prompt_obj: dict[str, Any] | None = None
+        if isinstance(payload.prompt, dict):
+            prompt_obj = dict(payload.prompt)
+        elif isinstance(payload.prompt, str) and str(payload.prompt).strip():
+            prompt_obj = {"text": str(payload.prompt).strip()}
+        if prompt_obj is None:
+            prompt_obj = {}
+        if str(payload.action or "").strip().lower() == "find":
+            prompt_obj.setdefault("openVocab", True)
+            prompt_obj.setdefault("task", "find")
+        if prompt_obj:
+            meta_json["prompt"] = prompt_obj
+
+    recv_ts_ms = _now_ms()
+    seq = await gateway.submit_frame(
+        frame_bytes=cached.frame_bytes,
+        meta=meta_json,
+        request=request,
+        frame_meta=None,
+    )
+    run_id = gateway._extract_run_id(meta_json) or str(cached.run_id or "unknown-run")  # noqa: SLF001
+    event_frame_seq = gateway._resolve_event_frame_seq(seq, meta_json)  # noqa: SLF001
+    capture_ts_ms = _to_nonnegative_int_or_none(meta_json.get("captureTsMs"))
+    if capture_ts_ms is None:
+        capture_ts_ms = cached.capture_ts_ms
+    frame_input_payload = _build_frame_input_payload(
+        run_id=run_id,
+        frame_seq=event_frame_seq,
+        capture_ts_ms=capture_ts_ms,
+        recv_ts_ms=recv_ts_ms,
+        device_time_base=str(meta_json.get("deviceTimeBase", "")).strip() or None,
+        device_id=device_id,
+        mode=str(meta_json.get("mode", "")).strip() or None,
+        targets=targets,
+    )
+    frame_input_event = _build_byes_event(
+        run_id=run_id,
+        frame_seq=event_frame_seq,
+        category="frame",
+        name="frame.input",
+        payload=frame_input_payload,
+    )
+    await gateway._emit_inference_event(frame_input_event)  # noqa: SLF001
+
+    t0_for_state = _to_nonnegative_int_or_none(capture_ts_ms)
+    if t0_for_state is None:
+        t0_for_state = int(max(0, recv_ts_ms))
+    _frame_user_e2e_mark_input(run_id, event_frame_seq, t0_for_state)
+
+    assist_event = _build_byes_event(
+        run_id=run_id,
+        frame_seq=event_frame_seq,
+        category="ui",
+        name="assist.trigger",
+        payload={
+            "schemaVersion": "byes.assist_request.v1",
+            "deviceId": device_id,
+            "action": str(payload.action or "").strip().lower() or None,
+            "targets": targets,
+            "maxAgeMs": int(max_age_ms),
+            "cacheAgeMs": int(cached.age_ms),
+            "prompt": meta_json.get("prompt"),
+        },
+    )
+    await gateway._emit_inference_event(assist_event)  # noqa: SLF001
+
+    return {
+        "ok": True,
+        "deviceId": device_id,
+        "seq": int(seq),
+        "frameSeq": int(event_frame_seq),
+        "runId": run_id,
+        "targets": targets,
+        "cacheAgeMs": int(cached.age_ms),
+        "cacheFrameSeq": int(cached.frame_seq),
+    }
+
+
+@app.post("/api/record/start")
+async def api_record_start(payload: RecordStartRequest) -> dict[str, Any]:
+    device_id = str(payload.deviceId or "").strip() or "default"
+    try:
+        result = gateway.recording.start(
+            device_id=device_id,
+            note=str(payload.note or "").strip(),
+            max_sec=int(payload.maxSec or 120),
+            max_frames=int(payload.maxFrames or 0),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return result
+
+
+@app.post("/api/record/stop")
+async def api_record_stop(payload: RecordStopRequest, request: Request) -> dict[str, Any]:
+    device_id = str(payload.deviceId or "").strip() or "default"
+    host = str(request.headers.get("host", "127.0.0.1:8000")).strip() or "127.0.0.1:8000"
+    scheme = str(request.url.scheme or "http").strip() or "http"
+    base_url = f"{scheme}://{host}"
+    ws_scheme = "wss" if scheme == "https" else "ws"
+    ws_url = f"{ws_scheme}://{host}/ws/events"
+    try:
+        result = gateway.recording.stop(device_id=device_id, base_url=base_url, ws_url=ws_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return result
 
 
 @app.post("/api/fault/set")
@@ -4987,11 +5212,13 @@ def _normalize_mode_value(value: Any) -> str | None:
     return normalize_mode_token(value)
 
 
-_FORCED_TARGETS_ALLOWED = {"ocr", "risk", "det", "seg", "depth", "slam"}
+_FORCED_TARGETS_ALLOWED = {"ocr", "risk", "det", "seg", "depth", "slam", "find"}
 
 
 def _normalize_target_token(value: Any) -> str | None:
     token = str(value or "").strip().lower()
+    if token == "find":
+        return "det"
     if token in _FORCED_TARGETS_ALLOWED:
         return token
     return None
@@ -5019,6 +5246,64 @@ def _resolve_forced_targets(meta: dict[str, Any]) -> set[str]:
         collect(frame_meta.get("targets"))
         collect(frame_meta.get("forceTargets"))
     return targets
+
+
+def _resolve_assist_targets(action: str | None, raw_targets: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_targets or []:
+        token = _normalize_target_token(item)
+        if token is None or token in seen:
+            continue
+        seen.add(token)
+        normalized.append(token)
+    if normalized:
+        return normalized
+    action_token = str(action or "").strip().lower()
+    mapped = _normalize_target_token(action_token)
+    if mapped is not None:
+        return [mapped]
+    return []
+
+
+def _resolve_det_overrides(meta: dict[str, Any]) -> tuple[list[str] | None, dict[str, Any] | None]:
+    targets: list[str] = []
+    seen: set[str] = set()
+
+    def collect_targets(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                token = _normalize_target_token(item)
+                if token is None or token in seen:
+                    continue
+                seen.add(token)
+                targets.append(token)
+        elif isinstance(value, str):
+            for item in value.split(","):
+                token = _normalize_target_token(item)
+                if token is None or token in seen:
+                    continue
+                seen.add(token)
+                targets.append(token)
+
+    collect_targets(meta.get("detTargets"))
+    frame_meta = meta.get("frameMeta")
+    if isinstance(frame_meta, dict):
+        collect_targets(frame_meta.get("detTargets"))
+    det_targets = targets or None
+
+    det_prompt: dict[str, Any] | None = None
+    prompt_raw = meta.get("detPrompt")
+    if isinstance(prompt_raw, dict):
+        det_prompt = dict(prompt_raw)
+    elif isinstance(meta.get("prompt"), dict):
+        det_prompt = dict(meta.get("prompt"))
+    elif isinstance(frame_meta, dict) and isinstance(frame_meta.get("detPrompt"), dict):
+        det_prompt = dict(frame_meta.get("detPrompt"))
+    elif isinstance(frame_meta, dict) and isinstance(frame_meta.get("prompt"), dict):
+        det_prompt = dict(frame_meta.get("prompt"))
+
+    return det_targets, det_prompt
 
 
 def _build_depth_fused_risk_payload(depth_payload: dict[str, Any] | None) -> dict[str, Any] | None:

@@ -26,12 +26,14 @@ namespace BYES.Quest
         private const string PrefAutoSpeakOcr = "BYES_AUTOSPEAK_OCR";
         private const string PrefAutoSpeakDet = "BYES_AUTOSPEAK_DET";
         private const string PrefAutoSpeakRisk = "BYES_AUTOSPEAK_RISK";
+        private const string PrefAutoSpeakFind = "BYES_AUTOSPEAK_FIND";
+        private const string PrefAutoGuidance = "BYES_AUTO_GUIDANCE";
         private const string PrefOcrVerbose = "BYES_OCR_VERBOSE";
         private const string DefaultBaseUrl = "http://127.0.0.1:18000";
 
         private const float PingTimeoutSec = 2f;
         private const float QueryTimeoutSec = 3f;
-        private const float ReachabilityIntervalSec = 5f;
+        private const float ReachabilityIntervalSec = 10f;
 
         [Header("Quest Smoke Probe Profile")]
         [SerializeField] private bool applyLowOverheadGatewayProbeProfile = true;
@@ -65,16 +67,26 @@ namespace BYES.Quest
         private long _lastDetTsMs = -1;
         private string _lastRiskText = "-";
         private long _lastRiskTsMs = -1;
+        private string _lastFindText = "-";
+        private long _lastFindTsMs = -1;
+        private string _guidanceText = "-";
+        private long _lastGuidanceTsMs = -1;
+        private string _pendingFindPrompt = string.Empty;
+        private long _pendingFindPromptTsMs = -1;
         private long _toastUntilMs = -1;
         private bool _autoProbeEnabled = true;
         private bool _autoSpeakOcr;
         private bool _autoSpeakDet;
         private bool _autoSpeakRisk;
+        private bool _autoSpeakFind;
+        private bool _autoGuidance;
         private bool _ocrVerbose;
         private long _lastSpokenAtMs = -1;
         private string _lastSpokenDigest = string.Empty;
         private Coroutine _reachabilityCoroutine;
         private Coroutine _statusRefreshCoroutine;
+
+        private readonly Queue<long> _probeRequestTsMs = new Queue<long>();
 
         private GatewayClient _gatewayClient;
         private GatewayWsClient _gatewayWsClient;
@@ -98,6 +110,8 @@ namespace BYES.Quest
         private ITextView _lastOcrTextView;
         private ITextView _lastDetTextView;
         private ITextView _lastRiskTextView;
+        private ITextView _lastFindTextView;
+        private ITextView _guidanceTextView;
         private ITextView _scanStateText;
         private ITextView _selfTestText;
         private ITextView _captureText;
@@ -123,6 +137,8 @@ namespace BYES.Quest
             _autoSpeakOcr = PlayerPrefs.GetInt(PrefAutoSpeakOcr, 1) == 1;
             _autoSpeakDet = PlayerPrefs.GetInt(PrefAutoSpeakDet, 0) == 1;
             _autoSpeakRisk = PlayerPrefs.GetInt(PrefAutoSpeakRisk, 1) == 1;
+            _autoSpeakFind = PlayerPrefs.GetInt(PrefAutoSpeakFind, 0) == 1;
+            _autoGuidance = PlayerPrefs.GetInt(PrefAutoGuidance, 1) == 1;
             _ocrVerbose = PlayerPrefs.GetInt(PrefOcrVerbose, 0) == 1;
 
             EnsureEventSystem();
@@ -183,7 +199,7 @@ namespace BYES.Quest
             while (enabled)
             {
                 RefreshAllStatusLines();
-                yield return new WaitForSecondsRealtime(0.2f);
+                yield return new WaitForSecondsRealtime(0.5f);
             }
         }
 
@@ -458,6 +474,8 @@ namespace BYES.Quest
             }
 
             var labels = new List<string>();
+            var topLabel = string.Empty;
+            var topConf = 0f;
             var objects = payload["objects"] as JArray;
             if (objects == null && payload["result"] is JObject nested && nested["objects"] is JArray nestedObjects)
             {
@@ -476,6 +494,11 @@ namespace BYES.Quest
                     if (!string.IsNullOrWhiteSpace(label))
                     {
                         labels.Add(label);
+                        if (string.IsNullOrWhiteSpace(topLabel))
+                        {
+                            topLabel = label;
+                            topConf = row.Value<float?>("conf") ?? 0f;
+                        }
                     }
                     if (labels.Count >= 3)
                     {
@@ -489,6 +512,63 @@ namespace BYES.Quest
             if (_autoSpeakDet && labels.Count > 0)
             {
                 SpeakWithGuard("Detected " + string.Join(", ", labels));
+            }
+
+            var promptUsed = payload["promptUsed"] as JArray;
+            var hasFindPrompt = promptUsed != null && promptUsed.Count > 0;
+            if (!hasFindPrompt && payload["result"] is JObject nestedResult && nestedResult["promptUsed"] is JArray nestedPrompt)
+            {
+                promptUsed = nestedPrompt;
+                hasFindPrompt = promptUsed.Count > 0;
+            }
+
+            if (!hasFindPrompt && !string.IsNullOrWhiteSpace(_pendingFindPrompt))
+            {
+                var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                hasFindPrompt = nowMs - _pendingFindPromptTsMs <= 7000;
+            }
+
+            if (hasFindPrompt)
+            {
+                UpdateFindFromDet(topLabel, topConf, promptUsed);
+            }
+        }
+
+        private void UpdateFindFromDet(string topLabel, float topConf, JArray promptUsed)
+        {
+            string promptToken = string.Empty;
+            if (promptUsed != null && promptUsed.Count > 0)
+            {
+                promptToken = string.Join(",", promptUsed.ToObject<string[]>() ?? Array.Empty<string>()).Trim();
+            }
+
+            if (string.IsNullOrWhiteSpace(promptToken))
+            {
+                promptToken = string.IsNullOrWhiteSpace(_pendingFindPrompt) ? "find" : _pendingFindPrompt;
+            }
+
+            var resolvedLabel = string.IsNullOrWhiteSpace(topLabel) ? "none" : topLabel;
+            var findText = $"\"{promptToken}\" -> {resolvedLabel}";
+            if (topConf > 0f)
+            {
+                findText += $" conf={topConf:0.00}";
+            }
+            if (!string.IsNullOrWhiteSpace(_guidanceText) && !string.Equals(_guidanceText, "-", StringComparison.Ordinal))
+            {
+                findText += $" {_guidanceText}";
+            }
+            if (findText.Length > 220)
+            {
+                findText = findText.Substring(0, 220) + "...";
+            }
+
+            _lastFindText = findText;
+            _lastFindTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            _pendingFindPrompt = string.Empty;
+            _pendingFindPromptTsMs = -1;
+            if (_autoSpeakFind)
+            {
+                SpeakWithGuard("Find " + findText);
             }
         }
 
@@ -537,9 +617,16 @@ namespace BYES.Quest
                 _lastRiskText = "-";
             }
             _lastRiskTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var guidanceToken = _lastRiskText;
+            _guidanceText = guidanceToken;
+            _lastGuidanceTsMs = _lastRiskTsMs;
             if (_autoSpeakRisk)
             {
                 SpeakWithGuard("Risk " + _lastRiskText);
+            }
+            if (_autoGuidance)
+            {
+                SpeakWithGuard("Guidance " + _guidanceText);
             }
         }
 
@@ -613,10 +700,12 @@ namespace BYES.Quest
             _lastOcrTextView = CreateText("LastOCR", panel.transform, "Last OCR: -", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -642f), new Vector2(1480f, 62f));
             _lastDetTextView = CreateText("LastDET", panel.transform, "Last DET: -", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -696f), new Vector2(1480f, 62f));
             _lastRiskTextView = CreateText("LastRISK", panel.transform, "Last RISK: -", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -750f), new Vector2(1480f, 62f));
-            _scanStateText = CreateText("ScanState", panel.transform, "Scan: idle", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -804f), new Vector2(1480f, 62f));
-            _selfTestText = CreateText("SelfTest", panel.transform, "SelfTest: IDLE", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -858f), new Vector2(1480f, 62f));
-            _captureText = CreateText("CaptureStats", panel.transform, "Capture: -", 26, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -910f), new Vector2(1480f, 62f));
-            _hitchText = CreateText("HitchStats", panel.transform, "Hitch30s: -", 26, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -962f), new Vector2(1480f, 62f));
+            _lastFindTextView = CreateText("LastFIND", panel.transform, "Last FIND: -", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -804f), new Vector2(1480f, 62f));
+            _guidanceTextView = CreateText("Guidance", panel.transform, "Guidance: -", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -858f), new Vector2(1480f, 62f));
+            _scanStateText = CreateText("ScanState", panel.transform, "Scan: idle", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -912f), new Vector2(1480f, 62f));
+            _selfTestText = CreateText("SelfTest", panel.transform, "SelfTest: IDLE", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -966f), new Vector2(1480f, 62f));
+            _captureText = CreateText("CaptureStats", panel.transform, "Capture: -", 24, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1018f), new Vector2(1480f, 62f));
+            _hitchText = CreateText("HitchStats", panel.transform, "Hitch30s: -", 24, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1070f), new Vector2(1480f, 62f));
             _toastText = CreateText("Toast", panel.transform, "-", 34, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 168f), new Vector2(1480f, 72f));
             _rawText = CreateText("Raw", panel.transform, "-", 26, TextAnchor.UpperLeft, new Vector2(0.5f, 0f), new Vector2(0f, 96f), new Vector2(1480f, 124f));
 
@@ -632,6 +721,8 @@ namespace BYES.Quest
             CreateButton(panel.transform, "RefreshButton", "Refresh", new Vector2(-420f, -1110f), OnRefreshClicked, markAsAction: true);
             CreateButton(panel.transform, "SelfTestButton", "SelfTest", new Vector2(-190f, -1110f), OnSelfTestClicked, markAsAction: true);
             CreateButton(panel.transform, "ReconnectWsButton", "WS Reconnect", new Vector2(40f, -1110f), OnReconnectWsClicked, markAsAction: true);
+            CreateButton(panel.transform, "RecordStartButton", "Rec Start", new Vector2(270f, -1110f), OnRecordStartClicked, markAsAction: true);
+            CreateButton(panel.transform, "RecordStopButton", "Rec Stop", new Vector2(500f, -1110f), OnRecordStopClicked, markAsAction: true);
         }
 
         private void OnPingClicked()
@@ -659,6 +750,234 @@ namespace BYES.Quest
             yield return SendPing(autoProbe: false);
             yield return QueryVersion();
             yield return QueryMode();
+        }
+
+        private IEnumerator TriggerAssistThenFallback(
+            string action,
+            string[] targets,
+            JObject prompt,
+            Action fallbackAction,
+            string toastOnAssist,
+            string toastOnFallback)
+        {
+            ResolveRefs();
+            _scanStatus = "sending";
+            _scanError = string.Empty;
+            RefreshAllStatusLines();
+
+            var assistDone = false;
+            var assistOk = false;
+            var assistError = string.Empty;
+            yield return PostAssist(action, targets, prompt, (ok, error) =>
+            {
+                assistDone = true;
+                assistOk = ok;
+                assistError = error;
+            });
+
+            if (assistDone && assistOk)
+            {
+                _scanStatus = "assist_ok";
+                _scanError = string.Empty;
+                ShowToast(toastOnAssist);
+                RefreshAllStatusLines();
+                yield break;
+            }
+
+            var cacheMiss = !string.IsNullOrWhiteSpace(assistError)
+                            && assistError.IndexOf("assist_cache_miss", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (cacheMiss && fallbackAction != null)
+            {
+                fallbackAction.Invoke();
+                _scanStatus = "sending";
+                _scanError = string.Empty;
+                ShowToast(toastOnFallback);
+                RefreshAllStatusLines();
+                yield break;
+            }
+
+            if (fallbackAction != null)
+            {
+                fallbackAction.Invoke();
+                _scanStatus = "sending";
+                _scanError = string.Empty;
+                ShowToast(toastOnFallback);
+            }
+            else
+            {
+                _scanStatus = "failed";
+                _scanError = string.IsNullOrWhiteSpace(assistError) ? "assist failed" : assistError;
+                ShowToast("Assist failed");
+            }
+            RefreshAllStatusLines();
+        }
+
+        private IEnumerator StartRecording()
+        {
+            var payload = new JObject
+            {
+                ["deviceId"] = GetDeviceId(),
+                ["note"] = "quest3_smoke",
+                ["maxSec"] = 180,
+                ["maxFrames"] = 0,
+            };
+
+            var done = false;
+            var ok = false;
+            var message = string.Empty;
+            yield return SendJsonRequest(UnityWebRequest.kHttpVerbPOST, "/api/record/start", payload, (success, obj, error) =>
+            {
+                done = true;
+                ok = success;
+                if (success && obj != null)
+                {
+                    message = (obj.Value<string>("runId") ?? "record started").Trim();
+                }
+                else
+                {
+                    message = string.IsNullOrWhiteSpace(error) ? "record start failed" : error;
+                }
+            });
+
+            if (!done || !ok)
+            {
+                ShowToast("Record start failed");
+                _scanError = string.IsNullOrWhiteSpace(message) ? "record start failed" : message;
+            }
+            else
+            {
+                ShowToast("Record start");
+                _scanError = string.Empty;
+            }
+            RefreshAllStatusLines();
+        }
+
+        private IEnumerator StopRecording()
+        {
+            var payload = new JObject
+            {
+                ["deviceId"] = GetDeviceId(),
+            };
+
+            var done = false;
+            var ok = false;
+            var message = string.Empty;
+            yield return SendJsonRequest(UnityWebRequest.kHttpVerbPOST, "/api/record/stop", payload, (success, obj, error) =>
+            {
+                done = true;
+                ok = success;
+                if (success && obj != null)
+                {
+                    message = (obj.Value<string>("recordingPath") ?? "record stopped").Trim();
+                }
+                else
+                {
+                    message = string.IsNullOrWhiteSpace(error) ? "record stop failed" : error;
+                }
+            });
+
+            if (!done || !ok)
+            {
+                ShowToast("Record stop failed");
+                _scanError = string.IsNullOrWhiteSpace(message) ? "record stop failed" : message;
+            }
+            else
+            {
+                ShowToast("Record stop");
+                _scanError = string.Empty;
+            }
+            RefreshAllStatusLines();
+        }
+
+        private IEnumerator PostAssist(string action, string[] targets, JObject prompt, Action<bool, string> onDone)
+        {
+            var payload = new JObject
+            {
+                ["deviceId"] = GetDeviceId(),
+                ["action"] = string.IsNullOrWhiteSpace(action) ? "det" : action.Trim().ToLowerInvariant(),
+                ["maxAgeMs"] = 1500,
+            };
+            if (targets != null && targets.Length > 0)
+            {
+                var arr = new JArray();
+                for (var i = 0; i < targets.Length; i += 1)
+                {
+                    var token = string.IsNullOrWhiteSpace(targets[i]) ? string.Empty : targets[i].Trim().ToLowerInvariant();
+                    if (!string.IsNullOrWhiteSpace(token))
+                    {
+                        arr.Add(token);
+                    }
+                }
+                if (arr.Count > 0)
+                {
+                    payload["targets"] = arr;
+                }
+            }
+
+            if (prompt != null)
+            {
+                payload["prompt"] = prompt;
+            }
+
+            var done = false;
+            var successResult = false;
+            var errorResult = string.Empty;
+            yield return SendJsonRequest(UnityWebRequest.kHttpVerbPOST, "/api/assist", payload, (success, _, error) =>
+            {
+                done = true;
+                successResult = success;
+                errorResult = error;
+            });
+
+            if (!done)
+            {
+                onDone?.Invoke(false, "assist no response");
+                yield break;
+            }
+
+            onDone?.Invoke(successResult, errorResult);
+        }
+
+        private IEnumerator SendJsonRequest(
+            string method,
+            string path,
+            JObject payload,
+            Action<bool, JObject, string> onDone)
+        {
+            var uri = $"{_baseUrl}{path}";
+            TrackProbeRequest(path);
+            using var request = new UnityWebRequest(uri, method);
+            request.downloadHandler = new DownloadHandlerBuffer();
+            if (payload != null)
+            {
+                request.uploadHandler = new UploadHandlerRaw(System.Text.Encoding.UTF8.GetBytes(payload.ToString(Newtonsoft.Json.Formatting.None)));
+                request.SetRequestHeader("Content-Type", "application/json");
+            }
+            ApplyApiKeyHeader(request);
+            request.timeout = Mathf.CeilToInt(QueryTimeoutSec);
+            yield return request.SendWebRequest();
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                var detail = request.error ?? "request failed";
+                var body = request.downloadHandler != null ? request.downloadHandler.text : string.Empty;
+                if (!string.IsNullOrWhiteSpace(body))
+                {
+                    detail = detail + " | " + body;
+                }
+                onDone?.Invoke(false, null, detail);
+                yield break;
+            }
+
+            try
+            {
+                var text = request.downloadHandler != null ? request.downloadHandler.text : "{}";
+                var obj = JObject.Parse(string.IsNullOrWhiteSpace(text) ? "{}" : text);
+                onDone?.Invoke(true, obj, string.Empty);
+            }
+            catch (Exception ex)
+            {
+                onDone?.Invoke(false, null, "json parse failed: " + ex.Message);
+            }
         }
 
         private void OnScanClicked()
@@ -729,6 +1048,16 @@ namespace BYES.Quest
 
             ShowToast("WS reconnect requested");
             RefreshAllStatusLines();
+        }
+
+        private void OnRecordStartClicked()
+        {
+            StartCoroutine(StartRecording());
+        }
+
+        private void OnRecordStopClicked()
+        {
+            StartCoroutine(StopRecording());
         }
 
         public bool IsPanelVisible()
@@ -876,34 +1205,24 @@ namespace BYES.Quest
 
         public void TriggerReadTextOnceFromUi()
         {
-            ResolveRefs();
-            if (_scanController == null)
-            {
-                ShowToast("ReadText Failed: scan missing");
-                return;
-            }
-
-            _scanController.ReadTextOnceFromUi();
-            _scanStatus = "sending";
-            _scanError = string.Empty;
-            ShowToast("ReadText trigger");
-            RefreshAllStatusLines();
+            StartCoroutine(TriggerAssistThenFallback(
+                action: "ocr",
+                targets: new[] {"ocr"},
+                prompt: null,
+                fallbackAction: () => _scanController?.ReadTextOnceFromUi(),
+                toastOnAssist: "ReadText assist",
+                toastOnFallback: "ReadText upload"));
         }
 
         public void TriggerDetectObjectsOnceFromUi()
         {
-            ResolveRefs();
-            if (_scanController == null)
-            {
-                ShowToast("Detect Failed: scan missing");
-                return;
-            }
-
-            _scanController.DetectObjectsOnceFromUi();
-            _scanStatus = "sending";
-            _scanError = string.Empty;
-            ShowToast("Detect trigger");
-            RefreshAllStatusLines();
+            StartCoroutine(TriggerAssistThenFallback(
+                action: "det",
+                targets: new[] {"det"},
+                prompt: null,
+                fallbackAction: () => _scanController?.DetectObjectsOnceFromUi(),
+                toastOnAssist: "Detect assist",
+                toastOnFallback: "Detect upload"));
         }
 
         public void TriggerDepthRiskOnceFromUi()
@@ -927,9 +1246,42 @@ namespace BYES.Quest
             OnLiveClicked();
         }
 
+        public void TriggerFindConceptFromUi(string concept)
+        {
+            var normalized = string.IsNullOrWhiteSpace(concept) ? string.Empty : concept.Trim();
+            _pendingFindPrompt = normalized;
+            _pendingFindPromptTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            var prompt = new JObject
+            {
+                ["text"] = normalized,
+                ["openVocab"] = true,
+                ["task"] = "find",
+            };
+            StartCoroutine(TriggerAssistThenFallback(
+                action: "find",
+                targets: new[] {"det"},
+                prompt: prompt,
+                fallbackAction: () => _scanController?.FindConceptOnceFromUi(normalized),
+                toastOnAssist: $"Find assist: {normalized}",
+                toastOnFallback: $"Find upload: {normalized}"));
+        }
+
+        public void TriggerStartRecordFromUi()
+        {
+            StartCoroutine(StartRecording());
+        }
+
+        public void TriggerStopRecordFromUi()
+        {
+            StartCoroutine(StopRecording());
+        }
+
         public bool AutoSpeakOcrEnabled => _autoSpeakOcr;
         public bool AutoSpeakDetEnabled => _autoSpeakDet;
         public bool AutoSpeakRiskEnabled => _autoSpeakRisk;
+        public bool AutoSpeakFindEnabled => _autoSpeakFind;
+        public bool AutoGuidanceEnabled => _autoGuidance;
         public bool OcrVerboseEnabled => _ocrVerbose;
 
         public void SetAutoSpeakOcr(bool enabled)
@@ -954,6 +1306,22 @@ namespace BYES.Quest
             PlayerPrefs.SetInt(PrefAutoSpeakRisk, enabled ? 1 : 0);
             PlayerPrefs.Save();
             ShowToast("AutoSpeak RISK " + (enabled ? "ON" : "OFF"));
+        }
+
+        public void SetAutoSpeakFind(bool enabled)
+        {
+            _autoSpeakFind = enabled;
+            PlayerPrefs.SetInt(PrefAutoSpeakFind, enabled ? 1 : 0);
+            PlayerPrefs.Save();
+            ShowToast("AutoSpeak FIND " + (enabled ? "ON" : "OFF"));
+        }
+
+        public void SetAutoGuidance(bool enabled)
+        {
+            _autoGuidance = enabled;
+            PlayerPrefs.SetInt(PrefAutoGuidance, enabled ? 1 : 0);
+            PlayerPrefs.Save();
+            ShowToast("Auto Guidance " + (enabled ? "ON" : "OFF"));
         }
 
         public void SetOcrVerbose(bool enabled)
@@ -1039,6 +1407,16 @@ namespace BYES.Quest
             return string.IsNullOrWhiteSpace(_lastEventType) ? "-" : _lastEventType;
         }
 
+        public string GetLastFindText()
+        {
+            return string.IsNullOrWhiteSpace(_lastFindText) ? "-" : _lastFindText;
+        }
+
+        public string GetGuidanceText()
+        {
+            return string.IsNullOrWhiteSpace(_guidanceText) ? "-" : _guidanceText;
+        }
+
         public bool IsLockToHead()
         {
             return _headLockedPanel != null && _headLockedPanel.IsLockToHeadEnabled;
@@ -1088,6 +1466,8 @@ namespace BYES.Quest
                 $"ocr={_lastOcrText} ts={_lastOcrTsMs}\n" +
                 $"det={_lastDetText} ts={_lastDetTsMs}\n" +
                 $"risk={_lastRiskText} ts={_lastRiskTsMs}\n" +
+                $"find={_lastFindText} ts={_lastFindTsMs}\n" +
+                $"guidance={_guidanceText} ts={_lastGuidanceTsMs}\n" +
                 $"selfTest={_selfTestStatus} summary={_selfTestSummary}\n" +
                 $"hitch={(_hitchMonitor != null ? _hitchMonitor.HitchCount30s : -1)}";
         }
@@ -1142,6 +1522,7 @@ namespace BYES.Quest
         private IEnumerator SendPing(bool autoProbe)
         {
             var uri = $"{_baseUrl}/api/ping";
+            TrackProbeRequest("/api/ping");
             var seq = _pingSeq++;
             var clientSendTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var payload = new JObject
@@ -1186,6 +1567,7 @@ namespace BYES.Quest
         private IEnumerator QueryVersion()
         {
             var uri = $"{_baseUrl}/api/version";
+            TrackProbeRequest("/api/version");
             using var request = UnityWebRequest.Get(uri);
             ApplyApiKeyHeader(request);
             request.timeout = Mathf.CeilToInt(QueryTimeoutSec);
@@ -1223,6 +1605,7 @@ namespace BYES.Quest
         {
             var escapedDeviceId = UnityWebRequest.EscapeURL(GetDeviceId());
             var uri = $"{_baseUrl}/api/mode?deviceId={escapedDeviceId}";
+            TrackProbeRequest("/api/mode");
             using var request = UnityWebRequest.Get(uri);
             ApplyApiKeyHeader(request);
             request.timeout = Mathf.CeilToInt(QueryTimeoutSec);
@@ -1400,6 +1783,8 @@ namespace BYES.Quest
                 captureText =
                     $"CaptureHz: {_scanController.CaptureTargetHz} | Inflight: {_scanController.InflightCount}/{_scanController.LiveMaxInflight} | ReadbackReq: {_scanController.CaptureActiveReadbacks} | Async: {(_scanController.CaptureAsyncReadbackEnabled ? "ON" : "OFF")} / {(_scanController.CaptureSupportsAsyncReadback ? "supported" : "unsupported")}";
             }
+            var probeCount10s = GetProbeCount10s();
+            captureText += $" | probe10s={probeCount10s}";
             _lastUploadText.Set(uploadText);
             _lastE2eText.Set(e2eText);
             _captureText.Set(captureText);
@@ -1419,9 +1804,13 @@ namespace BYES.Quest
             var ocrAge = _lastOcrTsMs > 0 ? $"{Math.Max(0, nowMs - _lastOcrTsMs)}ms" : "-";
             var detAge = _lastDetTsMs > 0 ? $"{Math.Max(0, nowMs - _lastDetTsMs)}ms" : "-";
             var riskAge = _lastRiskTsMs > 0 ? $"{Math.Max(0, nowMs - _lastRiskTsMs)}ms" : "-";
+            var findAge = _lastFindTsMs > 0 ? $"{Math.Max(0, nowMs - _lastFindTsMs)}ms" : "-";
+            var guidanceAge = _lastGuidanceTsMs > 0 ? $"{Math.Max(0, nowMs - _lastGuidanceTsMs)}ms" : "-";
             _lastOcrTextView?.Set($"Last OCR: {_lastOcrText} | Age: {ocrAge}");
             _lastDetTextView?.Set($"Last DET: {_lastDetText} | Age: {detAge}");
             _lastRiskTextView?.Set($"Last RISK: {_lastRiskText} | Age: {riskAge}");
+            _lastFindTextView?.Set($"Last FIND: {_lastFindText} | Age: {findAge}");
+            _guidanceTextView?.Set($"Guidance: {_guidanceText} | Age: {guidanceAge}");
 
             var state = _scanController != null ? _scanController.LastScanState : _scanStatus;
             var err = _scanController != null ? _scanController.LastScanError : _scanError;
@@ -1435,6 +1824,11 @@ namespace BYES.Quest
                 _selfTestSummary = _selfTestRunner.CurrentSummary;
             }
             _selfTestText.Set($"SelfTest: {_selfTestStatus} | {_selfTestSummary}");
+
+            if (!liveEnabled && probeCount10s >= 8)
+            {
+                _rawText.Set("MainThread Spike suspect: probe polling");
+            }
 
             if (!_rawVisible)
             {
@@ -1458,6 +1852,31 @@ namespace BYES.Quest
         {
             _toastUntilMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 1800;
             _toastText.Set(string.IsNullOrWhiteSpace(message) ? "-" : message.Trim());
+        }
+
+        private void TrackProbeRequest(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            _probeRequestTsMs.Enqueue(nowMs);
+            while (_probeRequestTsMs.Count > 0 && nowMs - _probeRequestTsMs.Peek() > 10000)
+            {
+                _probeRequestTsMs.Dequeue();
+            }
+        }
+
+        private int GetProbeCount10s()
+        {
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            while (_probeRequestTsMs.Count > 0 && nowMs - _probeRequestTsMs.Peek() > 10000)
+            {
+                _probeRequestTsMs.Dequeue();
+            }
+            return _probeRequestTsMs.Count;
         }
 
         private void SetLiveEnabledFromUi(bool enabled)

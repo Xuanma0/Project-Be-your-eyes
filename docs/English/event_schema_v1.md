@@ -40,6 +40,7 @@
 - `seg.segment`
 - `seg.prompt`
 - `det.objects`
+- `assist.trigger`
 - `depth.estimate`
 - `risk.fused`
 - `slam.pose`
@@ -207,10 +208,43 @@
     "model": "yolo11n",
     "endpoint": "http://127.0.0.1:19120/det",
     "objects": [
-      {"label": "person", "conf": 0.91, "box_xyxy": [120, 80, 380, 620]}
+      {
+        "label": "person",
+        "conf": 0.91,
+        "box_xyxy": [120, 80, 380, 620],
+        "mask": {
+          "format": "polygon_v1",
+          "points": [[120, 80], [380, 80], [380, 620], [120, 620]]
+        }
+      }
     ],
     "objectsCount": 1,
-    "topK": 5
+    "topK": 5,
+    "openVocab": true,
+    "promptUsed": ["door", "exit sign"]
+  }
+}
+```
+
+### 6.1) Assist trigger event
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000001000,
+  "frameSeq": 18,
+  "component": "gateway",
+  "category": "ui",
+  "name": "assist.trigger",
+  "phase": "result",
+  "status": "ok",
+  "payload": {
+    "schemaVersion": "byes.assist_request.v1",
+    "deviceId": "quest3-device",
+    "action": "find",
+    "targets": ["det"],
+    "maxAgeMs": 1500,
+    "cacheAgeMs": 221,
+    "prompt": {"text": "exit sign", "openVocab": true, "task": "find"}
   }
 }
 ```
