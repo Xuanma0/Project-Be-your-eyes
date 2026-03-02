@@ -74,215 +74,222 @@ namespace BYES.Quest
         private IEnumerator RunSelfTestRoutine()
         {
             _stepDurationsMs.Clear();
-            SetStatus("RUNNING", "step1 ping");
-            ResolveRefs();
-            if (_gatewayClient == null)
+            var restoreLiveAfterTest = false;
+            try
             {
-                Fail("gateway-client missing");
-                _selfTestRoutine = null;
-                yield break;
-            }
-
-            if (_scanController == null)
-            {
-                Fail("scan-controller missing");
-                _selfTestRoutine = null;
-                yield break;
-            }
-
-            var pingOk = false;
-            long pingRttMs = -1;
-            string pingError = string.Empty;
-            var pingStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            yield return PingOnce((ok, rttMs, error) =>
-            {
-                pingOk = ok;
-                pingRttMs = rttMs;
-                pingError = error;
-            });
-            _stepDurationsMs["ping"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - pingStepStartedMs);
-            if (!pingOk)
-            {
-                Fail($"/api/ping failed: {pingError}");
-                _selfTestRoutine = null;
-                yield break;
-            }
-
-            SetStatus("RUNNING", "step2 version");
-            var versionOk = false;
-            var versionText = string.Empty;
-            var versionStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            yield return GetJson("/api/version", (ok, obj, error) =>
-            {
-                if (!ok || obj == null)
+                SetStatus("RUNNING", "step1 ping");
+                ResolveRefs();
+                if (_gatewayClient == null)
                 {
-                    versionOk = false;
-                    versionText = string.IsNullOrWhiteSpace(error) ? "request failed" : error;
-                    return;
+                    Fail("gateway-client missing");
+                    yield break;
                 }
 
-                versionText = (obj.Value<string>("version") ?? string.Empty).Trim();
-                versionOk = !string.IsNullOrWhiteSpace(versionText);
-                if (!versionOk)
+                if (_scanController == null)
                 {
-                    versionText = "missing version field";
+                    Fail("scan-controller missing");
+                    yield break;
                 }
-            });
-            _stepDurationsMs["version"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - versionStepStartedMs);
-            if (!versionOk)
-            {
-                Fail($"/api/version failed: {versionText}");
-                _selfTestRoutine = null;
-                yield break;
-            }
 
-            SetStatus("RUNNING", "step3 capabilities");
-            var capabilitiesOk = false;
-            var capabilitiesText = string.Empty;
-            var capabilitiesStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            yield return GetJson("/api/capabilities", (ok, obj, error) =>
-            {
-                if (!ok || obj == null)
+                if (_scanController.IsLiveEnabled)
                 {
-                    var normalizedError = string.IsNullOrWhiteSpace(error) ? "request failed" : error;
-                    // Backward compatibility: older gateway builds may not expose /api/capabilities.
-                    // Treat 404 as non-fatal and continue with the remaining functional checks.
-                    if (normalizedError.IndexOf("404", StringComparison.OrdinalIgnoreCase) >= 0)
+                    _scanController.SetLiveEnabled(false);
+                    restoreLiveAfterTest = true;
+                    yield return new WaitForSecondsRealtime(0.2f);
+                }
+
+                var pingOk = false;
+                long pingRttMs = -1;
+                string pingError = string.Empty;
+                var pingStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                yield return PingOnce((ok, rttMs, error) =>
+                {
+                    pingOk = ok;
+                    pingRttMs = rttMs;
+                    pingError = error;
+                });
+                _stepDurationsMs["ping"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - pingStepStartedMs);
+                if (!pingOk)
+                {
+                    Fail($"/api/ping failed: {pingError}");
+                    yield break;
+                }
+
+                SetStatus("RUNNING", "step2 version");
+                var versionOk = false;
+                var versionText = string.Empty;
+                var versionStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                yield return GetJson("/api/version", (ok, obj, error) =>
+                {
+                    if (!ok || obj == null)
                     {
-                        capabilitiesOk = true;
-                        capabilitiesText = "legacy gateway (no /api/capabilities)";
+                        versionOk = false;
+                        versionText = string.IsNullOrWhiteSpace(error) ? "request failed" : error;
                         return;
                     }
 
-                    capabilitiesOk = false;
-                    capabilitiesText = normalizedError;
-                    return;
+                    versionText = (obj.Value<string>("version") ?? string.Empty).Trim();
+                    versionOk = !string.IsNullOrWhiteSpace(versionText);
+                    if (!versionOk)
+                    {
+                        versionText = "missing version field";
+                    }
+                });
+                _stepDurationsMs["version"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - versionStepStartedMs);
+                if (!versionOk)
+                {
+                    Fail($"/api/version failed: {versionText}");
+                    yield break;
                 }
 
-                var providers = obj["available_providers"] as JObject;
-                capabilitiesText = providers != null ? providers.ToString(Newtonsoft.Json.Formatting.None) : "available_providers missing";
-                capabilitiesOk = providers != null;
-            });
-            _stepDurationsMs["capabilities"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - capabilitiesStepStartedMs);
-            if (!capabilitiesOk)
-            {
-                Fail($"/api/capabilities failed: {capabilitiesText}");
-                _selfTestRoutine = null;
-                yield break;
-            }
-
-            SetStatus("RUNNING", "step4 ws connect");
-            var wsConnected = false;
-            var wsStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var wsDeadline = Time.realtimeSinceStartup + 5f;
-            while (Time.realtimeSinceStartup < wsDeadline)
-            {
-                if (_gatewayClient != null && _gatewayClient.IsConnected)
+                SetStatus("RUNNING", "step3 capabilities");
+                var capabilitiesOk = false;
+                var capabilitiesText = string.Empty;
+                var capabilitiesStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                yield return GetJson("/api/capabilities", (ok, obj, error) =>
                 {
-                    wsConnected = true;
-                    break;
+                    if (!ok || obj == null)
+                    {
+                        var normalizedError = string.IsNullOrWhiteSpace(error) ? "request failed" : error;
+                        // Backward compatibility: older gateway builds may not expose /api/capabilities.
+                        // Treat 404 as non-fatal and continue with the remaining functional checks.
+                        if (normalizedError.IndexOf("404", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            capabilitiesOk = true;
+                            capabilitiesText = "legacy gateway (no /api/capabilities)";
+                            return;
+                        }
+
+                        capabilitiesOk = false;
+                        capabilitiesText = normalizedError;
+                        return;
+                    }
+
+                    var providers = obj["available_providers"] as JObject;
+                    capabilitiesText = providers != null ? providers.ToString(Newtonsoft.Json.Formatting.None) : "available_providers missing";
+                    capabilitiesOk = providers != null;
+                });
+                _stepDurationsMs["capabilities"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - capabilitiesStepStartedMs);
+                if (!capabilitiesOk)
+                {
+                    Fail($"/api/capabilities failed: {capabilitiesText}");
+                    yield break;
                 }
-                yield return null;
-            }
-            _stepDurationsMs["ws"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - wsStepStartedMs);
-            if (!wsConnected)
-            {
-                Fail("WS not connected");
-                _selfTestRoutine = null;
-                yield break;
-            }
 
-            SetStatus("RUNNING", "step5 mode roundtrip");
-            var modeRoundtripOk = false;
-            var roundtripError = string.Empty;
-            var modeStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            yield return VerifyModeRoundtrip((ok, error) =>
-            {
-                modeRoundtripOk = ok;
-                roundtripError = error;
-            });
-            _stepDurationsMs["mode"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - modeStepStartedMs);
-            if (!modeRoundtripOk)
-            {
-                Fail($"mode roundtrip failed: {roundtripError}");
-                _selfTestRoutine = null;
-                yield break;
-            }
-
-            SetStatus("RUNNING", "step6 depth+risk");
-            var depthRiskOk = false;
-            var depthRiskError = string.Empty;
-            var depthRiskStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            yield return RunScanStep(
-                () => _scanController.DepthRiskOnceFromUi(),
-                expectedEventNames: new[] {"risk.fused", "risk.hazards", "depth.estimate"},
-                timeoutSec: Mathf.Max(3f, scanWaitTimeoutSec),
-                onDone: (ok, error) =>
+                SetStatus("RUNNING", "step4 ws connect");
+                var wsConnected = false;
+                var wsStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var wsDeadline = Time.realtimeSinceStartup + 5f;
+                while (Time.realtimeSinceStartup < wsDeadline)
                 {
-                    depthRiskOk = ok;
-                    depthRiskError = error;
-                });
-            _stepDurationsMs["depth_risk"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - depthRiskStepStartedMs);
-            if (!depthRiskOk)
-            {
-                Fail($"depth/risk failed: {depthRiskError}");
-                _selfTestRoutine = null;
-                yield break;
-            }
-
-            SetStatus("RUNNING", "step7 ocr");
-            var ocrOk = false;
-            var ocrError = string.Empty;
-            var ocrStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            yield return RunScanStep(
-                () => _scanController.ReadTextOnceFromUi(),
-                expectedEventNames: new[] {"ocr.read", "ocr"},
-                timeoutSec: Mathf.Max(5f, scanWaitTimeoutSec + 3f),
-                onDone: (ok, error) =>
+                    if (_gatewayClient != null && _gatewayClient.IsConnected)
+                    {
+                        wsConnected = true;
+                        break;
+                    }
+                    yield return null;
+                }
+                _stepDurationsMs["ws"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - wsStepStartedMs);
+                if (!wsConnected)
                 {
-                    ocrOk = ok;
-                    ocrError = error;
-                });
-            _stepDurationsMs["ocr"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - ocrStepStartedMs);
-            if (!ocrOk)
-            {
-                Fail($"ocr failed: {ocrError}");
-                _selfTestRoutine = null;
-                yield break;
-            }
+                    Fail("WS not connected");
+                    yield break;
+                }
 
-            SetStatus("RUNNING", "step8 det");
-            var detOk = false;
-            var detError = string.Empty;
-            var detStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            yield return RunScanStep(
-                () => _scanController.DetectObjectsOnceFromUi(),
-                expectedEventNames: new[] {"det.objects", "det"},
-                timeoutSec: Mathf.Max(5f, scanWaitTimeoutSec + 3f),
-                onDone: (ok, error) =>
+                SetStatus("RUNNING", "step5 mode roundtrip");
+                var modeRoundtripOk = false;
+                var roundtripError = string.Empty;
+                var modeStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                yield return VerifyModeRoundtrip((ok, error) =>
                 {
-                    detOk = ok;
-                    detError = error;
+                    modeRoundtripOk = ok;
+                    roundtripError = error;
                 });
-            _stepDurationsMs["det"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - detStepStartedMs);
-            if (!detOk)
+                _stepDurationsMs["mode"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - modeStepStartedMs);
+                if (!modeRoundtripOk)
+                {
+                    Fail($"mode roundtrip failed: {roundtripError}");
+                    yield break;
+                }
+
+                SetStatus("RUNNING", "step6 depth+risk");
+                var depthRiskOk = false;
+                var depthRiskError = string.Empty;
+                var depthRiskStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                yield return RunScanStep(
+                    () => _scanController.DepthRiskOnceFromUi(),
+                    expectedEventNames: new[] {"risk.fused", "risk.hazards", "depth.estimate"},
+                    timeoutSec: Mathf.Max(3f, scanWaitTimeoutSec),
+                    onDone: (ok, error) =>
+                    {
+                        depthRiskOk = ok;
+                        depthRiskError = error;
+                    });
+                _stepDurationsMs["depth_risk"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - depthRiskStepStartedMs);
+                if (!depthRiskOk)
+                {
+                    Fail($"depth/risk failed: {depthRiskError}");
+                    yield break;
+                }
+
+                SetStatus("RUNNING", "step7 ocr");
+                var ocrOk = false;
+                var ocrError = string.Empty;
+                var ocrStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                yield return RunScanStep(
+                    () => _scanController.ReadTextOnceFromUi(),
+                    expectedEventNames: new[] {"ocr.read", "ocr"},
+                    timeoutSec: Mathf.Max(5f, scanWaitTimeoutSec + 3f),
+                    onDone: (ok, error) =>
+                    {
+                        ocrOk = ok;
+                        ocrError = error;
+                    });
+                _stepDurationsMs["ocr"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - ocrStepStartedMs);
+                if (!ocrOk)
+                {
+                    Fail($"ocr failed: {ocrError}");
+                    yield break;
+                }
+
+                SetStatus("RUNNING", "step8 det");
+                var detOk = false;
+                var detError = string.Empty;
+                var detStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                yield return RunScanStep(
+                    () => _scanController.DetectObjectsOnceFromUi(),
+                    expectedEventNames: new[] {"det.objects", "det"},
+                    timeoutSec: Mathf.Max(5f, scanWaitTimeoutSec + 3f),
+                    onDone: (ok, error) =>
+                    {
+                        detOk = ok;
+                        detError = error;
+                    });
+                _stepDurationsMs["det"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - detStepStartedMs);
+                if (!detOk)
+                {
+                    Fail($"det failed: {detError}");
+                    yield break;
+                }
+
+                SetStatus(
+                    "PASS",
+                    $"ping={pingRttMs}ms " +
+                    $"stepMs(ping={GetStepMs("ping")},version={GetStepMs("version")},cap={GetStepMs("capabilities")},ws={GetStepMs("ws")},mode={GetStepMs("mode")},depthRisk={GetStepMs("depth_risk")},ocr={GetStepMs("ocr")},det={GetStepMs("det")}) " +
+                    $"version={versionText} ws=ok mode=ok depthRisk=ok ocr=ok det=ok");
+                if (verboseLogs)
+                {
+                    Debug.Log($"[ByesQuest3SelfTestRunner] PASS {_summary}");
+                }
+            }
+            finally
             {
-                Fail($"det failed: {detError}");
+                if (restoreLiveAfterTest && _scanController != null)
+                {
+                    _scanController.SetLiveEnabled(true);
+                }
                 _selfTestRoutine = null;
-                yield break;
             }
-
-            SetStatus(
-                "PASS",
-                $"ping={pingRttMs}ms " +
-                $"stepMs(ping={GetStepMs("ping")},version={GetStepMs("version")},cap={GetStepMs("capabilities")},ws={GetStepMs("ws")},mode={GetStepMs("mode")},depthRisk={GetStepMs("depth_risk")},ocr={GetStepMs("ocr")},det={GetStepMs("det")}) " +
-                $"version={versionText} ws=ok mode=ok depthRisk=ok ocr=ok det=ok");
-            if (verboseLogs)
-            {
-                Debug.Log($"[ByesQuest3SelfTestRunner] PASS {_summary}");
-            }
-
-            _selfTestRoutine = null;
         }
 
         private IEnumerator RunScanStep(Action trigger, string[] expectedEventNames, float timeoutSec, Action<bool, string> onDone)

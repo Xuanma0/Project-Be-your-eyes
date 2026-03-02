@@ -81,6 +81,28 @@ def test_get_mode_is_isolated_by_device_id() -> None:
     assert response_b.json()["mode"] == "walk"
 
 
+def test_get_mode_clamps_stale_client_ts_to_server_now() -> None:
+    with TestClient(app) as client:
+        post = client.post(
+            "/api/mode",
+            json={
+                "runId": "run-legacy-clock",
+                "frameSeq": 1,
+                "mode": "read_text",
+                "source": "xr",
+                # Simulate a badly drifted device clock.
+                "tsMs": 123456789,
+                "deviceId": "quest-clock-drift",
+            },
+        )
+        assert post.status_code == 200, post.text
+        response = client.get("/api/mode", params={"deviceId": "quest-clock-drift"})
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["mode"] == "read_text"
+    assert payload["source"] == "explicit"
+
+
 def test_get_mode_requires_api_key_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BYES_GATEWAY_API_KEY", "abc")
     with TestClient(app) as client:

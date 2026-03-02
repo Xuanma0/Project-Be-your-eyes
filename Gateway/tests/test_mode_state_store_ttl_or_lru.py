@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from byes.mode_state import ModeStateStore
 
 
@@ -32,8 +34,7 @@ def test_mode_state_store_lru_eviction_by_capacity() -> None:
 
 def test_mode_state_store_ttl_expires_old_entries() -> None:
     store = ModeStateStore(default_mode="walk", max_entries=8, ttl_ms=1)
-    store.set_mode(device_id="device-old", run_id=None, mode="inspect", ts_ms=0, source="system")
-
-    # ts_ms=0 is far older than now; entry should be purged on access
+    store.set_mode(device_id="device-old", run_id=None, mode="inspect", source="system")
+    time.sleep(0.01)
     assert store.get_mode(device_id="device-old", run_id=None) == "walk"
     assert store.consume_changed_flag(device_id="device-old", run_id=None) is False

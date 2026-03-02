@@ -120,11 +120,15 @@ class ModeStateStore:
         default_mode: str = "walk",
         max_entries: int = 256,
         ttl_ms: int = 30 * 60 * 1000,
+        max_clock_skew_ms: int = 10 * 60 * 1000,
     ) -> None:
         normalized_default = normalize_mode_value(default_mode) or "walk"
         self.default_mode = normalized_default
         self.max_entries = max(1, int(max_entries))
         self.ttl_ms = max(0, int(ttl_ms))
+        # Device clocks on standalone headsets can drift; clamp stale/future client ts
+        # to server-now so mode entries are not purged immediately.
+        self.max_clock_skew_ms = max(0, int(max_clock_skew_ms))
         self._device_modes: OrderedDict[str, _ModeEntry] = OrderedDict()
         self._run_modes: OrderedDict[str, _ModeEntry] = OrderedDict()
 
@@ -138,14 +142,20 @@ class ModeStateStore:
         return token or None
 
     def _resolve_ts_ms(self, ts_ms: int | None) -> int:
+        now_ms = _now_ms()
         if ts_ms is None:
-            return _now_ms()
+            return now_ms
         try:
             numeric = int(ts_ms)
         except (TypeError, ValueError):
-            return _now_ms()
+            return now_ms
         if numeric < 0:
-            return _now_ms()
+            return now_ms
+        if self.max_clock_skew_ms > 0:
+            lower_bound = now_ms - self.max_clock_skew_ms
+            upper_bound = now_ms + self.max_clock_skew_ms
+            if numeric < lower_bound or numeric > upper_bound:
+                return now_ms
         return numeric
 
     def _purge_expired(self, now_ms: int) -> None:
