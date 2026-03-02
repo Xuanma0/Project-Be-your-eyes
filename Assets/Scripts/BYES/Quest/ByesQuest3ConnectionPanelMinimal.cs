@@ -1282,6 +1282,30 @@ namespace BYES.Quest
             yield return request.SendWebRequest();
             if (request.result != UnityWebRequest.Result.Success)
             {
+                // Backward compatibility: some gateways still accept "read" instead of "read_text".
+                if (string.Equals(normalized, "read_text", StringComparison.OrdinalIgnoreCase))
+                {
+                    var fallbackOk = false;
+                    var fallbackError = request.error ?? "unknown";
+                    yield return TrySetModeFallbackRead(modeRaw: "read", onDone: (ok, error) =>
+                    {
+                        fallbackOk = ok;
+                        fallbackError = error;
+                    });
+                    if (fallbackOk)
+                    {
+                        SyncLocalModeState(normalized);
+                        _modeText.Set($"Mode: {_currentMode}");
+                        ShowToast("Set mode -> read");
+                        yield return QueryMode();
+                        yield break;
+                    }
+
+                    _rawText.Set($"Set mode error: {fallbackError}");
+                    ShowToast($"Set mode failed: {fallbackError}");
+                    yield break;
+                }
+
                 _rawText.Set($"Set mode error: {request.error}");
                 ShowToast($"Set mode failed: {request.error}");
                 yield break;
@@ -1306,6 +1330,35 @@ namespace BYES.Quest
             {
                 ShowToast($"Mode readback mismatch (want {normalized}, got {_currentMode})");
             }
+        }
+
+        private IEnumerator TrySetModeFallbackRead(string modeRaw, Action<bool, string> onDone)
+        {
+            var uri = $"{_baseUrl}/api/mode";
+            var payload = new JObject
+            {
+                ["runId"] = "quest3-smoke",
+                ["frameSeq"] = Math.Max(1, _modeSeq++),
+                ["mode"] = modeRaw,
+                ["source"] = "xr",
+                ["tsMs"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ["deviceId"] = GetDeviceId(),
+            };
+            using var request = new UnityWebRequest(uri, UnityWebRequest.kHttpVerbPOST);
+            request.uploadHandler = new UploadHandlerRaw(System.Text.Encoding.UTF8.GetBytes(payload.ToString(Newtonsoft.Json.Formatting.None)));
+            request.downloadHandler = new DownloadHandlerBuffer();
+            request.timeout = Mathf.CeilToInt(QueryTimeoutSec);
+            request.SetRequestHeader("Content-Type", "application/json");
+            ApplyApiKeyHeader(request);
+
+            yield return request.SendWebRequest();
+            if (request.result == UnityWebRequest.Result.Success)
+            {
+                onDone?.Invoke(true, string.Empty);
+                yield break;
+            }
+
+            onDone?.Invoke(false, request.error ?? "unknown");
         }
 
         private void RefreshAllStatusLines()

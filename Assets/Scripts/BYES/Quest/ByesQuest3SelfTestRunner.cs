@@ -470,7 +470,7 @@ namespace BYES.Quest
                 ["runId"] = "quest3-smoke",
                 ["frameSeq"] = 1,
                 ["mode"] = mode,
-                ["source"] = "selftest",
+                ["source"] = "xr",
                 ["tsMs"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 ["deviceId"] = deviceId,
             };
@@ -496,7 +496,7 @@ namespace BYES.Quest
                     ["runId"] = "quest3-smoke",
                     ["frameSeq"] = 1,
                     ["mode"] = "read",
-                    ["source"] = "selftest",
+                    ["source"] = "xr",
                     ["tsMs"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     ["deviceId"] = deviceId,
                 }, (ok, _, error) =>

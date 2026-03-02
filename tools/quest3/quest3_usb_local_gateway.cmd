@@ -51,12 +51,13 @@ echo [quest3_usb_local_gateway] Active reverse rules:
 "%ADB_BIN%" reverse --list
 
 echo [quest3_usb_local_gateway] STEP 1/2: Starting gateway window on 127.0.0.1:%GATEWAY_PORT% ...
-start "BYES-Gateway" cmd /c "cd /d "%REPO_ROOT%\Gateway" && set BYES_INFERENCE_EMIT_WS_V1=1 && set BYES_EMIT_NET_DEBUG=1 && python scripts/dev_up.py --gateway-only --host 127.0.0.1 --gateway-port %GATEWAY_PORT% --no-reload"
+start "BYES-Gateway" cmd /c "cd /d "%REPO_ROOT%\Gateway" && set BYES_INFERENCE_EMIT_WS_V1=1 && set BYES_EMIT_NET_DEBUG=1 && set BYES_ENABLE_OCR=1 && set BYES_ENABLE_DET=1 && set BYES_ENABLE_DEPTH=1 && set BYES_ENABLE_RISK=1 && set BYES_OCR_BACKEND=mock && set BYES_DET_BACKEND=mock && set BYES_DEPTH_BACKEND=mock && set BYES_RISK_BACKEND=mock && python scripts/dev_up.py --gateway-only --host 127.0.0.1 --gateway-port %GATEWAY_PORT% --no-reload"
 
 echo.
 echo [quest3_usb_local_gateway] STEP 2/2: In Quest panel use:
 echo   host = 127.0.0.1
 echo   port = %GATEWAY_PORT%
 echo Then click: SelfTest (or Refresh then SelfTest if status is stale)
+echo   - Read Text Once / Detect Once will use mock providers by default in this profile.
 
 exit /b 0
