@@ -1036,7 +1036,7 @@ namespace BYES.Quest
             _runtimeCanvas = canvas;
 
             var canvasRect = canvasGo.GetComponent<RectTransform>();
-            canvasRect.sizeDelta = new Vector2(1720f, 1600f);
+            canvasRect.sizeDelta = new Vector2(1720f, 1860f);
             canvasRect.localScale = Vector3.one * 0.00025f;
             canvasRect.localPosition = Vector3.zero;
             canvasRect.localRotation = Quaternion.identity;
@@ -1044,7 +1044,7 @@ namespace BYES.Quest
             canvasGo.AddComponent<CanvasScaler>();
             AddBestRaycaster(canvasGo);
 
-            var panel = CreateUiObject("Panel", canvasGo.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(1720f, 1560f), Vector2.zero);
+            var panel = CreateUiObject("Panel", canvasGo.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(1720f, 1820f), Vector2.zero);
             var panelImage = panel.AddComponent<Image>();
             panelImage.color = new Color(0f, 0f, 0f, 0.8f);
             var panelGroup = panel.AddComponent<CanvasGroup>();
@@ -1074,23 +1074,23 @@ namespace BYES.Quest
             _selfTestText = CreateText("SelfTest", panel.transform, "SelfTest: IDLE", 26, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1178f), new Vector2(1480f, 96f));
             _captureText = CreateText("CaptureStats", panel.transform, "Capture: -", 22, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1272f), new Vector2(1480f, 52f));
             _hitchText = CreateText("HitchStats", panel.transform, "Hitch30s: -", 22, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1320f), new Vector2(1480f, 52f));
-            _toastText = CreateText("Toast", panel.transform, "-", 32, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 230f), new Vector2(1480f, 72f));
-            _rawText = CreateText("Raw", panel.transform, "-", 24, TextAnchor.UpperLeft, new Vector2(0.5f, 0f), new Vector2(0f, 150f), new Vector2(1480f, 140f));
+            _toastText = CreateText("Toast", panel.transform, "-", 32, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 290f), new Vector2(1480f, 72f));
+            _rawText = CreateText("Raw", panel.transform, "-", 24, TextAnchor.UpperLeft, new Vector2(0.5f, 0f), new Vector2(0f, 210f), new Vector2(1480f, 170f), allowWrap: true);
 
-            CreateButton(panel.transform, "PingButton", "Ping", new Vector2(-650f, -1388f), OnPingClicked, markAsAction: true);
-            CreateButton(panel.transform, "VersionButton", "Version", new Vector2(-420f, -1388f), OnVersionClicked, markAsAction: true);
-            CreateButton(panel.transform, "ModeReadButton", "Read", new Vector2(-190f, -1388f), () => OnSetModeClicked("read_text"), markAsAction: true);
-            CreateButton(panel.transform, "ModeWalkButton", "Walk", new Vector2(40f, -1388f), () => OnSetModeClicked("walk"), markAsAction: true);
-            CreateButton(panel.transform, "ModeInspectButton", "Inspect", new Vector2(270f, -1388f), () => OnSetModeClicked("inspect"), markAsAction: true);
-            _scanButton = CreateButton(panel.transform, "ScanButton", "Scan Once", new Vector2(500f, -1388f), OnScanClicked, markAsAction: true);
-            _liveButton = CreateButton(panel.transform, "LiveButton", "Live Start", new Vector2(730f, -1388f), OnLiveClicked, markAsAction: true);
-            _liveToggle = CreateLiveToggle(panel.transform, "LiveToggle", "Live", new Vector2(730f, -1452f), OnLiveToggleChanged, markAsAction: true);
+            CreateButton(panel.transform, "PingButton", "Ping", new Vector2(-650f, -1508f), OnPingClicked, markAsAction: true);
+            CreateButton(panel.transform, "VersionButton", "Version", new Vector2(-420f, -1508f), OnVersionClicked, markAsAction: true);
+            CreateButton(panel.transform, "ModeReadButton", "Read", new Vector2(-190f, -1508f), () => OnSetModeClicked("read_text"), markAsAction: true);
+            CreateButton(panel.transform, "ModeWalkButton", "Walk", new Vector2(40f, -1508f), () => OnSetModeClicked("walk"), markAsAction: true);
+            CreateButton(panel.transform, "ModeInspectButton", "Inspect", new Vector2(270f, -1508f), () => OnSetModeClicked("inspect"), markAsAction: true);
+            _scanButton = CreateButton(panel.transform, "ScanButton", "Scan Once", new Vector2(500f, -1508f), OnScanClicked, markAsAction: true);
+            _liveButton = CreateButton(panel.transform, "LiveButton", "Live Start", new Vector2(730f, -1508f), OnLiveClicked, markAsAction: true);
+            _liveToggle = CreateLiveToggle(panel.transform, "LiveToggle", "Live", new Vector2(730f, -1588f), OnLiveToggleChanged, markAsAction: true);
 
-            CreateButton(panel.transform, "RefreshButton", "Refresh", new Vector2(-420f, -1452f), OnRefreshClicked, markAsAction: true);
-            CreateButton(panel.transform, "SelfTestButton", "SelfTest", new Vector2(-190f, -1452f), OnSelfTestClicked, markAsAction: true);
-            CreateButton(panel.transform, "ReconnectWsButton", "WS Reconnect", new Vector2(40f, -1452f), OnReconnectWsClicked, markAsAction: true);
-            CreateButton(panel.transform, "RecordStartButton", "Rec Start", new Vector2(270f, -1452f), OnRecordStartClicked, markAsAction: true);
-            CreateButton(panel.transform, "RecordStopButton", "Rec Stop", new Vector2(500f, -1452f), OnRecordStopClicked, markAsAction: true);
+            CreateButton(panel.transform, "RefreshButton", "Refresh", new Vector2(-420f, -1588f), OnRefreshClicked, markAsAction: true);
+            CreateButton(panel.transform, "SelfTestButton", "SelfTest", new Vector2(-190f, -1588f), OnSelfTestClicked, markAsAction: true);
+            CreateButton(panel.transform, "ReconnectWsButton", "WS Reconnect", new Vector2(40f, -1588f), OnReconnectWsClicked, markAsAction: true);
+            CreateButton(panel.transform, "RecordStartButton", "Rec Start", new Vector2(270f, -1588f), OnRecordStartClicked, markAsAction: true);
+            CreateButton(panel.transform, "RecordStopButton", "Rec Stop", new Vector2(500f, -1588f), OnRecordStopClicked, markAsAction: true);
         }
 
         private void OnPingClicked()
@@ -2924,21 +2924,22 @@ namespace BYES.Quest
             TextAnchor fallbackAnchor,
             Vector2 anchor,
             Vector2 anchoredPos,
-            Vector2 size)
+            Vector2 size,
+            bool allowWrap = false)
         {
             var textGo = CreateUiObject(name, parent, anchor, anchor, size, anchoredPos);
             var tmpType = Type.GetType("TMPro.TextMeshProUGUI, Unity.TextMeshPro");
             if (tmpType != null)
             {
                 var component = textGo.AddComponent(tmpType);
-                return new TmpTextView(component, value, fontSize);
+                return new TmpTextView(component, value, fontSize, allowWrap);
             }
 
             var uiText = textGo.AddComponent<Text>();
             uiText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             uiText.color = Color.white;
             uiText.alignment = fallbackAnchor;
-            uiText.horizontalOverflow = HorizontalWrapMode.Wrap;
+            uiText.horizontalOverflow = allowWrap ? HorizontalWrapMode.Wrap : HorizontalWrapMode.Overflow;
             uiText.verticalOverflow = VerticalWrapMode.Truncate;
             uiText.resizeTextForBestFit = false;
             uiText.fontSize = fontSize;
@@ -3177,9 +3178,10 @@ namespace BYES.Quest
             private readonly PropertyInfo _fontSizeProperty;
             private readonly PropertyInfo _colorProperty;
             private readonly PropertyInfo _alignmentProperty;
+            private readonly PropertyInfo _wordWrapProperty;
             private string _lastValue = string.Empty;
 
-            public TmpTextView(Component component, string value, int fontSize)
+            public TmpTextView(Component component, string value, int fontSize, bool allowWrap)
             {
                 _component = component;
                 var type = component.GetType();
@@ -3187,6 +3189,7 @@ namespace BYES.Quest
                 _fontSizeProperty = type.GetProperty("fontSize");
                 _colorProperty = type.GetProperty("color");
                 _alignmentProperty = type.GetProperty("alignment");
+                _wordWrapProperty = type.GetProperty("enableWordWrapping");
 
                 if (_fontSizeProperty != null)
                 {
@@ -3215,6 +3218,11 @@ namespace BYES.Quest
                     {
                         _alignmentProperty.SetValue(_component, centerValue, null);
                     }
+                }
+
+                if (_wordWrapProperty != null && _wordWrapProperty.PropertyType == typeof(bool))
+                {
+                    _wordWrapProperty.SetValue(_component, allowWrap, null);
                 }
 
                 Set(value);

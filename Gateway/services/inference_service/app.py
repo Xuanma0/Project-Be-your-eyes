@@ -308,41 +308,59 @@ def infer_det(request: InferenceRequest) -> dict[str, Any]:
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"det_infer_failed:{exc.__class__.__name__}") from exc
+        # Treat unexpected provider failures as temporary unavailability instead of hard 500.
+        raise HTTPException(status_code=503, detail=f"det_infer_failed:{exc.__class__.__name__}") from exc
 
     model = str(result.get("model", provider.model)).strip() or provider.model
     latency_ms = max(0, _now_ms() - started)
     backend = str(result.get("backend", provider.name)).strip().lower() or provider.name
     endpoint = result.get("endpoint", getattr(provider, "endpoint", None))
     endpoint_text = str(endpoint).strip() if endpoint is not None else ""
-    objects, warnings_count = _normalize_det_objects(result.get("objects"))
-    top_k = _to_nonnegative_int(result.get("topK")) or 5
-    response: dict[str, Any] = {
-        "schemaVersion": "byes.det.v1",
-        "runId": request.runId,
-        "frameSeq": request.frameSeq,
-        "objects": objects,
-        "objectsCount": len(objects),
-        "topK": max(1, top_k),
-        "latencyMs": latency_ms,
-        "model": model,
-        "backend": backend,
-        "endpoint": endpoint_text or None,
-    }
-    if "openVocab" in result:
-        response["openVocab"] = bool(result.get("openVocab"))
-    prompt_used = result.get("promptUsed")
-    if isinstance(prompt_used, list):
-        response["promptUsed"] = [str(item).strip() for item in prompt_used if str(item).strip()]
-    image_width = _to_positive_int(result.get("imageWidth"))
-    image_height = _to_positive_int(result.get("imageHeight"))
-    if image_width is not None:
-        response["imageWidth"] = image_width
-    if image_height is not None:
-        response["imageHeight"] = image_height
-    if warnings_count > 0:
-        response["warningsCount"] = warnings_count
-    return response
+    try:
+        objects, warnings_count = _normalize_det_objects(result.get("objects"))
+        top_k = _to_nonnegative_int(result.get("topK")) or 5
+        response: dict[str, Any] = {
+            "schemaVersion": "byes.det.v1",
+            "runId": request.runId,
+            "frameSeq": request.frameSeq,
+            "objects": objects,
+            "objectsCount": len(objects),
+            "topK": max(1, top_k),
+            "latencyMs": latency_ms,
+            "model": model,
+            "backend": backend,
+            "endpoint": endpoint_text or None,
+        }
+        if "openVocab" in result:
+            response["openVocab"] = bool(result.get("openVocab"))
+        prompt_used = result.get("promptUsed")
+        if isinstance(prompt_used, list):
+            response["promptUsed"] = [str(item).strip() for item in prompt_used if str(item).strip()]
+        image_width = _to_positive_int(result.get("imageWidth"))
+        image_height = _to_positive_int(result.get("imageHeight"))
+        if image_width is not None:
+            response["imageWidth"] = image_width
+        if image_height is not None:
+            response["imageHeight"] = image_height
+        if warnings_count > 0:
+            response["warningsCount"] = warnings_count
+        return response
+    except Exception as exc:  # noqa: BLE001
+        # Keep /det stable in pilot mode even when provider outputs malformed payloads.
+        return {
+            "schemaVersion": "byes.det.v1",
+            "runId": request.runId,
+            "frameSeq": request.frameSeq,
+            "objects": [],
+            "objectsCount": 0,
+            "topK": 5,
+            "latencyMs": latency_ms,
+            "model": model,
+            "backend": backend,
+            "endpoint": endpoint_text or None,
+            "warningsCount": 1,
+            "warnings": [f"det_postprocess_failed:{exc.__class__.__name__}"],
+        }
 
 
 @app.post("/risk")

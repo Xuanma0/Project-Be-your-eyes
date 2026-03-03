@@ -284,6 +284,31 @@ Evidence checklist:
   - `/api/asr` request (when ASR enabled)
   - `/api/record/start` + `/api/record/stop` 200 lines
 
+## 8.6) One-Command Auto Audit (v5.04)
+
+When you want a repeatable PC-side check for `capabilities + record -> replay -> report`, run:
+
+```bat
+tools\quest3\quest3_auto_audit_v5_04.cmd
+```
+
+Optional args:
+
+```bat
+tools\quest3\quest3_auto_audit_v5_04.cmd http://127.0.0.1:18000 quest3-smoke 8
+```
+
+- arg1: base URL
+- arg2: device id
+- arg3: record duration seconds
+
+Outputs are written to:
+
+- `Gateway/artifacts/quest_audit/quest_v504_audit_summary.json`
+- `Gateway/artifacts/quest_audit/quest_v504_audit_summary.md`
+- `Gateway/artifacts/quest_audit/quest_v504_report.md`
+- `Gateway/artifacts/quest_audit/quest_v504_report.json`
+
 ## 9) Diagnosing Periodic Hitch (v4.98)
 
 When users report "every 1 second a brief freeze", check panel metrics with `Live OFF`:
