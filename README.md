@@ -98,10 +98,16 @@ Quest 3 smoke one-command launcher (Windows):
 powershell -ExecutionPolicy Bypass -File tools/quest3/quest3_smoke.ps1 --usb
 ```
 
-Quest 3 v5.02 real-stack launcher (USB + gateway + inference providers + assist/find/record):
+Quest 3 v5.03 real-stack launcher (USB + gateway + inference providers + assist/find/track/record):
 
 ```bat
-tools\quest3\quest3_usb_realstack_v5_02.cmd
+tools\quest3\quest3_usb_realstack_v5_03.cmd
+```
+
+Optional online pySLAM bridge in the same launcher:
+```bat
+set BYES_ENABLE_PYSLAM_SERVICE=1
+tools\quest3\quest3_usb_realstack_v5_03.cmd
 ```
 
 Optional hardened profile smoke (still local bind unless you override host):
@@ -145,6 +151,7 @@ python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 12
 - v5.00 Quest default entry: palm-up + pinch opens official hand menu (`Connection / Actions / Mode / Panels / Settings / Debug`)
 - v5.01 actions in hand menu include `Read Text Once` and `Detect Once`, and panel shows `Last OCR / Last DET / Last RISK` with age.
 - v5.02 adds promptable `Find` actions (Door/Exit/Stairs/Elevator/Restroom/Person), `Start Record/Stop Record`, and panel lines for `Last FIND` and `Guidance`.
+- v5.03 adds `Select ROI / Start Track / Track Step / Stop Track`, `Last TARGET`, and optional guidance audio/haptics cues.
 - Gesture shortcuts default to `Safe` mode (no trigger while menu/system gesture/UI/grab conflict is active)
 - Smoke panel move/resize is now explicit opt-in from hand menu (`Panels -> Enable Move/Resize`)
 - Passthrough can be toggled from hand menu (`Settings -> Passthrough`)
@@ -203,6 +210,10 @@ Optional real providers for v5.02:
 - New in v5.02:
   - `POST /api/assist` reuses cached latest frame for per-action inference (`ocr/det/find/risk/depth/seg`) without requiring a fresh upload.
   - `POST /api/record/start` and `POST /api/record/stop` create Quest recording run-packages under `Gateway/runs/quest_recordings/`.
+- New in v5.03:
+  - `POST /api/assist` supports target session actions: `target_start`, `target_step`, `target_stop` (ROI + session id + tracker options).
+  - Target session events are emitted on WS v1: `target.session` and `target.update`.
+  - Optional offline pySLAM helper: `python Gateway/scripts/pyslam_run_package.py --run-package <path>`.
 
 ## 5) Data & Evaluation Flow
 
@@ -275,7 +286,7 @@ python Gateway/scripts/verify_contracts.py --check-lock
 If maintainers decide to align release tags with `VERSION`:
 
 ```bash
-git tag -a v5.02 -m "v5.02" <commit>
+git tag -a v5.03 -m "v5.03" <commit>
 ```
 
 Do not run this automatically unless release approval is explicit.

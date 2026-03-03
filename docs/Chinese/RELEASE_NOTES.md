@@ -1,4 +1,11 @@
-Current development version is defined by `VERSION`; this file records historical milestones only.
+﻿Current development version is defined by `VERSION`; this file records historical milestones only.
+
+## v5.03
+- 新增 Target Tracking Assist：`POST /api/assist` 支持 `target_start / target_step / target_stop`，并发出 `target.session` / `target.update` 事件。
+- Quest 面板新增 `Last TARGET`（含 Age），并接入 Guidance 文本 + 空间音频/触觉开关。
+- 新增可选 Passthrough 控制桥接（`ByesPassthroughController`）与菜单开关状态显示。
+- 新增可选 pySLAM 离线脚本 `Gateway/scripts/pyslam_run_package.py` 与 `services/pyslam_service` 桥接骨架。
+- 新增一键 USB realstack 脚本：`tools/quest3/quest3_usb_realstack_v5_03.cmd`。
 
 ## v5.02
 - Promptable Find：在 real DET 基础上增加概念查找（Find Door / Exit Sign / Stairs / Elevator / Restroom / Person）。
@@ -180,3 +187,4 @@ Current development version is defined by `VERSION`; this file records historica
   - `scaleDriftProxy`
   - `refViewStrategyDiversityCount`
 - 鎺ュ叆 report/leaderboard/linter/contract gate/matrix summary銆?
+

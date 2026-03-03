@@ -89,6 +89,11 @@ from byes.model_manifest import build_model_manifest
 from byes.middleware.rate_limit import RateLimitConfig, RateLimitMiddleware
 from byes.middleware.request_size_limit import RequestSizeLimitMiddleware, RequestSizeLimits
 from byes.recording import RecordingManager
+from byes.target_tracking import (
+    TargetTrackingStore,
+    build_target_session_payload,
+    build_target_update_payload,
+)
 from scripts.report_run import generate_report_outputs, load_run_package, safe_extract_zip
 
 
@@ -529,13 +534,27 @@ class PingRequest(BaseModel):
 
 class AssistRequest(BaseModel):
     deviceId: str | None = None
-    action: Literal["ocr", "det", "find", "risk", "depth", "seg", "slam"] | None = None
+    action: Literal[
+        "ocr",
+        "det",
+        "find",
+        "risk",
+        "depth",
+        "seg",
+        "slam",
+        "target_start",
+        "target_step",
+        "target_stop",
+    ] | None = None
     targets: list[str] | None = None
     prompt: str | dict[str, Any] | None = None
     roi: dict[str, Any] | None = None
     maxAgeMs: int | None = 1500
     runId: str | None = None
     mode: str | None = None
+    sessionId: str | None = None
+    tracker: Literal["botsort", "bytetrack"] | None = None
+    seg: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _validate_assist(self) -> "AssistRequest":
@@ -715,6 +734,9 @@ class GatewayApp:
         assist_cache_ttl_ms = max(200, int(os.getenv("BYES_ASSIST_CACHE_TTL_MS", "2000") or "2000"))
         assist_cache_max_entries = max(1, int(os.getenv("BYES_ASSIST_CACHE_MAX_ENTRIES", "16") or "16"))
         self.frame_cache = FrameCache(ttl_ms=assist_cache_ttl_ms, max_entries=assist_cache_max_entries)
+        target_ttl_ms = max(1000, int(os.getenv("BYES_TARGET_TRACKING_TTL_MS", "30000") or "30000"))
+        target_max_entries = max(1, int(os.getenv("BYES_TARGET_TRACKING_MAX_ENTRIES", "128") or "128"))
+        self.target_tracking = TargetTrackingStore(ttl_ms=target_ttl_ms, max_entries=target_max_entries)
         self.recording = RecordingManager(run_packages_root=self.run_packages_root)
         self.pov_store = PovStore()
 
@@ -728,6 +750,7 @@ class GatewayApp:
         self.slam_backend = get_slam_backend(self.config)
         self._inference_events.clear()
         self.frame_cache.reset()
+        self.target_tracking.reset()
         self.recording.reset()
         self.costmap_fuser.reset()
         self.dynamic_mask_cache.reset()
@@ -2666,19 +2689,74 @@ async def api_capabilities() -> dict[str, Any]:
             "assist": True,
             "recording": True,
             "findPromptable": True,
+            "targetTracking": True,
+            "roiAssist": True,
         },
     }
 
 
 @app.post("/api/assist")
 async def api_assist(request: Request, payload: AssistRequest) -> dict[str, Any]:
+    action_token = str(payload.action or "").strip().lower()
     device_id = str(payload.deviceId or "").strip() or "default"
+
+    if action_token == "target_stop":
+        stopped = gateway.target_tracking.stop_session(device_id=device_id, session_id=payload.sessionId)
+        if stopped is None:
+            raise HTTPException(status_code=404, detail="target_session_not_found")
+        stop_run_id = str(payload.runId or "").strip() or str(stopped.run_id or "unknown-run")
+        stop_frame_seq = 1
+        cached_for_stop = gateway.frame_cache.get(device_id=device_id, max_age_ms=max(200, int(payload.maxAgeMs or 1500)))
+        if cached_for_stop is not None:
+            stop_frame_seq = int(max(1, int(cached_for_stop.frame_seq)))
+        stop_event = _build_byes_event(
+            run_id=stop_run_id,
+            frame_seq=stop_frame_seq,
+            category="tool",
+            name="target.session",
+            payload=build_target_session_payload(stopped, status="closed", reason="stopped"),
+        )
+        await gateway._emit_inference_event(stop_event)  # noqa: SLF001
+        return {
+            "ok": True,
+            "deviceId": device_id,
+            "action": action_token,
+            "sessionId": stopped.session_id,
+            "status": "closed",
+        }
+
     max_age_ms = 1500 if payload.maxAgeMs is None else max(100, int(payload.maxAgeMs))
     cached = gateway.frame_cache.get(device_id=device_id, max_age_ms=max_age_ms)
     if cached is None:
         raise HTTPException(status_code=404, detail="assist_cache_miss")
 
+    session = None
     targets = _resolve_assist_targets(payload.action, payload.targets)
+    if action_token == "target_start":
+        prompt_text = _extract_assist_prompt_text(payload.prompt)
+        seg_enabled, seg_mode = _extract_assist_seg_options(payload)
+        session = gateway.target_tracking.start_session(
+            device_id=device_id,
+            run_id=str(payload.runId or "").strip() or str(cached.run_id or "unknown-run"),
+            roi=payload.roi if isinstance(payload.roi, dict) else {},
+            prompt=prompt_text,
+            tracker=str(payload.tracker or "botsort"),
+            seg_enabled=seg_enabled,
+            seg_mode=seg_mode,
+            session_id=payload.sessionId,
+        )
+        targets = ["det"]
+        if bool(session.seg_enabled):
+            targets.append("seg")
+    elif action_token == "target_step":
+        session = gateway.target_tracking.get_session(device_id=device_id, session_id=payload.sessionId)
+        if session is None:
+            raise HTTPException(status_code=404, detail="target_session_not_found")
+        gateway.target_tracking.touch_session(session)
+        targets = ["det"]
+        if bool(session.seg_enabled):
+            targets.append("seg")
+
     if not targets:
         raise HTTPException(status_code=400, detail="assist_targets_empty")
 
@@ -2694,10 +2772,22 @@ async def api_assist(request: Request, payload: AssistRequest) -> dict[str, Any]
 
     if isinstance(payload.roi, dict):
         meta_json["roi"] = dict(payload.roi)
+    if session is not None:
+        meta_json["sessionId"] = session.session_id
+        meta_json["roi"] = dict(session.roi)
+        meta_json["targetTracking"] = {
+            "enabled": True,
+            "sessionId": session.session_id,
+            "tracker": session.tracker,
+            "action": action_token,
+            "seg": {"enabled": bool(session.seg_enabled), "mode": session.seg_mode},
+        }
 
     if "det" in targets:
         prompt_obj: dict[str, Any] | None = None
-        if isinstance(payload.prompt, dict):
+        if session is not None and session.prompt:
+            prompt_obj = {"text": session.prompt, "openVocab": True, "task": "find"}
+        elif isinstance(payload.prompt, dict):
             prompt_obj = dict(payload.prompt)
         elif isinstance(payload.prompt, str) and str(payload.prompt).strip():
             prompt_obj = {"text": str(payload.prompt).strip()}
@@ -2758,13 +2848,44 @@ async def api_assist(request: Request, payload: AssistRequest) -> dict[str, Any]
             "maxAgeMs": int(max_age_ms),
             "cacheAgeMs": int(cached.age_ms),
             "prompt": meta_json.get("prompt"),
+            "sessionId": session.session_id if session is not None else None,
         },
     )
     await gateway._emit_inference_event(assist_event)  # noqa: SLF001
 
-    return {
+    target_update_payload: dict[str, Any] | None = None
+    if session is not None and action_token in {"target_start", "target_step"}:
+        if action_token == "target_start":
+            target_session_event = _build_byes_event(
+                run_id=run_id,
+                frame_seq=event_frame_seq,
+                category="tool",
+                name="target.session",
+                payload=build_target_session_payload(session, status="active"),
+            )
+            await gateway._emit_inference_event(target_session_event)  # noqa: SLF001
+
+        det_payload = _find_recent_event_payload(run_id=run_id, frame_seq=event_frame_seq, event_name="det.objects")
+        seg_payload = _find_recent_event_payload(run_id=run_id, frame_seq=event_frame_seq, event_name="seg.masks")
+        target_update_payload = build_target_update_payload(
+            session,
+            step=max(1, int(event_frame_seq)),
+            det_payload=det_payload,
+            seg_payload=seg_payload,
+        )
+        target_update_event = _build_byes_event(
+            run_id=run_id,
+            frame_seq=event_frame_seq,
+            category="tool",
+            name="target.update",
+            payload=target_update_payload,
+        )
+        await gateway._emit_inference_event(target_update_event)  # noqa: SLF001
+
+    response: dict[str, Any] = {
         "ok": True,
         "deviceId": device_id,
+        "action": action_token or None,
         "seq": int(seq),
         "frameSeq": int(event_frame_seq),
         "runId": run_id,
@@ -2772,6 +2893,10 @@ async def api_assist(request: Request, payload: AssistRequest) -> dict[str, Any]
         "cacheAgeMs": int(cached.age_ms),
         "cacheFrameSeq": int(cached.frame_seq),
     }
+    if session is not None:
+        response["sessionId"] = session.session_id
+        response["targetTracking"] = target_update_payload
+    return response
 
 
 @app.post("/api/record/start")
@@ -5260,6 +5385,10 @@ def _resolve_assist_targets(action: str | None, raw_targets: list[str] | None) -
     if normalized:
         return normalized
     action_token = str(action or "").strip().lower()
+    if action_token in {"target_start", "target_step"}:
+        return ["det"]
+    if action_token == "target_stop":
+        return []
     mapped = _normalize_target_token(action_token)
     if mapped is not None:
         return [mapped]
@@ -5304,6 +5433,42 @@ def _resolve_det_overrides(meta: dict[str, Any]) -> tuple[list[str] | None, dict
         det_prompt = dict(frame_meta.get("prompt"))
 
     return det_targets, det_prompt
+
+
+def _extract_assist_prompt_text(prompt: str | dict[str, Any] | None) -> str | None:
+    if isinstance(prompt, str):
+        text = str(prompt).strip()
+        return text or None
+    if isinstance(prompt, dict):
+        for key in ("text", "prompt", "label"):
+            value = str(prompt.get(key, "") or "").strip()
+            if value:
+                return value
+    return None
+
+
+def _extract_assist_seg_options(payload: AssistRequest) -> tuple[bool, str | None]:
+    if not isinstance(payload.seg, dict):
+        return False, None
+    enabled = bool(payload.seg.get("enabled", False))
+    mode = str(payload.seg.get("mode", "") or "").strip() or None
+    return enabled, mode
+
+
+def _find_recent_event_payload(run_id: str, frame_seq: int, event_name: str) -> dict[str, Any] | None:
+    target_run = str(run_id or "").strip()
+    target_seq = int(max(1, frame_seq))
+    for row in reversed(gateway._inference_events):  # noqa: SLF001
+        if str(row.get("runId", "")).strip() != target_run:
+            continue
+        if int(_to_nonnegative_int(row.get("frameSeq"), 0) or 0) != target_seq:
+            continue
+        if str(row.get("name", "")).strip() != str(event_name).strip():
+            continue
+        payload = row.get("payload")
+        if isinstance(payload, dict):
+            return payload
+    return None
 
 
 def _build_depth_fused_risk_payload(depth_payload: dict[str, Any] | None) -> dict[str, Any] | None:

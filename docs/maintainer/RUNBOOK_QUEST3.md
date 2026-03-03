@@ -4,7 +4,7 @@
 
 ## 1) Build Prerequisites
 
-- Unity version: `6000.3.5f2` (`ProjectSettings/ProjectVersion.txt`).
+- Unity version: `6000.3.10f1` (`ProjectSettings/ProjectVersion.txt`).
 - XR packages present:
   - `com.unity.xr.openxr`
   - `com.unity.xr.meta-openxr` (>= 2.3.0)
@@ -35,6 +35,10 @@ tools\quest3\quest3_usb_realstack_v5_01.cmd
    v5.02 pilot launcher (assist/find/record enabled):
 ```bat
 tools\quest3\quest3_usb_realstack_v5_02.cmd
+```
+   v5.03 pilot launcher (assist/find/track/record + guidance toggles):
+```bat
+tools\quest3\quest3_usb_realstack_v5_03.cmd
 ```
 2. On Quest, open `Quest3SmokeScene` app and look at the floating panel in front of you.
 3. Confirm panel base URL is `http://127.0.0.1:18000`.
@@ -172,6 +176,61 @@ tools\quest3\quest3_usb_realstack_v5_02.cmd
 python Gateway/scripts/replay_run_package.py --run-package <recordingPath> --reset
 python Gateway/scripts/report_run.py --run-package <recordingPath>
 ```
+
+## 8.3) v5.03 ROI -> Target Tracking -> Guidance -> Recording (USB)
+
+1. Start realstack:
+```bat
+tools\quest3\quest3_usb_realstack_v5_03.cmd
+```
+   Optional online pySLAM bridge:
+```bat
+set BYES_ENABLE_PYSLAM_SERVICE=1
+tools\quest3\quest3_usb_realstack_v5_03.cmd
+```
+2. In Quest hand menu:
+   - `Debug -> Run SelfTest` (PASS expected; passthrough may show `SKIP` with reason when unavailable).
+3. Manual target-tracking loop:
+   - `Actions -> Select ROI` (default center ROI is used in smoke profile)
+   - `Actions -> Start Track`
+   - `Actions -> Track Step` (repeat 2-5 times while moving view)
+   - `Actions -> Stop Track`
+4. Expected panel lines update:
+   - `Last TARGET`
+   - `Guidance` (`LEFT/RIGHT/CENTER/STOP`)
+   - `Last Event` contains `target.session` / `target.update`
+5. Guidance toggles:
+   - `Settings -> Auto Guidance`
+   - `Settings -> Guidance Audio`
+   - `Settings -> Guidance Haptics` (controller-only; hand-tracking mode should not error when controller missing)
+6. Recording loop:
+   - `Actions -> Rec Start`
+   - run short track/find/scan flow for 5-10s
+   - `Actions -> Rec Stop`
+   - verify PC terminal prints `recordingPath`
+
+### Evidence checklist (v5.03)
+
+- Quest screenshot with:
+  - `HTTP: reachable`, `WS: connected`
+  - `Last TARGET`, `Guidance`
+  - `Last Upload`, `Last E2E`
+- PC terminal snippets:
+  - `/api/assist` with `target_start`/`target_step` returns 200
+  - `/api/record/start` and `/api/record/stop` returns 200
+  - printed `recordingPath`
+
+## 8.4) Optional pySLAM Offline Runner
+
+After record stop, you can post-process the run package with optional pySLAM:
+
+```bash
+python Gateway/scripts/pyslam_run_package.py --run-package <recordingPath> --pyslam-root <YOUR_PYSLAM_REPO_PATH>
+```
+
+- Output:
+  - `out/pyslam/trajectory.json`
+- If pySLAM root is missing, script exits with code `2` and prints setup guidance.
 
 ## 9) Diagnosing Periodic Hitch (v4.98)
 

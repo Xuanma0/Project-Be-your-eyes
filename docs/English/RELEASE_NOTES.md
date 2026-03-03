@@ -4,6 +4,13 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v5.03
+- Added target-tracking assist flow on top of frame cache: `POST /api/assist` now supports `target_start / target_step / target_stop` with device-scoped session TTL and emits `target.session` / `target.update` events.
+- Added optional Quest guidance output stack (text + spatial audio + haptics toggles) and wired target updates into panel telemetry (`Last TARGET` + age).
+- Added optional passthrough controller bridge (`ByesPassthroughController`) and menu-controlled toggle path with runtime status feedback.
+- Added optional pySLAM runner script `Gateway/scripts/pyslam_run_package.py` and lightweight optional `services/pyslam_service` bridge scaffold.
+- Added v5.03 one-click USB launcher `tools/quest3/quest3_usb_realstack_v5_03.cmd` for adb reverse + gateway/inference startup with find/assist/record defaults.
+
 ## v5.02
 - Added promptable `Find` path on top of real DET stack: Gateway now supports `find` via DET prompt overrides and Quest hand menu exposes one-tap find presets (`door`, `exit sign`, `stairs`, `elevator`, `restroom`, `person`).
 - Added Gateway frame-cache assist endpoint `POST /api/assist` so OCR/DET/FIND/RISK/DEPTH actions can run against the latest cached frame (no mandatory re-upload from Quest when cache is fresh).

@@ -272,11 +272,87 @@ namespace BYES.Quest
                     yield break;
                 }
 
+                SetStatus("RUNNING", "step9 target tracking");
+                var trackOk = false;
+                var trackError = string.Empty;
+                var trackStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                yield return RunScanStep(
+                    () => _scanController.ScanOnceFromUi(),
+                    expectedEventNames: new[] {"frame.input", "risk.fused", "det.objects"},
+                    timeoutSec: Mathf.Max(3f, scanWaitTimeoutSec),
+                    onDone: (_, _) => { });
+                yield return new WaitForSecondsRealtime(0.2f);
+                yield return RunPanelEventStep(
+                    trigger: () =>
+                    {
+                        _panel?.TriggerSelectRoiFromUi();
+                        _panel?.TriggerStartTrackFromUi();
+                    },
+                    expectedEventNames: new[] {"target.update", "target.session"},
+                    timeoutSec: Mathf.Max(5f, scanWaitTimeoutSec + 2f),
+                    onDone: (ok, error) =>
+                    {
+                        trackOk = ok;
+                        trackError = error;
+                    });
+                _stepDurationsMs["track"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - trackStepStartedMs);
+                if (!trackOk)
+                {
+                    Fail($"target tracking failed: {trackError}");
+                    yield break;
+                }
+
+                SetStatus("RUNNING", "step10 guidance");
+                var guidanceOk = _panel != null && !string.IsNullOrWhiteSpace(_panel.GetGuidanceText()) && _panel.GetGuidanceText() != "-";
+                _stepDurationsMs["guidance"] = 0;
+                if (!guidanceOk)
+                {
+                    Fail("guidance not updated");
+                    yield break;
+                }
+
+                SetStatus("RUNNING", "step11 passthrough");
+                var passthroughStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var passthroughStatus = _panel != null ? _panel.GetPassthroughStatus() : "panel missing";
+                var passthroughSkipped = false;
+                if (_panel != null && passthroughStatus.IndexOf("unavailable", StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    _panel.SetPassthroughEnabled(false);
+                    yield return new WaitForSecondsRealtime(0.2f);
+                    _panel.SetPassthroughEnabled(true);
+                    yield return new WaitForSecondsRealtime(0.2f);
+                }
+                else
+                {
+                    passthroughSkipped = true;
+                }
+                _stepDurationsMs["passthrough"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - passthroughStepStartedMs);
+
+                SetStatus("RUNNING", "step12 record");
+                var recordOk = false;
+                var recordErr = string.Empty;
+                var recordPath = string.Empty;
+                var recordStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                yield return RunRecordRoundtrip((ok, path, error) =>
+                {
+                    recordOk = ok;
+                    recordPath = path;
+                    recordErr = error;
+                });
+                _stepDurationsMs["record"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - recordStepStartedMs);
+                if (!recordOk)
+                {
+                    Fail($"recording failed: {recordErr}");
+                    yield break;
+                }
+
+                _panel?.TriggerStopTrackFromUi();
+
                 SetStatus(
                     "PASS",
                     $"ping={pingRttMs}ms " +
-                    $"stepMs(ping={GetStepMs("ping")},version={GetStepMs("version")},cap={GetStepMs("capabilities")},ws={GetStepMs("ws")},mode={GetStepMs("mode")},depthRisk={GetStepMs("depth_risk")},ocr={GetStepMs("ocr")},det={GetStepMs("det")}) " +
-                    $"version={versionText} ws=ok mode=ok depthRisk=ok ocr=ok det=ok");
+                    $"stepMs(ping={GetStepMs("ping")},version={GetStepMs("version")},cap={GetStepMs("capabilities")},ws={GetStepMs("ws")},mode={GetStepMs("mode")},depthRisk={GetStepMs("depth_risk")},ocr={GetStepMs("ocr")},det={GetStepMs("det")},track={GetStepMs("track")},guidance={GetStepMs("guidance")},passthrough={GetStepMs("passthrough")},record={GetStepMs("record")}) " +
+                    $"version={versionText} ws=ok mode=ok depthRisk=ok ocr=ok det=ok track=ok guidance=ok passthrough={(passthroughSkipped ? "skip" : "ok")} record=ok path={recordPath}");
                 if (verboseLogs)
                 {
                     Debug.Log($"[ByesQuest3SelfTestRunner] PASS {_summary}");
@@ -373,6 +449,124 @@ namespace BYES.Quest
             }
 
             onDone?.Invoke(true, string.Empty);
+        }
+
+        private IEnumerator RunPanelEventStep(Action trigger, string[] expectedEventNames, float timeoutSec, Action<bool, string> onDone)
+        {
+            if (_gatewayClient == null)
+            {
+                onDone?.Invoke(false, "gateway client missing");
+                yield break;
+            }
+
+            var expected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (expectedEventNames != null)
+            {
+                for (var i = 0; i < expectedEventNames.Length; i += 1)
+                {
+                    var token = (expectedEventNames[i] ?? string.Empty).Trim();
+                    if (!string.IsNullOrWhiteSpace(token))
+                    {
+                        expected.Add(token);
+                    }
+                }
+            }
+
+            var matched = false;
+            void WsEventHandler(JObject evt)
+            {
+                if (evt == null)
+                {
+                    return;
+                }
+                var name = (evt.Value<string>("name") ?? evt.Value<string>("type") ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    return;
+                }
+                if (expected.Count == 0 || expected.Contains(name))
+                {
+                    matched = true;
+                }
+            }
+
+            _gatewayClient.OnGatewayEvent += WsEventHandler;
+            trigger?.Invoke();
+
+            var started = Time.realtimeSinceStartup;
+            var waitSec = Mathf.Max(1f, timeoutSec);
+            while (Time.realtimeSinceStartup - started < waitSec)
+            {
+                if (matched)
+                {
+                    break;
+                }
+                yield return null;
+            }
+
+            _gatewayClient.OnGatewayEvent -= WsEventHandler;
+
+            if (!matched)
+            {
+                onDone?.Invoke(false, "WS expected event timeout");
+                yield break;
+            }
+
+            onDone?.Invoke(true, string.Empty);
+        }
+
+        private IEnumerator RunRecordRoundtrip(Action<bool, string, string> onDone)
+        {
+            var payloadStart = new JObject
+            {
+                ["deviceId"] = GetDeviceIdForSelfTest(),
+                ["note"] = "selftest_v5_03",
+                ["maxSec"] = 20,
+                ["maxFrames"] = 0,
+            };
+            var startOk = false;
+            var startErr = string.Empty;
+            yield return SendRequest(UnityWebRequest.kHttpVerbPOST, "/api/record/start", payloadStart, (ok, _, error) =>
+            {
+                startOk = ok;
+                startErr = error;
+            });
+            if (!startOk)
+            {
+                var already = !string.IsNullOrWhiteSpace(startErr) && startErr.IndexOf("already active recording", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!already)
+                {
+                    onDone?.Invoke(false, string.Empty, string.IsNullOrWhiteSpace(startErr) ? "record/start failed" : startErr);
+                    yield break;
+                }
+            }
+
+            yield return new WaitForSecondsRealtime(0.8f);
+
+            var payloadStop = new JObject
+            {
+                ["deviceId"] = GetDeviceIdForSelfTest(),
+            };
+            var stopOk = false;
+            var stopErr = string.Empty;
+            var path = string.Empty;
+            yield return SendRequest(UnityWebRequest.kHttpVerbPOST, "/api/record/stop", payloadStop, (ok, obj, error) =>
+            {
+                stopOk = ok;
+                stopErr = error;
+                if (ok && obj != null)
+                {
+                    path = (obj.Value<string>("recordingPath") ?? string.Empty).Trim();
+                }
+            });
+
+            if (!stopOk)
+            {
+                onDone?.Invoke(false, path, string.IsNullOrWhiteSpace(stopErr) ? "record/stop failed" : stopErr);
+                yield break;
+            }
+
+            onDone?.Invoke(true, path, string.Empty);
         }
 
         private void Fail(string reason)

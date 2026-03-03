@@ -41,6 +41,8 @@
 - `seg.prompt`
 - `det.objects`
 - `assist.trigger`
+- `target.session`
+- `target.update`
 - `depth.estimate`
 - `risk.fused`
 - `slam.pose`
@@ -249,6 +251,70 @@
 }
 ```
 
+### 6.2) Target session lifecycle event
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000001012,
+  "frameSeq": 18,
+  "component": "gateway",
+  "category": "tool",
+  "name": "target.session",
+  "phase": "result",
+  "status": "ok",
+  "payload": {
+    "schemaVersion": "byes.target.session.v1",
+    "sessionId": "trk_quest3_a1b2c3d4",
+    "deviceId": "quest3-device",
+    "runId": "quest3-smoke",
+    "status": "active",
+    "tracker": "botsort",
+    "roi": {"x": 0.35, "y": 0.35, "w": 0.3, "h": 0.3},
+    "prompt": "door",
+    "seg": {"enabled": true, "mode": "sam3"},
+    "createdTsMs": 1704000001000,
+    "updatedTsMs": 1704000001012
+  }
+}
+```
+
+### 6.3) Target update event
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000001110,
+  "frameSeq": 19,
+  "component": "gateway",
+  "category": "tool",
+  "name": "target.update",
+  "phase": "result",
+  "status": "ok",
+  "payload": {
+    "schemaVersion": "byes.target.update.v1",
+    "sessionId": "trk_quest3_a1b2c3d4",
+    "deviceId": "quest3-device",
+    "runId": "quest3-smoke",
+    "step": 19,
+    "tracker": "botsort",
+    "roi": {"x": 0.35, "y": 0.35, "w": 0.3, "h": 0.3},
+    "prompt": "door",
+    "target": {
+      "label": "door",
+      "conf": 0.87,
+      "boxNorm": [0.41, 0.29, 0.58, 0.86],
+      "boxXyxy": [320, 160, 540, 900]
+    },
+    "hasDetection": true,
+    "seg": {
+      "enabled": true,
+      "mode": "sam3",
+      "payloadPresent": true
+    },
+    "updatedTsMs": 1704000001110
+  }
+}
+```
+
 ### 7) Fused risk from depth grid
 ```json
 {
@@ -305,4 +371,11 @@
 - `payload.meta.refViewStrategy` is optional and used for temporal-consistency analysis/reporting.
 - Single-frame depth metrics (`absRel`, `rmse`, `delta1`) remain unchanged.
 - Temporal metrics are report-level aggregates from consecutive `depth.estimate` events (`quality.depthTemporal`), not new event names.
+
+`v5.03` note:
+- `seg.masks` payload remains optional even when segmentation is requested.
+- A normalized mask object, when present, should follow one of:
+  - `{"format":"rle_v1","size":[h,w],"counts":[...]}` (preferred for transport),
+  - `{"format":"polygon_v1","points":[[x,y],...]}` (lightweight overlay use),
+  - `{"format":"png_b64","size":[h,w],"data":"..."}` (fallback/debug).
 

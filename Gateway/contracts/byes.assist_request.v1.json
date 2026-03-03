@@ -14,7 +14,19 @@
     },
     "action": {
       "type": ["string", "null"],
-      "enum": ["ocr", "det", "find", "risk", "depth", "seg", "slam", null]
+      "enum": [
+        "ocr",
+        "det",
+        "find",
+        "risk",
+        "depth",
+        "seg",
+        "slam",
+        "target_start",
+        "target_step",
+        "target_stop",
+        null
+      ]
     },
     "targets": {
       "type": "array",
@@ -33,6 +45,21 @@
       "minimum": 0
     },
     "prompt": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "sessionId": {
+      "type": ["string", "null"]
+    },
+    "tracker": {
+      "type": ["string", "null"],
+      "enum": ["botsort", "bytetrack", null]
+    },
+    "roi": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "seg": {
       "type": ["object", "null"],
       "additionalProperties": true
     }

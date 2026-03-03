@@ -65,6 +65,8 @@ namespace BYES.Quest
         private Toggle _autoSpeakRiskToggle;
         private Toggle _autoSpeakFindToggle;
         private Toggle _autoGuidanceToggle;
+        private Toggle _guidanceAudioToggle;
+        private Toggle _guidanceHapticsToggle;
         private Toggle _ocrVerboseToggle;
         private Slider _uiScaleSlider;
 
@@ -335,8 +337,12 @@ namespace BYES.Quest
             CreateButton(page, "Find Elevator", new Vector2(-260f, -290f), () => { _panel?.TriggerFindConceptFromUi("elevator"); SetFeedback("Find elevator"); });
             CreateButton(page, "Find Restroom", new Vector2(0f, -290f), () => { _panel?.TriggerFindConceptFromUi("restroom"); SetFeedback("Find restroom"); });
             CreateButton(page, "Find Person", new Vector2(260f, -290f), () => { _panel?.TriggerFindConceptFromUi("person"); SetFeedback("Find person"); });
-            CreateButton(page, "Export Debug", new Vector2(0f, -370f), () => { _panel?.ExportDebugText(); SetFeedback("Debug exported"); });
-            CreateButton(page, "Back", new Vector2(0f, -450f), () => { SetPage("home"); SetFeedback("Home"); });
+            CreateButton(page, "Select ROI", new Vector2(-260f, -370f), () => { _panel?.TriggerSelectRoiFromUi(); SetFeedback("ROI selected"); });
+            CreateButton(page, "Start Track", new Vector2(0f, -370f), () => { _panel?.TriggerStartTrackFromUi(); SetFeedback("Track start"); });
+            CreateButton(page, "Track Step", new Vector2(260f, -370f), () => { _panel?.TriggerTrackStepFromUi(); SetFeedback("Track step"); });
+            CreateButton(page, "Stop Track", new Vector2(-260f, -450f), () => { _panel?.TriggerStopTrackFromUi(); SetFeedback("Track stop"); });
+            CreateButton(page, "Export Debug", new Vector2(0f, -450f), () => { _panel?.ExportDebugText(); SetFeedback("Debug exported"); });
+            CreateButton(page, "Back", new Vector2(260f, -450f), () => { SetPage("home"); SetFeedback("Home"); });
         }
 
         private void BuildMode(Transform page)
@@ -417,30 +423,33 @@ namespace BYES.Quest
                 _panel?.SetAutoGuidance(value);
                 SetFeedback("Auto Guidance " + (value ? "ON" : "OFF"));
             });
-            _passthroughToggle = CreateToggle(page, "Passthrough", new Vector2(0f, -406f), value =>
+            _guidanceAudioToggle = CreateToggle(page, "Guidance Audio", new Vector2(0f, -406f), value =>
+            {
+                _panel?.SetGuidanceAudio(value);
+                SetFeedback("Guidance Audio " + (value ? "ON" : "OFF"));
+            });
+            _guidanceHapticsToggle = CreateToggle(page, "Guidance Haptics", new Vector2(0f, -464f), value =>
+            {
+                _panel?.SetGuidanceHaptics(value);
+                SetFeedback("Guidance Haptics " + (value ? "ON" : "OFF"));
+            });
+            _passthroughToggle = CreateToggle(page, "Passthrough", new Vector2(0f, -522f), value =>
             {
                 PlayerPrefs.SetInt(PrefPassthrough, value ? 1 : 0);
                 PlayerPrefs.Save();
-                if (value)
-                {
-                    ByesQuestPassthroughSetup.EnsureInstance().SetEnabled(true);
-                }
-                else
-                {
-                    _passthroughSetup?.SetEnabled(false);
-                }
+                _panel?.SetPassthroughEnabled(value);
                 SetFeedback("Passthrough " + (value ? "ON" : "OFF"));
             });
-            _uiScaleSlider = CreateSlider(page, new Vector2(0f, -464f), 0.6f, 1.4f, value =>
+            _uiScaleSlider = CreateSlider(page, new Vector2(0f, -580f), 0.6f, 1.4f, value =>
             {
                 PlayerPrefs.SetFloat(PrefUiScale, value);
                 PlayerPrefs.Save();
                 ApplyUiScale(value);
                 SetFeedback($"UI Scale {value:0.00}x");
             });
-            _scaleText = CreateText("ScaleText", page, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -510f), new Vector2(760f, 32f));
-            _settingsText = CreateText("SettingsText", page, "-", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -548f), new Vector2(780f, 32f));
-            CreateButton(page, "Back", new Vector2(0f, -602f), () => { SetPage("home"); SetFeedback("Home"); });
+            _scaleText = CreateText("ScaleText", page, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -626f), new Vector2(760f, 32f));
+            _settingsText = CreateText("SettingsText", page, "-", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -662f), new Vector2(780f, 32f));
+            CreateButton(page, "Back", new Vector2(0f, -716f), () => { SetPage("home"); SetFeedback("Home"); });
         }
 
         private void BuildDebug(Transform page)
@@ -484,7 +493,9 @@ namespace BYES.Quest
             _sb.Append("UploadMs=").Append(_panel.GetLastUploadMs()).Append("  E2E=").Append(_panel.GetLastE2eMs()).Append('\n');
             _sb.Append("LastEvent=").Append(_panel.GetLastEventType()).Append('\n');
             _sb.Append("LastFind=").Append(_panel.GetLastFindText()).Append('\n');
+            _sb.Append("LastTarget=").Append(_panel.GetLastTargetText()).Append('\n');
             _sb.Append("Guidance=").Append(_panel.GetGuidanceText()).Append('\n');
+            _sb.Append("Passthrough=").Append(_panel.GetPassthroughStatus()).Append('\n');
             _sb.Append("SelfTest=").Append(_selfTestRunner != null ? _selfTestRunner.CurrentStatus : "-").Append('\n');
             _sb.Append("Gestures=").Append(_shortcuts != null ? _shortcuts.GetRecentTriggersAsText() : "-").Append('\n');
             _sb.Append("GuideDisabler=").Append(ByesMrTemplateGuideDisabler.LastSummary);
@@ -499,6 +510,8 @@ namespace BYES.Quest
             _autoSpeakRiskToggle?.SetIsOnWithoutNotify(_panel.AutoSpeakRiskEnabled);
             _autoSpeakFindToggle?.SetIsOnWithoutNotify(_panel.AutoSpeakFindEnabled);
             _autoGuidanceToggle?.SetIsOnWithoutNotify(_panel.AutoGuidanceEnabled);
+            _guidanceAudioToggle?.SetIsOnWithoutNotify(_panel.GuidanceAudioEnabled);
+            _guidanceHapticsToggle?.SetIsOnWithoutNotify(_panel.GuidanceHapticsEnabled);
             _ocrVerboseToggle?.SetIsOnWithoutNotify(_panel.OcrVerboseEnabled);
 
             SetText(_scaleText, $"UI Scale: {(_uiScaleSlider != null ? _uiScaleSlider.value : 1f):0.00}x");
@@ -565,6 +578,8 @@ namespace BYES.Quest
             _autoSpeakRiskToggle?.SetIsOnWithoutNotify(_panel != null && _panel.AutoSpeakRiskEnabled);
             _autoSpeakFindToggle?.SetIsOnWithoutNotify(_panel != null && _panel.AutoSpeakFindEnabled);
             _autoGuidanceToggle?.SetIsOnWithoutNotify(_panel != null && _panel.AutoGuidanceEnabled);
+            _guidanceAudioToggle?.SetIsOnWithoutNotify(_panel != null && _panel.GuidanceAudioEnabled);
+            _guidanceHapticsToggle?.SetIsOnWithoutNotify(_panel != null && _panel.GuidanceHapticsEnabled);
             _ocrVerboseToggle?.SetIsOnWithoutNotify(_panel != null && _panel.OcrVerboseEnabled);
 
             var uiScale = PlayerPrefs.GetFloat(PrefUiScale, 1f);
@@ -580,11 +595,11 @@ namespace BYES.Quest
             var passthroughEnabled = PlayerPrefs.GetInt(PrefPassthrough, 1) == 1;
             if (passthroughEnabled)
             {
-                ByesQuestPassthroughSetup.EnsureInstance().SetEnabled(true);
+                _panel?.SetPassthroughEnabled(true);
             }
             else
             {
-                _passthroughSetup?.SetEnabled(false);
+                _panel?.SetPassthroughEnabled(false);
             }
             _panel?.SetActionControlsVisible(PlayerPrefs.GetInt(PrefShowFullPanel, 0) == 1);
             _panel?.SetLockToHead(PlayerPrefs.GetInt(PrefLockToHead, 1) == 1);

@@ -54,6 +54,9 @@
 | `BYES_SERVICE_DEPTH_ONNX_PATH` | ONNX depth model file path (required when depth provider is `onnx`) | empty | inference_service ONNX depth provider | `Gateway/services/inference_service/providers/onnx_depth.py` |
 | `BYES_ASSIST_CACHE_TTL_MS` | Gateway frame cache TTL for `/api/assist` reuse window | `2000` | Gateway frame cache init | `Gateway/main.py` (`GatewayApp.__init__`), `Gateway/byes/frame_cache.py` |
 | `BYES_ASSIST_CACHE_MAX_ENTRIES` | Gateway frame cache max device entries (LRU) | `16` | Gateway frame cache init | `Gateway/main.py` (`GatewayApp.__init__`), `Gateway/byes/frame_cache.py` |
+| `BYES_TARGET_TRACKING_TTL_MS` | TTL for `/api/assist` target-tracking sessions (`target_start/step/stop`) | `30000` | Gateway target-tracking store | `Gateway/main.py` (`GatewayApp.__init__`), `Gateway/byes/target_tracking/store.py` |
+| `BYES_TARGET_TRACKING_MAX_ENTRIES` | Max in-memory target-tracking sessions | `128` | Gateway target-tracking store | `Gateway/main.py` (`GatewayApp.__init__`), `Gateway/byes/target_tracking/store.py` |
+| `BYES_PYSLAM_REPO_PATH` | Optional local pySLAM repo path used by offline runner script | empty | Offline script bridge | `Gateway/scripts/pyslam_run_package.py` |
 | `BYES_CAPTURE_USE_ASYNC_GPU_READBACK` | Unity capture path switch for async GPU readback | Android default `1` (fallback to sync when unsupported) | Quest frame capture pipeline | `Assets/BeYourEyes/Unity/Capture/ScreenFrameGrabber.cs` |
 | `BYES_CAPTURE_TARGET_HZ` | Unity capture target hz used by Quest smoke/live defaults | `1` | Quest capture + scan controller | `Assets/BeYourEyes/Unity/Capture/ScreenFrameGrabber.cs`; `Assets/BeYourEyes/Unity/Interaction/ScanController.cs` |
 | `BYES_CAPTURE_MAX_INFLIGHT` | Unity capture in-flight readback cap | `1` | Quest capture + scan controller | `Assets/BeYourEyes/Unity/Capture/ScreenFrameGrabber.cs`; `Assets/BeYourEyes/Unity/Interaction/ScanController.cs` |
@@ -82,6 +85,17 @@
   - Mode changes from `/api/mode` or frame metadata update runtime mode state.
   - First frame after mode change force-triggers mode targets once (`_modeChanged` / `consume_changed_flag`).
   - Evidence: `Gateway/main.py:774-791`, `Gateway/main.py:898-1140`, `Gateway/byes/mode_state.py:161-230`.
+
+## v5.03 Target Tracking / pySLAM Notes
+
+- Target-tracking assist uses the same frame cache path as `/api/assist`, plus session store knobs:
+  - `BYES_TARGET_TRACKING_TTL_MS`
+  - `BYES_TARGET_TRACKING_MAX_ENTRIES`
+- Optional offline pySLAM bridge:
+  - `python Gateway/scripts/pyslam_run_package.py --run-package <path>`
+  - script requires `--pyslam-root` or `BYES_PYSLAM_REPO_PATH`.
+- Optional online pySLAM bridge scaffold service exists at:
+  - `Gateway/services/pyslam_service/app.py` (`/health`, `/slam/reset`, `/slam/step`)
 
 ## Service Port/Bind Variables
 

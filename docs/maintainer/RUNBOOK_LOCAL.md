@@ -79,7 +79,7 @@ python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 12
 Evidence: `docs/English/COMMANDS.md:57`; `Gateway/services/inference_service/README.md:13`.
 
 ### Start Unity
-1. Open project with Unity `6000.3.5f2` (`ProjectSettings/ProjectVersion.txt:1`).
+1. Open project with Unity `6000.3.10f1` (`ProjectSettings/ProjectVersion.txt:1`).
 2. Default scene is `Assets/Scenes/SampleScene.unity` (BuildSettings enabled entry).
 3. WS default address is `ws://127.0.0.1:8000/ws/events` (`Assets/Scenes/SampleScene.unity:2651`; `Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs:29,114`).
 
@@ -125,6 +125,19 @@ Evidence:
 Quick checks:
 - `rg -n "error CS" unity_compile.log`
 - `rg -n "AssemblyResolutionException" unity_compile.log`
+
+### Optional: v5.03 offline pySLAM on recorded package
+
+```bash
+python Gateway/scripts/pyslam_run_package.py --run-package <recordingPath> --pyslam-root <YOUR_PYSLAM_REPO_PATH>
+```
+
+Expected output:
+- `out/pyslam/trajectory.json` is generated under the run package.
+- Script prints the source TUM file path used for conversion.
+
+Failure behavior:
+- If `--pyslam-root` and `BYES_PYSLAM_REPO_PATH` are both missing, script exits `2` with setup guidance.
 
 ## Troubleshooting Quick Checks
 
