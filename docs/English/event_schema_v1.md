@@ -41,6 +41,7 @@
 - `seg.prompt`
 - `det.objects`
 - `det.objects.v1`
+- `vis.overlay.v1`
 - `seg.mask.v1`
 - `depth.map.v1`
 - `asr.transcript.v1`
@@ -396,7 +397,35 @@
 }
 ```
 
-### 6.6) ASR transcript event (`asr.transcript.v1`)
+### 6.6) Overlay companion event (`vis.overlay.v1`)
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000001150,
+  "frameSeq": 19,
+  "component": "gateway",
+  "category": "tool",
+  "name": "vis.overlay.v1",
+  "phase": "result",
+  "status": "ok",
+  "payload": {
+    "schemaVersion": "byes.vis.overlay.v1",
+    "kind": "det",
+    "assetId": "a_1704000001150_overlay_det",
+    "w": 960,
+    "h": 540,
+    "inferMs": 28,
+    "providerMeta": {
+      "backend": "ultralytics",
+      "model": "yolo26n.pt",
+      "endpoint": "http://127.0.0.1:19120/det"
+    },
+    "tsMs": 1704000001150
+  }
+}
+```
+
+### 6.7) ASR transcript event (`asr.transcript.v1`)
 ```json
 {
   "schemaVersion": "byes.event.v1",
@@ -525,4 +554,7 @@
 `v5.04` note:
 - `seg.mask.v1` and `depth.map.v1` move heavy visualization payloads to `/api/assets/{assetId}` and keep WS event payloads lightweight.
 - Recording run packages persist referenced assets under `assets/` and keep `events/events_v1.jsonl` as asset-id references (no large inline base64).
+
+`v5.05` note:
+- `vis.overlay.v1` is a lightweight companion signal for Quest/Desktop renderers; binary payloads remain in `/api/assets/{assetId}`.
 

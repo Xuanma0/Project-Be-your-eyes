@@ -1,5 +1,12 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v5.05
+- Added Quest real-frame source abstraction (IByesFrameSource) with PCA capture scaffolding (ByesPcaFrameSource) and render-texture fallback; frame-source metadata is now attached in /api/frame upload meta.
+- Added Desktop Console (GET /ui, GET /api/ui/state) to show provider real/mock evidence, latest frame/overlay preview, and quick actions (ping/mode/assist/record).
+- Extended Gateway overlay bus with vis.overlay.v1 companion events for DET/SEG/DEPTH assets and latest overlay index for Quest HUD + desktop preview.
+- Extended Quest smoke panel observability with provider summary (real/mock/off) and capture source/resolution stats, with low-frequency capabilities refresh.
+- Added one-command launcher tools/quest3/quest3_usb_realstack_v5_05.cmd (USB reverse + gateway/inference + optional pySLAM bridge + auto-open desktop console).
+
 ## v5.04
 - 新增 Quest 视觉 HUD 资产闭环：支持 `det.objects.v1` 框/标签/trackId、`seg.mask.v1` 蒙版资产、`depth.map.v1` 深度资产叠加显示。
 - Gateway 新增资产接口：`GET /api/assets/{asset_id}` 与 `GET /api/assets/{asset_id}/meta`，避免在 WS 事件中传大体积 base64。

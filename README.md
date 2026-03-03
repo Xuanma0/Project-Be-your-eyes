@@ -110,6 +110,12 @@ Quest 3 v5.04 pilot launcher (USB + gateway + inference + optional ASR/pySLAM ru
 tools\quest3\quest3_usb_realstack_v5_04.cmd
 ```
 
+Quest 3 v5.05 launcher (USB + gateway + inference + desktop console `/ui` + optional pySLAM bridge):
+
+```bat
+tools\quest3\quest3_usb_realstack_v5_05.cmd
+```
+
 Optional online pySLAM bridge in the same launcher:
 ```bat
 set BYES_ENABLE_PYSLAM_SERVICE=1
@@ -159,6 +165,7 @@ python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 12
 - v5.02 adds promptable `Find` actions (Door/Exit/Stairs/Elevator/Restroom/Person), `Start Record/Stop Record`, and panel lines for `Last FIND` and `Guidance`.
 - v5.03 adds `Select ROI / Start Track / Track Step / Stop Track`, `Last TARGET`, and optional guidance audio/haptics cues.
 - v5.04 adds vision HUD asset overlays (`det.objects.v1`, `seg.mask.v1`, `depth.map.v1`), optional `/api/asr` transcript flow, and optional realtime pySLAM bridge status in capabilities.
+- v5.05 adds desktop observability (`/ui`, `/api/ui/state`), `vis.overlay.v1` companion events, and frame-source evidence (capture source/resolution/provider summary) on Quest + desktop.
 - Gesture shortcuts default to `Safe` mode (no trigger while menu/system gesture/UI/grab conflict is active)
 - Smoke panel move/resize is explicit opt-in from `Dev -> Enable Move/Resize`.
 - Passthrough controls are in `Vision` (`On/Off`, `Opacity`, `Color/Gray` if supported).
@@ -293,7 +300,7 @@ python Gateway/scripts/verify_contracts.py --check-lock
 If maintainers decide to align release tags with `VERSION`:
 
 ```bash
-git tag -a v5.03 -m "v5.03" <commit>
+git tag -a v5.05 -m "v5.05" <commit>
 ```
 
 Do not run this automatically unless release approval is explicit.

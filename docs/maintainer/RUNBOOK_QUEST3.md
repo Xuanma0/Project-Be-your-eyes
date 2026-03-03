@@ -44,6 +44,10 @@ tools\quest3\quest3_usb_realstack_v5_03.cmd
 ```bat
 tools\quest3\quest3_usb_realstack_v5_04.cmd
 ```
+   v5.05 launcher (HUD overlays + desktop console `/ui` + provider evidence + optional pySLAM realtime):
+```bat
+tools\quest3\quest3_usb_realstack_v5_05.cmd
+```
 2. On Quest, open `Quest3SmokeScene` app and look at the floating panel in front of you.
 3. Confirm panel base URL is `http://127.0.0.1:18000`.
 4. Click `SelfTest` (single-button smoke). If status looks stale first, click `Refresh` once.
@@ -258,6 +262,34 @@ Quest:
 4. Trigger `Read Text`, `Find`, and `Track` actions from `Home/Guidance/Dev`:
    - panel updates `Last OCR / Last FIND / Last TARGET`
    - HUD overlay updates age/fps stats
+
+## 8.7) v5.05 Quest Validation (True-frame evidence + Desktop Console)
+
+PC:
+1. Run:
+```bat
+tools\quest3\quest3_usb_realstack_v5_05.cmd
+```
+2. Browser should auto-open:
+   - `http://127.0.0.1:18000/ui`
+3. Verify desktop console shows:
+   - provider status (`real/mock/off`)
+   - latest frame preview
+   - latest DET/SEG/DEPTH overlay previews
+
+Quest:
+1. In panel, verify:
+   - `CaptureHz`, `Src`, `frameWidth x frameHeight`
+   - provider summary appears in capture/debug lines
+2. Run `SelfTest`; expect PASS or SKIP with explicit reason for optional features.
+3. Toggle Vision overlays and adjust alpha:
+   - `Show DET / SEG / DEPTH / TARGET`
+4. Trigger `Read Text`, `Detect`, `Find` and verify:
+   - panel `Last OCR / Last DET / Last FIND` age updates
+   - desktop `/ui` event tail and overlay previews continue updating
+5. Optional pySLAM realtime:
+   - set `BYES_PYSLAM_ROOT` before launch
+   - verify capabilities/report indicate pyslam realtime status and reason
 5. `Guidance` page:
    - set mode `Walk/Read/Inspect`
    - toggle auto guidance/audio/haptics and adjust guidance rate slider

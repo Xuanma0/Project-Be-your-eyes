@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using BeYourEyes.Adapters;
 using BeYourEyes.Adapters.Networking;
 using BeYourEyes.Core.Events;
@@ -45,8 +46,11 @@ namespace BeYourEyes.Unity.Interaction
         [SerializeField] private InputActionReference rightLiveToggleAction;
         [SerializeField] private InputActionReference rightPrimaryButtonAction;
         [SerializeField] private InputActionReference rightTriggerButtonAction;
+        [Header("Frame Source")]
+        [SerializeField] private MonoBehaviour frameSourceBehaviour;
 
         private ScreenFrameGrabber frameGrabber;
+        private IByesFrameSource activeFrameSource;
         private GatewayFrameUploader uploader;
         private GatewayWsClient wsClient;
         private GatewayClient gatewayClient;
@@ -91,10 +95,21 @@ namespace BeYourEyes.Unity.Interaction
         public string LastScanState => string.IsNullOrWhiteSpace(lastScanState) ? "idle" : lastScanState;
         public string LastScanError => string.IsNullOrWhiteSpace(lastScanError) ? string.Empty : lastScanError;
         public string LastEventType => string.IsNullOrWhiteSpace(lastEventType) ? "-" : lastEventType;
-        public bool CaptureSupportsAsyncReadback => frameGrabber != null && frameGrabber.SupportsAsyncGpuReadback;
-        public bool CaptureAsyncReadbackEnabled => frameGrabber != null && frameGrabber.AsyncGpuReadbackEnabled;
-        public int CaptureTargetHz => frameGrabber != null ? frameGrabber.CaptureTargetHz : Mathf.Max(1, Mathf.RoundToInt(liveFps));
-        public int CaptureActiveReadbacks => frameGrabber != null ? frameGrabber.ActiveReadbackRequests : 0;
+        public bool CaptureSupportsAsyncReadback => ResolveFrameSource()?.SupportsAsyncGpuReadback ?? false;
+        public bool CaptureAsyncReadbackEnabled => ResolveFrameSource()?.AsyncGpuReadbackEnabled ?? false;
+        public int CaptureTargetHz => ResolveFrameSource()?.CaptureTargetHz ?? Mathf.Max(1, Mathf.RoundToInt(liveFps));
+        public int CaptureActiveReadbacks => ResolveFrameSource()?.ActiveReadbackRequests ?? 0;
+        public string CaptureSource
+        {
+            get
+            {
+                var source = ResolveFrameSource();
+                var name = source?.SourceName;
+                return string.IsNullOrWhiteSpace(name) ? "unknown" : name;
+            }
+        }
+        public int CaptureFrameWidth => ResolveFrameSource()?.LastFrameWidth ?? 0;
+        public int CaptureFrameHeight => ResolveFrameSource()?.LastFrameHeight ?? 0;
         public event Action<UploadMetrics> OnUploadFinished;
 
         private void Awake()
@@ -106,10 +121,11 @@ namespace BeYourEyes.Unity.Interaction
                 frameGrabber = gameObject.AddComponent<ScreenFrameGrabber>();
             }
 
-            if (frameGrabber != null)
+            activeFrameSource = ResolveFrameSource();
+            if (activeFrameSource != null)
             {
-                liveFps = Mathf.Max(0.1f, frameGrabber.CaptureTargetHz);
-                liveMaxInflight = Mathf.Max(1, frameGrabber.CaptureMaxInflight);
+                liveFps = Mathf.Max(0.1f, activeFrameSource.CaptureTargetHz);
+                liveMaxInflight = Mathf.Max(1, activeFrameSource.CaptureMaxInflight);
             }
 
             uploader = GetComponent<GatewayFrameUploader>();
@@ -357,7 +373,22 @@ namespace BeYourEyes.Unity.Interaction
 
             try
             {
-                yield return frameGrabber.CaptureJpg(bytes => jpg = bytes);
+                var source = ResolveFrameSource();
+                if (source == null)
+                {
+                    Debug.LogWarning("[Scan] frame source missing");
+                    lastScanState = "failed";
+                    lastScanError = "frame source missing";
+                    uploadsFailedCount++;
+                    EmitUploadMetrics(ok: false, error: lastScanError);
+                    yield break;
+                }
+
+                var captureMeta = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+                source.FillMeta(captureMeta);
+                captureMeta["frameSource"] = source.SourceName;
+
+                yield return source.CaptureJpg(bytes => jpg = bytes);
 
                 captureInProgress = false;
                 if (jpg == null || jpg.Length == 0)
@@ -380,7 +411,7 @@ namespace BeYourEyes.Unity.Interaction
                     uploader.baseUrl = gatewayClient.BaseUrl;
                     uploader.SetApiKey(gatewayClient.ApiKey);
                 }
-                var metaJson = BuildUploadMetaJson(sendTsMs, forcedTargets, detPrompt);
+                var metaJson = BuildUploadMetaJson(sendTsMs, forcedTargets, detPrompt, captureMeta);
 
                 yield return uploader.UploadFrame(
                     jpg,
@@ -606,6 +637,53 @@ namespace BeYourEyes.Unity.Interaction
             }
         }
 
+        private IByesFrameSource ResolveFrameSource()
+        {
+            if (activeFrameSource != null)
+            {
+                if (activeFrameSource.IsAvailable || activeFrameSource == frameGrabber)
+                {
+                    return activeFrameSource;
+                }
+            }
+
+            if (frameSourceBehaviour is IByesFrameSource explicitSource)
+            {
+                activeFrameSource = explicitSource;
+                if (activeFrameSource.IsAvailable)
+                {
+                    return activeFrameSource;
+                }
+            }
+
+            IByesFrameSource fallback = null;
+            var components = GetComponents<MonoBehaviour>();
+            for (var i = 0; i < components.Length; i += 1)
+            {
+                if (components[i] is not IByesFrameSource candidate)
+                {
+                    continue;
+                }
+
+                fallback ??= candidate;
+                var sourceName = candidate.SourceName ?? string.Empty;
+                if (candidate.IsAvailable && !string.Equals(sourceName, "rendertexture", StringComparison.OrdinalIgnoreCase))
+                {
+                    activeFrameSource = candidate;
+                    return activeFrameSource;
+                }
+            }
+
+            if (fallback != null)
+            {
+                activeFrameSource = fallback;
+                return activeFrameSource;
+            }
+
+            activeFrameSource = frameGrabber;
+            return activeFrameSource;
+        }
+
         private void EmitUploadMetrics(bool ok, string error)
         {
             OnUploadFinished?.Invoke(new UploadMetrics(
@@ -616,7 +694,7 @@ namespace BeYourEyes.Unity.Interaction
             ));
         }
 
-        private string BuildUploadMetaJson(long captureTsMs, string[] forcedTargets, JObject detPrompt)
+        private string BuildUploadMetaJson(long captureTsMs, string[] forcedTargets, JObject detPrompt, IDictionary<string, object> captureMeta)
         {
             var mode = GatewayRuntimeContext.ResolveApiMode();
             var runId = gatewayClient != null ? (gatewayClient.SessionId ?? string.Empty).Trim() : string.Empty;
@@ -655,6 +733,18 @@ namespace BeYourEyes.Unity.Interaction
             if (detPrompt != null)
             {
                 payload["prompt"] = detPrompt;
+            }
+
+            if (captureMeta != null && captureMeta.Count > 0)
+            {
+                try
+                {
+                    payload["capture"] = JObject.FromObject(captureMeta);
+                }
+                catch
+                {
+                    // Keep upload metadata best-effort and avoid scan failure on serialization mismatch.
+                }
             }
 
             return payload.ToString(Newtonsoft.Json.Formatting.None);

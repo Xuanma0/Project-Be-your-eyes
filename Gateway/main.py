@@ -769,6 +769,9 @@ class GatewayApp:
         )
         self._slam_traj_points: dict[str, list[dict[str, Any]]] = {}
         self._slam_traj_last_emit_ms: dict[str, int] = {}
+        self._latest_frame_asset_id: str | None = None
+        self._latest_frame_meta: dict[str, Any] = {}
+        self._latest_overlay_assets: dict[str, dict[str, Any]] = {}
         self.pov_store = PovStore()
 
     async def startup(self) -> None:
@@ -786,6 +789,9 @@ class GatewayApp:
         self.recording.reset()
         self._slam_traj_points.clear()
         self._slam_traj_last_emit_ms.clear()
+        self._latest_frame_asset_id = None
+        self._latest_frame_meta = {}
+        self._latest_overlay_assets = {}
         self.costmap_fuser.reset()
         self.dynamic_mask_cache.reset()
         self._external_readiness = {}
@@ -921,6 +927,12 @@ class GatewayApp:
         snapshot = list(self._inference_events)
         self._inference_events.clear()
         return snapshot
+
+    def snapshot_inference_events(self, *, limit: int = 64) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(512, int(limit)))
+        if len(self._inference_events) <= safe_limit:
+            return list(self._inference_events)
+        return list(self._inference_events[-safe_limit:])
 
     async def _emit_inference_event(self, event: dict[str, Any]) -> None:
         if not isinstance(event, dict):
@@ -2532,6 +2544,29 @@ async def frame(
     except Exception:
         pass
     try:
+        frame_asset = gateway.asset_cache.put(
+            data=frame_bytes,
+            content_type="image/jpeg",
+            meta={
+                "kind": "frame.raw",
+                "runId": run_id,
+                "frameSeq": int(max(1, int(seq))),
+                "deviceId": cache_device_id,
+            },
+        )
+        gateway._latest_frame_asset_id = frame_asset.asset_id  # noqa: SLF001
+        gateway._latest_frame_meta = {  # noqa: SLF001
+            "runId": run_id,
+            "frameSeq": int(max(1, int(seq))),
+            "deviceId": cache_device_id,
+            "captureTsMs": _to_nonnegative_int_or_none(capture_ts_ms),
+            "recvTsMs": int(recv_ts_ms),
+            "sizeBytes": int(len(frame_bytes)),
+            "assetId": frame_asset.asset_id,
+        }
+    except Exception:
+        pass
+    try:
         gateway.recording.on_frame(
             device_id=cache_device_id,
             run_id=run_id,
@@ -2920,6 +2955,173 @@ async def api_capabilities() -> dict[str, Any]:
             "pyslamRealtime": pyslam_enabled,
         },
     }
+
+
+@app.get("/api/ui/state")
+async def api_ui_state(limit: int = 60) -> dict[str, Any]:
+    safe_limit = max(10, min(240, int(limit)))
+    capabilities = await api_capabilities()
+    latest_events = gateway.snapshot_inference_events(limit=safe_limit)
+    overlay_assets = dict(gateway._latest_overlay_assets)  # noqa: SLF001
+    frame_asset_id = gateway._latest_frame_asset_id  # noqa: SLF001
+    frame_meta = dict(gateway._latest_frame_meta)  # noqa: SLF001
+    now_ms = _now_ms()
+    return {
+        "ok": True,
+        "tsMs": now_ms,
+        "version": capabilities.get("version"),
+        "gitSha": capabilities.get("gitSha"),
+        "profile": capabilities.get("profile"),
+        "capabilities": capabilities,
+        "latest": {
+            "frameAssetId": frame_asset_id,
+            "frameMeta": frame_meta,
+            "overlayAssets": overlay_assets,
+            "eventCount": len(latest_events),
+            "lastEvent": latest_events[-1] if latest_events else None,
+            "eventsTail": latest_events[-20:],
+        },
+    }
+
+
+def _build_desktop_console_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BYES Desktop Console v5.05</title>
+  <style>
+    body{font-family:Segoe UI,Arial,sans-serif;background:#111;color:#eee;margin:0;padding:12px}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .card{background:#1b1b1b;border:1px solid #333;border-radius:8px;padding:10px}
+    .card h3{margin:0 0 8px 0;font-size:15px}
+    .mono{font-family:Consolas,Menlo,monospace;font-size:12px;white-space:pre-wrap}
+    button{margin:2px;padding:6px 10px;border-radius:6px;border:1px solid #444;background:#2a2a2a;color:#eee;cursor:pointer}
+    button:hover{background:#3a3a3a}
+    img{max-width:100%;height:auto;border:1px solid #444;border-radius:6px}
+    .w320{width:320px}
+    .w420{width:420px}
+    .grow{flex:1;min-width:360px}
+    .ok{color:#77e08c}.warn{color:#ffca70}.err{color:#ff8f8f}
+  </style>
+</head>
+<body>
+  <h2>BYES Desktop Console (v5.05)</h2>
+  <div class="row">
+    <div class="card w420">
+      <h3>Runtime</h3>
+      <div id="runtime" class="mono">loading...</div>
+      <div>
+        <button onclick="postPing()">Ping</button>
+        <button onclick="setMode('walk')">Mode Walk</button>
+        <button onclick="setMode('read_text')">Mode Read</button>
+        <button onclick="setMode('inspect')">Mode Inspect</button>
+      </div>
+    </div>
+    <div class="card w420">
+      <h3>Actions (assist/cache)</h3>
+      <div>
+        <button onclick="assist('ocr')">Read Text</button>
+        <button onclick="assist('det')">Detect</button>
+        <button onclick="assist('find','door')">Find Door</button>
+        <button onclick="assist('find','exit sign')">Find Exit</button>
+        <button onclick="recordStart()">Record Start</button>
+        <button onclick="recordStop()">Record Stop</button>
+      </div>
+      <div id="actions" class="mono">-</div>
+    </div>
+    <div class="card grow">
+      <h3>Providers (real/mock evidence)</h3>
+      <div id="providers" class="mono">-</div>
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:12px">
+    <div class="card w320"><h3>Latest Frame</h3><img id="imgFrame" alt="frame preview"/></div>
+    <div class="card w320"><h3>DET Overlay</h3><img id="imgDet" alt="det overlay"/></div>
+    <div class="card w320"><h3>SEG Overlay</h3><img id="imgSeg" alt="seg overlay"/></div>
+    <div class="card w320"><h3>DEPTH Overlay</h3><img id="imgDepth" alt="depth overlay"/></div>
+  </div>
+
+  <div class="row" style="margin-top:12px">
+    <div class="card grow">
+      <h3>Events Tail</h3>
+      <div id="events" class="mono">-</div>
+    </div>
+  </div>
+
+  <script>
+    let lastState = null;
+    let lastAction = "-";
+    let deviceId = "default";
+    async function refreshState(){
+      try{
+        const r = await fetch('/api/ui/state?limit=80',{cache:'no-store'});
+        const s = await r.json();
+        lastState = s;
+        const caps = s.capabilities || {};
+        const prov = (caps.available_providers || {});
+        const latest = (s.latest || {});
+        const frameMeta = latest.frameMeta || {};
+        deviceId = frameMeta.deviceId || deviceId || 'default';
+        const runtime = [
+          `version=${s.version} git=${s.gitSha || '-'}`,
+          `profile=${s.profile || '-'}`,
+          `frameAsset=${latest.frameAssetId || '-'} size=${frameMeta.sizeBytes || '-'}`,
+          `eventCount=${latest.eventCount || 0}`,
+          `deviceId=${deviceId}`
+        ].join('\\n');
+        document.getElementById('runtime').textContent = runtime;
+        document.getElementById('providers').textContent = JSON.stringify(prov, null, 2);
+        document.getElementById('events').textContent = JSON.stringify(latest.eventsTail || [], null, 2);
+        document.getElementById('actions').textContent = lastAction;
+
+        setImg('imgFrame', latest.frameAssetId);
+        const overlays = latest.overlayAssets || {};
+        setImg('imgDet', overlays.det ? overlays.det.assetId : null);
+        setImg('imgSeg', overlays.seg ? overlays.seg.assetId : null);
+        setImg('imgDepth', overlays.depth ? overlays.depth.assetId : null);
+      }catch(err){
+        document.getElementById('runtime').textContent = 'state refresh failed: ' + err;
+      }
+    }
+    function setImg(id, assetId){
+      const el = document.getElementById(id);
+      if(!el){return;}
+      if(!assetId){el.removeAttribute('src'); return;}
+      el.src = `/api/assets/${encodeURIComponent(assetId)}?t=${Date.now()}`;
+    }
+    async function postJson(url, body){
+      const r = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+      let payload = null;
+      try{ payload = await r.json(); }catch(_){}
+      lastAction = `${url} -> ${r.status}\\n${JSON.stringify(payload || {}, null, 2)}`;
+      await refreshState();
+    }
+    async function postPing(){
+      await postJson('/api/ping',{deviceId, seq: Date.now()%100000, clientSendTsMs: Date.now()});
+    }
+    async function setMode(mode){
+      await postJson('/api/mode',{runId:'desktop-ui', frameSeq:1, mode, source:'ui', tsMs:Date.now(), deviceId});
+    }
+    async function assist(action, prompt){
+      const body = {deviceId, action};
+      if(prompt){ body.prompt = {text: prompt, openVocab: true, task: 'find'}; }
+      await postJson('/api/assist', body);
+    }
+    async function recordStart(){ await postJson('/api/record/start',{deviceId, note:'desktop-ui'}); }
+    async function recordStop(){ await postJson('/api/record/stop',{deviceId}); }
+    setInterval(refreshState, 1500);
+    refreshState();
+  </script>
+</body>
+</html>"""
+
+
+@app.get("/ui")
+async def desktop_console_ui() -> HTMLResponse:
+    return HTMLResponse(content=_build_desktop_console_html())
 
 
 @app.get("/api/assets/{asset_id}")
@@ -5863,6 +6065,118 @@ def _tiny_png() -> bytes:
     )
 
 
+def _encode_det_overlay_to_png(payload: dict[str, Any]) -> tuple[bytes, int, int]:
+    image_w = _to_nonnegative_int(payload.get("imageWidth"), 0) or 0
+    image_h = _to_nonnegative_int(payload.get("imageHeight"), 0) or 0
+    image_w = max(1, int(image_w))
+    image_h = max(1, int(image_h))
+    objects = payload.get("objects")
+    if not isinstance(objects, list):
+        return (_tiny_png(), 1, 1)
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        return (_tiny_png(), 1, 1)
+    image = Image.new("RGBA", (image_w, image_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image, "RGBA")
+    for row in objects:
+        if not isinstance(row, dict):
+            continue
+        box = row.get("box_xyxy")
+        if not (isinstance(box, list) and len(box) == 4):
+            box_norm = row.get("box_norm")
+            if isinstance(box_norm, list) and len(box_norm) == 4:
+                try:
+                    box = [
+                        float(box_norm[0]) * float(image_w),
+                        float(box_norm[1]) * float(image_h),
+                        float(box_norm[2]) * float(image_w),
+                        float(box_norm[3]) * float(image_h),
+                    ]
+                except Exception:
+                    box = None
+        if not (isinstance(box, list) and len(box) == 4):
+            continue
+        try:
+            x0, y0, x1, y1 = [float(v) for v in box]
+        except Exception:
+            continue
+        if x1 < x0:
+            x0, x1 = x1, x0
+        if y1 < y0:
+            y0, y1 = y1, y0
+        x0 = max(0.0, min(float(image_w - 1), x0))
+        x1 = max(0.0, min(float(image_w - 1), x1))
+        y0 = max(0.0, min(float(image_h - 1), y0))
+        y1 = max(0.0, min(float(image_h - 1), y1))
+        if (x1 - x0) < 1.0 or (y1 - y0) < 1.0:
+            continue
+        label = str(row.get("label", "obj") or "obj").strip()
+        conf = row.get("conf")
+        try:
+            conf_text = f"{float(conf):0.2f}"
+        except Exception:
+            conf_text = ""
+        draw.rectangle((x0, y0, x1, y1), outline=(0, 255, 96, 230), width=3)
+        tag = f"{label} {conf_text}".strip()
+        if tag:
+            tx = max(0.0, x0 + 2.0)
+            ty = max(0.0, y0 - 18.0)
+            draw.rectangle((tx - 2, ty - 2, tx + min(280.0, max(20.0, len(tag) * 8.0)), ty + 16), fill=(0, 0, 0, 140))
+            draw.text((tx, ty), tag, fill=(200, 255, 220, 240))
+    out = io.BytesIO()
+    image.save(out, format="PNG", optimize=True)
+    return (out.getvalue(), image_w, image_h)
+
+
+async def _emit_vis_overlay_v1_event(
+    *,
+    gateway: GatewayApp,
+    run_id: str | None,
+    frame_seq: int,
+    kind: str,
+    asset: Any,
+    payload: dict[str, Any],
+    width: int,
+    height: int,
+) -> None:
+    kind_token = str(kind or "").strip().lower() or "unknown"
+    provider_meta = {
+        "backend": payload.get("backend"),
+        "model": payload.get("model"),
+        "endpoint": payload.get("endpoint"),
+    }
+    infer_ms = _to_nonnegative_int_or_none(payload.get("latencyMs"))
+    if infer_ms is None:
+        infer_ms = _to_nonnegative_int_or_none(payload.get("inferMs"))
+    event_payload = {
+        "schemaVersion": "byes.vis.overlay.v1",
+        "kind": kind_token,
+        "assetId": str(asset.asset_id),
+        "w": int(max(1, int(width))),
+        "h": int(max(1, int(height))),
+        "providerMeta": provider_meta,
+        "inferMs": infer_ms,
+        "tsMs": _now_ms(),
+    }
+    gateway._latest_overlay_assets[kind_token] = {  # noqa: SLF001
+        "assetId": str(asset.asset_id),
+        "w": int(max(1, int(width))),
+        "h": int(max(1, int(height))),
+        "inferMs": infer_ms,
+        "providerMeta": provider_meta,
+        "tsMs": _now_ms(),
+    }
+    event = _build_byes_event(
+        run_id=run_id or "unknown-run",
+        frame_seq=frame_seq,
+        category="tool",
+        name="vis.overlay.v1",
+        payload=event_payload,
+    )
+    await gateway._emit_inference_event(event)  # noqa: SLF001
+
+
 def _encode_rle_mask_to_png(mask: dict[str, Any], *, fallback_w: int = 64, fallback_h: int = 64) -> tuple[bytes, int, int]:
     size = mask.get("size")
     counts = mask.get("counts")
@@ -5975,6 +6289,8 @@ async def _emit_det_objects_v1_event(
         out_objects.append(normalized)
     if not out_objects:
         return
+    image_w = _to_nonnegative_int(payload.get("imageWidth"), 0) or 0
+    image_h = _to_nonnegative_int(payload.get("imageHeight"), 0) or 0
     event = _build_byes_event(
         run_id=run_id or "unknown-run",
         frame_seq=frame_seq,
@@ -5984,11 +6300,43 @@ async def _emit_det_objects_v1_event(
             "schemaVersion": "byes.det.v1",
             "objects": out_objects,
             "objectsCount": int(len(out_objects)),
-            "imageWidth": _to_nonnegative_int_or_none(payload.get("imageWidth")),
-            "imageHeight": _to_nonnegative_int_or_none(payload.get("imageHeight")),
+            "imageWidth": image_w if image_w > 0 else None,
+            "imageHeight": image_h if image_h > 0 else None,
         },
     )
     await gateway._emit_inference_event(event)  # noqa: SLF001
+    det_png, det_w, det_h = _encode_det_overlay_to_png(
+        {
+            "objects": out_objects,
+            "imageWidth": image_w if image_w > 0 else 1,
+            "imageHeight": image_h if image_h > 0 else 1,
+            "backend": payload.get("backend"),
+            "model": payload.get("model"),
+            "endpoint": payload.get("endpoint"),
+            "latencyMs": payload.get("latencyMs"),
+        }
+    )
+    det_asset = gateway.asset_cache.put(
+        data=det_png,
+        content_type="image/png",
+        meta={
+            "kind": "det.overlay",
+            "w": int(det_w),
+            "h": int(det_h),
+            "runId": run_id,
+            "frameSeq": int(frame_seq),
+        },
+    )
+    await _emit_vis_overlay_v1_event(
+        gateway=gateway,
+        run_id=run_id,
+        frame_seq=frame_seq,
+        kind="det",
+        asset=det_asset,
+        payload=payload,
+        width=int(det_w),
+        height=int(det_h),
+    )
 
 
 async def _emit_seg_mask_v1_event(
@@ -6050,6 +6398,16 @@ async def _emit_seg_mask_v1_event(
         payload=event_payload,
     )
     await gateway._emit_inference_event(event)  # noqa: SLF001
+    await _emit_vis_overlay_v1_event(
+        gateway=gateway,
+        run_id=run_id,
+        frame_seq=frame_seq,
+        kind="seg",
+        asset=asset,
+        payload=payload,
+        width=int(w),
+        height=int(h),
+    )
 
 
 async def _emit_depth_map_v1_event(
@@ -6091,6 +6449,16 @@ async def _emit_depth_map_v1_event(
         payload=event_payload,
     )
     await gateway._emit_inference_event(event)  # noqa: SLF001
+    await _emit_vis_overlay_v1_event(
+        gateway=gateway,
+        run_id=run_id,
+        frame_seq=frame_seq,
+        kind="depth",
+        asset=asset,
+        payload=payload,
+        width=int(w),
+        height=int(h),
+    )
 
 
 async def _emit_slam_pose_v1_event(

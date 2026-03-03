@@ -71,6 +71,12 @@
 | `BYES_TARGET_TRACKING_MAX_ENTRIES` | Max in-memory target-tracking sessions | `128` | Gateway target-tracking store | `Gateway/main.py` (`GatewayApp.__init__`), `Gateway/byes/target_tracking/store.py` |
 | `BYES_PYSLAM_REPO_PATH` | Optional local pySLAM repo path used by offline runner script | empty | Offline script bridge | `Gateway/scripts/pyslam_run_package.py` |
 | `BYES_PYSLAM_ROOT` | Optional local pySLAM root used by `quest3_usb_realstack_v5_04.cmd` for auto-enabling realtime bridge | empty | Quest USB launcher | `tools/quest3/quest3_usb_realstack_v5_04.cmd` |
+| `BYES_PROVIDER_DET` | v5.05 launcher alias for DET provider profile (`yolo26|ultralytics|mock`) | `yolo26` | Quest USB launcher | `tools/quest3/quest3_usb_realstack_v5_05.cmd` |
+| `BYES_PROVIDER_SEG` | v5.05 launcher alias for SEG provider profile (`sam3|mock`) | `sam3` | Quest USB launcher | `tools/quest3/quest3_usb_realstack_v5_05.cmd` |
+| `BYES_PROVIDER_DEPTH` | v5.05 launcher alias for DEPTH provider profile (`da3|onnx|none`) | `da3` | Quest USB launcher | `tools/quest3/quest3_usb_realstack_v5_05.cmd` |
+| `BYES_YOLO26_WEIGHTS` | Optional YOLO26 local weights path (mapped to `BYES_SERVICE_DET_MODEL_PATH`) | empty | Quest USB launcher / inference det | `tools/quest3/quest3_usb_realstack_v5_05.cmd` |
+| `BYES_DA3_WEIGHTS` | Optional DA3 depth local weights/model path (mapped to `BYES_SERVICE_DEPTH_ONNX_PATH`) | empty | Quest USB launcher / inference depth | `tools/quest3/quest3_usb_realstack_v5_05.cmd` |
+| `BYES_SAM3_WEIGHTS` | Optional SAM3 checkpoint path (mapped to `BYES_SERVICE_SAM3_CKPT`) | empty | Quest USB launcher / inference seg | `tools/quest3/quest3_usb_realstack_v5_05.cmd` |
 | `BYES_CAPTURE_USE_ASYNC_GPU_READBACK` | Unity capture path switch for async GPU readback | Android default `1` (fallback to sync when unsupported) | Quest frame capture pipeline | `Assets/BeYourEyes/Unity/Capture/ScreenFrameGrabber.cs` |
 | `BYES_CAPTURE_TARGET_HZ` | Unity capture target hz used by Quest smoke/live defaults | `1` | Quest capture + scan controller | `Assets/BeYourEyes/Unity/Capture/ScreenFrameGrabber.cs`; `Assets/BeYourEyes/Unity/Interaction/ScanController.cs` |
 | `BYES_CAPTURE_MAX_INFLIGHT` | Unity capture in-flight readback cap | `1` | Quest capture + scan controller | `Assets/BeYourEyes/Unity/Capture/ScreenFrameGrabber.cs`; `Assets/BeYourEyes/Unity/Interaction/ScanController.cs` |

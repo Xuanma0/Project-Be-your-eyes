@@ -5,7 +5,7 @@ using UnityEngine.Rendering;
 
 namespace BeYourEyes.Unity.Capture
 {
-    public sealed class ScreenFrameGrabber : MonoBehaviour
+    public sealed class ScreenFrameGrabber : MonoBehaviour, IByesFrameSource
     {
         private const string EnvUseAsyncReadback = "BYES_CAPTURE_USE_ASYNC_GPU_READBACK";
         private const string EnvTargetHz = "BYES_CAPTURE_TARGET_HZ";
@@ -29,12 +29,18 @@ namespace BeYourEyes.Unity.Capture
         private bool _runtimeAsyncEnabled;
         private bool _warnedNoAsync;
         private int _activeReadbackRequests;
+        private int _lastFrameWidth;
+        private int _lastFrameHeight;
 
+        public string SourceName => "rendertexture";
+        public bool IsAvailable => true;
         public bool SupportsAsyncGpuReadback => SystemInfo.supportsAsyncGPUReadback;
         public bool AsyncGpuReadbackEnabled => _runtimeAsyncEnabled;
         public int CaptureTargetHz => Mathf.Max(1, captureTargetHz);
         public int CaptureMaxInflight => Mathf.Max(1, captureMaxInflight);
         public int ActiveReadbackRequests => Mathf.Max(0, _activeReadbackRequests);
+        public int LastFrameWidth => Mathf.Max(0, _lastFrameWidth);
+        public int LastFrameHeight => Mathf.Max(0, _lastFrameHeight);
 
         private void Awake()
         {
@@ -55,6 +61,8 @@ namespace BeYourEyes.Unity.Capture
             var sourceHeight = Mathf.Max(32, Screen.height);
             ResolveTargetSize(sourceWidth, sourceHeight, out var targetWidth, out var targetHeight);
             EnsureResources(targetWidth, targetHeight);
+            _lastFrameWidth = targetWidth;
+            _lastFrameHeight = targetHeight;
 
             var jpg = (byte[])null;
 
@@ -69,6 +77,22 @@ namespace BeYourEyes.Unity.Capture
             }
 
             onDone?.Invoke(jpg);
+        }
+
+        public void FillMeta(System.Collections.Generic.IDictionary<string, object> meta)
+        {
+            if (meta == null)
+            {
+                return;
+            }
+
+            meta["frameSource"] = SourceName;
+            meta["frameWidth"] = LastFrameWidth;
+            meta["frameHeight"] = LastFrameHeight;
+            meta["captureTargetHz"] = CaptureTargetHz;
+            meta["captureMaxInflight"] = CaptureMaxInflight;
+            meta["asyncGpuReadback"] = AsyncGpuReadbackEnabled;
+            meta["asyncGpuSupported"] = SupportsAsyncGpuReadback;
         }
 
         private IEnumerator CaptureAsync(int width, int height, Action<byte[]> onDone)

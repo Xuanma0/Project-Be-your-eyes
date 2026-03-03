@@ -39,6 +39,7 @@ namespace BYES.Quest
         private const float PingTimeoutSec = 2f;
         private const float QueryTimeoutSec = 3f;
         private const float ReachabilityIntervalSec = 10f;
+        private const float CapabilitiesRefreshIntervalSec = 30f;
 
         [Header("Quest Smoke Probe Profile")]
         [SerializeField] private bool applyLowOverheadGatewayProbeProfile = true;
@@ -82,6 +83,10 @@ namespace BYES.Quest
         private long _lastAsrTsMs = -1;
         private string _lastTtsText = "-";
         private long _lastTtsTsMs = -1;
+        private string _providerSummary = "providers: -";
+        private string _providerDetail = "-";
+        private long _providerTsMs = -1;
+        private long _lastCapabilitiesFetchTsMs = -1;
         private string _pendingFindPrompt = string.Empty;
         private long _pendingFindPromptTsMs = -1;
         private long _toastUntilMs = -1;
@@ -197,6 +202,7 @@ namespace BYES.Quest
             BindRuntimeEvents();
             ApplyPanelPresentationDefaults();
             ApplyConnectionConfig(reconnect: true);
+            StartCoroutine(QueryCapabilities(silent: true));
             RefreshAllStatusLines();
         }
 
@@ -205,6 +211,10 @@ namespace BYES.Quest
             ResolveRefs();
             BindRuntimeEvents();
             ApplyConnectionConfig(reconnect: true);
+            if (ShouldRefreshCapabilities())
+            {
+                StartCoroutine(QueryCapabilities(silent: true));
+            }
             if (_reachabilityCoroutine == null)
             {
                 _reachabilityCoroutine = StartCoroutine(ReachabilityLoop());
@@ -246,6 +256,10 @@ namespace BYES.Quest
                 if (_autoProbeEnabled)
                 {
                     yield return SendPing(autoProbe: true);
+                    if (ShouldRefreshCapabilities())
+                    {
+                        yield return QueryCapabilities(silent: true);
+                    }
                 }
                 yield return new WaitForSecondsRealtime(ReachabilityIntervalSec);
             }
@@ -1118,6 +1132,7 @@ namespace BYES.Quest
             yield return SendPing(autoProbe: false);
             yield return QueryVersion();
             yield return QueryMode();
+            yield return QueryCapabilities(silent: false);
         }
 
         private IEnumerator TriggerAssistThenFallback(
@@ -2191,6 +2206,7 @@ namespace BYES.Quest
                 $"find={_lastFindText} ts={_lastFindTsMs}\n" +
                 $"target={_lastTargetText} ts={_lastTargetTsMs} session={_targetSessionId}\n" +
                 $"guidance={_guidanceText} ts={_lastGuidanceTsMs}\n" +
+                $"providers={_providerSummary} detail={_providerDetail}\n" +
                 $"passthrough={GetPassthroughStatus()}\n" +
                 $"selfTest={_selfTestStatus} summary={_selfTestSummary}\n" +
                 $"hitch={(_hitchMonitor != null ? _hitchMonitor.HitchCount30s : -1)}";
@@ -2229,6 +2245,11 @@ namespace BYES.Quest
             if (_gatewayWsClient != null)
             {
                 _gatewayWsClient.SetConnectionConfig(wsUrl, _apiKey, reconnect: reconnect);
+            }
+
+            if (isActiveAndEnabled && ShouldRefreshCapabilities())
+            {
+                StartCoroutine(QueryCapabilities(silent: true));
             }
         }
 
@@ -2361,6 +2382,116 @@ namespace BYES.Quest
 
             _modeText.Set("Mode: raw");
             _rawText.Set(payload);
+        }
+
+        private IEnumerator QueryCapabilities(bool silent)
+        {
+            var uri = $"{_baseUrl}/api/capabilities";
+            TrackProbeRequest("/api/capabilities");
+            using var request = UnityWebRequest.Get(uri);
+            ApplyApiKeyHeader(request);
+            request.timeout = Mathf.CeilToInt(QueryTimeoutSec);
+            yield return request.SendWebRequest();
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                _providerSummary = "providers: failed";
+                _providerDetail = request.error ?? "capabilities failed";
+                _providerTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                _lastCapabilitiesFetchTsMs = _providerTsMs;
+                if (!silent)
+                {
+                    ShowToast("Capabilities failed");
+                }
+                yield break;
+            }
+
+            var payload = request.downloadHandler != null ? request.downloadHandler.text : string.Empty;
+            try
+            {
+                var obj = JObject.Parse(string.IsNullOrWhiteSpace(payload) ? "{}" : payload);
+                var providers = obj["available_providers"] as JObject;
+                _providerSummary = BuildProviderSummary(providers);
+                _providerDetail = providers != null
+                    ? providers.ToString(Newtonsoft.Json.Formatting.None)
+                    : "available_providers missing";
+            }
+            catch (Exception ex)
+            {
+                _providerSummary = "providers: parse_failed";
+                _providerDetail = ex.GetType().Name;
+            }
+
+            _providerTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            _lastCapabilitiesFetchTsMs = _providerTsMs;
+            if (!silent)
+            {
+                ShowToast("Capabilities OK");
+            }
+        }
+
+        private bool ShouldRefreshCapabilities()
+        {
+            if (_lastCapabilitiesFetchTsMs <= 0)
+            {
+                return true;
+            }
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            return (nowMs - _lastCapabilitiesFetchTsMs) >= Mathf.RoundToInt(CapabilitiesRefreshIntervalSec * 1000f);
+        }
+
+        private static string BuildProviderSummary(JObject providers)
+        {
+            if (providers == null)
+            {
+                return "providers: unavailable";
+            }
+
+            static string Token(JObject root, string key)
+            {
+                var row = root?[key] as JObject;
+                if (row == null)
+                {
+                    return $"{key}=na";
+                }
+
+                var backend = (row.Value<string>("backend") ?? "unknown").Trim().ToLowerInvariant();
+                var enabled = row.Value<bool?>("enabled") == true;
+                var reason = (row.Value<string>("reason") ?? string.Empty).Trim().ToLowerInvariant();
+
+                var mode = "real";
+                if (!enabled)
+                {
+                    mode = "off";
+                }
+                else if (backend.IndexOf("mock", StringComparison.Ordinal) >= 0
+                         || backend.IndexOf("reference", StringComparison.Ordinal) >= 0
+                         || backend == "none")
+                {
+                    mode = "mock";
+                }
+                else if (reason.IndexOf("missing", StringComparison.Ordinal) >= 0
+                         || reason.IndexOf("disabled", StringComparison.Ordinal) >= 0
+                         || reason.IndexOf("not_ready", StringComparison.Ordinal) >= 0)
+                {
+                    mode = "off";
+                }
+
+                var compactBackend = backend.Length > 14 ? backend.Substring(0, 14) : backend;
+                return $"{key}={mode}/{compactBackend}";
+            }
+
+            return string.Join(
+                " ",
+                new[]
+                {
+                    Token(providers, "ocr"),
+                    Token(providers, "det"),
+                    Token(providers, "seg"),
+                    Token(providers, "depth"),
+                    Token(providers, "slam"),
+                    Token(providers, "asr"),
+                }
+            );
         }
 
         private IEnumerator SetMode(string mode)
@@ -2536,10 +2667,14 @@ namespace BYES.Quest
                     ? $"Last E2E: {_scanController.LastE2eMs:0} ms"
                     : "Last E2E: -";
                 captureText =
-                    $"CaptureHz: {_scanController.CaptureTargetHz} | Inflight: {_scanController.InflightCount}/{_scanController.LiveMaxInflight} | ReadbackReq: {_scanController.CaptureActiveReadbacks} | Async: {(_scanController.CaptureAsyncReadbackEnabled ? "ON" : "OFF")} / {(_scanController.CaptureSupportsAsyncReadback ? "supported" : "unsupported")}";
+                    $"CaptureHz: {_scanController.CaptureTargetHz} | Src: {_scanController.CaptureSource} {_scanController.CaptureFrameWidth}x{_scanController.CaptureFrameHeight} | Inflight: {_scanController.InflightCount}/{_scanController.LiveMaxInflight} | ReadbackReq: {_scanController.CaptureActiveReadbacks} | Async: {(_scanController.CaptureAsyncReadbackEnabled ? "ON" : "OFF")} / {(_scanController.CaptureSupportsAsyncReadback ? "supported" : "unsupported")}";
             }
             var probeCount10s = GetProbeCount10s();
             captureText += $" | probe10s={probeCount10s}";
+            if (!string.IsNullOrWhiteSpace(_providerSummary))
+            {
+                captureText += $" | {_providerSummary}";
+            }
             _lastUploadText.Set(uploadText);
             _lastE2eText.Set(e2eText);
             _captureText.Set(captureText);
@@ -2602,7 +2737,8 @@ namespace BYES.Quest
 
             if (_rawVisible)
             {
-                var hint = $"trackSession={_targetSessionId} | passthrough={GetPassthroughStatus()} | guideAudio={(_guidanceAudioEnabled ? "on" : "off")} | guideHaptics={(_guidanceHapticsEnabled ? "on" : "off")} | asr={_lastAsrText}({asrAge}) | tts={_lastTtsText}({ttsAge}) | autoVoice={(_autoVoiceCommandEnabled ? "on" : "off")}";
+                var providerAge = _providerTsMs > 0 ? $"{Math.Max(0, nowMs - _providerTsMs)}ms" : "-";
+                var hint = $"trackSession={_targetSessionId} | passthrough={GetPassthroughStatus()} | guideAudio={(_guidanceAudioEnabled ? "on" : "off")} | guideHaptics={(_guidanceHapticsEnabled ? "on" : "off")} | asr={_lastAsrText}({asrAge}) | tts={_lastTtsText}({ttsAge}) | autoVoice={(_autoVoiceCommandEnabled ? "on" : "off")} | providers=[{_providerSummary}] age={providerAge}";
                 if (probeCount10s >= 8 && !liveEnabled)
                 {
                     hint = "MainThread Spike suspect: probe polling | " + hint;
