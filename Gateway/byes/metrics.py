@@ -1,6 +1,19 @@
 ﻿from __future__ import annotations
 
+import os
+import platform
 from dataclasses import dataclass
+
+# Python 3.14 on Windows can block for a long time in platform._wmi_query()
+# during prometheus_client import (platform collector initialization).
+# Prime uname cache with lightweight defaults to keep gateway startup stable.
+if os.name == "nt":
+    try:
+        if getattr(platform, "_uname_cache", None) is None:
+            platform._uname_cache = platform.uname_result("Windows", "byes-host", "unknown", "unknown", "unknown")
+    except Exception:
+        # Keep behavior unchanged if internals differ across Python versions.
+        pass
 
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Gauge, Histogram, generate_latest
 
@@ -538,3 +551,4 @@ class GatewayMetrics:
             content=generate_latest(self._registry),
             content_type=CONTENT_TYPE_LATEST,
         )
+

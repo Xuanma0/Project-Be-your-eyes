@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "byes.asr_request.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "deviceId"],
+  "properties": {
+    "schemaVersion": {
+      "const": "byes.asr_request.v1"
+    },
+    "deviceId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runId": {
+      "type": ["string", "null"]
+    },
+    "frameSeq": {
+      "type": ["integer", "null"],
+      "minimum": 1
+    },
+    "language": {
+      "type": ["string", "null"]
+    },
+    "contentType": {
+      "type": ["string", "null"]
+    },
+    "sampleRateHz": {
+      "type": ["integer", "null"],
+      "minimum": 1000
+    }
+  }
+}

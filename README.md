@@ -104,6 +104,12 @@ Quest 3 v5.03 real-stack launcher (USB + gateway + inference providers + assist/
 tools\quest3\quest3_usb_realstack_v5_03.cmd
 ```
 
+Quest 3 v5.04 pilot launcher (USB + gateway + inference + optional ASR/pySLAM runtime bridges + HUD asset events):
+
+```bat
+tools\quest3\quest3_usb_realstack_v5_04.cmd
+```
+
 Optional online pySLAM bridge in the same launcher:
 ```bat
 set BYES_ENABLE_PYSLAM_SERVICE=1
@@ -152,6 +158,7 @@ python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 12
 - v5.01 actions in hand menu include `Read Text Once` and `Detect Once`, and panel shows `Last OCR / Last DET / Last RISK` with age.
 - v5.02 adds promptable `Find` actions (Door/Exit/Stairs/Elevator/Restroom/Person), `Start Record/Stop Record`, and panel lines for `Last FIND` and `Guidance`.
 - v5.03 adds `Select ROI / Start Track / Track Step / Stop Track`, `Last TARGET`, and optional guidance audio/haptics cues.
+- v5.04 adds vision HUD asset overlays (`det.objects.v1`, `seg.mask.v1`, `depth.map.v1`), optional `/api/asr` transcript flow, and optional realtime pySLAM bridge status in capabilities.
 - Gesture shortcuts default to `Safe` mode (no trigger while menu/system gesture/UI/grab conflict is active)
 - Smoke panel move/resize is now explicit opt-in from hand menu (`Panels -> Enable Move/Resize`)
 - Passthrough can be toggled from hand menu (`Settings -> Passthrough`)

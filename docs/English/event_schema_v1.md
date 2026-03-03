@@ -40,6 +40,10 @@
 - `seg.segment`
 - `seg.prompt`
 - `det.objects`
+- `det.objects.v1`
+- `seg.mask.v1`
+- `depth.map.v1`
+- `asr.transcript.v1`
 - `assist.trigger`
 - `target.session`
 - `target.update`
@@ -228,6 +232,36 @@
 }
 ```
 
+### 6.4) Detection objects v1 (HUD-friendly)
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000001050,
+  "frameSeq": 1,
+  "component": "gateway",
+  "category": "tool",
+  "name": "det.objects.v1",
+  "phase": "result",
+  "status": "ok",
+  "latencyMs": 57,
+  "payload": {
+    "schemaVersion": "byes.det.v1",
+    "objectsCount": 1,
+    "imageWidth": 960,
+    "imageHeight": 540,
+    "objects": [
+      {
+        "label": "door",
+        "conf": 0.88,
+        "trackId": "17",
+        "box_xyxy": [220, 90, 480, 510],
+        "box_norm": [0.229, 0.167, 0.5, 0.944]
+      }
+    ]
+  }
+}
+```
+
 ### 6.1) Assist trigger event
 ```json
 {
@@ -315,6 +349,76 @@
 }
 ```
 
+### 6.4) Segmentation mask asset event (`seg.mask.v1`)
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000001120,
+  "frameSeq": 19,
+  "component": "gateway",
+  "category": "tool",
+  "name": "seg.mask.v1",
+  "phase": "result",
+  "status": "ok",
+  "payload": {
+    "schemaVersion": "byes.seg.mask.v1",
+    "assetId": "a_1704000001120_5f0c9a31",
+    "w": 960,
+    "h": 540,
+    "label": "door",
+    "trackId": "17",
+    "roi": {"x0": 0.23, "y0": 0.17, "x1": 0.50, "y1": 0.94}
+  }
+}
+```
+
+### 6.5) Depth colormap asset event (`depth.map.v1`)
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000001140,
+  "frameSeq": 19,
+  "component": "gateway",
+  "category": "tool",
+  "name": "depth.map.v1",
+  "phase": "result",
+  "status": "ok",
+  "payload": {
+    "schemaVersion": "byes.depth.map.v1",
+    "assetId": "a_1704000001140_b839d12e",
+    "w": 160,
+    "h": 120,
+    "minDepthM": 0.74,
+    "maxDepthM": 4.91
+  }
+}
+```
+
+### 6.6) ASR transcript event (`asr.transcript.v1`)
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "tsMs": 1704000001200,
+  "frameSeq": 22,
+  "component": "gateway",
+  "category": "tool",
+  "name": "asr.transcript.v1",
+  "phase": "result",
+  "status": "ok",
+  "payload": {
+    "schemaVersion": "byes.asr.transcript.v1",
+    "deviceId": "quest3-device",
+    "runId": "quest3-smoke",
+    "frameSeq": 22,
+    "text": "read this",
+    "language": "auto",
+    "backend": "mock",
+    "model": "mock-asr-v1",
+    "latencyMs": 4
+  }
+}
+```
+
 ### 7) Fused risk from depth grid
 ```json
 {
@@ -378,4 +482,8 @@
   - `{"format":"rle_v1","size":[h,w],"counts":[...]}` (preferred for transport),
   - `{"format":"polygon_v1","points":[[x,y],...]}` (lightweight overlay use),
   - `{"format":"png_b64","size":[h,w],"data":"..."}` (fallback/debug).
+
+`v5.04` note:
+- `seg.mask.v1` and `depth.map.v1` move heavy visualization payloads to `/api/assets/{assetId}` and keep WS event payloads lightweight.
+- Recording run packages persist referenced assets under `assets/` and keep `events/events_v1.jsonl` as asset-id references (no large inline base64).
 

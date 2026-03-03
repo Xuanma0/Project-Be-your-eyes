@@ -40,6 +40,10 @@ tools\quest3\quest3_usb_realstack_v5_02.cmd
 ```bat
 tools\quest3\quest3_usb_realstack_v5_03.cmd
 ```
+   v5.04 pilot launcher (HUD overlays + asset endpoints + optional ASR/pySLAM realtime bridge):
+```bat
+tools\quest3\quest3_usb_realstack_v5_04.cmd
+```
 2. On Quest, open `Quest3SmokeScene` app and look at the floating panel in front of you.
 3. Confirm panel base URL is `http://127.0.0.1:18000`.
 4. Click `SelfTest` (single-button smoke). If status looks stale first, click `Refresh` once.
@@ -231,6 +235,47 @@ python Gateway/scripts/pyslam_run_package.py --run-package <recordingPath> --pys
 - Output:
   - `out/pyslam/trajectory.json`
 - If pySLAM root is missing, script exits with code `2` and prints setup guidance.
+
+## 8.5) v5.04 Quest Validation (HUD + Voice + Optional pySLAM)
+
+PC:
+1. Run:
+```bat
+tools\quest3\quest3_usb_realstack_v5_04.cmd
+```
+2. Confirm launcher output includes:
+   - `adb reverse tcp:18000 tcp:18000`
+   - gateway/inference startup lines
+   - optional pySLAM bridge enabled/disabled reason
+
+Quest:
+1. Open app and verify `HTTP: reachable` + `WS: connected`.
+2. `Debug -> Run SelfTest` should PASS (or SKIP with explicit reason for optional capabilities like passthrough/ASR/pySLAM realtime).
+3. `Vision` toggles:
+   - enable DET/SEG/DEPTH overlay
+   - adjust SEG/DEPTH alpha
+4. Trigger `Read Text`, `Find`, and `Track` actions:
+   - panel updates `Last OCR / Last FIND / Last TARGET`
+   - HUD overlay updates age/fps stats
+5. Voice checks:
+   - `Play Beep` audible
+   - `Speak Test` updates panel TTS status
+   - if ASR enabled, `Push-to-talk` produces `asr.transcript.v1`
+6. Record checks:
+   - `Start Record` -> operate 5-10s -> `Stop Record`
+   - terminal prints `recordingPath`
+
+Evidence checklist:
+- Quest screenshot containing:
+  - HTTP/WS
+  - Last Upload/E2E
+  - Last OCR/FIND/TARGET
+  - Guidance + HUD stats
+- PC logs containing:
+  - `/api/assets/{asset_id}` GET lines
+  - `seg.mask.v1` / `depth.map.v1` WS events
+  - `/api/asr` request (when ASR enabled)
+  - `/api/record/start` + `/api/record/stop` 200 lines
 
 ## 9) Diagnosing Periodic Hitch (v4.98)
 

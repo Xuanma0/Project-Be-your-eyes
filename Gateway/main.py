@@ -26,6 +26,8 @@ from byes.config import GatewayConfig, load_config
 from byes.confirm_manager import ConfirmManager
 from byes.degradation import DegradationManager, DegradationState
 from byes.action_gate import ActionPlanGate
+from byes.asset_cache import AssetCache
+from byes.asr import AsrBackend, asr_capabilities
 from byes.faults import FaultManager
 from byes.frame_cache import FrameCache
 from byes.frame_tracker import FrameTracker
@@ -734,10 +736,22 @@ class GatewayApp:
         assist_cache_ttl_ms = max(200, int(os.getenv("BYES_ASSIST_CACHE_TTL_MS", "2000") or "2000"))
         assist_cache_max_entries = max(1, int(os.getenv("BYES_ASSIST_CACHE_MAX_ENTRIES", "16") or "16"))
         self.frame_cache = FrameCache(ttl_ms=assist_cache_ttl_ms, max_entries=assist_cache_max_entries)
+        asset_cache_ttl_ms = max(1000, int(os.getenv("BYES_ASSET_CACHE_TTL_MS", "12000") or "12000"))
+        asset_cache_max_entries = max(1, int(os.getenv("BYES_ASSET_CACHE_MAX_ENTRIES", "256") or "256"))
+        asset_cache_max_bytes = max(1024, int(os.getenv("BYES_ASSET_CACHE_MAX_BYTES", str(32 * 1024 * 1024)) or str(32 * 1024 * 1024)))
+        self.asset_cache = AssetCache(
+            ttl_ms=asset_cache_ttl_ms,
+            max_entries=asset_cache_max_entries,
+            max_total_bytes=asset_cache_max_bytes,
+        )
         target_ttl_ms = max(1000, int(os.getenv("BYES_TARGET_TRACKING_TTL_MS", "30000") or "30000"))
         target_max_entries = max(1, int(os.getenv("BYES_TARGET_TRACKING_MAX_ENTRIES", "128") or "128"))
         self.target_tracking = TargetTrackingStore(ttl_ms=target_ttl_ms, max_entries=target_max_entries)
-        self.recording = RecordingManager(run_packages_root=self.run_packages_root)
+        self.recording = RecordingManager(
+            run_packages_root=self.run_packages_root,
+            asset_resolver=self.resolve_recording_asset,
+        )
+        self.asr_backend = AsrBackend()
         self.pov_store = PovStore()
 
     async def startup(self) -> None:
@@ -750,6 +764,7 @@ class GatewayApp:
         self.slam_backend = get_slam_backend(self.config)
         self._inference_events.clear()
         self.frame_cache.reset()
+        self.asset_cache.reset()
         self.target_tracking.reset()
         self.recording.reset()
         self.costmap_fuser.reset()
@@ -789,6 +804,12 @@ class GatewayApp:
         await self.scheduler.start()
         self.degradation.set_ws_client_count(0)
         self._degrade_watchdog_task = asyncio.create_task(self._degradation_watchdog_loop())
+
+    def resolve_recording_asset(self, asset_id: str) -> tuple[bytes, str] | None:
+        cached = self.asset_cache.get(asset_id)
+        if cached is None:
+            return None
+        return (bytes(cached.data), str(cached.content_type or "application/octet-stream"))
 
     def _to_run_packages_relative(self, path: Path) -> str:
         root = self.run_packages_root.resolve()
@@ -1176,6 +1197,14 @@ class GatewayApp:
                 model=getattr(self.det_backend, "model_id", None),
                 endpoint=getattr(self.det_backend, "endpoint", None),
             )
+            det_overlay_payload = det_result.payload if isinstance(det_result.payload, dict) else {}
+            await _emit_det_objects_v1_event(
+                gateway=self,
+                run_id=run_id,
+                frame_seq=event_frame_seq,
+                component=component,
+                payload=det_overlay_payload,
+            )
 
         run_depth = bool(self.config.inference_enable_depth) and should_run_mode_target(
             frame_seq=event_frame_seq,
@@ -1226,6 +1255,14 @@ class GatewayApp:
                 backend=depth_backend_name,
                 model=depth_model_id,
                 endpoint=depth_endpoint,
+            )
+            depth_overlay_payload = depth_result.payload if isinstance(depth_result.payload, dict) else {}
+            await _emit_depth_map_v1_event(
+                gateway=self,
+                run_id=run_id,
+                frame_seq=event_frame_seq,
+                component=component,
+                payload=depth_overlay_payload,
             )
             depth_payload_for_costmap = depth_result.payload if isinstance(depth_result.payload, dict) else {}
             if isinstance(depth_result.grid, dict):
@@ -1337,6 +1374,20 @@ class GatewayApp:
                 backend=seg_backend_name,
                 model=seg_model_id,
                 endpoint=seg_endpoint,
+            )
+            seg_overlay_payload = seg_result.payload if isinstance(seg_result.payload, dict) else {}
+            if isinstance(seg_result.segments, list):
+                seg_overlay_payload = dict(seg_overlay_payload)
+                seg_overlay_payload.setdefault(
+                    "segments",
+                    [row for row in seg_result.segments if isinstance(row, dict)],
+                )
+            await _emit_seg_mask_v1_event(
+                gateway=self,
+                run_id=run_id,
+                frame_seq=event_frame_seq,
+                component=component,
+                payload=seg_overlay_payload,
             )
             seg_payload_for_costmap = seg_result.payload if isinstance(seg_result.payload, dict) else {}
             if isinstance(seg_result.segments, list):
@@ -2665,6 +2716,7 @@ async def api_capabilities() -> dict[str, Any]:
             "endpoint": getattr(gateway.slam_backend, "endpoint", None),
             "enabled": bool(gateway.config.inference_enable_slam),
         },
+        "asr": asr_capabilities(),
     }
     enabled_flags = {
         "ocr": bool(gateway.config.inference_enable_ocr),
@@ -2675,6 +2727,7 @@ async def api_capabilities() -> dict[str, Any]:
         "slam": bool(gateway.config.inference_enable_slam),
         "costmap": bool(gateway.config.inference_enable_costmap),
         "costmapFused": bool(gateway.config.inference_enable_costmap_fused),
+        "asr": str(os.getenv("BYES_ENABLE_ASR", "0")).strip().lower() in {"1", "true", "yes", "on"},
     }
     return {
         "version": build.get("version"),
@@ -2691,8 +2744,89 @@ async def api_capabilities() -> dict[str, Any]:
             "findPromptable": True,
             "targetTracking": True,
             "roiAssist": True,
+            "visionHud": True,
+            "assetEndpoint": True,
+            "segMaskAsset": True,
+            "depthMapAsset": True,
+            "asr": True,
+            "pyslamRealtime": str(os.getenv("BYES_ENABLE_PYSLAM_REALTIME", "0")).strip().lower() in {"1", "true", "yes", "on"},
         },
     }
+
+
+@app.get("/api/assets/{asset_id}")
+async def api_assets_get(asset_id: str) -> Response:
+    cached = gateway.asset_cache.get(asset_id)
+    if cached is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    headers = {
+        "Cache-Control": "no-store",
+        "X-BYES-Asset-Id": cached.asset_id,
+    }
+    return Response(content=bytes(cached.data), media_type=str(cached.content_type), headers=headers)
+
+
+@app.get("/api/assets/{asset_id}/meta")
+async def api_assets_meta(asset_id: str) -> dict[str, Any]:
+    meta = gateway.asset_cache.get_meta(asset_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    return meta
+
+
+@app.post("/api/asr")
+async def api_asr(
+    request: Request,
+    audio: UploadFile | None = File(default=None),
+    deviceId: str | None = Form(default=None),
+    runId: str | None = Form(default=None),
+    frameSeq: int | None = Form(default=None),
+    language: str | None = Form(default=None),
+) -> dict[str, Any]:
+    content_type = str(request.headers.get("content-type", "")).lower()
+    audio_bytes: bytes | None = None
+    if "multipart/form-data" in content_type and audio is not None:
+        audio_bytes = await audio.read()
+    else:
+        body = await request.body()
+        audio_bytes = body if body else None
+
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="audio is required")
+
+    if str(os.getenv("BYES_ENABLE_ASR", "0")).strip().lower() not in {"1", "true", "yes", "on"}:
+        raise HTTPException(status_code=503, detail="asr_disabled")
+
+    try:
+        transcript = gateway.asr_backend.transcribe(audio_bytes=audio_bytes, language=language)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"asr_failed:{exc.__class__.__name__}") from exc
+
+    run_id = str(runId or "").strip() or "unknown-run"
+    frame_seq = max(1, int(frameSeq or 1))
+    device_id = str(deviceId or "").strip() or "default"
+    payload = {
+        "schemaVersion": "byes.asr.transcript.v1",
+        "deviceId": device_id,
+        "runId": run_id,
+        "frameSeq": frame_seq,
+        "text": str(transcript.text or "").strip(),
+        "language": transcript.language,
+        "backend": transcript.backend,
+        "model": transcript.model,
+        "latencyMs": int(max(0, transcript.latency_ms)),
+    }
+    event = _build_byes_event(
+        run_id=run_id,
+        frame_seq=frame_seq,
+        category="tool",
+        name="asr.transcript.v1",
+        payload=payload,
+    )
+    await gateway._emit_inference_event(event)  # noqa: SLF001
+    return payload
 
 
 @app.post("/api/assist")
@@ -5551,6 +5685,269 @@ def _build_depth_fused_risk_payload(depth_payload: dict[str, Any] | None) -> dic
         if value is not None:
             payload[key] = value
     return payload
+
+
+def _tiny_png() -> bytes:
+    # 1x1 transparent PNG
+    return (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+        b"\x00\x00\x00\x0bIDATx\x9cc`\x00\x02\x00\x00\x05\x00\x01\x0d\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+
+def _encode_rle_mask_to_png(mask: dict[str, Any], *, fallback_w: int = 64, fallback_h: int = 64) -> tuple[bytes, int, int]:
+    size = mask.get("size")
+    counts = mask.get("counts")
+    if not (isinstance(size, list) and len(size) == 2 and isinstance(counts, list)):
+        return (_tiny_png(), 1, 1)
+    try:
+        h = max(1, int(size[0]))
+        w = max(1, int(size[1]))
+    except Exception:
+        h = max(1, int(fallback_h))
+        w = max(1, int(fallback_w))
+    total = w * h
+    flat: list[int] = []
+    fill = 0
+    for raw in counts:
+        try:
+            run = max(0, int(raw))
+        except Exception:
+            run = 0
+        if run <= 0:
+            continue
+        flat.extend([255 if fill else 0] * run)
+        fill = 1 - fill
+        if len(flat) >= total:
+            break
+    if len(flat) < total:
+        flat.extend([0] * (total - len(flat)))
+    flat = flat[:total]
+    try:
+        from PIL import Image
+    except Exception:
+        return (_tiny_png(), 1, 1)
+    image = Image.frombytes("L", (w, h), bytes(flat))
+    out = io.BytesIO()
+    image.save(out, format="PNG", optimize=True)
+    return (out.getvalue(), w, h)
+
+
+def _encode_depth_grid_to_colormap_png(grid: dict[str, Any]) -> tuple[bytes, int, int, float | None, float | None]:
+    size = grid.get("size")
+    values = grid.get("values")
+    if not (isinstance(size, list) and len(size) == 2 and isinstance(values, list)):
+        return (_tiny_png(), 1, 1, None, None)
+    try:
+        gw = max(1, int(size[0]))
+        gh = max(1, int(size[1]))
+    except Exception:
+        return (_tiny_png(), 1, 1, None, None)
+    expected = gw * gh
+    nums: list[int] = []
+    for raw in values:
+        try:
+            nums.append(max(0, int(raw)))
+        except Exception:
+            nums.append(0)
+        if len(nums) >= expected:
+            break
+    if len(nums) < expected:
+        nums.extend([0] * (expected - len(nums)))
+    nums = nums[:expected]
+    positives = [float(v) for v in nums if v > 0]
+    min_mm = min(positives) if positives else None
+    max_mm = max(positives) if positives else None
+    if min_mm is None or max_mm is None or max_mm <= min_mm:
+        min_mm = 100.0
+        max_mm = 3000.0
+    span = max(1.0, max_mm - min_mm)
+
+    rgba = bytearray()
+    for mm in nums:
+        if mm <= 0:
+            rgba.extend((0, 0, 0, 0))
+            continue
+        t = max(0.0, min(1.0, (float(mm) - min_mm) / span))
+        # Blue (far) -> Red (near) ramp.
+        r = int(max(0, min(255, (1.0 - t) * 255.0)))
+        g = int(max(0, min(255, (1.0 - abs(t - 0.5) * 2.0) * 180.0)))
+        b = int(max(0, min(255, t * 255.0)))
+        rgba.extend((r, g, b, 200))
+
+    try:
+        from PIL import Image
+    except Exception:
+        return (_tiny_png(), 1, 1, min_mm / 1000.0, max_mm / 1000.0)
+    image = Image.frombytes("RGBA", (gw, gh), bytes(rgba))
+    out = io.BytesIO()
+    image.save(out, format="PNG", optimize=True)
+    return (out.getvalue(), gw, gh, min_mm / 1000.0, max_mm / 1000.0)
+
+
+async def _emit_det_objects_v1_event(
+    *,
+    gateway: GatewayApp,
+    run_id: str | None,
+    frame_seq: int,
+    component: str,
+    payload: dict[str, Any],
+) -> None:
+    objects = payload.get("objects")
+    if not isinstance(objects, list):
+        return
+    out_objects: list[dict[str, Any]] = []
+    for row in objects:
+        if not isinstance(row, dict):
+            continue
+        normalized = dict(row)
+        track_id = row.get("trackId")
+        if track_id is not None:
+            normalized["trackId"] = str(track_id)
+        out_objects.append(normalized)
+    if not out_objects:
+        return
+    event = _build_byes_event(
+        run_id=run_id or "unknown-run",
+        frame_seq=frame_seq,
+        category="tool",
+        name="det.objects.v1",
+        payload={
+            "schemaVersion": "byes.det.v1",
+            "objects": out_objects,
+            "objectsCount": int(len(out_objects)),
+            "imageWidth": _to_nonnegative_int_or_none(payload.get("imageWidth")),
+            "imageHeight": _to_nonnegative_int_or_none(payload.get("imageHeight")),
+        },
+    )
+    await gateway._emit_inference_event(event)  # noqa: SLF001
+
+
+async def _emit_seg_mask_v1_event(
+    *,
+    gateway: GatewayApp,
+    run_id: str | None,
+    frame_seq: int,
+    component: str,
+    payload: dict[str, Any],
+) -> None:
+    segments = payload.get("segments")
+    if not isinstance(segments, list):
+        return
+    selected: dict[str, Any] | None = None
+    for row in segments:
+        if isinstance(row, dict) and isinstance(row.get("mask"), dict):
+            selected = row
+            break
+    if selected is None:
+        return
+    mask = selected.get("mask")
+    if not isinstance(mask, dict):
+        return
+    image_bytes, w, h = _encode_rle_mask_to_png(
+        mask,
+        fallback_w=_to_nonnegative_int(payload.get("imageWidth"), 64) or 64,
+        fallback_h=_to_nonnegative_int(payload.get("imageHeight"), 64) or 64,
+    )
+    asset = gateway.asset_cache.put(
+        data=image_bytes,
+        content_type="image/png",
+        meta={
+            "kind": "seg.mask",
+            "w": int(w),
+            "h": int(h),
+            "runId": run_id,
+            "frameSeq": int(frame_seq),
+        },
+    )
+    bbox = selected.get("bbox")
+    event_payload: dict[str, Any] = {
+        "schemaVersion": "byes.seg.mask.v1",
+        "assetId": asset.asset_id,
+        "w": int(w),
+        "h": int(h),
+        "label": str(selected.get("label", "") or "").strip() or None,
+        "trackId": str(selected.get("trackId", "") or "").strip() or None,
+        "roi": _bbox_to_norm_roi(
+            bbox,
+            image_w=_to_nonnegative_int(payload.get("imageWidth"), w) or w,
+            image_h=_to_nonnegative_int(payload.get("imageHeight"), h) or h,
+        ),
+    }
+    event = _build_byes_event(
+        run_id=run_id or "unknown-run",
+        frame_seq=frame_seq,
+        category="tool",
+        name="seg.mask.v1",
+        payload=event_payload,
+    )
+    await gateway._emit_inference_event(event)  # noqa: SLF001
+
+
+async def _emit_depth_map_v1_event(
+    *,
+    gateway: GatewayApp,
+    run_id: str | None,
+    frame_seq: int,
+    component: str,
+    payload: dict[str, Any],
+) -> None:
+    grid = payload.get("grid")
+    if not isinstance(grid, dict):
+        return
+    image_bytes, w, h, min_depth_m, max_depth_m = _encode_depth_grid_to_colormap_png(grid)
+    asset = gateway.asset_cache.put(
+        data=image_bytes,
+        content_type="image/png",
+        meta={
+            "kind": "depth.map",
+            "w": int(w),
+            "h": int(h),
+            "runId": run_id,
+            "frameSeq": int(frame_seq),
+        },
+    )
+    event_payload: dict[str, Any] = {
+        "schemaVersion": "byes.depth.map.v1",
+        "assetId": asset.asset_id,
+        "w": int(w),
+        "h": int(h),
+        "minDepthM": min_depth_m,
+        "maxDepthM": max_depth_m,
+    }
+    event = _build_byes_event(
+        run_id=run_id or "unknown-run",
+        frame_seq=frame_seq,
+        category="tool",
+        name="depth.map.v1",
+        payload=event_payload,
+    )
+    await gateway._emit_inference_event(event)  # noqa: SLF001
+
+
+def _bbox_to_norm_roi(bbox: Any, *, image_w: int, image_h: int) -> dict[str, float] | None:
+    if not (isinstance(bbox, list) and len(bbox) == 4 and image_w > 0 and image_h > 0):
+        return None
+    try:
+        x0, y0, x1, y1 = [float(item) for item in bbox]
+    except Exception:
+        return None
+    if x0 > x1:
+        x0, x1 = x1, x0
+    if y0 > y1:
+        y0, y1 = y1, y0
+    x0 = max(0.0, min(float(image_w), x0))
+    x1 = max(0.0, min(float(image_w), x1))
+    y0 = max(0.0, min(float(image_h), y0))
+    y1 = max(0.0, min(float(image_h), y1))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return {
+        "x": max(0.0, min(1.0, x0 / float(image_w))),
+        "y": max(0.0, min(1.0, y0 / float(image_h))),
+        "w": max(0.0, min(1.0, (x1 - x0) / float(image_w))),
+        "h": max(0.0, min(1.0, (y1 - y0) / float(image_h))),
+    }
 
 
 def _build_frame_input_payload(

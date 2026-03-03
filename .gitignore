@@ -80,3 +80,6 @@ Gateway/external/modelpack/weights_test/
 # Optional: if Unity generates these locally and you don't want them committed
 **/MemoryCaptures/
 **/Logs/
+
+# Unity Android temporary native build outputs
+.utmp/

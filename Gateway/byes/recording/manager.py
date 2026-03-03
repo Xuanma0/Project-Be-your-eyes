@@ -6,7 +6,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 def _now_ms() -> int:
@@ -44,9 +44,12 @@ class _RecordingSession:
     ws_events_path: Path
     metrics_before_path: Path
     metrics_after_path: Path
+    assets_dir: Path
     frame_count: int = 0
     event_count: int = 0
+    asset_count: int = 0
     run_frame_index: dict[tuple[str, int], bool] = field(default_factory=dict)
+    copied_assets: set[str] = field(default_factory=set)
     closed: bool = False
 
     def is_expired(self) -> bool:
@@ -56,10 +59,19 @@ class _RecordingSession:
 
 
 class RecordingManager:
-    def __init__(self, *, run_packages_root: Path) -> None:
+    def __init__(
+        self,
+        *,
+        run_packages_root: Path,
+        asset_resolver: Callable[[str], tuple[bytes, str] | None] | None = None,
+    ) -> None:
         self._root = Path(run_packages_root).resolve() / "quest_recordings"
         self._lock = threading.Lock()
         self._sessions: dict[str, _RecordingSession] = {}
+        self._asset_resolver = asset_resolver
+
+    def set_asset_resolver(self, resolver: Callable[[str], tuple[bytes, str] | None] | None) -> None:
+        self._asset_resolver = resolver
 
     def reset(self) -> None:
         with self._lock:
@@ -89,9 +101,11 @@ class RecordingManager:
             ws_events_path = root_dir / "ws_events.jsonl"
             metrics_before_path = root_dir / "metrics_before.txt"
             metrics_after_path = root_dir / "metrics_after.txt"
+            assets_dir = root_dir / "assets"
 
             frames_dir.mkdir(parents=True, exist_ok=True)
             events_dir.mkdir(parents=True, exist_ok=True)
+            assets_dir.mkdir(parents=True, exist_ok=True)
             metrics_before_path.write_text("# recording started\n", encoding="utf-8")
             metrics_after_path.write_text("# recording stopped\n", encoding="utf-8")
 
@@ -109,6 +123,7 @@ class RecordingManager:
                 ws_events_path=ws_events_path,
                 metrics_before_path=metrics_before_path,
                 metrics_after_path=metrics_after_path,
+                assets_dir=assets_dir,
             )
             self._sessions[normalized_device] = session
 
@@ -142,11 +157,13 @@ class RecordingManager:
                 "eventsV1Jsonl": "events/events_v1.jsonl",
                 "metricsBefore": "metrics_before.txt",
                 "metricsAfter": "metrics_after.txt",
+                "assetsDir": "assets",
                 "framesDir": "frames",
                 "framesMetaJsonl": "frames_meta.jsonl",
                 "framesCount": int(session.frame_count),
                 "frameCountSent": int(session.frame_count),
                 "eventCountAccepted": int(session.event_count),
+                "assetCount": int(session.asset_count),
                 "errors": [],
                 "recording": {
                     "deviceId": session.device_id,
@@ -232,6 +249,29 @@ class RecordingManager:
             _append_jsonl(matched.events_v1_path, event)
             _append_jsonl(matched.ws_events_path, event)
             matched.event_count += 1
+            self._copy_assets_for_event_unlocked(matched, event)
+
+    def _copy_assets_for_event_unlocked(self, session: _RecordingSession, event: dict[str, Any]) -> None:
+        resolver = self._asset_resolver
+        if resolver is None:
+            return
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            return
+        asset_ids = _collect_asset_ids(payload)
+        for asset_id in asset_ids:
+            if asset_id in session.copied_assets:
+                continue
+            resolved = resolver(asset_id)
+            if resolved is None:
+                continue
+            data, content_type = resolved
+            ext = _asset_ext_from_content_type(content_type)
+            file_name = f"{asset_id}{ext}"
+            out_path = session.assets_dir / file_name
+            out_path.write_bytes(bytes(data or b""))
+            session.asset_count += 1
+            session.copied_assets.add(asset_id)
 
 
 def _to_nonnegative_int_or_none(value: Any) -> int | None:
@@ -242,3 +282,30 @@ def _to_nonnegative_int_or_none(value: Any) -> int | None:
     if parsed < 0:
         return None
     return parsed
+
+
+def _collect_asset_ids(payload: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+    direct = str(payload.get("assetId", "")).strip()
+    if direct:
+        ids.append(direct)
+    raw_list = payload.get("assetIds")
+    if isinstance(raw_list, list):
+        for item in raw_list:
+            text = str(item or "").strip()
+            if text:
+                ids.append(text)
+    return sorted(set(ids))
+
+
+def _asset_ext_from_content_type(content_type: str) -> str:
+    normalized = str(content_type or "").strip().lower()
+    if "png" in normalized:
+        return ".png"
+    if "webp" in normalized:
+        return ".webp"
+    if "jpeg" in normalized or "jpg" in normalized:
+        return ".jpg"
+    if "json" in normalized:
+        return ".json"
+    return ".bin"

@@ -4,6 +4,13 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v5.04
+- Added Quest vision-HUD pipeline for real-time overlays: `det.objects.v1` boxes + labels/track id, `seg.mask.v1` assets, and `depth.map.v1` assets (binary payloads served via `/api/assets/{asset_id}`).
+- Added Gateway asset endpoints and cache metadata endpoint: `GET /api/assets/{asset_id}` and `GET /api/assets/{asset_id}/meta` for HUD texture transport without base64 inflation in WS events.
+- Added optional ASR ingress endpoint `POST /api/asr` with mock default backend and optional faster-whisper backend, plus `asr.transcript.v1` event emission.
+- Extended Quest recording manager to persist referenced visual assets into run package `assets/` and keep replay/report pipeline compatibility.
+- Added Quest v5.04 one-click USB launcher `tools/quest3/quest3_usb_realstack_v5_04.cmd` (gateway + inference + optional pySLAM bridge detection) and updated runbook evidence checklist.
+
 ## v5.03
 - Added target-tracking assist flow on top of frame cache: `POST /api/assist` now supports `target_start / target_step / target_stop` with device-scoped session TTL and emits `target.session` / `target.update` events.
 - Added optional Quest guidance output stack (text + spatial audio + haptics toggles) and wired target updates into panel telemetry (`Last TARGET` + age).

@@ -76,6 +76,10 @@ namespace BYES.Quest
         private long _lastGuidanceTsMs = -1;
         private string _lastTargetText = "-";
         private long _lastTargetTsMs = -1;
+        private string _lastAsrText = "-";
+        private long _lastAsrTsMs = -1;
+        private string _lastTtsText = "-";
+        private long _lastTtsTsMs = -1;
         private string _pendingFindPrompt = string.Empty;
         private long _pendingFindPromptTsMs = -1;
         private long _toastUntilMs = -1;
@@ -112,6 +116,7 @@ namespace BYES.Quest
         private ByesHapticsCue _guidanceHapticsCue;
         private ByesPassthroughController _passthroughController;
         private ByesRoiPanelController _roiPanelController;
+        private ByesVisionHudController _visionHud;
         private bool _recordingActive;
         private string _targetSessionId = string.Empty;
         private string _targetTracker = "botsort";
@@ -332,6 +337,19 @@ namespace BYES.Quest
                 }
             }
 
+            if (_visionHud == null)
+            {
+                _visionHud = FindFirstObjectByType<ByesVisionHudController>();
+                if (_visionHud == null)
+                {
+                    _visionHud = GetComponent<ByesVisionHudController>();
+                }
+                if (_visionHud == null)
+                {
+                    _visionHud = gameObject.AddComponent<ByesVisionHudController>();
+                }
+            }
+
             if (_speechOrchestrator == null)
             {
                 _speechOrchestrator = FindFirstObjectByType<SpeechOrchestrator>();
@@ -473,6 +491,7 @@ namespace BYES.Quest
                 UpdateOcrFromEvent(payload);
             }
             else if (string.Equals(lowered, "det.objects", StringComparison.Ordinal)
+                     || string.Equals(lowered, "det.objects.v1", StringComparison.Ordinal)
                      || string.Equals(lowered, "det", StringComparison.Ordinal))
             {
                 UpdateDetFromEvent(payload);
@@ -489,6 +508,10 @@ namespace BYES.Quest
             else if (string.Equals(lowered, "target.session", StringComparison.Ordinal))
             {
                 UpdateTargetSessionFromEvent(payload);
+            }
+            else if (string.Equals(lowered, "asr.transcript.v1", StringComparison.Ordinal))
+            {
+                UpdateAsrFromEvent(payload);
             }
             if (string.Equals(_scanStatus, "sending", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(_scanStatus, "uploaded", StringComparison.OrdinalIgnoreCase))
@@ -816,6 +839,29 @@ namespace BYES.Quest
             }
         }
 
+        private void UpdateAsrFromEvent(JObject payload)
+        {
+            if (payload == null)
+            {
+                return;
+            }
+
+            var source = payload["result"] as JObject ?? payload;
+            var text = (source.Value<string>("text") ?? payload.Value<string>("text") ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                text = "-";
+            }
+            if (text.Length > 220)
+            {
+                text = text.Substring(0, 220) + "...";
+            }
+
+            _lastAsrText = text;
+            _lastAsrTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            ShowToast("ASR: " + (text.Length > 48 ? text.Substring(0, 48) + "..." : text));
+        }
+
         private float ParseDepthFromRiskText(string text)
         {
             var raw = string.IsNullOrWhiteSpace(text) ? string.Empty : text.Trim().ToLowerInvariant();
@@ -914,6 +960,8 @@ namespace BYES.Quest
             {
                 _lastSpokenAtMs = nowMs;
                 _lastSpokenDigest = digest;
+                _lastTtsText = normalized;
+                _lastTtsTsMs = nowMs;
             }
         }
 
@@ -2325,6 +2373,8 @@ namespace BYES.Quest
             var findAge = _lastFindTsMs > 0 ? $"{Math.Max(0, nowMs - _lastFindTsMs)}ms" : "-";
             var targetAge = _lastTargetTsMs > 0 ? $"{Math.Max(0, nowMs - _lastTargetTsMs)}ms" : "-";
             var guidanceAge = _lastGuidanceTsMs > 0 ? $"{Math.Max(0, nowMs - _lastGuidanceTsMs)}ms" : "-";
+            var asrAge = _lastAsrTsMs > 0 ? $"{Math.Max(0, nowMs - _lastAsrTsMs)}ms" : "-";
+            var ttsAge = _lastTtsTsMs > 0 ? $"{Math.Max(0, nowMs - _lastTtsTsMs)}ms" : "-";
             _lastOcrTextView?.Set($"Last OCR: {_lastOcrText} | Age: {ocrAge}");
             _lastDetTextView?.Set($"Last DET: {_lastDetText} | Age: {detAge}");
             _lastRiskTextView?.Set($"Last RISK: {_lastRiskText} | Age: {riskAge}");
@@ -2348,7 +2398,7 @@ namespace BYES.Quest
 
             if (_rawVisible)
             {
-                var hint = $"trackSession={_targetSessionId} | passthrough={GetPassthroughStatus()} | guideAudio={(_guidanceAudioEnabled ? "on" : "off")} | guideHaptics={(_guidanceHapticsEnabled ? "on" : "off")}";
+                var hint = $"trackSession={_targetSessionId} | passthrough={GetPassthroughStatus()} | guideAudio={(_guidanceAudioEnabled ? "on" : "off")} | guideHaptics={(_guidanceHapticsEnabled ? "on" : "off")} | asr={_lastAsrText}({asrAge}) | tts={_lastTtsText}({ttsAge})";
                 if (probeCount10s >= 8 && !liveEnabled)
                 {
                     hint = "MainThread Spike suspect: probe polling | " + hint;

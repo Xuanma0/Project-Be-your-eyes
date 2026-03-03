@@ -37,6 +37,16 @@
 | `BYES_MODE_PROFILE_JSON` | Optional mode-driven per-target stride config (JSON string) | empty (disabled) | Gateway mode profile parser + inference scheduler | `Gateway/byes/config.py:370`; `Gateway/byes/mode_state.py:49`; `Gateway/main.py:520,916-1140` |
 | `BYES_EMIT_MODE_PROFILE_DEBUG` | Optional debug event switch for per-frame fired/skipped targets (`mode.profile`) | `false` | Gateway inference event emitter | `Gateway/byes/config.py:371`; `Gateway/main.py:1186-1205` |
 | `BYES_EMIT_NET_DEBUG` | Optional debug event emission for `/api/ping` requests (`net.ping`) | `false` | Gateway ping endpoint debug branch | `Gateway/byes/config.py`; `Gateway/main.py` (`ping`) |
+| `BYES_ASSET_CACHE_TTL_MS` | TTL for `/api/assets/*` cache entries used by `seg.mask.v1` / `depth.map.v1` events | `12000` | Gateway asset cache | `Gateway/main.py:739`; `Gateway/byes/asset_cache.py` |
+| `BYES_ASSET_CACHE_MAX_ENTRIES` | Max number of asset cache entries (LRU) | `256` | Gateway asset cache | `Gateway/main.py:740`; `Gateway/byes/asset_cache.py` |
+| `BYES_ASSET_CACHE_MAX_BYTES` | Max aggregate bytes in asset cache before evicting oldest entries | `33554432` | Gateway asset cache | `Gateway/main.py:741`; `Gateway/byes/asset_cache.py` |
+| `BYES_ENABLE_ASR` | Enable `/api/asr` endpoint and ASR event emission (`asr.transcript.v1`) | `0` | Gateway ASR endpoint gate | `Gateway/main.py:2797`; `Gateway/byes/asr.py:95` |
+| `BYES_ASR_BACKEND` | ASR backend selector (`mock|faster_whisper`) | `mock` | Gateway ASR backend | `Gateway/byes/asr.py:26` |
+| `BYES_ASR_MODEL` | ASR model id/size (mock label or faster-whisper model size) | `mock-asr-v1` | Gateway ASR backend | `Gateway/byes/asr.py:27,58` |
+| `BYES_ASR_MOCK_TEXT` | Mock transcript text returned when backend=`mock` | `read this` | Gateway ASR backend | `Gateway/byes/asr.py:28` |
+| `BYES_ASR_DEVICE` | faster-whisper device selector (`cpu|cuda`) | `cpu` | Gateway ASR backend | `Gateway/byes/asr.py:59` |
+| `BYES_ASR_COMPUTE_TYPE` | faster-whisper compute type (`int8|float16|...`) | `int8` | Gateway ASR backend | `Gateway/byes/asr.py:60` |
+| `BYES_ENABLE_PYSLAM_REALTIME` | Capability flag for realtime pySLAM bridge path (reported by `/api/capabilities`) | `0` | Gateway capabilities payload | `Gateway/main.py:2752` |
 | `BYES_VERSION_OVERRIDE` | Optional `/api/version` override string | empty | Gateway version endpoint helper | `Gateway/byes/version_info.py` (`read_repo_version`) |
 | `BYES_GIT_SHA` | Optional build git sha surfaced in `/api/version` | empty | Gateway version endpoint helper | `Gateway/byes/version_info.py` (`get_build_info`) |
 | `BYES_SERVICE_OCR_PROVIDER` | inference_service OCR provider selector (`mock|reference|http|tesseract|paddleocr`) | `mock` | inference_service OCR router | `Gateway/services/inference_service/app.py` (`_select_ocr_provider`) |
@@ -57,6 +67,7 @@
 | `BYES_TARGET_TRACKING_TTL_MS` | TTL for `/api/assist` target-tracking sessions (`target_start/step/stop`) | `30000` | Gateway target-tracking store | `Gateway/main.py` (`GatewayApp.__init__`), `Gateway/byes/target_tracking/store.py` |
 | `BYES_TARGET_TRACKING_MAX_ENTRIES` | Max in-memory target-tracking sessions | `128` | Gateway target-tracking store | `Gateway/main.py` (`GatewayApp.__init__`), `Gateway/byes/target_tracking/store.py` |
 | `BYES_PYSLAM_REPO_PATH` | Optional local pySLAM repo path used by offline runner script | empty | Offline script bridge | `Gateway/scripts/pyslam_run_package.py` |
+| `BYES_PYSLAM_ROOT` | Optional local pySLAM root used by `quest3_usb_realstack_v5_04.cmd` for auto-enabling realtime bridge | empty | Quest USB launcher | `tools/quest3/quest3_usb_realstack_v5_04.cmd` |
 | `BYES_CAPTURE_USE_ASYNC_GPU_READBACK` | Unity capture path switch for async GPU readback | Android default `1` (fallback to sync when unsupported) | Quest frame capture pipeline | `Assets/BeYourEyes/Unity/Capture/ScreenFrameGrabber.cs` |
 | `BYES_CAPTURE_TARGET_HZ` | Unity capture target hz used by Quest smoke/live defaults | `1` | Quest capture + scan controller | `Assets/BeYourEyes/Unity/Capture/ScreenFrameGrabber.cs`; `Assets/BeYourEyes/Unity/Interaction/ScanController.cs` |
 | `BYES_CAPTURE_MAX_INFLIGHT` | Unity capture in-flight readback cap | `1` | Quest capture + scan controller | `Assets/BeYourEyes/Unity/Capture/ScreenFrameGrabber.cs`; `Assets/BeYourEyes/Unity/Interaction/ScanController.cs` |

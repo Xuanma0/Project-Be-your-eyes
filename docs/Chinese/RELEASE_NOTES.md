@@ -1,5 +1,12 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v5.04
+- 新增 Quest 视觉 HUD 资产闭环：支持 `det.objects.v1` 框/标签/trackId、`seg.mask.v1` 蒙版资产、`depth.map.v1` 深度资产叠加显示。
+- Gateway 新增资产接口：`GET /api/assets/{asset_id}` 与 `GET /api/assets/{asset_id}/meta`，避免在 WS 事件中传大体积 base64。
+- 新增可选语音输入入口 `POST /api/asr`：默认 `mock` 后端，支持可选 `faster-whisper`，并发出 `asr.transcript.v1`。
+- 录制链路增强：Quest recording 在生成 run package 时同步落盘引用的 `assets/` 文件，保持 replay/report 兼容。
+- 新增 v5.04 一键 USB realstack 脚本 `tools/quest3/quest3_usb_realstack_v5_04.cmd`（gateway + inference + 可选 pySLAM 检测）与配套验收指引。
+
 ## v5.03
 - 新增 Target Tracking Assist：`POST /api/assist` 支持 `target_start / target_step / target_stop`，并发出 `target.session` / `target.update` 事件。
 - Quest 面板新增 `Last TARGET`（含 Age），并接入 Guidance 文本 + 空间音频/触觉开关。
