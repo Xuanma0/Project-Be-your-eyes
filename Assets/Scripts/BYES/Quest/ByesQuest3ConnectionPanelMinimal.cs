@@ -1285,7 +1285,7 @@ namespace BYES.Quest
             {
                 ["deviceId"] = GetDeviceId(),
                 ["action"] = string.IsNullOrWhiteSpace(action) ? "det" : action.Trim().ToLowerInvariant(),
-                ["maxAgeMs"] = 1500,
+                ["maxAgeMs"] = 5000,
             };
             if (targets != null && targets.Length > 0)
             {
@@ -1334,7 +1334,7 @@ namespace BYES.Quest
             {
                 ["deviceId"] = GetDeviceId(),
                 ["action"] = action,
-                ["maxAgeMs"] = 1500,
+                ["maxAgeMs"] = 5000,
                 ["tracker"] = _targetTracker,
             };
 
@@ -1381,6 +1381,30 @@ namespace BYES.Quest
                 response = obj;
                 error = err;
             });
+
+            var normalizedError = string.IsNullOrWhiteSpace(error) ? string.Empty : error.Trim();
+            var likelyCacheMiss =
+                normalizedError.IndexOf("assist_cache_miss", StringComparison.OrdinalIgnoreCase) >= 0
+                || (normalizedError.IndexOf("404", StringComparison.OrdinalIgnoreCase) >= 0
+                    && normalizedError.IndexOf("/api/assist", StringComparison.OrdinalIgnoreCase) >= 0);
+            if ((!done || !ok || response == null) && likelyCacheMiss && _scanController != null)
+            {
+                // Assist requires a fresh cached frame for this deviceId. Seed once then retry.
+                _scanController.ScanOnceFromUi();
+                yield return new WaitForSecondsRealtime(0.35f);
+
+                done = false;
+                ok = false;
+                error = string.Empty;
+                response = null;
+                yield return SendJsonRequest(UnityWebRequest.kHttpVerbPOST, "/api/assist", BuildTrackPayload("target_start"), (success, obj, err) =>
+                {
+                    done = true;
+                    ok = success;
+                    response = obj;
+                    error = err;
+                });
+            }
 
             if (!done || !ok || response == null)
             {
@@ -2093,6 +2117,26 @@ namespace BYES.Quest
         public long GetHudDetAgeMs()
         {
             return _visionHud != null ? _visionHud.LastDetAgeMs : -1L;
+        }
+
+        public long GetLastOcrTsMs()
+        {
+            return _lastOcrTsMs;
+        }
+
+        public long GetLastDetTsMs()
+        {
+            return _lastDetTsMs;
+        }
+
+        public long GetLastRiskTsMs()
+        {
+            return _lastRiskTsMs;
+        }
+
+        public string GetScanErrorText()
+        {
+            return _scanError ?? string.Empty;
         }
 
         public bool IsLockToHead()

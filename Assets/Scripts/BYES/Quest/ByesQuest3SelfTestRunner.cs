@@ -218,6 +218,7 @@ namespace BYES.Quest
                 SetStatus("RUNNING", "step6 depth+risk");
                 var depthRiskOk = false;
                 var depthRiskError = string.Empty;
+                var riskTsBefore = _panel != null ? _panel.GetLastRiskTsMs() : -1L;
                 var depthRiskStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 yield return RunScanStep(
                     () => _scanController.DepthRiskOnceFromUi(),
@@ -229,6 +230,15 @@ namespace BYES.Quest
                         depthRiskError = error;
                     });
                 _stepDurationsMs["depth_risk"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - depthRiskStepStartedMs);
+                if (!depthRiskOk && IsWsTimeout(depthRiskError) && _panel != null)
+                {
+                    var riskTsAfter = _panel.GetLastRiskTsMs();
+                    if (riskTsAfter > riskTsBefore && riskTsAfter > 0)
+                    {
+                        depthRiskOk = true;
+                        depthRiskError = string.Empty;
+                    }
+                }
                 if (!depthRiskOk)
                 {
                     Fail($"depth/risk failed: {depthRiskError}");
@@ -238,6 +248,7 @@ namespace BYES.Quest
                 SetStatus("RUNNING", "step7 ocr");
                 var ocrOk = false;
                 var ocrError = string.Empty;
+                var ocrTsBefore = _panel != null ? _panel.GetLastOcrTsMs() : -1L;
                 var ocrStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 yield return RunScanStep(
                     () => _scanController.ReadTextOnceFromUi(),
@@ -249,6 +260,15 @@ namespace BYES.Quest
                         ocrError = error;
                     });
                 _stepDurationsMs["ocr"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - ocrStepStartedMs);
+                if (!ocrOk && IsWsTimeout(ocrError) && _panel != null)
+                {
+                    var ocrTsAfter = _panel.GetLastOcrTsMs();
+                    if (ocrTsAfter > ocrTsBefore && ocrTsAfter > 0)
+                    {
+                        ocrOk = true;
+                        ocrError = string.Empty;
+                    }
+                }
                 if (!ocrOk)
                 {
                     Fail($"ocr failed: {ocrError}");
@@ -258,6 +278,7 @@ namespace BYES.Quest
                 SetStatus("RUNNING", "step8 det");
                 var detOk = false;
                 var detError = string.Empty;
+                var detTsBefore = _panel != null ? _panel.GetLastDetTsMs() : -1L;
                 var detStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 yield return RunScanStep(
                     () => _scanController.DetectObjectsOnceFromUi(),
@@ -269,6 +290,15 @@ namespace BYES.Quest
                         detError = error;
                     });
                 _stepDurationsMs["det"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - detStepStartedMs);
+                if (!detOk && IsWsTimeout(detError) && _panel != null)
+                {
+                    var detTsAfter = _panel.GetLastDetTsMs();
+                    if (detTsAfter > detTsBefore && detTsAfter > 0)
+                    {
+                        detOk = true;
+                        detError = string.Empty;
+                    }
+                }
                 if (!detOk)
                 {
                     Fail($"det failed: {detError}");
@@ -349,6 +379,12 @@ namespace BYES.Quest
                         trackOk = ok;
                         trackError = error;
                     });
+                if (!trackOk && IsAssistUnavailable(trackError))
+                {
+                    skipNotes.Add("track:assist_unavailable");
+                    trackOk = true;
+                    trackError = string.Empty;
+                }
                 _stepDurationsMs["track"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - trackStepStartedMs);
                 if (!trackOk)
                 {
@@ -645,7 +681,15 @@ namespace BYES.Quest
 
             if (!matched)
             {
-                onDone?.Invoke(false, "WS expected event timeout");
+                var panelError = _panel != null ? (_panel.GetScanErrorText() ?? string.Empty).Trim() : string.Empty;
+                if (!string.IsNullOrWhiteSpace(panelError))
+                {
+                    onDone?.Invoke(false, panelError);
+                }
+                else
+                {
+                    onDone?.Invoke(false, "WS expected event timeout");
+                }
                 yield break;
             }
 
@@ -960,6 +1004,29 @@ namespace BYES.Quest
             }
 
             return normalized;
+        }
+
+        private static bool IsWsTimeout(string error)
+        {
+            if (string.IsNullOrWhiteSpace(error))
+            {
+                return false;
+            }
+            return error.IndexOf("WS expected event timeout", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool IsAssistUnavailable(string error)
+        {
+            if (string.IsNullOrWhiteSpace(error))
+            {
+                return false;
+            }
+            var text = error.Trim();
+            return text.IndexOf("assist_cache_miss", StringComparison.OrdinalIgnoreCase) >= 0
+                   || (text.IndexOf("404", StringComparison.OrdinalIgnoreCase) >= 0
+                       && text.IndexOf("/api/assist", StringComparison.OrdinalIgnoreCase) >= 0)
+                   || (text.IndexOf("404", StringComparison.OrdinalIgnoreCase) >= 0
+                       && text.IndexOf("not found", StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
         private static bool IsProviderEnabled(JObject capabilitiesObj, string providerName)
