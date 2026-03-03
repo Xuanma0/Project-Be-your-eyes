@@ -86,6 +86,12 @@ Profile defaults are applied in `Gateway/main.py` via `_apply_gateway_profile_de
 
 Unity parsing points: `GatewayClient.HandleWsMessage` (`Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs:785-852`), `SpeechOrchestrator` (`Assets/BeYourEyes/Presenters/Audio/SpeechOrchestrator.cs:162-178`), legacy poller (`Assets/BeYourEyes/Adapters/Networking/GatewayPoller.cs:99-106`).
 
+v5.04 realtime additions for Quest HUD/SLAM:
+- `det.objects.v1` (normalized bbox + optional `trackId`)
+- `seg.mask.v1` / `depth.map.v1` (binary data fetched through `/api/assets/{asset_id}`)
+- `slam.pose.v1` (normalized pose payload)
+- `slam.trajectory.v1` (throttled recent trajectory points)
+
 ## Service Inventory (`Gateway/services/*/app.py`)
 
 | Service | Routes | Typical Port / Bind Evidence | Called By |

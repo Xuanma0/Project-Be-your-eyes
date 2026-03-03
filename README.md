@@ -154,14 +154,14 @@ python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 12
 - Confirm decision: `Y/N` (or XR primary/secondary)
 - Connection panel probes: `Test Ping`, `Read Mode`, `Get Version`
 - `Quest3SmokeScene` runs zero-controller self-test on startup (ping/version/mode/live-loop) and reports `RUNNING/PASS/FAIL` in panel
-- v5.00 Quest default entry: palm-up + pinch opens official hand menu (`Connection / Actions / Mode / Panels / Settings / Debug`)
+- v5.04 Quest default entry: palm-up opens official hand menu (`Home / Vision / Guidance / Voice / Dev`) with favorites pin-to-home.
 - v5.01 actions in hand menu include `Read Text Once` and `Detect Once`, and panel shows `Last OCR / Last DET / Last RISK` with age.
 - v5.02 adds promptable `Find` actions (Door/Exit/Stairs/Elevator/Restroom/Person), `Start Record/Stop Record`, and panel lines for `Last FIND` and `Guidance`.
 - v5.03 adds `Select ROI / Start Track / Track Step / Stop Track`, `Last TARGET`, and optional guidance audio/haptics cues.
 - v5.04 adds vision HUD asset overlays (`det.objects.v1`, `seg.mask.v1`, `depth.map.v1`), optional `/api/asr` transcript flow, and optional realtime pySLAM bridge status in capabilities.
 - Gesture shortcuts default to `Safe` mode (no trigger while menu/system gesture/UI/grab conflict is active)
-- Smoke panel move/resize is now explicit opt-in from hand menu (`Panels -> Enable Move/Resize`)
-- Passthrough can be toggled from hand menu (`Settings -> Passthrough`)
+- Smoke panel move/resize is explicit opt-in from `Dev -> Enable Move/Resize`.
+- Passthrough controls are in `Vision` (`On/Off`, `Opacity`, `Color/Gray` if supported).
 
 ### Success signals
 

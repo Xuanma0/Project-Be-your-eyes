@@ -5,6 +5,7 @@ import contextlib
 import csv
 import hashlib
 import html
+import importlib.util
 import io
 import json
 import os
@@ -752,6 +753,22 @@ class GatewayApp:
             asset_resolver=self.resolve_recording_asset,
         )
         self.asr_backend = AsrBackend()
+        self._emit_slam_trajectory_v1 = str(os.getenv("BYES_EMIT_SLAM_TRAJECTORY_V1", "1")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self._slam_traj_emit_interval_ms = max(
+            200,
+            int(os.getenv("BYES_SLAM_TRAJECTORY_EMIT_INTERVAL_MS", "1000") or "1000"),
+        )
+        self._slam_traj_max_points = max(
+            4,
+            int(os.getenv("BYES_SLAM_TRAJECTORY_MAX_POINTS", "60") or "60"),
+        )
+        self._slam_traj_points: dict[str, list[dict[str, Any]]] = {}
+        self._slam_traj_last_emit_ms: dict[str, int] = {}
         self.pov_store = PovStore()
 
     async def startup(self) -> None:
@@ -767,6 +784,8 @@ class GatewayApp:
         self.asset_cache.reset()
         self.target_tracking.reset()
         self.recording.reset()
+        self._slam_traj_points.clear()
+        self._slam_traj_last_emit_ms.clear()
         self.costmap_fuser.reset()
         self.dynamic_mask_cache.reset()
         self._external_readiness = {}
@@ -913,6 +932,66 @@ class GatewayApp:
         self.recording.on_event(event_copy)
         if self.config.inference_emit_ws_events_v1:
             await self.connections.broadcast_json(event_copy)
+
+    async def _maybe_emit_slam_trajectory_v1(
+        self,
+        *,
+        run_id: str,
+        frame_seq: int,
+        device_id: str | None,
+        tracking_state: str | None,
+        pose: dict[str, Any] | None,
+    ) -> None:
+        if not self._emit_slam_trajectory_v1:
+            return
+        if not isinstance(pose, dict):
+            return
+        t = pose.get("t")
+        q = pose.get("q")
+        if not (isinstance(t, list) and len(t) >= 3 and isinstance(q, list) and len(q) >= 4):
+            return
+        try:
+            tx = float(t[0])
+            ty = float(t[1])
+            tz = float(t[2])
+            qx = float(q[0])
+            qy = float(q[1])
+            qz = float(q[2])
+            qw = float(q[3])
+        except Exception:
+            return
+        key = str(device_id or "default").strip() or "default"
+        now_ms = _now_ms()
+        points = self._slam_traj_points.setdefault(key, [])
+        points.append(
+            {
+                "tsMs": int(now_ms),
+                "t": [tx, ty, tz],
+                "q": [qx, qy, qz, qw],
+                "trackingState": str(tracking_state or "").strip().lower() or None,
+            }
+        )
+        if len(points) > self._slam_traj_max_points:
+            del points[0 : len(points) - self._slam_traj_max_points]
+        last_emit_ms = int(self._slam_traj_last_emit_ms.get(key, -1))
+        if last_emit_ms > 0 and (now_ms - last_emit_ms) < self._slam_traj_emit_interval_ms:
+            return
+        self._slam_traj_last_emit_ms[key] = now_ms
+        payload = {
+            "schemaVersion": "byes.slam.trajectory.v1",
+            "deviceId": key,
+            "trackingState": str(tracking_state or "").strip().lower() or None,
+            "points": list(points),
+        }
+        await self._emit_inference_event(
+            _build_byes_event(
+                run_id=run_id,
+                frame_seq=frame_seq,
+                category="tool",
+                name="slam.trajectory.v1",
+                payload=payload,
+            )
+        )
 
     @staticmethod
     def _extract_run_id(meta: dict[str, Any]) -> str | None:
@@ -1438,6 +1517,21 @@ class GatewayApp:
                 backend=slam_backend_name,
                 model=slam_model_id,
                 endpoint=slam_endpoint,
+            )
+            slam_overlay_payload = slam_result.payload if isinstance(slam_result.payload, dict) else {}
+            await _emit_slam_pose_v1_event(
+                gateway=self,
+                run_id=run_id,
+                frame_seq=event_frame_seq,
+                component=component,
+                payload=slam_overlay_payload,
+            )
+            await self._maybe_emit_slam_trajectory_v1(
+                run_id=run_id,
+                frame_seq=event_frame_seq,
+                device_id=device_id,
+                tracking_state=slam_result.tracking_state,
+                pose=slam_result.pose if isinstance(slam_result.pose, dict) else None,
             )
             slam_payload_for_costmap = slam_result.payload if isinstance(slam_result.payload, dict) else {}
             if isinstance(slam_result.pose, dict):
@@ -2679,44 +2773,117 @@ async def api_version() -> dict[str, Any]:
 @app.get("/api/capabilities")
 async def api_capabilities() -> dict[str, Any]:
     build = get_build_info(profile=gateway.config.gateway_profile)
+    asr_enabled = str(os.getenv("BYES_ENABLE_ASR", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    asr_backend_name = str(os.getenv("BYES_ASR_BACKEND", "mock")).strip().lower() or "mock"
+    asr_reason = "enabled"
+    if not asr_enabled:
+        asr_reason = "disabled_by_env"
+    elif asr_backend_name == "faster_whisper" and importlib.util.find_spec("faster_whisper") is None:
+        asr_reason = "missing_dependency:faster_whisper"
+
+    def _provider_reason(*, enabled: bool, backend: str | None, endpoint: str | None, service_key: str | None = None) -> str:
+        if not enabled:
+            return "disabled_by_flag"
+        backend_text = str(backend or "").strip().lower()
+        endpoint_text = str(endpoint or "").strip()
+        if backend_text == "http" and not endpoint_text:
+            return "missing_endpoint"
+        if service_key:
+            readiness = gateway._external_readiness.get(service_key)  # noqa: SLF001
+            if isinstance(readiness, dict):
+                if bool(readiness.get("ready", False)):
+                    return "ready"
+                return str(readiness.get("reason", "not_ready") or "not_ready")
+        return "ready"
+
+    pyslam_enabled = str(os.getenv("BYES_ENABLE_PYSLAM_REALTIME", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    pyslam_root = str(os.getenv("BYES_PYSLAM_ROOT", "")).strip()
+    pyslam_reason = "enabled" if pyslam_enabled else "disabled_by_env"
+    if pyslam_enabled and not pyslam_root:
+        pyslam_reason = "missing_env:BYES_PYSLAM_ROOT"
+    elif pyslam_enabled and not Path(pyslam_root).exists():
+        pyslam_reason = "path_not_found"
+
     available_providers = {
         "ocr": {
             "backend": getattr(gateway.ocr_backend, "name", "unknown"),
             "model": getattr(gateway.ocr_backend, "model_id", None),
             "endpoint": getattr(gateway.ocr_backend, "endpoint", None),
             "enabled": bool(gateway.config.inference_enable_ocr),
+            "reason": _provider_reason(
+                enabled=bool(gateway.config.inference_enable_ocr),
+                backend=getattr(gateway.ocr_backend, "name", "unknown"),
+                endpoint=getattr(gateway.ocr_backend, "endpoint", None),
+                service_key="real_ocr",
+            ),
         },
         "risk": {
             "backend": getattr(gateway.risk_backend, "name", "unknown"),
             "model": getattr(gateway.risk_backend, "model_id", None),
             "endpoint": getattr(gateway.risk_backend, "endpoint", None),
             "enabled": bool(gateway.config.inference_enable_risk),
+            "reason": _provider_reason(
+                enabled=bool(gateway.config.inference_enable_risk),
+                backend=getattr(gateway.risk_backend, "name", "unknown"),
+                endpoint=getattr(gateway.risk_backend, "endpoint", None),
+            ),
         },
         "det": {
             "backend": getattr(gateway.det_backend, "name", "unknown"),
             "model": getattr(gateway.det_backend, "model_id", None),
             "endpoint": getattr(gateway.det_backend, "endpoint", None),
             "enabled": bool(gateway.config.inference_enable_det),
+            "reason": _provider_reason(
+                enabled=bool(gateway.config.inference_enable_det),
+                backend=getattr(gateway.det_backend, "name", "unknown"),
+                endpoint=getattr(gateway.det_backend, "endpoint", None),
+                service_key="real_det",
+            ),
         },
         "depth": {
             "backend": getattr(gateway.depth_backend, "name", "unknown"),
             "model": getattr(gateway.depth_backend, "model_id", None),
             "endpoint": getattr(gateway.depth_backend, "endpoint", None),
             "enabled": bool(gateway.config.inference_enable_depth),
+            "reason": _provider_reason(
+                enabled=bool(gateway.config.inference_enable_depth),
+                backend=getattr(gateway.depth_backend, "name", "unknown"),
+                endpoint=getattr(gateway.depth_backend, "endpoint", None),
+                service_key="real_depth",
+            ),
         },
         "seg": {
             "backend": getattr(gateway.seg_backend, "name", "unknown"),
             "model": getattr(gateway.seg_backend, "model_id", None),
             "endpoint": getattr(gateway.seg_backend, "endpoint", None),
             "enabled": bool(gateway.config.inference_enable_seg),
+            "reason": _provider_reason(
+                enabled=bool(gateway.config.inference_enable_seg),
+                backend=getattr(gateway.seg_backend, "name", "unknown"),
+                endpoint=getattr(gateway.seg_backend, "endpoint", None),
+            ),
         },
         "slam": {
             "backend": getattr(gateway.slam_backend, "name", "unknown"),
             "model": getattr(gateway.slam_backend, "model_id", None),
             "endpoint": getattr(gateway.slam_backend, "endpoint", None),
             "enabled": bool(gateway.config.inference_enable_slam),
+            "reason": _provider_reason(
+                enabled=bool(gateway.config.inference_enable_slam),
+                backend=getattr(gateway.slam_backend, "name", "unknown"),
+                endpoint=getattr(gateway.slam_backend, "endpoint", None),
+            ),
         },
-        "asr": asr_capabilities(),
+        "asr": {
+            **asr_capabilities(),
+            "reason": asr_reason,
+        },
+        "pyslamRealtime": {
+            "enabled": pyslam_enabled,
+            "backend": "pyslam_http" if pyslam_enabled else "mock",
+            "reason": pyslam_reason,
+            "root": pyslam_root or None,
+        },
     }
     enabled_flags = {
         "ocr": bool(gateway.config.inference_enable_ocr),
@@ -2727,7 +2894,8 @@ async def api_capabilities() -> dict[str, Any]:
         "slam": bool(gateway.config.inference_enable_slam),
         "costmap": bool(gateway.config.inference_enable_costmap),
         "costmapFused": bool(gateway.config.inference_enable_costmap_fused),
-        "asr": str(os.getenv("BYES_ENABLE_ASR", "0")).strip().lower() in {"1", "true", "yes", "on"},
+        "asr": asr_enabled,
+        "pyslamRealtime": pyslam_enabled,
     }
     return {
         "version": build.get("version"),
@@ -2749,7 +2917,7 @@ async def api_capabilities() -> dict[str, Any]:
             "segMaskAsset": True,
             "depthMapAsset": True,
             "asr": True,
-            "pyslamRealtime": str(os.getenv("BYES_ENABLE_PYSLAM_REALTIME", "0")).strip().lower() in {"1", "true", "yes", "on"},
+            "pyslamRealtime": pyslam_enabled,
         },
     }
 
@@ -5920,6 +6088,41 @@ async def _emit_depth_map_v1_event(
         frame_seq=frame_seq,
         category="tool",
         name="depth.map.v1",
+        payload=event_payload,
+    )
+    await gateway._emit_inference_event(event)  # noqa: SLF001
+
+
+async def _emit_slam_pose_v1_event(
+    *,
+    gateway: GatewayApp,
+    run_id: str | None,
+    frame_seq: int,
+    component: str,
+    payload: dict[str, Any],
+) -> None:
+    if not isinstance(payload, dict):
+        return
+    pose = payload.get("pose")
+    if not isinstance(pose, dict):
+        return
+    event_payload = {
+        "schemaVersion": "byes.slam.pose.v1",
+        "trackingState": str(payload.get("trackingState", "") or "").strip().lower() or None,
+        "pose": {
+            "t": pose.get("t"),
+            "q": pose.get("q"),
+            "frame": pose.get("frame"),
+        },
+        "backend": payload.get("backend"),
+        "model": payload.get("model"),
+        "endpoint": payload.get("endpoint"),
+    }
+    event = _build_byes_event(
+        run_id=run_id or "unknown-run",
+        frame_seq=frame_seq,
+        category="tool",
+        name="slam.pose.v1",
         payload=event_payload,
     )
     await gateway._emit_inference_event(event)  # noqa: SLF001

@@ -6,16 +6,28 @@ namespace BYES.UI
 {
     public sealed class ByesQuestPassthroughSetup : MonoBehaviour
     {
+        public enum PassthroughColorMode
+        {
+            Color = 0,
+            Gray = 1,
+        }
+
         private const string PrefAutoInstall = "BYES_PASSTHROUGH_AUTOINSTALL";
         private static bool _missingArFoundationLogged;
         private static ByesQuestPassthroughSetup _instance;
         private bool _isEnabled;
+        private float _opacity = 1f;
+        private PassthroughColorMode _colorMode = PassthroughColorMode.Color;
+        private bool _supportsGrayMode;
         private Camera _camera;
         private Behaviour _cameraManager;
         private Behaviour _cameraBackground;
 
         public static ByesQuestPassthroughSetup Instance => _instance ?? FindFirstObjectByType<ByesQuestPassthroughSetup>();
         public bool IsEnabled => _isEnabled;
+        public float Opacity => _opacity;
+        public PassthroughColorMode ColorMode => _colorMode;
+        public bool SupportsGrayMode => _supportsGrayMode;
 
         public static ByesQuestPassthroughSetup EnsureInstance()
         {
@@ -126,6 +138,18 @@ namespace BYES.UI
             ApplyPassthroughState();
         }
 
+        public void SetOpacity(float opacity)
+        {
+            _opacity = Mathf.Clamp01(opacity);
+            ApplyPassthroughState();
+        }
+
+        public void SetColorMode(PassthroughColorMode mode)
+        {
+            _colorMode = mode;
+            ApplyPassthroughState();
+        }
+
         private void ApplyPassthroughState()
         {
             ResolveCameraAndComponents();
@@ -136,7 +160,16 @@ namespace BYES.UI
 
             _camera.clearFlags = CameraClearFlags.SolidColor;
             var color = _camera.backgroundColor;
-            color.a = _isEnabled ? 0f : 1f;
+            // AR passthrough is shown when camera background is transparent.
+            // Opacity controls how much of virtual solid background remains.
+            color.a = _isEnabled ? Mathf.Clamp01(1f - _opacity) : 1f;
+            if (_colorMode == PassthroughColorMode.Gray && _supportsGrayMode)
+            {
+                var gray = color.grayscale;
+                color.r = gray;
+                color.g = gray;
+                color.b = gray;
+            }
             _camera.backgroundColor = color;
 
             if (_cameraManager != null)
@@ -168,6 +201,7 @@ namespace BYES.UI
 
             var cameraManagerType = ResolveType("UnityEngine.XR.ARFoundation.ARCameraManager, Unity.XR.ARFoundation");
             var cameraBackgroundType = ResolveType("UnityEngine.XR.ARFoundation.ARCameraBackground, Unity.XR.ARFoundation");
+            _supportsGrayMode = false;
             if (cameraManagerType != null && _cameraManager == null)
             {
                 _cameraManager = _camera.GetComponent(cameraManagerType) as Behaviour;

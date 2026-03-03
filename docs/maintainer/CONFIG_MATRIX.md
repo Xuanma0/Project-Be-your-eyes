@@ -47,6 +47,9 @@
 | `BYES_ASR_DEVICE` | faster-whisper device selector (`cpu|cuda`) | `cpu` | Gateway ASR backend | `Gateway/byes/asr.py:59` |
 | `BYES_ASR_COMPUTE_TYPE` | faster-whisper compute type (`int8|float16|...`) | `int8` | Gateway ASR backend | `Gateway/byes/asr.py:60` |
 | `BYES_ENABLE_PYSLAM_REALTIME` | Capability flag for realtime pySLAM bridge path (reported by `/api/capabilities`) | `0` | Gateway capabilities payload | `Gateway/main.py:2752` |
+| `BYES_EMIT_SLAM_TRAJECTORY_V1` | Emit low-frequency `slam.trajectory.v1` WS events from accumulated pose points | `1` | Gateway slam trajectory emitter | `Gateway/main.py` (`GatewayApp._maybe_emit_slam_trajectory_v1`) |
+| `BYES_SLAM_TRAJECTORY_EMIT_INTERVAL_MS` | Min interval between `slam.trajectory.v1` emissions per device | `1000` | Gateway slam trajectory emitter | `Gateway/main.py` (`GatewayApp.__init__`) |
+| `BYES_SLAM_TRAJECTORY_MAX_POINTS` | Max pose points retained in emitted trajectory payload | `60` | Gateway slam trajectory emitter | `Gateway/main.py` (`GatewayApp.__init__`) |
 | `BYES_VERSION_OVERRIDE` | Optional `/api/version` override string | empty | Gateway version endpoint helper | `Gateway/byes/version_info.py` (`read_repo_version`) |
 | `BYES_GIT_SHA` | Optional build git sha surfaced in `/api/version` | empty | Gateway version endpoint helper | `Gateway/byes/version_info.py` (`get_build_info`) |
 | `BYES_SERVICE_OCR_PROVIDER` | inference_service OCR provider selector (`mock|reference|http|tesseract|paddleocr`) | `mock` | inference_service OCR router | `Gateway/services/inference_service/app.py` (`_select_ocr_provider`) |

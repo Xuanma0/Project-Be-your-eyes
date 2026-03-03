@@ -10,6 +10,8 @@ This changelog summarizes delivered capabilities from `v4.38` onward for reviewe
 - Added optional ASR ingress endpoint `POST /api/asr` with mock default backend and optional faster-whisper backend, plus `asr.transcript.v1` event emission.
 - Extended Quest recording manager to persist referenced visual assets into run package `assets/` and keep replay/report pipeline compatibility.
 - Added Quest v5.04 one-click USB launcher `tools/quest3/quest3_usb_realstack_v5_04.cmd` (gateway + inference + optional pySLAM bridge detection) and updated runbook evidence checklist.
+- Refactored Quest wrist menu IA to `Home / Vision / Guidance / Voice / Dev`, with pin-to-home favorites, voice test controls, and explicit panel move/resize gating.
+- Added passthrough extended controls (`on/off`, `opacity`, `color/gray` when supported), plus v5.04 self-test extensions for HUD assets, TTS/ASR checks, and optional pySLAM realtime status.
 
 ## v5.03
 - Added target-tracking assist flow on top of frame cache: `POST /api/assist` now supports `target_start / target_step / target_stop` with device-scoped session TTL and emits `target.session` / `target.update` events.

@@ -249,19 +249,26 @@ tools\quest3\quest3_usb_realstack_v5_04.cmd
    - optional pySLAM bridge enabled/disabled reason
 
 Quest:
-1. Open app and verify `HTTP: reachable` + `WS: connected`.
-2. `Debug -> Run SelfTest` should PASS (or SKIP with explicit reason for optional capabilities like passthrough/ASR/pySLAM realtime).
-3. `Vision` toggles:
-   - enable DET/SEG/DEPTH overlay
+1. Open app, palm-up to show wrist menu, then check `Home` status: `HTTP reachable`, `WS connected`, `Record`, `Overlay`.
+2. `Dev -> Run SelfTest` should PASS (or SKIP with explicit reason for optional capabilities like passthrough/ASR/pySLAM realtime).
+3. `Vision` page:
+   - enable DET/SEG/DEPTH/TARGET overlay
    - adjust SEG/DEPTH alpha
-4. Trigger `Read Text`, `Find`, and `Track` actions:
+   - passthrough toggle + opacity + color/gray mode
+4. Trigger `Read Text`, `Find`, and `Track` actions from `Home/Guidance/Dev`:
    - panel updates `Last OCR / Last FIND / Last TARGET`
    - HUD overlay updates age/fps stats
-5. Voice checks:
+5. `Guidance` page:
+   - set mode `Walk/Read/Inspect`
+   - toggle auto guidance/audio/haptics and adjust guidance rate slider
+6. `Voice` page:
    - `Play Beep` audible
    - `Speak Test` updates panel TTS status
    - if ASR enabled, `Push-to-talk` produces `asr.transcript.v1`
-6. Record checks:
+7. Favorites:
+   - run any action, then `Dev -> Pin Last Action`
+   - verify pinned action appears in `Home` favorites row and is clickable
+8. Record checks:
    - `Start Record` -> operate 5-10s -> `Stop Record`
    - terminal prints `recordingPath`
 

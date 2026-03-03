@@ -11,6 +11,13 @@ namespace BYES.Guidance
 
         private float _lastPulseAt;
 
+        public float CooldownSec => cooldownSec;
+
+        public void SetCooldownSec(float value)
+        {
+            cooldownSec = Mathf.Clamp(value, 0.05f, 2f);
+        }
+
         public void Pulse(GuidanceOutput output)
         {
             if (Time.unscaledTime - _lastPulseAt < Mathf.Max(0.05f, cooldownSec))

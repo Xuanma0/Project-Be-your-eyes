@@ -107,6 +107,7 @@ def speedup_mock_tools() -> None:
 
 def test_v12_baseline_frame_e2e_accounting() -> None:
     with TestClient(app) as client:
+        client.post("/api/dev/reset")
         speedup_mock_tools()
         client.post("/api/fault/clear")
         before = parse_metrics(client.get("/metrics").text)

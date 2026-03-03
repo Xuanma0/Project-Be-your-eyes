@@ -29,6 +29,7 @@ namespace BYES.Quest
         private Text _statsText;
         private readonly List<Image> _boxOutlines = new List<Image>();
         private readonly List<Text> _boxLabels = new List<Text>();
+        private ByesVisionHudRenderer _renderer;
         private Texture2D _segTexture;
         private Texture2D _depthTexture;
         private long _lastSegTsMs = -1;
@@ -50,6 +51,42 @@ namespace BYES.Quest
         public float OverlayFps => _overlayFps;
         public float LastDecodeMs => _lastDecodeMs;
         public int LastAssetBytes => _assetBytes;
+
+        public long LastSegAgeMs
+        {
+            get
+            {
+                if (_lastSegTsMs <= 0)
+                {
+                    return -1;
+                }
+                return Math.Max(0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _lastSegTsMs);
+            }
+        }
+
+        public long LastDepthAgeMs
+        {
+            get
+            {
+                if (_lastDepthTsMs <= 0)
+                {
+                    return -1;
+                }
+                return Math.Max(0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _lastDepthTsMs);
+            }
+        }
+
+        public long LastDetAgeMs
+        {
+            get
+            {
+                if (_lastDetTsMs <= 0)
+                {
+                    return -1;
+                }
+                return Math.Max(0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _lastDetTsMs);
+            }
+        }
 
         private void Awake()
         {
@@ -74,7 +111,6 @@ namespace BYES.Quest
         {
             UpdatePose();
             UpdateStats();
-            TickOverlayFps();
         }
 
         public void SetShowDet(bool enabled)
@@ -110,6 +146,17 @@ namespace BYES.Quest
         public void SetDepthAlpha(float value)
         {
             depthAlpha = Mathf.Clamp01(value);
+            ApplyVisualState();
+        }
+
+        public void ResetHud()
+        {
+            showDetOverlay = true;
+            showSegOverlay = true;
+            showDepthOverlay = true;
+            showTargetOverlay = true;
+            segAlpha = 0.35f;
+            depthAlpha = 0.30f;
             ApplyVisualState();
         }
 
@@ -158,6 +205,7 @@ namespace BYES.Quest
             _statsText.raycastTarget = false;
 
             _isInitialized = true;
+            EnsureRenderer();
         }
 
         private void ResolveRefs()
@@ -175,18 +223,13 @@ namespace BYES.Quest
             {
                 return;
             }
-
-            _gatewayClient.OnGatewayEvent -= HandleGatewayEvent;
-            _gatewayClient.OnGatewayEvent += HandleGatewayEvent;
+            EnsureRenderer();
+            _renderer?.Bind(_gatewayClient);
         }
 
         private void Unbind()
         {
-            if (_gatewayClient == null)
-            {
-                return;
-            }
-            _gatewayClient.OnGatewayEvent -= HandleGatewayEvent;
+            _renderer?.Unbind();
         }
 
         private void HandleGatewayEvent(JObject evt)
@@ -384,21 +427,8 @@ namespace BYES.Quest
 
         private void ApplyVisualState()
         {
-            if (_segImage != null)
-            {
-                _segImage.enabled = showSegOverlay;
-                _segImage.color = new Color(1f, 0.25f, 0.25f, Mathf.Clamp01(segAlpha));
-            }
-            if (_depthImage != null)
-            {
-                _depthImage.enabled = showDepthOverlay;
-                _depthImage.color = new Color(1f, 1f, 1f, Mathf.Clamp01(depthAlpha));
-            }
-            for (var i = 0; i < _boxOutlines.Count; i += 1)
-            {
-                _boxOutlines[i].enabled = showDetOverlay && _boxOutlines[i].enabled;
-                _boxLabels[i].enabled = showDetOverlay && _boxLabels[i].enabled;
-            }
+            EnsureRenderer();
+            _renderer?.SetVisualState(showDetOverlay, showSegOverlay, showDepthOverlay, segAlpha, depthAlpha);
         }
 
         private void UpdatePose()
@@ -432,12 +462,35 @@ namespace BYES.Quest
             {
                 return;
             }
+            EnsureRenderer();
+            if (_renderer != null)
+            {
+                _overlayFps = _renderer.OverlayFps;
+                _lastDecodeMs = _renderer.LastDecodeMs;
+                _assetBytes = _renderer.LastAssetBytes;
+                _lastSegTsMs = _renderer.LastSegTsMs;
+                _lastDepthTsMs = _renderer.LastDepthTsMs;
+                _lastDetTsMs = _renderer.LastDetTsMs;
+            }
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var segAge = _lastSegTsMs > 0 ? Math.Max(0, now - _lastSegTsMs) : -1;
             var depthAge = _lastDepthTsMs > 0 ? Math.Max(0, now - _lastDepthTsMs) : -1;
             var detAge = _lastDetTsMs > 0 ? Math.Max(0, now - _lastDetTsMs) : -1;
             _statsText.text = $"HUD fps:{_overlayFps:0.0} decode:{_lastDecodeMs:0.0}ms bytes:{_assetBytes}\n" +
                               $"segAge:{(segAge >= 0 ? segAge + "ms" : "-")} depthAge:{(depthAge >= 0 ? depthAge + "ms" : "-")} detAge:{(detAge >= 0 ? detAge + "ms" : "-")}";
+        }
+
+        private void EnsureRenderer()
+        {
+            if (_renderer == null)
+            {
+                _renderer = GetComponent<ByesVisionHudRenderer>();
+                if (_renderer == null)
+                {
+                    _renderer = gameObject.AddComponent<ByesVisionHudRenderer>();
+                }
+            }
+            _renderer?.Initialize(_segImage, _depthImage, _boxOutlines, _boxLabels, 960f, 540f);
         }
 
         private void TickOverlayFps()

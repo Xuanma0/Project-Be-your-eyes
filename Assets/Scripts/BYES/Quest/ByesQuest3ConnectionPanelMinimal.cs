@@ -32,6 +32,8 @@ namespace BYES.Quest
         private const string PrefOcrVerbose = "BYES_OCR_VERBOSE";
         private const string PrefGuidanceAudio = "BYES_GUIDANCE_AUDIO";
         private const string PrefGuidanceHaptics = "BYES_GUIDANCE_HAPTICS";
+        private const string PrefGuidanceRateSec = "BYES_GUIDANCE_RATE_SEC";
+        private const string PrefAutoVoiceCommand = "BYES_AUTO_VOICE_COMMAND";
         private const string DefaultBaseUrl = "http://127.0.0.1:18000";
 
         private const float PingTimeoutSec = 2f;
@@ -92,6 +94,8 @@ namespace BYES.Quest
         private bool _ocrVerbose;
         private bool _guidanceAudioEnabled;
         private bool _guidanceHapticsEnabled;
+        private bool _autoVoiceCommandEnabled;
+        private float _guidanceRateSec = 0.4f;
         private long _lastSpokenAtMs = -1;
         private string _lastSpokenDigest = string.Empty;
         private Coroutine _reachabilityCoroutine;
@@ -117,6 +121,14 @@ namespace BYES.Quest
         private ByesPassthroughController _passthroughController;
         private ByesRoiPanelController _roiPanelController;
         private ByesVisionHudController _visionHud;
+        private ByesVoiceCommandRouter _voiceCommandRouter;
+        private AudioSource _beepAudioSource;
+        private AudioClip _beepClip;
+        private bool _voiceRecordingActive;
+        private AudioClip _voiceMicClip;
+        private int _voiceMicFrequency = 16000;
+        private string _voiceMicDevice = null;
+        private float _voiceRecordingStartRealtime;
         private bool _recordingActive;
         private string _targetSessionId = string.Empty;
         private string _targetTracker = "botsort";
@@ -143,6 +155,9 @@ namespace BYES.Quest
         private ITextView _lastFindTextView;
         private ITextView _lastTargetTextView;
         private ITextView _guidanceTextView;
+        private ITextView _lastAsrTextView;
+        private ITextView _lastTtsTextView;
+        private ITextView _hudStatsTextView;
         private ITextView _scanStateText;
         private ITextView _selfTestText;
         private ITextView _captureText;
@@ -173,6 +188,8 @@ namespace BYES.Quest
             _ocrVerbose = PlayerPrefs.GetInt(PrefOcrVerbose, 0) == 1;
             _guidanceAudioEnabled = PlayerPrefs.GetInt(PrefGuidanceAudio, 1) == 1;
             _guidanceHapticsEnabled = PlayerPrefs.GetInt(PrefGuidanceHaptics, 0) == 1;
+            _autoVoiceCommandEnabled = PlayerPrefs.GetInt(PrefAutoVoiceCommand, 1) == 1;
+            _guidanceRateSec = Mathf.Clamp(PlayerPrefs.GetFloat(PrefGuidanceRateSec, 0.4f), 0.2f, 1.2f);
 
             EnsureEventSystem();
             BuildRuntimeUi();
@@ -316,6 +333,7 @@ namespace BYES.Quest
                     _guidanceHapticsCue = gameObject.AddComponent<ByesHapticsCue>();
                 }
             }
+            ApplyGuidanceRate();
 
             if (_passthroughController == null)
             {
@@ -348,6 +366,35 @@ namespace BYES.Quest
                 {
                     _visionHud = gameObject.AddComponent<ByesVisionHudController>();
                 }
+            }
+
+            if (_voiceCommandRouter == null)
+            {
+                _voiceCommandRouter = FindFirstObjectByType<ByesVoiceCommandRouter>();
+                if (_voiceCommandRouter == null)
+                {
+                    _voiceCommandRouter = gameObject.GetComponent<ByesVoiceCommandRouter>();
+                }
+                if (_voiceCommandRouter == null)
+                {
+                    _voiceCommandRouter = gameObject.AddComponent<ByesVoiceCommandRouter>();
+                }
+            }
+
+            if (_beepAudioSource == null)
+            {
+                _beepAudioSource = gameObject.GetComponent<AudioSource>();
+                if (_beepAudioSource == null)
+                {
+                    _beepAudioSource = gameObject.AddComponent<AudioSource>();
+                    _beepAudioSource.playOnAwake = false;
+                    _beepAudioSource.spatialBlend = 0f;
+                    _beepAudioSource.volume = 1f;
+                }
+            }
+            if (_beepClip == null)
+            {
+                _beepClip = BuildBeepClip();
             }
 
             if (_speechOrchestrator == null)
@@ -860,6 +907,10 @@ namespace BYES.Quest
             _lastAsrText = text;
             _lastAsrTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             ShowToast("ASR: " + (text.Length > 48 ? text.Substring(0, 48) + "..." : text));
+            if (_autoVoiceCommandEnabled && _voiceCommandRouter != null)
+            {
+                _voiceCommandRouter.RouteTranscript(text, this);
+            }
         }
 
         private float ParseDepthFromRiskText(string text)
@@ -923,6 +974,13 @@ namespace BYES.Quest
             }
         }
 
+        private void ApplyGuidanceRate()
+        {
+            var rate = Mathf.Clamp(_guidanceRateSec, 0.2f, 1.2f);
+            _guidanceAudioCue?.SetCooldownSec(rate);
+            _guidanceHapticsCue?.SetCooldownSec(rate);
+        }
+
         private void SpeakWithGuard(string text)
         {
             var normalized = string.IsNullOrWhiteSpace(text) ? string.Empty : text.Trim();
@@ -978,7 +1036,7 @@ namespace BYES.Quest
             _runtimeCanvas = canvas;
 
             var canvasRect = canvasGo.GetComponent<RectTransform>();
-            canvasRect.sizeDelta = new Vector2(1650f, 1320f);
+            canvasRect.sizeDelta = new Vector2(1720f, 1600f);
             canvasRect.localScale = Vector3.one * 0.00025f;
             canvasRect.localPosition = Vector3.zero;
             canvasRect.localRotation = Quaternion.identity;
@@ -986,7 +1044,7 @@ namespace BYES.Quest
             canvasGo.AddComponent<CanvasScaler>();
             AddBestRaycaster(canvasGo);
 
-            var panel = CreateUiObject("Panel", canvasGo.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(1650f, 1320f), Vector2.zero);
+            var panel = CreateUiObject("Panel", canvasGo.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(1720f, 1560f), Vector2.zero);
             var panelImage = panel.AddComponent<Image>();
             panelImage.color = new Color(0f, 0f, 0f, 0.8f);
             var panelGroup = panel.AddComponent<CanvasGroup>();
@@ -1009,27 +1067,30 @@ namespace BYES.Quest
             _lastFindTextView = CreateText("LastFIND", panel.transform, "Last FIND: -", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -804f), new Vector2(1480f, 62f));
             _lastTargetTextView = CreateText("LastTarget", panel.transform, "Last TARGET: -", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -858f), new Vector2(1480f, 62f));
             _guidanceTextView = CreateText("Guidance", panel.transform, "Guidance: -", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -912f), new Vector2(1480f, 62f));
-            _scanStateText = CreateText("ScanState", panel.transform, "Scan: idle", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -966f), new Vector2(1480f, 62f));
-            _selfTestText = CreateText("SelfTest", panel.transform, "SelfTest: IDLE", 26, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1014f), new Vector2(1480f, 108f));
-            _captureText = CreateText("CaptureStats", panel.transform, "Capture: -", 22, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1116f), new Vector2(1480f, 56f));
-            _hitchText = CreateText("HitchStats", panel.transform, "Hitch30s: -", 22, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1168f), new Vector2(1480f, 56f));
-            _toastText = CreateText("Toast", panel.transform, "-", 32, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 190f), new Vector2(1480f, 72f));
-            _rawText = CreateText("Raw", panel.transform, "-", 24, TextAnchor.UpperLeft, new Vector2(0.5f, 0f), new Vector2(0f, 120f), new Vector2(1480f, 130f));
+            _lastAsrTextView = CreateText("LastASR", panel.transform, "Last ASR: -", 26, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -966f), new Vector2(1480f, 58f));
+            _lastTtsTextView = CreateText("LastTTS", panel.transform, "Last TTS: -", 26, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1018f), new Vector2(1480f, 58f));
+            _hudStatsTextView = CreateText("HudStats", panel.transform, "HUD: -", 24, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1070f), new Vector2(1480f, 58f));
+            _scanStateText = CreateText("ScanState", panel.transform, "Scan: idle", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1126f), new Vector2(1480f, 62f));
+            _selfTestText = CreateText("SelfTest", panel.transform, "SelfTest: IDLE", 26, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1178f), new Vector2(1480f, 96f));
+            _captureText = CreateText("CaptureStats", panel.transform, "Capture: -", 22, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1272f), new Vector2(1480f, 52f));
+            _hitchText = CreateText("HitchStats", panel.transform, "Hitch30s: -", 22, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1320f), new Vector2(1480f, 52f));
+            _toastText = CreateText("Toast", panel.transform, "-", 32, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 230f), new Vector2(1480f, 72f));
+            _rawText = CreateText("Raw", panel.transform, "-", 24, TextAnchor.UpperLeft, new Vector2(0.5f, 0f), new Vector2(0f, 150f), new Vector2(1480f, 140f));
 
-            CreateButton(panel.transform, "PingButton", "Ping", new Vector2(-650f, -1220f), OnPingClicked, markAsAction: true);
-            CreateButton(panel.transform, "VersionButton", "Version", new Vector2(-420f, -1220f), OnVersionClicked, markAsAction: true);
-            CreateButton(panel.transform, "ModeReadButton", "Read", new Vector2(-190f, -1220f), () => OnSetModeClicked("read_text"), markAsAction: true);
-            CreateButton(panel.transform, "ModeWalkButton", "Walk", new Vector2(40f, -1220f), () => OnSetModeClicked("walk"), markAsAction: true);
-            CreateButton(panel.transform, "ModeInspectButton", "Inspect", new Vector2(270f, -1220f), () => OnSetModeClicked("inspect"), markAsAction: true);
-            _scanButton = CreateButton(panel.transform, "ScanButton", "Scan Once", new Vector2(500f, -1220f), OnScanClicked, markAsAction: true);
-            _liveButton = CreateButton(panel.transform, "LiveButton", "Live Start", new Vector2(730f, -1220f), OnLiveClicked, markAsAction: true);
-            _liveToggle = CreateLiveToggle(panel.transform, "LiveToggle", "Live", new Vector2(730f, -1280f), OnLiveToggleChanged, markAsAction: true);
+            CreateButton(panel.transform, "PingButton", "Ping", new Vector2(-650f, -1388f), OnPingClicked, markAsAction: true);
+            CreateButton(panel.transform, "VersionButton", "Version", new Vector2(-420f, -1388f), OnVersionClicked, markAsAction: true);
+            CreateButton(panel.transform, "ModeReadButton", "Read", new Vector2(-190f, -1388f), () => OnSetModeClicked("read_text"), markAsAction: true);
+            CreateButton(panel.transform, "ModeWalkButton", "Walk", new Vector2(40f, -1388f), () => OnSetModeClicked("walk"), markAsAction: true);
+            CreateButton(panel.transform, "ModeInspectButton", "Inspect", new Vector2(270f, -1388f), () => OnSetModeClicked("inspect"), markAsAction: true);
+            _scanButton = CreateButton(panel.transform, "ScanButton", "Scan Once", new Vector2(500f, -1388f), OnScanClicked, markAsAction: true);
+            _liveButton = CreateButton(panel.transform, "LiveButton", "Live Start", new Vector2(730f, -1388f), OnLiveClicked, markAsAction: true);
+            _liveToggle = CreateLiveToggle(panel.transform, "LiveToggle", "Live", new Vector2(730f, -1452f), OnLiveToggleChanged, markAsAction: true);
 
-            CreateButton(panel.transform, "RefreshButton", "Refresh", new Vector2(-420f, -1280f), OnRefreshClicked, markAsAction: true);
-            CreateButton(panel.transform, "SelfTestButton", "SelfTest", new Vector2(-190f, -1280f), OnSelfTestClicked, markAsAction: true);
-            CreateButton(panel.transform, "ReconnectWsButton", "WS Reconnect", new Vector2(40f, -1280f), OnReconnectWsClicked, markAsAction: true);
-            CreateButton(panel.transform, "RecordStartButton", "Rec Start", new Vector2(270f, -1280f), OnRecordStartClicked, markAsAction: true);
-            CreateButton(panel.transform, "RecordStopButton", "Rec Stop", new Vector2(500f, -1280f), OnRecordStopClicked, markAsAction: true);
+            CreateButton(panel.transform, "RefreshButton", "Refresh", new Vector2(-420f, -1452f), OnRefreshClicked, markAsAction: true);
+            CreateButton(panel.transform, "SelfTestButton", "SelfTest", new Vector2(-190f, -1452f), OnSelfTestClicked, markAsAction: true);
+            CreateButton(panel.transform, "ReconnectWsButton", "WS Reconnect", new Vector2(40f, -1452f), OnReconnectWsClicked, markAsAction: true);
+            CreateButton(panel.transform, "RecordStartButton", "Rec Start", new Vector2(270f, -1452f), OnRecordStartClicked, markAsAction: true);
+            CreateButton(panel.transform, "RecordStopButton", "Rec Stop", new Vector2(500f, -1452f), OnRecordStopClicked, markAsAction: true);
         }
 
         private void OnPingClicked()
@@ -1769,6 +1830,46 @@ namespace BYES.Quest
             StartCoroutine(StopRecording());
         }
 
+        public void TriggerPlayBeepFromUi()
+        {
+            ResolveRefs();
+            if (_beepAudioSource == null || _beepClip == null)
+            {
+                ShowToast("Beep unavailable");
+                return;
+            }
+            _beepAudioSource.PlayOneShot(_beepClip, 1f);
+            _lastTtsText = "beep";
+            _lastTtsTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            ShowToast("Beep");
+        }
+
+        public void TriggerSpeakTestFromUi()
+        {
+            SpeakWithGuard("hello from be your eyes");
+            ShowToast("Speak test");
+        }
+
+        public void TriggerPushToTalkStartFromUi()
+        {
+            StartVoiceCapture();
+        }
+
+        public void TriggerPushToTalkStopFromUi()
+        {
+            StopVoiceCaptureAndSend();
+        }
+
+        public void SetAutoVoiceCommand(bool enabled)
+        {
+            _autoVoiceCommandEnabled = enabled;
+            PlayerPrefs.SetInt(PrefAutoVoiceCommand, enabled ? 1 : 0);
+            PlayerPrefs.Save();
+            ShowToast("Auto Voice Cmd " + (enabled ? "ON" : "OFF"));
+        }
+
+        public bool AutoVoiceCommandEnabled => _autoVoiceCommandEnabled;
+
         public bool AutoSpeakOcrEnabled => _autoSpeakOcr;
         public bool AutoSpeakDetEnabled => _autoSpeakDet;
         public bool AutoSpeakRiskEnabled => _autoSpeakRisk;
@@ -1832,6 +1933,25 @@ namespace BYES.Quest
             PlayerPrefs.SetInt(PrefGuidanceHaptics, enabled ? 1 : 0);
             PlayerPrefs.Save();
             ShowToast("Guidance Haptics " + (enabled ? "ON" : "OFF"));
+        }
+
+        public void SetGuidanceRate(float seconds)
+        {
+            _guidanceRateSec = Mathf.Clamp(seconds, 0.2f, 1.2f);
+            PlayerPrefs.SetFloat(PrefGuidanceRateSec, _guidanceRateSec);
+            PlayerPrefs.Save();
+            ApplyGuidanceRate();
+            ShowToast($"Guidance rate {_guidanceRateSec:0.00}s");
+        }
+
+        public float GetGuidanceRate()
+        {
+            return _guidanceRateSec;
+        }
+
+        public bool IsRecording()
+        {
+            return _recordingActive;
         }
 
         public void SetOcrVerbose(bool enabled)
@@ -1948,6 +2068,31 @@ namespace BYES.Quest
         public string GetGuidanceText()
         {
             return string.IsNullOrWhiteSpace(_guidanceText) ? "-" : _guidanceText;
+        }
+
+        public string GetLastAsrText()
+        {
+            return string.IsNullOrWhiteSpace(_lastAsrText) ? "-" : _lastAsrText;
+        }
+
+        public string GetLastTtsText()
+        {
+            return string.IsNullOrWhiteSpace(_lastTtsText) ? "-" : _lastTtsText;
+        }
+
+        public long GetHudSegAgeMs()
+        {
+            return _visionHud != null ? _visionHud.LastSegAgeMs : -1L;
+        }
+
+        public long GetHudDepthAgeMs()
+        {
+            return _visionHud != null ? _visionHud.LastDepthAgeMs : -1L;
+        }
+
+        public long GetHudDetAgeMs()
+        {
+            return _visionHud != null ? _visionHud.LastDetAgeMs : -1L;
         }
 
         public bool IsLockToHead()
@@ -2381,6 +2526,21 @@ namespace BYES.Quest
             _lastFindTextView?.Set($"Last FIND: {_lastFindText} | Age: {findAge}");
             _lastTargetTextView?.Set($"Last TARGET: {_lastTargetText} | Age: {targetAge}");
             _guidanceTextView?.Set($"Guidance: {_guidanceText} | Age: {guidanceAge}");
+            _lastAsrTextView?.Set($"Last ASR: {_lastAsrText} | Age: {asrAge}");
+            _lastTtsTextView?.Set($"Last TTS: {_lastTtsText} | Age: {ttsAge}");
+
+            if (_visionHud != null)
+            {
+                _hudStatsTextView?.Set(
+                    $"HUD: fps={_visionHud.OverlayFps:0.0} decode={_visionHud.LastDecodeMs:0.0}ms bytes={_visionHud.LastAssetBytes} " +
+                    $"segAge={(_visionHud.LastSegAgeMs >= 0 ? _visionHud.LastSegAgeMs + "ms" : "-")} " +
+                    $"depthAge={(_visionHud.LastDepthAgeMs >= 0 ? _visionHud.LastDepthAgeMs + "ms" : "-")} " +
+                    $"detAge={(_visionHud.LastDetAgeMs >= 0 ? _visionHud.LastDetAgeMs + "ms" : "-")}");
+            }
+            else
+            {
+                _hudStatsTextView?.Set("HUD: unavailable");
+            }
 
             var state = _scanController != null ? _scanController.LastScanState : _scanStatus;
             var scanErr = _scanController != null ? _scanController.LastScanError : string.Empty;
@@ -2398,7 +2558,7 @@ namespace BYES.Quest
 
             if (_rawVisible)
             {
-                var hint = $"trackSession={_targetSessionId} | passthrough={GetPassthroughStatus()} | guideAudio={(_guidanceAudioEnabled ? "on" : "off")} | guideHaptics={(_guidanceHapticsEnabled ? "on" : "off")} | asr={_lastAsrText}({asrAge}) | tts={_lastTtsText}({ttsAge})";
+                var hint = $"trackSession={_targetSessionId} | passthrough={GetPassthroughStatus()} | guideAudio={(_guidanceAudioEnabled ? "on" : "off")} | guideHaptics={(_guidanceHapticsEnabled ? "on" : "off")} | asr={_lastAsrText}({asrAge}) | tts={_lastTtsText}({ttsAge}) | autoVoice={(_autoVoiceCommandEnabled ? "on" : "off")}";
                 if (probeCount10s >= 8 && !liveEnabled)
                 {
                     hint = "MainThread Spike suspect: probe polling | " + hint;
@@ -2495,6 +2655,165 @@ namespace BYES.Quest
             }
 
             eventSystemGo.AddComponent<StandaloneInputModule>();
+        }
+
+        private void StartVoiceCapture()
+        {
+            if (_voiceRecordingActive)
+            {
+                return;
+            }
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (!UnityEngine.Android.Permission.HasUserAuthorizedPermission(UnityEngine.Android.Permission.Microphone))
+            {
+                UnityEngine.Android.Permission.RequestUserPermission(UnityEngine.Android.Permission.Microphone);
+                ShowToast("Mic permission requested");
+                return;
+            }
+#endif
+            if (Microphone.devices == null || Microphone.devices.Length == 0)
+            {
+                ShowToast("Mic unavailable");
+                return;
+            }
+
+            _voiceMicDevice = Microphone.devices[0];
+            _voiceMicFrequency = 16000;
+            _voiceMicClip = Microphone.Start(_voiceMicDevice, false, 8, _voiceMicFrequency);
+            _voiceRecordingStartRealtime = Time.realtimeSinceStartup;
+            _voiceRecordingActive = _voiceMicClip != null;
+            ShowToast(_voiceRecordingActive ? "PTT recording..." : "PTT start failed");
+        }
+
+        private void StopVoiceCaptureAndSend()
+        {
+            if (!_voiceRecordingActive)
+            {
+                ShowToast("PTT not active");
+                return;
+            }
+            _voiceRecordingActive = false;
+            var device = string.IsNullOrWhiteSpace(_voiceMicDevice) ? null : _voiceMicDevice;
+            var clip = _voiceMicClip;
+            var position = device != null ? Microphone.GetPosition(device) : 0;
+            try
+            {
+                if (device != null)
+                {
+                    Microphone.End(device);
+                }
+            }
+            catch
+            {
+                // ignore stop errors
+            }
+            _voiceMicClip = null;
+            if (clip == null || position <= 0)
+            {
+                ShowToast("PTT empty audio");
+                return;
+            }
+
+            var channels = Math.Max(1, clip.channels);
+            var sampleCount = Math.Max(1, position * channels);
+            var samples = new float[sampleCount];
+            if (!clip.GetData(samples, 0))
+            {
+                ShowToast("PTT read failed");
+                return;
+            }
+            var wav = EncodePcm16Wav(samples, clip.frequency, channels);
+            StartCoroutine(PostAsrAudio(wav));
+        }
+
+        private IEnumerator PostAsrAudio(byte[] wavBytes)
+        {
+            if (wavBytes == null || wavBytes.Length == 0)
+            {
+                ShowToast("ASR send failed");
+                yield break;
+            }
+            var url = $"{_baseUrl}/api/asr";
+            TrackProbeRequest("/api/asr");
+            using var request = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST);
+            request.uploadHandler = new UploadHandlerRaw(wavBytes);
+            request.downloadHandler = new DownloadHandlerBuffer();
+            request.timeout = Mathf.CeilToInt(QueryTimeoutSec);
+            request.SetRequestHeader("Content-Type", "audio/wav");
+            ApplyApiKeyHeader(request);
+            yield return request.SendWebRequest();
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                ShowToast("ASR request failed");
+                _scanError = request.error ?? "asr failed";
+                yield break;
+            }
+
+            var text = request.downloadHandler != null ? request.downloadHandler.text : "{}";
+            try
+            {
+                var obj = JObject.Parse(string.IsNullOrWhiteSpace(text) ? "{}" : text);
+                var payload = new JObject
+                {
+                    ["text"] = (obj.Value<string>("text") ?? string.Empty).Trim(),
+                };
+                UpdateAsrFromEvent(payload);
+            }
+            catch
+            {
+                _lastAsrText = "asr ok";
+                _lastAsrTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            }
+            ShowToast("PTT sent");
+        }
+
+        private static byte[] EncodePcm16Wav(float[] samples, int sampleRate, int channels)
+        {
+            var sampleCount = samples != null ? samples.Length : 0;
+            var byteCount = sampleCount * 2;
+            var outBytes = new byte[44 + byteCount];
+            // RIFF header
+            System.Text.Encoding.ASCII.GetBytes("RIFF").CopyTo(outBytes, 0);
+            BitConverter.GetBytes(36 + byteCount).CopyTo(outBytes, 4);
+            System.Text.Encoding.ASCII.GetBytes("WAVE").CopyTo(outBytes, 8);
+            // fmt chunk
+            System.Text.Encoding.ASCII.GetBytes("fmt ").CopyTo(outBytes, 12);
+            BitConverter.GetBytes(16).CopyTo(outBytes, 16); // PCM header size
+            BitConverter.GetBytes((short)1).CopyTo(outBytes, 20); // PCM
+            BitConverter.GetBytes((short)channels).CopyTo(outBytes, 22);
+            BitConverter.GetBytes(sampleRate).CopyTo(outBytes, 24);
+            var byteRate = sampleRate * channels * 2;
+            BitConverter.GetBytes(byteRate).CopyTo(outBytes, 28);
+            BitConverter.GetBytes((short)(channels * 2)).CopyTo(outBytes, 32);
+            BitConverter.GetBytes((short)16).CopyTo(outBytes, 34);
+            // data chunk
+            System.Text.Encoding.ASCII.GetBytes("data").CopyTo(outBytes, 36);
+            BitConverter.GetBytes(byteCount).CopyTo(outBytes, 40);
+            var offset = 44;
+            for (var i = 0; i < sampleCount; i += 1)
+            {
+                var v = Mathf.Clamp(samples[i], -1f, 1f);
+                var s = (short)Mathf.RoundToInt(v * short.MaxValue);
+                BitConverter.GetBytes(s).CopyTo(outBytes, offset);
+                offset += 2;
+            }
+            return outBytes;
+        }
+
+        private static AudioClip BuildBeepClip()
+        {
+            const int frequency = 24000;
+            const float duration = 0.2f;
+            var length = Mathf.Max(1, Mathf.RoundToInt(frequency * duration));
+            var clip = AudioClip.Create("BYES_Beep", length, 1, frequency, false);
+            var samples = new float[length];
+            for (var i = 0; i < length; i += 1)
+            {
+                var t = (float)i / frequency;
+                samples[i] = Mathf.Sin(2f * Mathf.PI * 880f * t) * 0.22f;
+            }
+            clip.SetData(samples, 0);
+            return clip;
         }
 
         private static void AddBestRaycaster(GameObject canvasGo)

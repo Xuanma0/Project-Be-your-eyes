@@ -75,6 +75,7 @@ namespace BYES.Quest
         {
             _stepDurationsMs.Clear();
             var restoreLiveAfterTest = false;
+            var skipNotes = new List<string>();
             try
             {
                 SetStatus("RUNNING", "step1 ping");
@@ -118,6 +119,7 @@ namespace BYES.Quest
                 SetStatus("RUNNING", "step2 version");
                 var versionOk = false;
                 var versionText = string.Empty;
+                JObject capabilitiesObj = null;
                 var versionStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 yield return GetJson("/api/version", (ok, obj, error) =>
                 {
@@ -166,6 +168,7 @@ namespace BYES.Quest
                     }
 
                     var providers = obj["available_providers"] as JObject;
+                    capabilitiesObj = obj;
                     capabilitiesText = providers != null ? providers.ToString(Newtonsoft.Json.Formatting.None) : "available_providers missing";
                     capabilitiesOk = providers != null;
                 });
@@ -272,7 +275,58 @@ namespace BYES.Quest
                     yield break;
                 }
 
-                SetStatus("RUNNING", "step9 target tracking");
+                SetStatus("RUNNING", "step9 vision assets");
+                var visionAssetsStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var segExpected = IsProviderEnabled(capabilitiesObj, "seg");
+                var depthExpected = IsProviderEnabled(capabilitiesObj, "depth");
+                if (segExpected || depthExpected)
+                {
+                    var visionEventOk = false;
+                    var visionEventErr = string.Empty;
+                    yield return RunScanStep(
+                        () => _scanController.ScanOnceFromUi(),
+                        expectedEventNames: new[] {"seg.mask.v1", "seg.mask", "depth.map.v1", "depth.estimate"},
+                        timeoutSec: Mathf.Max(4f, scanWaitTimeoutSec),
+                        onDone: (ok, error) =>
+                        {
+                            visionEventOk = ok;
+                            visionEventErr = error;
+                        });
+                    if (!visionEventOk)
+                    {
+                        skipNotes.Add("vision_events:" + visionEventErr);
+                    }
+
+                    var waitUntil = Time.realtimeSinceStartup + 2.5f;
+                    while (Time.realtimeSinceStartup < waitUntil)
+                    {
+                        var segReady = !segExpected || (_panel != null && _panel.GetHudSegAgeMs() >= 0);
+                        var depthReady = !depthExpected || (_panel != null && _panel.GetHudDepthAgeMs() >= 0);
+                        if (segReady && depthReady)
+                        {
+                            break;
+                        }
+                        yield return null;
+                    }
+
+                    var segOk = !segExpected || (_panel != null && _panel.GetHudSegAgeMs() >= 0);
+                    var depthOk = !depthExpected || (_panel != null && _panel.GetHudDepthAgeMs() >= 0);
+                    if (!segOk)
+                    {
+                        skipNotes.Add("seg.asset:not_observed");
+                    }
+                    if (!depthOk)
+                    {
+                        skipNotes.Add("depth.asset:not_observed");
+                    }
+                }
+                else
+                {
+                    skipNotes.Add("vision_assets:providers_disabled");
+                }
+                _stepDurationsMs["vision_assets"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - visionAssetsStepStartedMs);
+
+                SetStatus("RUNNING", "step10 target tracking");
                 var trackOk = false;
                 var trackError = string.Empty;
                 var trackStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -302,7 +356,7 @@ namespace BYES.Quest
                     yield break;
                 }
 
-                SetStatus("RUNNING", "step10 guidance");
+                SetStatus("RUNNING", "step11 guidance");
                 var guidanceOk = _panel != null && !string.IsNullOrWhiteSpace(_panel.GetGuidanceText()) && _panel.GetGuidanceText() != "-";
                 _stepDurationsMs["guidance"] = 0;
                 if (!guidanceOk)
@@ -311,7 +365,7 @@ namespace BYES.Quest
                     yield break;
                 }
 
-                SetStatus("RUNNING", "step11 passthrough");
+                SetStatus("RUNNING", "step12 passthrough");
                 var passthroughStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 var passthroughStatus = _panel != null ? _panel.GetPassthroughStatus() : "panel missing";
                 var passthroughSkipped = false;
@@ -328,7 +382,89 @@ namespace BYES.Quest
                 }
                 _stepDurationsMs["passthrough"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - passthroughStepStartedMs);
 
-                SetStatus("RUNNING", "step12 record");
+                SetStatus("RUNNING", "step13 tts");
+                var ttsStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                _panel?.TriggerPlayBeepFromUi();
+                yield return new WaitForSecondsRealtime(0.25f);
+                var beepOk = _panel != null && (_panel.GetLastTtsText() ?? string.Empty).IndexOf("beep", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!beepOk)
+                {
+                    Fail("tts beep failed");
+                    yield break;
+                }
+                _panel?.TriggerSpeakTestFromUi();
+                yield return new WaitForSecondsRealtime(0.35f);
+                var ttsText = _panel != null ? (_panel.GetLastTtsText() ?? string.Empty).Trim() : string.Empty;
+                if (string.IsNullOrWhiteSpace(ttsText) || string.Equals(ttsText, "-", StringComparison.Ordinal))
+                {
+                    skipNotes.Add("tts:speak_backend_unavailable");
+                }
+                _stepDurationsMs["tts"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - ttsStepStartedMs);
+
+                SetStatus("RUNNING", "step14 mic+asr");
+                var asrStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var micCheck = CheckOrRequestMicPermission();
+                if (!micCheck.ok)
+                {
+                    if (micCheck.skipped)
+                    {
+                        skipNotes.Add("mic:" + micCheck.reason);
+                    }
+                    else
+                    {
+                        Fail("mic permission failed: " + micCheck.reason);
+                        yield break;
+                    }
+                }
+                var asrEnabled = IsAsrEnabled(capabilitiesObj);
+                if (asrEnabled)
+                {
+                    var asrOk = false;
+                    var asrErr = string.Empty;
+                    yield return PostSyntheticAsr((ok, error) =>
+                    {
+                        asrOk = ok;
+                        asrErr = error;
+                    });
+                    if (!asrOk)
+                    {
+                        Fail("asr failed: " + asrErr);
+                        yield break;
+                    }
+                }
+                else
+                {
+                    skipNotes.Add("asr:disabled");
+                }
+                _stepDurationsMs["asr"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - asrStepStartedMs);
+
+                SetStatus("RUNNING", "step15 pyslam");
+                var slamStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                if (IsProviderEnabled(capabilitiesObj, "pyslamRealtime"))
+                {
+                    var slamOk = false;
+                    var slamErr = string.Empty;
+                    yield return RunScanStep(
+                        () => _scanController.ScanOnceFromUi(),
+                        expectedEventNames: new[] {"slam.pose.v1", "slam.pose"},
+                        timeoutSec: Mathf.Max(4f, scanWaitTimeoutSec),
+                        onDone: (ok, error) =>
+                        {
+                            slamOk = ok;
+                            slamErr = error;
+                        });
+                    if (!slamOk)
+                    {
+                        skipNotes.Add("pyslam:" + slamErr);
+                    }
+                }
+                else
+                {
+                    skipNotes.Add("pyslam:disabled");
+                }
+                _stepDurationsMs["pyslam"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - slamStepStartedMs);
+
+                SetStatus("RUNNING", "step16 record");
                 var recordOk = false;
                 var recordErr = string.Empty;
                 var recordPath = string.Empty;
@@ -351,8 +487,9 @@ namespace BYES.Quest
                 SetStatus(
                     "PASS",
                     $"ping={pingRttMs}ms " +
-                    $"stepMs(ping={GetStepMs("ping")},version={GetStepMs("version")},cap={GetStepMs("capabilities")},ws={GetStepMs("ws")},mode={GetStepMs("mode")},depthRisk={GetStepMs("depth_risk")},ocr={GetStepMs("ocr")},det={GetStepMs("det")},track={GetStepMs("track")},guidance={GetStepMs("guidance")},passthrough={GetStepMs("passthrough")},record={GetStepMs("record")}) " +
-                    $"version={versionText} ws=ok mode=ok depthRisk=ok ocr=ok det=ok track=ok guidance=ok passthrough={(passthroughSkipped ? "skip" : "ok")} record=ok path={recordPath}");
+                    $"stepMs(ping={GetStepMs("ping")},version={GetStepMs("version")},cap={GetStepMs("capabilities")},ws={GetStepMs("ws")},mode={GetStepMs("mode")},depthRisk={GetStepMs("depth_risk")},ocr={GetStepMs("ocr")},det={GetStepMs("det")},vision={GetStepMs("vision_assets")},track={GetStepMs("track")},guidance={GetStepMs("guidance")},passthrough={GetStepMs("passthrough")},tts={GetStepMs("tts")},asr={GetStepMs("asr")},pyslam={GetStepMs("pyslam")},record={GetStepMs("record")}) " +
+                    $"version={versionText} ws=ok mode=ok depthRisk=ok ocr=ok det=ok track=ok guidance=ok passthrough={(passthroughSkipped ? "skip" : "ok")} record=ok path={recordPath}" +
+                    (skipNotes.Count > 0 ? $" skip=[{string.Join(";", skipNotes)}]" : string.Empty));
                 if (verboseLogs)
                 {
                     Debug.Log($"[ByesQuest3SelfTestRunner] PASS {_summary}");
@@ -823,6 +960,191 @@ namespace BYES.Quest
             }
 
             return normalized;
+        }
+
+        private static bool IsProviderEnabled(JObject capabilitiesObj, string providerName)
+        {
+            if (capabilitiesObj == null || string.IsNullOrWhiteSpace(providerName))
+            {
+                return false;
+            }
+
+            var providers = capabilitiesObj["available_providers"] as JObject;
+            var provider = providers?[providerName] as JObject;
+            if (provider == null)
+            {
+                return false;
+            }
+
+            return provider.Value<bool?>("enabled") == true;
+        }
+
+        private static bool IsAsrEnabled(JObject capabilitiesObj)
+        {
+            if (capabilitiesObj == null)
+            {
+                return false;
+            }
+
+            var flags = capabilitiesObj["enabled_flags"] as JObject;
+            if (flags != null && flags.Value<bool?>("asr") == true)
+            {
+                return true;
+            }
+
+            var providers = capabilitiesObj["available_providers"] as JObject;
+            var asr = providers?["asr"] as JObject;
+            return asr != null && asr.Value<bool?>("enabled") == true;
+        }
+
+        private (bool ok, bool skipped, string reason) CheckOrRequestMicPermission()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                var micPermission = UnityEngine.Android.Permission.Microphone;
+                if (UnityEngine.Android.Permission.HasUserAuthorizedPermission(micPermission))
+                {
+                    return (true, false, string.Empty);
+                }
+
+                UnityEngine.Android.Permission.RequestUserPermission(micPermission);
+                var deadline = Time.realtimeSinceStartup + 2f;
+                while (Time.realtimeSinceStartup < deadline)
+                {
+                    if (UnityEngine.Android.Permission.HasUserAuthorizedPermission(micPermission))
+                    {
+                        return (true, false, string.Empty);
+                    }
+                }
+                return (false, false, "permission_denied");
+            }
+            catch (Exception ex)
+            {
+                return (false, false, "permission_check_failed:" + ex.GetType().Name);
+            }
+#else
+            return (true, true, "non_android");
+#endif
+        }
+
+        private IEnumerator PostSyntheticAsr(Action<bool, string> onDone)
+        {
+            ResolveRefs();
+            if (_gatewayClient == null)
+            {
+                onDone?.Invoke(false, "gateway client missing");
+                yield break;
+            }
+
+            var wavBytes = BuildSyntheticWav(sampleRate: 16000, durationSec: 0.25f, frequency: 440f);
+            if (wavBytes == null || wavBytes.Length == 0)
+            {
+                onDone?.Invoke(false, "wav build failed");
+                yield break;
+            }
+
+            var requestOk = false;
+            var requestError = string.Empty;
+            var observedAsrEvent = false;
+            var startedAt = Time.realtimeSinceStartup;
+
+            void WsEventHandler(JObject evt)
+            {
+                if (evt == null)
+                {
+                    return;
+                }
+
+                var name = (evt.Value<string>("name") ?? evt.Value<string>("type") ?? string.Empty).Trim();
+                if (string.Equals(name, "asr.transcript.v1", StringComparison.OrdinalIgnoreCase))
+                {
+                    observedAsrEvent = true;
+                }
+            }
+
+            _gatewayClient.OnGatewayEvent += WsEventHandler;
+            try
+            {
+                var url = BuildApiUrl("/api/asr");
+                using (var req = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST))
+                {
+                    req.uploadHandler = new UploadHandlerRaw(wavBytes);
+                    req.downloadHandler = new DownloadHandlerBuffer();
+                    req.SetRequestHeader("Content-Type", "audio/wav");
+                    var apiKey = _gatewayClient.ApiKey;
+                    if (!string.IsNullOrWhiteSpace(apiKey))
+                    {
+                        req.SetRequestHeader("X-BYES-API-Key", apiKey.Trim());
+                    }
+                    req.timeout = 8;
+                    yield return req.SendWebRequest();
+                    if (req.result != UnityWebRequest.Result.Success)
+                    {
+                        requestOk = false;
+                        requestError = req.error ?? "request failed";
+                    }
+                    else
+                    {
+                        requestOk = true;
+                    }
+                }
+
+                if (!requestOk)
+                {
+                    onDone?.Invoke(false, requestError);
+                    yield break;
+                }
+
+                var waitDeadline = Time.realtimeSinceStartup + 2f;
+                while (Time.realtimeSinceStartup < waitDeadline && !observedAsrEvent)
+                {
+                    yield return null;
+                }
+
+                if (!observedAsrEvent)
+                {
+                    onDone?.Invoke(false, "asr event timeout");
+                    yield break;
+                }
+
+                _stepDurationsMs["asr_req"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - Convert.ToInt64(startedAt * 1000f));
+                onDone?.Invoke(true, string.Empty);
+            }
+            finally
+            {
+                _gatewayClient.OnGatewayEvent -= WsEventHandler;
+            }
+        }
+
+        private static byte[] BuildSyntheticWav(int sampleRate, float durationSec, float frequency)
+        {
+            var length = Mathf.Max(1, Mathf.RoundToInt(sampleRate * Mathf.Max(0.05f, durationSec)));
+            var pcm = new short[length];
+            for (var i = 0; i < length; i += 1)
+            {
+                var t = i / (float)sampleRate;
+                var envelope = Mathf.Clamp01(1f - (i / (float)length));
+                pcm[i] = (short)Mathf.RoundToInt(Mathf.Sin(2f * Mathf.PI * frequency * t) * envelope * short.MaxValue * 0.18f);
+            }
+
+            var dataBytes = pcm.Length * sizeof(short);
+            var wav = new byte[44 + dataBytes];
+            System.Text.Encoding.ASCII.GetBytes("RIFF").CopyTo(wav, 0);
+            BitConverter.GetBytes(36 + dataBytes).CopyTo(wav, 4);
+            System.Text.Encoding.ASCII.GetBytes("WAVE").CopyTo(wav, 8);
+            System.Text.Encoding.ASCII.GetBytes("fmt ").CopyTo(wav, 12);
+            BitConverter.GetBytes(16).CopyTo(wav, 16);
+            BitConverter.GetBytes((short)1).CopyTo(wav, 20);
+            BitConverter.GetBytes((short)1).CopyTo(wav, 22);
+            BitConverter.GetBytes(sampleRate).CopyTo(wav, 24);
+            BitConverter.GetBytes(sampleRate * 2).CopyTo(wav, 28);
+            BitConverter.GetBytes((short)2).CopyTo(wav, 32);
+            BitConverter.GetBytes((short)16).CopyTo(wav, 34);
+            System.Text.Encoding.ASCII.GetBytes("data").CopyTo(wav, 36);
+            BitConverter.GetBytes(dataBytes).CopyTo(wav, 40);
+            Buffer.BlockCopy(pcm, 0, wav, 44, dataBytes);
+            return wav;
         }
 
         private IEnumerator SendRequest(string method, string path, JObject payload, Action<bool, JObject, string> onDone)

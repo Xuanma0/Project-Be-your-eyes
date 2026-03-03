@@ -27,6 +27,8 @@ namespace BYES.Quest
         private const string PrefPassthrough = "BYES_HANDMENU_PASSTHROUGH";
         private const string PrefLockToHead = "BYES_HANDMENU_LOCK_TO_HEAD";
         private const string PrefMoveResize = "BYES_HANDMENU_MOVE_RESIZE";
+        private const string PrefFavorites = "BYES_HANDMENU_FAVORITES";
+        private const int FavoriteSlotCount = 3;
 
         [SerializeField] private float baseUiScale = 0.00038f;
         [SerializeField] private float refreshIntervalSec = 0.75f;
@@ -43,10 +45,16 @@ namespace BYES.Quest
         private ByesHandGestureShortcuts _shortcuts;
         private ByesQuest3SelfTestRunner _selfTestRunner;
         private ByesQuestPassthroughSetup _passthroughSetup;
+        private ByesPassthroughController _passthroughController;
+        private ByesVisionHudController _visionHud;
 
         private readonly Dictionary<string, GameObject> _pages = new Dictionary<string, GameObject>();
         private readonly Dictionary<Text, string> _textCache = new Dictionary<Text, string>();
+        private readonly Dictionary<string, MenuAction> _actionRegistry = new Dictionary<string, MenuAction>(StringComparer.OrdinalIgnoreCase);
+        private readonly List<string> _favorites = new List<string>();
+        private readonly List<Button> _favoriteButtons = new List<Button>();
         private readonly StringBuilder _sb = new StringBuilder(512);
+        private string _lastActionKey = string.Empty;
 
         private Text _feedbackText;
         private Text _connectionText;
@@ -54,10 +62,14 @@ namespace BYES.Quest
         private Text _settingsText;
         private Text _debugText;
         private Text _scaleText;
+        private Text _visionText;
+        private Text _guidanceText;
+        private Text _voiceText;
 
         private Toggle _showFullPanelToggle;
         private Toggle _gestureEnabledToggle;
         private Toggle _passthroughToggle;
+        private Toggle _passthroughGrayToggle;
         private Toggle _lockToHeadToggle;
         private Toggle _moveResizeToggle;
         private Toggle _autoSpeakOcrToggle;
@@ -68,11 +80,22 @@ namespace BYES.Quest
         private Toggle _guidanceAudioToggle;
         private Toggle _guidanceHapticsToggle;
         private Toggle _ocrVerboseToggle;
+        private Toggle _autoVoiceCommandToggle;
         private Slider _uiScaleSlider;
+        private Slider _segAlphaSlider;
+        private Slider _depthAlphaSlider;
+        private Slider _passthroughOpacitySlider;
+        private Slider _guidanceRateSlider;
 
         private bool _systemGestureActive;
         private bool _uiSuppressed;
         private Coroutine _refreshRoutine;
+
+        private sealed class MenuAction
+        {
+            public string Label = string.Empty;
+            public Action Callback;
+        }
 
         private enum MenuHandPref
         {
@@ -129,6 +152,8 @@ namespace BYES.Quest
             _shortcuts ??= FindFirstObjectByType<ByesHandGestureShortcuts>();
             _selfTestRunner ??= FindFirstObjectByType<ByesQuest3SelfTestRunner>();
             _passthroughSetup ??= ByesQuestPassthroughSetup.Instance;
+            _passthroughController ??= FindFirstObjectByType<ByesPassthroughController>();
+            _visionHud ??= FindFirstObjectByType<ByesVisionHudController>();
         }
 
         private void EnsureOfficialHandMenu()
@@ -273,21 +298,18 @@ namespace BYES.Quest
 
         private void BuildPages(Transform root)
         {
+            RegisterCoreActions();
             _pages["home"] = CreatePage(root, "Home");
-            _pages["connection"] = CreatePage(root, "Connection");
-            _pages["actions"] = CreatePage(root, "Actions");
-            _pages["mode"] = CreatePage(root, "Mode");
-            _pages["panels"] = CreatePage(root, "Panels");
-            _pages["settings"] = CreatePage(root, "Settings");
-            _pages["debug"] = CreatePage(root, "Debug");
+            _pages["vision"] = CreatePage(root, "Vision");
+            _pages["guidance"] = CreatePage(root, "Guidance");
+            _pages["voice"] = CreatePage(root, "Voice");
+            _pages["dev"] = CreatePage(root, "Dev");
 
             BuildHome(_pages["home"].transform);
-            BuildConnection(_pages["connection"].transform);
-            BuildActions(_pages["actions"].transform);
-            BuildMode(_pages["mode"].transform);
-            BuildPanels(_pages["panels"].transform);
-            BuildSettings(_pages["settings"].transform);
-            BuildDebug(_pages["debug"].transform);
+            BuildVision(_pages["vision"].transform);
+            BuildGuidancePage(_pages["guidance"].transform);
+            BuildVoice(_pages["voice"].transform);
+            BuildDev(_pages["dev"].transform);
         }
 
         private GameObject CreatePage(Transform root, string title)
@@ -297,14 +319,391 @@ namespace BYES.Quest
             return page;
         }
 
+        private void RegisterCoreActions()
+        {
+            _actionRegistry.Clear();
+            RegisterAction("scan", "Scan Once", () => _panel?.TriggerScanOnceFromUi());
+            RegisterAction("read", "Read Text", () => _panel?.TriggerReadTextOnceFromUi());
+            RegisterAction("find_door", "Find Door", () => _panel?.TriggerFindConceptFromUi("door"));
+            RegisterAction("find_exit", "Find Exit", () => _panel?.TriggerFindConceptFromUi("exit sign"));
+            RegisterAction("find_person", "Find Person", () => _panel?.TriggerFindConceptFromUi("person"));
+            RegisterAction("live_toggle", "Toggle Live", () => _panel?.TriggerToggleLiveFromUi());
+            RegisterAction("mode_walk", "Mode Walk", () => _panel?.TriggerSetModeWalk());
+            RegisterAction("mode_read", "Mode Read", () => _panel?.TriggerSetModeRead());
+            RegisterAction("mode_inspect", "Mode Inspect", () => _panel?.TriggerSetModeInspect());
+            RegisterAction("selftest", "Run SelfTest", () => _panel?.TriggerSelfTestFromUi());
+            RegisterAction("record_start", "Start Record", () => _panel?.TriggerStartRecordFromUi());
+            RegisterAction("record_stop", "Stop Record", () => _panel?.TriggerStopRecordFromUi());
+            RegisterAction("roi_select", "Select ROI", () => _panel?.TriggerSelectRoiFromUi());
+            RegisterAction("track_start", "Start Track", () => _panel?.TriggerStartTrackFromUi());
+            RegisterAction("track_step", "Track Step", () => _panel?.TriggerTrackStepFromUi());
+            RegisterAction("track_stop", "Stop Track", () => _panel?.TriggerStopTrackFromUi());
+            RegisterAction("export_debug", "Export Debug", () => _panel?.ExportDebugText());
+            RegisterAction("beep", "Play Beep", () => _panel?.TriggerPlayBeepFromUi());
+            RegisterAction("speak_test", "Speak Test", () => _panel?.TriggerSpeakTestFromUi());
+            RegisterAction("ptt_start", "PTT Start", () => _panel?.TriggerPushToTalkStartFromUi());
+            RegisterAction("ptt_stop", "PTT Stop", () => _panel?.TriggerPushToTalkStopFromUi());
+        }
+
+        private void RegisterAction(string key, string label, Action callback)
+        {
+            if (string.IsNullOrWhiteSpace(key) || callback == null)
+            {
+                return;
+            }
+
+            _actionRegistry[key] = new MenuAction
+            {
+                Label = string.IsNullOrWhiteSpace(label) ? key : label,
+                Callback = callback,
+            };
+        }
+
+        private void InvokeAction(string key, string feedback)
+        {
+            if (!_actionRegistry.TryGetValue(key, out var action) || action == null || action.Callback == null)
+            {
+                SetFeedback("Action unavailable: " + key);
+                return;
+            }
+
+            action.Callback.Invoke();
+            _lastActionKey = key;
+            SetFeedback(string.IsNullOrWhiteSpace(feedback) ? action.Label : feedback);
+            RefreshFavoriteButtons();
+        }
+
         private void BuildHome(Transform page)
         {
-            CreateButton(page, "Connection", new Vector2(-200f, 200f), () => { SetPage("connection"); SetFeedback("Connection page"); });
-            CreateButton(page, "Actions", new Vector2(0f, 200f), () => { SetPage("actions"); SetFeedback("Actions page"); });
-            CreateButton(page, "Mode", new Vector2(200f, 200f), () => { SetPage("mode"); SetFeedback("Mode page"); });
-            CreateButton(page, "Panels", new Vector2(-200f, 120f), () => { SetPage("panels"); SetFeedback("Panels page"); });
-            CreateButton(page, "Settings", new Vector2(0f, 120f), () => { SetPage("settings"); SetFeedback("Settings page"); });
-            CreateButton(page, "Debug", new Vector2(200f, 120f), () => { SetPage("debug"); SetFeedback("Debug page"); });
+            CreateButton(page, "Scan", new Vector2(-260f, 220f), () => InvokeAction("scan", "Scan once"));
+            CreateButton(page, "Read", new Vector2(0f, 220f), () => InvokeAction("read", "Read text"));
+            CreateButton(page, "Find Door", new Vector2(260f, 220f), () => InvokeAction("find_door", "Find door"));
+
+            CreateButton(page, "Vision", new Vector2(-260f, 140f), () => { SetPage("vision"); SetFeedback("Vision page"); });
+            CreateButton(page, "Guidance", new Vector2(0f, 140f), () => { SetPage("guidance"); SetFeedback("Guidance page"); });
+            CreateButton(page, "Voice", new Vector2(260f, 140f), () => { SetPage("voice"); SetFeedback("Voice page"); });
+            CreateButton(page, "Dev", new Vector2(0f, 60f), () => { SetPage("dev"); SetFeedback("Dev page"); });
+
+            _connectionText = CreateText("HomeStatus", page, "-", 21, TextAnchor.UpperLeft, new Vector2(0.5f, 0.5f), new Vector2(0f, -70f), new Vector2(780f, 270f));
+            _modeText = CreateText("HomeMode", page, "Mode: -", 24, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -230f), new Vector2(780f, 42f));
+            _ = CreateText("FavTitle", page, "Favorites (pin from Dev page)", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -282f), new Vector2(760f, 34f));
+
+            for (var i = 0; i < FavoriteSlotCount; i += 1)
+            {
+                var slot = i;
+                var y = -344f - (i * 76f);
+                var btn = CreateButton(page, $"Favorite {i + 1}", new Vector2(0f, y), () => InvokeFavorite(slot));
+                btn.gameObject.SetActive(false);
+                _favoriteButtons.Add(btn);
+            }
+        }
+
+        private void BuildVision(Transform page)
+        {
+            _visionText = CreateText("VisionText", page, "-", 21, TextAnchor.UpperLeft, new Vector2(0.5f, 0.5f), new Vector2(0f, 170f), new Vector2(780f, 150f));
+            CreateToggle(page, "Show DET Overlay", new Vector2(0f, 92f), value =>
+            {
+                _visionHud?.SetShowDet(value);
+                SetFeedback("Show DET " + (value ? "ON" : "OFF"));
+            });
+            CreateToggle(page, "Show SEG Overlay", new Vector2(0f, 34f), value =>
+            {
+                _visionHud?.SetShowSeg(value);
+                SetFeedback("Show SEG " + (value ? "ON" : "OFF"));
+            });
+            CreateToggle(page, "Show DEPTH Overlay", new Vector2(0f, -24f), value =>
+            {
+                _visionHud?.SetShowDepth(value);
+                SetFeedback("Show DEPTH " + (value ? "ON" : "OFF"));
+            });
+            CreateToggle(page, "Show TARGET Overlay", new Vector2(0f, -82f), value =>
+            {
+                _visionHud?.SetShowTarget(value);
+                SetFeedback("Show TARGET " + (value ? "ON" : "OFF"));
+            });
+
+            _segAlphaSlider = CreateSlider(page, new Vector2(0f, -170f), 0f, 1f, value =>
+            {
+                _visionHud?.SetSegAlpha(value);
+                SetFeedback($"SEG alpha {value:0.00}");
+            });
+            _depthAlphaSlider = CreateSlider(page, new Vector2(0f, -246f), 0f, 1f, value =>
+            {
+                _visionHud?.SetDepthAlpha(value);
+                SetFeedback($"DEPTH alpha {value:0.00}");
+            });
+
+            _passthroughToggle = CreateToggle(page, "Passthrough", new Vector2(0f, -332f), value =>
+            {
+                PlayerPrefs.SetInt(PrefPassthrough, value ? 1 : 0);
+                PlayerPrefs.Save();
+                _panel?.SetPassthroughEnabled(value);
+                SetFeedback("Passthrough " + (value ? "ON" : "OFF"));
+            });
+            _passthroughGrayToggle = CreateToggle(page, "Passthrough Gray", new Vector2(0f, -390f), value =>
+            {
+                _passthroughController?.SetColorMode(value ? ByesPassthroughController.DisplayMode.Gray : ByesPassthroughController.DisplayMode.Color);
+                SetFeedback(value ? "Passthrough gray" : "Passthrough color");
+            });
+            _passthroughOpacitySlider = CreateSlider(page, new Vector2(0f, -468f), 0f, 1f, value =>
+            {
+                _passthroughController?.SetOpacity(value);
+                SetFeedback($"Passthrough opacity {value:0.00}");
+            });
+            CreateButton(page, "Reset HUD", new Vector2(-140f, -548f), () =>
+            {
+                _visionHud?.ResetHud();
+                SetFeedback("HUD reset");
+            });
+            CreateButton(page, "Back", new Vector2(140f, -548f), () => { SetPage("home"); SetFeedback("Home"); });
+        }
+
+        private void BuildGuidancePage(Transform page)
+        {
+            _guidanceText = CreateText("GuidanceText", page, "-", 21, TextAnchor.UpperLeft, new Vector2(0.5f, 0.5f), new Vector2(0f, 180f), new Vector2(780f, 150f));
+            _autoGuidanceToggle = CreateToggle(page, "Auto Guidance", new Vector2(0f, 96f), value =>
+            {
+                _panel?.SetAutoGuidance(value);
+                SetFeedback("Auto Guidance " + (value ? "ON" : "OFF"));
+            });
+            _guidanceAudioToggle = CreateToggle(page, "Guidance Audio", new Vector2(0f, 38f), value =>
+            {
+                _panel?.SetGuidanceAudio(value);
+                SetFeedback("Guidance Audio " + (value ? "ON" : "OFF"));
+            });
+            _guidanceHapticsToggle = CreateToggle(page, "Guidance Haptics", new Vector2(0f, -20f), value =>
+            {
+                _panel?.SetGuidanceHaptics(value);
+                SetFeedback("Guidance Haptics " + (value ? "ON" : "OFF"));
+            });
+            _guidanceRateSlider = CreateSlider(page, new Vector2(0f, -108f), 0.2f, 1.2f, value =>
+            {
+                _panel?.SetGuidanceRate(value);
+                SetFeedback($"Guidance rate {value:0.00}s");
+            });
+            CreateButton(page, "Mode Walk", new Vector2(-260f, -196f), () => InvokeAction("mode_walk", "Mode walk"));
+            CreateButton(page, "Mode Read", new Vector2(0f, -196f), () => InvokeAction("mode_read", "Mode read"));
+            CreateButton(page, "Mode Inspect", new Vector2(260f, -196f), () => InvokeAction("mode_inspect", "Mode inspect"));
+            CreateButton(page, "Find Exit", new Vector2(-260f, -274f), () => InvokeAction("find_exit", "Find exit"));
+            CreateButton(page, "Find Person", new Vector2(0f, -274f), () => InvokeAction("find_person", "Find person"));
+            CreateButton(page, "Back", new Vector2(260f, -274f), () => { SetPage("home"); SetFeedback("Home"); });
+        }
+
+        private void BuildVoice(Transform page)
+        {
+            _voiceText = CreateText("VoiceText", page, "-", 21, TextAnchor.UpperLeft, new Vector2(0.5f, 0.5f), new Vector2(0f, 178f), new Vector2(780f, 150f));
+            _autoSpeakOcrToggle = CreateToggle(page, "Auto Speak OCR", new Vector2(0f, 94f), value =>
+            {
+                _panel?.SetAutoSpeakOcr(value);
+                SetFeedback("AutoSpeak OCR " + (value ? "ON" : "OFF"));
+            });
+            _autoSpeakDetToggle = CreateToggle(page, "Auto Speak DET", new Vector2(0f, 36f), value =>
+            {
+                _panel?.SetAutoSpeakDet(value);
+                SetFeedback("AutoSpeak DET " + (value ? "ON" : "OFF"));
+            });
+            _autoSpeakRiskToggle = CreateToggle(page, "Auto Speak RISK", new Vector2(0f, -22f), value =>
+            {
+                _panel?.SetAutoSpeakRisk(value);
+                SetFeedback("AutoSpeak RISK " + (value ? "ON" : "OFF"));
+            });
+            _autoSpeakFindToggle = CreateToggle(page, "Auto Speak FIND", new Vector2(0f, -80f), value =>
+            {
+                _panel?.SetAutoSpeakFind(value);
+                SetFeedback("AutoSpeak FIND " + (value ? "ON" : "OFF"));
+            });
+            _ocrVerboseToggle = CreateToggle(page, "OCR Verbose", new Vector2(0f, -138f), value =>
+            {
+                _panel?.SetOcrVerbose(value);
+                SetFeedback("OCR Verbose " + (value ? "ON" : "OFF"));
+            });
+            _gestureEnabledToggle = CreateToggle(page, "Gesture Shortcuts Enabled", new Vector2(0f, -196f), value =>
+            {
+                PlayerPrefs.SetInt(PrefGestureEnabled, value ? 1 : 0);
+                PlayerPrefs.Save();
+                _shortcuts?.SetShortcutsEnabled(value);
+                SetFeedback("Shortcuts " + (value ? "ON" : "OFF"));
+            });
+            _autoVoiceCommandToggle = CreateToggle(page, "Auto Voice Command", new Vector2(0f, -254f), value =>
+            {
+                _panel?.SetAutoVoiceCommand(value);
+                SetFeedback("Auto Voice Cmd " + (value ? "ON" : "OFF"));
+            });
+            CreateButton(page, "Shortcut Hand", new Vector2(-260f, -332f), CycleShortcutHand);
+            CreateButton(page, "Conflict Mode", new Vector2(0f, -332f), CycleConflictMode);
+            CreateButton(page, "Menu Hand", new Vector2(260f, -332f), CycleMenuHand);
+            CreateButton(page, "Play Beep", new Vector2(-260f, -408f), () => InvokeAction("beep", "Beep played"));
+            CreateButton(page, "Speak Test", new Vector2(0f, -408f), () => InvokeAction("speak_test", "Speak test"));
+            CreateButton(page, "PTT Start", new Vector2(260f, -408f), () => InvokeAction("ptt_start", "PTT start"));
+            CreateButton(page, "PTT Stop", new Vector2(-260f, -484f), () => InvokeAction("ptt_stop", "PTT stop"));
+            CreateButton(page, "Back", new Vector2(260f, -484f), () => { SetPage("home"); SetFeedback("Home"); });
+        }
+
+        private void BuildDev(Transform page)
+        {
+            _debugText = CreateText("DevText", page, "-", 20, TextAnchor.UpperLeft, new Vector2(0.5f, 0.5f), new Vector2(0f, 196f), new Vector2(780f, 210f));
+            CreateButton(page, "Run SelfTest", new Vector2(-260f, 90f), () => InvokeAction("selftest", "SelfTest started"));
+            CreateButton(page, "Rec Start", new Vector2(0f, 90f), () => InvokeAction("record_start", "Record start"));
+            CreateButton(page, "Rec Stop", new Vector2(260f, 90f), () => InvokeAction("record_stop", "Record stop"));
+            CreateButton(page, "ROI Select", new Vector2(-260f, 16f), () => InvokeAction("roi_select", "ROI selected"));
+            CreateButton(page, "Track Start", new Vector2(0f, 16f), () => InvokeAction("track_start", "Track start"));
+            CreateButton(page, "Track Step", new Vector2(260f, 16f), () => InvokeAction("track_step", "Track step"));
+            CreateButton(page, "Track Stop", new Vector2(-260f, -58f), () => InvokeAction("track_stop", "Track stop"));
+            CreateButton(page, "Export Debug", new Vector2(0f, -58f), () => InvokeAction("export_debug", "Debug exported"));
+            CreateButton(page, "Refresh", new Vector2(260f, -58f), () =>
+            {
+                _panel?.TriggerRefreshFromUi();
+                RefreshStatus();
+                SetFeedback("Refreshed");
+            });
+            CreateButton(page, "Pin Last Action", new Vector2(-260f, -132f), PinLastAction);
+            CreateButton(page, "Clear Favorites", new Vector2(0f, -132f), ClearFavorites);
+            CreateButton(page, "Copy Debug", new Vector2(260f, -132f), () =>
+            {
+                GUIUtility.systemCopyBuffer = (_panel != null ? _panel.BuildDebugSummary() : "panel missing") + "\nGestures=" + (_shortcuts != null ? _shortcuts.GetRecentTriggersAsText() : "-");
+                SetFeedback("Debug copied");
+            });
+            _showFullPanelToggle = CreateToggle(page, "Open Full Connection Panel", new Vector2(0f, -208f), value =>
+            {
+                PlayerPrefs.SetInt(PrefShowFullPanel, value ? 1 : 0);
+                PlayerPrefs.Save();
+                _panel?.SetActionControlsVisible(value);
+                SetFeedback("Full panel " + (value ? "ON" : "OFF"));
+            });
+            _lockToHeadToggle = CreateToggle(page, "Smoke Panel LockToHead", new Vector2(0f, -266f), value =>
+            {
+                PlayerPrefs.SetInt(PrefLockToHead, value ? 1 : 0);
+                PlayerPrefs.Save();
+                _panel?.SetLockToHead(value);
+                SetFeedback("LockToHead " + (value ? "ON" : "OFF"));
+            });
+            _moveResizeToggle = CreateToggle(page, "Enable Move/Resize", new Vector2(0f, -324f), value =>
+            {
+                PlayerPrefs.SetInt(PrefMoveResize, value ? 1 : 0);
+                PlayerPrefs.Save();
+                _panel?.SetMoveResizeEnabled(value);
+                SetFeedback("Move/Resize " + (value ? "ON" : "OFF"));
+            });
+            CreateButton(page, "Reset Pose/Scale", new Vector2(-140f, -402f), () => { _panel?.SnapToDefaultPose(); SetFeedback("Panel reset"); });
+            _uiScaleSlider = CreateSlider(page, new Vector2(140f, -402f), 0.6f, 1.4f, value =>
+            {
+                PlayerPrefs.SetFloat(PrefUiScale, value);
+                PlayerPrefs.Save();
+                ApplyUiScale(value);
+                SetFeedback($"UI Scale {value:0.00}x");
+            });
+            _scaleText = CreateText("ScaleText", page, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -454f), new Vector2(760f, 32f));
+            _settingsText = CreateText("SettingsText", page, "-", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -490f), new Vector2(780f, 32f));
+            CreateButton(page, "Back", new Vector2(0f, -558f), () => { SetPage("home"); SetFeedback("Home"); });
+        }
+
+        private void InvokeFavorite(int index)
+        {
+            if (index < 0 || index >= _favorites.Count)
+            {
+                return;
+            }
+
+            var key = _favorites[index];
+            if (_actionRegistry.TryGetValue(key, out var action) && action != null)
+            {
+                InvokeAction(key, "Favorite -> " + action.Label);
+            }
+        }
+
+        private void PinLastAction()
+        {
+            if (string.IsNullOrWhiteSpace(_lastActionKey))
+            {
+                SetFeedback("No recent action to pin");
+                return;
+            }
+
+            _favorites.Remove(_lastActionKey);
+            _favorites.Insert(0, _lastActionKey);
+            while (_favorites.Count > FavoriteSlotCount)
+            {
+                _favorites.RemoveAt(_favorites.Count - 1);
+            }
+            SaveFavorites();
+            RefreshFavoriteButtons();
+            SetFeedback("Pinned: " + _lastActionKey);
+        }
+
+        private void ClearFavorites()
+        {
+            _favorites.Clear();
+            SaveFavorites();
+            LoadFavoritesFromPrefs();
+            SetFeedback("Favorites reset");
+        }
+
+        private void LoadFavoritesFromPrefs()
+        {
+            _favorites.Clear();
+            var raw = PlayerPrefs.GetString(PrefFavorites, string.Empty);
+            var tokens = string.IsNullOrWhiteSpace(raw) ? Array.Empty<string>() : raw.Split(',');
+            for (var i = 0; i < tokens.Length; i += 1)
+            {
+                var key = (tokens[i] ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(key) || !_actionRegistry.ContainsKey(key) || _favorites.Contains(key))
+                {
+                    continue;
+                }
+                _favorites.Add(key);
+                if (_favorites.Count >= FavoriteSlotCount)
+                {
+                    break;
+                }
+            }
+
+            if (_favorites.Count == 0)
+            {
+                _favorites.Add("scan");
+                _favorites.Add("read");
+                _favorites.Add("find_door");
+                SaveFavorites();
+            }
+
+            RefreshFavoriteButtons();
+        }
+
+        private void SaveFavorites()
+        {
+            PlayerPrefs.SetString(PrefFavorites, string.Join(",", _favorites));
+            PlayerPrefs.Save();
+        }
+
+        private void RefreshFavoriteButtons()
+        {
+            for (var i = 0; i < _favoriteButtons.Count; i += 1)
+            {
+                var btn = _favoriteButtons[i];
+                if (btn == null)
+                {
+                    continue;
+                }
+
+                if (i >= _favorites.Count)
+                {
+                    btn.gameObject.SetActive(false);
+                    continue;
+                }
+
+                var key = _favorites[i];
+                if (!_actionRegistry.TryGetValue(key, out var action) || action == null)
+                {
+                    btn.gameObject.SetActive(false);
+                    continue;
+                }
+
+                btn.gameObject.SetActive(true);
+                var text = btn.GetComponentInChildren<Text>();
+                if (text != null)
+                {
+                    text.text = action.Label;
+                }
+            }
         }
 
         private void BuildConnection(Transform page)
@@ -482,12 +881,35 @@ namespace BYES.Quest
             }
 
             _sb.Clear();
-            _sb.Append("BaseUrl: ").Append(_panel.GetBaseUrl()).Append('\n');
+            _sb.Append("HTTP: ").Append(_panel.GetBaseUrl()).Append('\n');
             _sb.Append("WS: ").Append(_panel.IsWsConnected() ? "connected" : "disconnected").Append('\n');
+            _sb.Append("Record: ").Append(_panel.IsRecording() ? "ON" : "OFF").Append('\n');
+            _sb.Append("Overlay: ").Append(_visionHud != null ? "ready" : "unavailable").Append('\n');
             _sb.Append("DeviceId: ").Append(_panel.GetDeviceId()).Append('\n');
-            _sb.Append("Mode: ").Append(_panel.GetCurrentModeText());
+            _sb.Append("Upload/E2E: ").Append(_panel.GetLastUploadMs()).Append("ms / ").Append(_panel.GetLastE2eMs()).Append("ms");
             SetText(_connectionText, _sb.ToString());
             SetText(_modeText, "Mode: " + _panel.GetCurrentModeText());
+
+            _sb.Clear();
+            _sb.Append("HUD fps=").Append(_visionHud != null ? _visionHud.OverlayFps.ToString("0.0") : "-").Append('\n');
+            _sb.Append("SEG age=").Append(_visionHud != null ? _visionHud.LastSegAgeMs.ToString() : "-").Append("ms  ");
+            _sb.Append("DEPTH age=").Append(_visionHud != null ? _visionHud.LastDepthAgeMs.ToString() : "-").Append("ms  ");
+            _sb.Append("DET age=").Append(_visionHud != null ? _visionHud.LastDetAgeMs.ToString() : "-").Append("ms\n");
+            _sb.Append("Decode=").Append(_visionHud != null ? _visionHud.LastDecodeMs.ToString("0.0") : "-").Append("ms  Bytes=").Append(_visionHud != null ? _visionHud.LastAssetBytes : 0);
+            SetText(_visionText, _sb.ToString());
+
+            _sb.Clear();
+            _sb.Append("Guidance: ").Append(_panel.GetGuidanceText()).Append('\n');
+            _sb.Append("Auto=").Append(_panel.AutoGuidanceEnabled ? "on" : "off");
+            _sb.Append(" Audio=").Append(_panel.GuidanceAudioEnabled ? "on" : "off");
+            _sb.Append(" Haptics=").Append(_panel.GuidanceHapticsEnabled ? "on" : "off");
+            SetText(_guidanceText, _sb.ToString());
+
+            _sb.Clear();
+            _sb.Append("Last ASR: ").Append(_panel.GetLastAsrText()).Append('\n');
+            _sb.Append("Last TTS: ").Append(_panel.GetLastTtsText()).Append('\n');
+            _sb.Append("AutoVoiceCmd: ").Append(_panel.AutoVoiceCommandEnabled ? "on" : "off");
+            SetText(_voiceText, _sb.ToString());
 
             _sb.Clear();
             _sb.Append("UploadMs=").Append(_panel.GetLastUploadMs()).Append("  E2E=").Append(_panel.GetLastE2eMs()).Append('\n');
@@ -513,10 +935,32 @@ namespace BYES.Quest
             _guidanceAudioToggle?.SetIsOnWithoutNotify(_panel.GuidanceAudioEnabled);
             _guidanceHapticsToggle?.SetIsOnWithoutNotify(_panel.GuidanceHapticsEnabled);
             _ocrVerboseToggle?.SetIsOnWithoutNotify(_panel.OcrVerboseEnabled);
+            _autoVoiceCommandToggle?.SetIsOnWithoutNotify(_panel.AutoVoiceCommandEnabled);
+            _passthroughToggle?.SetIsOnWithoutNotify(PlayerPrefs.GetInt(PrefPassthrough, 1) == 1);
+            _passthroughGrayToggle?.SetIsOnWithoutNotify(_passthroughController != null && _passthroughController.ColorMode == ByesPassthroughController.DisplayMode.Gray);
 
             SetText(_scaleText, $"UI Scale: {(_uiScaleSlider != null ? _uiScaleSlider.value : 1f):0.00}x");
             _lockToHeadToggle?.SetIsOnWithoutNotify(_panel.IsLockToHead());
             _moveResizeToggle?.SetIsOnWithoutNotify(_panel.IsMoveResizeEnabled());
+
+            if (_segAlphaSlider != null && _visionHud != null)
+            {
+                _segAlphaSlider.SetValueWithoutNotify(_visionHud.SegAlpha);
+            }
+            if (_depthAlphaSlider != null && _visionHud != null)
+            {
+                _depthAlphaSlider.SetValueWithoutNotify(_visionHud.DepthAlpha);
+            }
+            if (_passthroughOpacitySlider != null && _passthroughController != null)
+            {
+                _passthroughOpacitySlider.SetValueWithoutNotify(_passthroughController.Opacity);
+            }
+            if (_guidanceRateSlider != null)
+            {
+                _guidanceRateSlider.SetValueWithoutNotify(_panel.GetGuidanceRate());
+            }
+
+            RefreshFavoriteButtons();
         }
 
         private void OnSystemGestureStarted()
@@ -581,11 +1025,29 @@ namespace BYES.Quest
             _guidanceAudioToggle?.SetIsOnWithoutNotify(_panel != null && _panel.GuidanceAudioEnabled);
             _guidanceHapticsToggle?.SetIsOnWithoutNotify(_panel != null && _panel.GuidanceHapticsEnabled);
             _ocrVerboseToggle?.SetIsOnWithoutNotify(_panel != null && _panel.OcrVerboseEnabled);
+            _autoVoiceCommandToggle?.SetIsOnWithoutNotify(_panel != null && _panel.AutoVoiceCommandEnabled);
+            _passthroughGrayToggle?.SetIsOnWithoutNotify(_passthroughController != null && _passthroughController.ColorMode == ByesPassthroughController.DisplayMode.Gray);
 
             var uiScale = PlayerPrefs.GetFloat(PrefUiScale, 1f);
             if (_uiScaleSlider != null)
             {
                 _uiScaleSlider.SetValueWithoutNotify(uiScale);
+            }
+            if (_segAlphaSlider != null && _visionHud != null)
+            {
+                _segAlphaSlider.SetValueWithoutNotify(_visionHud.SegAlpha);
+            }
+            if (_depthAlphaSlider != null && _visionHud != null)
+            {
+                _depthAlphaSlider.SetValueWithoutNotify(_visionHud.DepthAlpha);
+            }
+            if (_passthroughOpacitySlider != null && _passthroughController != null)
+            {
+                _passthroughOpacitySlider.SetValueWithoutNotify(_passthroughController.Opacity);
+            }
+            if (_guidanceRateSlider != null && _panel != null)
+            {
+                _guidanceRateSlider.SetValueWithoutNotify(_panel.GetGuidanceRate());
             }
             ApplyUiScale(uiScale);
 
@@ -605,6 +1067,8 @@ namespace BYES.Quest
             _panel?.SetLockToHead(PlayerPrefs.GetInt(PrefLockToHead, 1) == 1);
             _panel?.SetMoveResizeEnabled(PlayerPrefs.GetInt(PrefMoveResize, 0) == 1);
             ApplyMenuHandPreference((MenuHandPref)PlayerPrefs.GetInt(PrefMenuHand, (int)MenuHandPref.Either));
+            _panel?.SetAutoVoiceCommand(PlayerPrefs.GetInt("BYES_AUTO_VOICE_COMMAND", 1) == 1);
+            LoadFavoritesFromPrefs();
         }
 
         private void CycleShortcutHand()

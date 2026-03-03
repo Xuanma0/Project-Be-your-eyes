@@ -6,6 +6,8 @@
 - 新增可选语音输入入口 `POST /api/asr`：默认 `mock` 后端，支持可选 `faster-whisper`，并发出 `asr.transcript.v1`。
 - 录制链路增强：Quest recording 在生成 run package 时同步落盘引用的 `assets/` 文件，保持 replay/report 兼容。
 - 新增 v5.04 一键 USB realstack 脚本 `tools/quest3/quest3_usb_realstack_v5_04.cmd`（gateway + inference + 可选 pySLAM 检测）与配套验收指引。
+- Quest 手腕菜单信息架构收敛为 `Home / Vision / Guidance / Voice / Dev`，支持“Pin Last Action 到 Home”收藏动作，并保留显式 Move/Resize 保护。
+- 新增透视扩展控制（开关、透明度、彩色/灰度可选）与 v5.04 自检扩展（HUD 资产、TTS/ASR、可选 pySLAM realtime 状态）。
 
 ## v5.03
 - 新增 Target Tracking Assist：`POST /api/assist` 支持 `target_start / target_step / target_stop`，并发出 `target.session` / `target.update` 事件。

@@ -50,6 +50,8 @@
 - `depth.estimate`
 - `risk.fused`
 - `slam.pose`
+- `slam.pose.v1`
+- `slam.trajectory.v1`
 - `frame.input`
 - `frame.ack`
 - `frame.e2e`
@@ -443,7 +445,7 @@
 }
 ```
 
-### 8) SLAM pose result
+### 8) SLAM pose result (`slam.pose` / `slam.pose.v1`)
 ```json
 {
   "schemaVersion": "byes.event.v1",
@@ -467,6 +469,43 @@
       "frame": "world_to_cam"
     },
     "warningsCount": 0
+  }
+}
+```
+
+`slam.pose.v1` emits a normalized payload for HUD/runtime consumers:
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "name": "slam.pose.v1",
+  "payload": {
+    "schemaVersion": "byes.slam.pose.v1",
+    "trackingState": "tracking",
+    "pose": {
+      "t": [0.1, 0.0, 0.0],
+      "q": [0.0, 0.0, 0.0, 1.0],
+      "frame": "world_to_cam"
+    },
+    "backend": "http",
+    "model": "reference-slam-v1",
+    "endpoint": "http://127.0.0.1:19261/slam/pose"
+  }
+}
+```
+
+`slam.trajectory.v1` (low frequency) provides recent pose history:
+```json
+{
+  "schemaVersion": "byes.event.v1",
+  "name": "slam.trajectory.v1",
+  "payload": {
+    "schemaVersion": "byes.slam.trajectory.v1",
+    "deviceId": "quest3-device",
+    "trackingState": "tracking",
+    "points": [
+      {"tsMs": 1704000001000, "t": [0.0, 0.0, 0.0], "q": [0.0, 0.0, 0.0, 1.0], "trackingState": "tracking"},
+      {"tsMs": 1704000002000, "t": [0.1, 0.0, 0.0], "q": [0.0, 0.0, 0.0, 1.0], "trackingState": "tracking"}
+    ]
   }
 }
 ```

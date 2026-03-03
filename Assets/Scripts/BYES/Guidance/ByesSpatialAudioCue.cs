@@ -18,6 +18,13 @@ namespace BYES.Guidance
         private AudioClip _beepClip;
         private float _lastPlayedAt;
 
+        public float CooldownSec => cooldownSec;
+
+        public void SetCooldownSec(float value)
+        {
+            cooldownSec = Mathf.Clamp(value, 0.05f, 2f);
+        }
+
         private void Awake()
         {
             _beepClip = CreateBeepClip();
