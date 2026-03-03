@@ -94,9 +94,13 @@ namespace BYES.Quest
         private ByesQuest3SelfTestRunner _selfTestRunner;
         private ByesHitchMonitor _hitchMonitor;
         private SpeechOrchestrator _speechOrchestrator;
+        private AndroidTtsBackend _localTtsBackend;
+        private bool _localTtsReady;
+        private bool _localTtsInitAttempted;
         private ByesHeadLockedPanel _headLockedPanel;
         private ByesSmokePanelGrabHandle _grabHandle;
         private ByesHandGestureShortcuts _shortcuts;
+        private bool _recordingActive;
 
         private ITextView _baseUrlText;
         private ITextView _reachabilityText;
@@ -169,6 +173,13 @@ namespace BYES.Quest
         private void OnDisable()
         {
             UnbindRuntimeEvents();
+            if (_localTtsBackend != null)
+            {
+                _localTtsBackend.Shutdown();
+                _localTtsBackend = null;
+                _localTtsReady = false;
+                _localTtsInitAttempted = false;
+            }
             if (_reachabilityCoroutine != null)
             {
                 StopCoroutine(_reachabilityCoroutine);
@@ -253,6 +264,30 @@ namespace BYES.Quest
             if (_speechOrchestrator == null)
             {
                 _speechOrchestrator = FindFirstObjectByType<SpeechOrchestrator>();
+                if (_speechOrchestrator == null)
+                {
+                    var bootstrap = FindFirstObjectByType<BeYourEyes.AppBootstrap>();
+                    var host = bootstrap != null ? bootstrap.gameObject : gameObject;
+                    _speechOrchestrator = host.GetComponent<SpeechOrchestrator>();
+                    if (_speechOrchestrator == null)
+                    {
+                        _speechOrchestrator = host.AddComponent<SpeechOrchestrator>();
+                    }
+                }
+            }
+
+            if (!_localTtsInitAttempted)
+            {
+                _localTtsInitAttempted = true;
+                try
+                {
+                    _localTtsBackend = new AndroidTtsBackend();
+                    _localTtsReady = _localTtsBackend.Initialize(this, 1.0f, 1.0f);
+                }
+                catch
+                {
+                    _localTtsReady = false;
+                }
             }
         }
 
@@ -651,9 +686,20 @@ namespace BYES.Quest
             }
 
             ResolveRefs();
-            if (_speechOrchestrator != null)
+            var spoken = false;
+            if (_localTtsReady && _localTtsBackend != null && Application.platform == RuntimePlatform.Android)
+            {
+                _localTtsBackend.Speak(normalized, flushQueue: false);
+                spoken = true;
+            }
+            else if (_speechOrchestrator != null)
             {
                 _speechOrchestrator.SpeakLocalHint(normalized);
+                spoken = true;
+            }
+
+            if (spoken)
+            {
                 _lastSpokenAtMs = nowMs;
                 _lastSpokenDigest = digest;
             }
@@ -841,11 +887,22 @@ namespace BYES.Quest
 
             if (!done || !ok)
             {
-                ShowToast("Record start failed");
-                _scanError = string.IsNullOrWhiteSpace(message) ? "record start failed" : message;
+                var normalized = (message ?? string.Empty).Trim();
+                if (normalized.IndexOf("already active recording", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    _recordingActive = true;
+                    _scanError = string.Empty;
+                    ShowToast("Record already active");
+                }
+                else
+                {
+                    ShowToast("Record start failed");
+                    _scanError = string.IsNullOrWhiteSpace(normalized) ? "record start failed" : normalized;
+                }
             }
             else
             {
+                _recordingActive = true;
                 ShowToast("Record start");
                 _scanError = string.Empty;
             }
@@ -878,11 +935,22 @@ namespace BYES.Quest
 
             if (!done || !ok)
             {
-                ShowToast("Record stop failed");
-                _scanError = string.IsNullOrWhiteSpace(message) ? "record stop failed" : message;
+                var normalized = (message ?? string.Empty).Trim();
+                if (normalized.IndexOf("no active recording", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    _recordingActive = false;
+                    _scanError = string.Empty;
+                    ShowToast("Record not active");
+                }
+                else
+                {
+                    ShowToast("Record stop failed");
+                    _scanError = string.IsNullOrWhiteSpace(normalized) ? "record stop failed" : normalized;
+                }
             }
             else
             {
+                _recordingActive = false;
                 ShowToast("Record stop");
                 _scanError = string.Empty;
             }
@@ -1813,10 +1881,11 @@ namespace BYES.Quest
             _guidanceTextView?.Set($"Guidance: {_guidanceText} | Age: {guidanceAge}");
 
             var state = _scanController != null ? _scanController.LastScanState : _scanStatus;
-            var err = _scanController != null ? _scanController.LastScanError : _scanError;
+            var scanErr = _scanController != null ? _scanController.LastScanError : string.Empty;
+            var err = !string.IsNullOrWhiteSpace(_scanError) ? _scanError : scanErr;
             _scanStateText.Set(string.IsNullOrWhiteSpace(err)
-                ? $"Scan: {state} | live={(liveEnabled ? "ON" : "OFF")} | pinned={IsPinned()} | controls={(_actionControlsVisible ? "on" : "off")}"
-                : $"Scan: {state} ({err}) | live={(liveEnabled ? "ON" : "OFF")} | pinned={IsPinned()} | controls={(_actionControlsVisible ? "on" : "off")}");
+                ? $"Scan: {state} | live={(liveEnabled ? "ON" : "OFF")} | rec={(_recordingActive ? "ON" : "OFF")} | pinned={IsPinned()} | controls={(_actionControlsVisible ? "on" : "off")}"
+                : $"Scan: {state} ({err}) | live={(liveEnabled ? "ON" : "OFF")} | rec={(_recordingActive ? "ON" : "OFF")} | pinned={IsPinned()} | controls={(_actionControlsVisible ? "on" : "off")}");
 
             if (_selfTestRunner != null)
             {
