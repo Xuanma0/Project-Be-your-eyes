@@ -2198,6 +2198,37 @@ namespace BYES.Quest
 
             if (!readbackOk)
             {
+                if (string.Equals(normalized, "read_text", StringComparison.OrdinalIgnoreCase))
+                {
+                    var fallbackOk = false;
+                    var fallbackError = string.Empty;
+                    yield return TrySetModeFallbackRead(modeRaw: "read", onDone: (ok, error) =>
+                    {
+                        fallbackOk = ok;
+                        fallbackError = error;
+                    });
+                    if (fallbackOk)
+                    {
+                        for (var attempt = 0; attempt < 3; attempt += 1)
+                        {
+                            yield return QueryMode();
+                            if (string.Equals(_currentMode, normalized, StringComparison.OrdinalIgnoreCase))
+                            {
+                                readbackOk = true;
+                                break;
+                            }
+                            yield return new WaitForSecondsRealtime(0.2f);
+                        }
+                    }
+                    else
+                    {
+                        _rawText.Set($"Set mode fallback(read) failed: {fallbackError}");
+                    }
+                }
+            }
+
+            if (!readbackOk)
+            {
                 ShowToast($"Mode readback mismatch (want {normalized}, got {_currentMode})");
             }
         }

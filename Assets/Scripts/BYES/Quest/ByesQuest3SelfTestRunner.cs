@@ -635,8 +635,31 @@ namespace BYES.Quest
             });
             if (!readBackOk)
             {
-                onDone?.Invoke(false, readBackErr);
-                yield break;
+                // Compatibility fallback: some gateway builds accept "read" but
+                // silently map unknown mode tokens back to "walk".
+                var fallbackReadOk = false;
+                var fallbackReadErr = string.Empty;
+                yield return PostMode("read", deviceId, (ok, error) =>
+                {
+                    fallbackReadOk = ok;
+                    fallbackReadErr = error;
+                });
+                if (!fallbackReadOk)
+                {
+                    onDone?.Invoke(false, string.IsNullOrWhiteSpace(fallbackReadErr) ? readBackErr : fallbackReadErr);
+                    yield break;
+                }
+
+                yield return ValidateMode(deviceId, "read_text", (ok, error) =>
+                {
+                    readBackOk = ok;
+                    readBackErr = error;
+                });
+                if (!readBackOk)
+                {
+                    onDone?.Invoke(false, readBackErr);
+                    yield break;
+                }
             }
 
             var walkOk = false;
