@@ -80,7 +80,7 @@ if "%BYES_ENABLE_PYSLAM_SERVICE%"=="1" (
 )
 
 echo [quest3_usb_realstack_v5_03] starting gateway + inference...
-start "BYES-RealStack-v5.03" cmd /k "cd /d \"%REPO_ROOT%\Gateway\" && set BYES_INFERENCE_EMIT_WS_V1=%BYES_INFERENCE_EMIT_WS_V1% && set BYES_EMIT_NET_DEBUG=%BYES_EMIT_NET_DEBUG% && set BYES_ENABLE_OCR=%BYES_ENABLE_OCR% && set BYES_ENABLE_DET=%BYES_ENABLE_DET% && set BYES_ENABLE_DEPTH=%BYES_ENABLE_DEPTH% && set BYES_ENABLE_RISK=%BYES_ENABLE_RISK% && set BYES_ENABLE_SEG=%BYES_ENABLE_SEG% && set BYES_OCR_BACKEND=%BYES_OCR_BACKEND% && set BYES_OCR_HTTP_URL=%BYES_OCR_HTTP_URL% && set BYES_DET_BACKEND=%BYES_DET_BACKEND% && set BYES_DET_HTTP_URL=%BYES_DET_HTTP_URL% && set BYES_DEPTH_BACKEND=%BYES_DEPTH_BACKEND% && set BYES_DEPTH_HTTP_URL=%BYES_DEPTH_HTTP_URL% && set BYES_RISK_BACKEND=%BYES_RISK_BACKEND% && set BYES_RISK_HTTP_URL=%BYES_RISK_HTTP_URL% && set BYES_SEG_BACKEND=%BYES_SEG_BACKEND% && set BYES_SEG_HTTP_URL=%BYES_SEG_HTTP_URL% && set BYES_SLAM_BACKEND=%BYES_SLAM_BACKEND% && set BYES_SLAM_HTTP_URL=%BYES_SLAM_HTTP_URL% && set BYES_SERVICE_OCR_PROVIDER=%BYES_SERVICE_OCR_PROVIDER% && set BYES_SERVICE_DET_PROVIDER=%BYES_SERVICE_DET_PROVIDER% && set BYES_SERVICE_DET_OPENVOCAB=%BYES_SERVICE_DET_OPENVOCAB% && set BYES_SERVICE_DEPTH_PROVIDER=%BYES_SERVICE_DEPTH_PROVIDER% && set BYES_SERVICE_RISK_PROVIDER=%BYES_SERVICE_RISK_PROVIDER% && set BYES_SERVICE_SEG_PROVIDER=%BYES_SERVICE_SEG_PROVIDER% && set BYES_SERVICE_SLAM_PROVIDER=%BYES_SERVICE_SLAM_PROVIDER% && set BYES_SERVICE_DET_MODEL_PATH=%BYES_SERVICE_DET_MODEL_PATH% && set BYES_SERVICE_DEPTH_ONNX_PATH=%BYES_SERVICE_DEPTH_ONNX_PATH% && python scripts/dev_up.py --with-inference --host 127.0.0.1 --gateway-port %GATEWAY_PORT% --inference-port %INFERENCE_PORT% --no-reload"
+start "BYES-RealStack-v5.03" cmd /k "cd /d \"%REPO_ROOT%\Gateway\" && python scripts/dev_up.py --with-inference --host 127.0.0.1 --gateway-port %GATEWAY_PORT% --inference-port %INFERENCE_PORT% --no-reload"
 
 if "%BYES_ENABLE_PYSLAM_SERVICE%"=="1" (
   echo [quest3_usb_realstack_v5_03] starting optional pyslam_service on %PYSLAM_PORT%...
@@ -94,7 +94,7 @@ echo   2) Run SelfTest (should PASS, passthrough may SKIP)
 echo   3) Actions: Select ROI -> Start Track -> Track Step -> Stop Track
 echo   4) Actions: Start Record -> Stop Record, verify recording path in terminal
 if "%BYES_ENABLE_PYSLAM_SERVICE%"=="1" (
-  echo   5) Optional online slam bridge enabled: %BYES_SLAM_HTTP_URL%
+  echo   5^) Optional online slam bridge enabled: %BYES_SLAM_HTTP_URL%
 )
 echo.
 echo [quest3_usb_realstack_v5_03] Optional installs:
