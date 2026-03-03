@@ -114,7 +114,13 @@ class UltralyticsDetProvider:
                 "pip install -r Gateway/services/inference_service/requirements-ultralytics.txt"
             ) from exc
         model_ref = self._resolve_model_ref()
-        self._engine = YOLO(model_ref)
+        try:
+            self._engine = YOLO(model_ref)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"det_model_load_failed:{exc.__class__.__name__}; "
+                "set BYES_SERVICE_DET_MODEL_PATH to a valid .pt file or use mock provider"
+            ) from exc
         return self._engine
 
     def _extract_prompt_labels(self, prompt: dict[str, Any] | None) -> list[str]:
@@ -181,7 +187,10 @@ class UltralyticsDetProvider:
         }
         if self.device:
             kwargs["device"] = self.device
-        predictions = engine.predict(image, **kwargs)
+        try:
+            predictions = engine.predict(image, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"det_infer_failed:{exc.__class__.__name__}") from exc
         if not predictions:
             return {
                 "schemaVersion": "byes.det.v1",

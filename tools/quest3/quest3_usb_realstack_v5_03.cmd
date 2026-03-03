@@ -98,6 +98,7 @@ set "BYES_SERVICE_SLAM_PROVIDER=mock"
 
 set "HAS_PADDLEOCR=0"
 set "HAS_ULTRALYTICS=0"
+set "HAS_DET_MODEL=0"
 set "HAS_ONNXRT=0"
 set "HAS_ONNX_MODEL=0"
 python -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('paddleocr') else 1)" >nul 2>&1
@@ -109,6 +110,12 @@ if !ERRORLEVEL! EQU 0 set "HAS_ONNXRT=1"
 if defined BYES_SERVICE_DEPTH_ONNX_PATH (
   if exist "!BYES_SERVICE_DEPTH_ONNX_PATH!" set "HAS_ONNX_MODEL=1"
 )
+if defined BYES_SERVICE_DET_MODEL_PATH (
+  if exist "!BYES_SERVICE_DET_MODEL_PATH!" set "HAS_DET_MODEL=1"
+)
+if defined BYES_SERVICE_DET_MODEL (
+  if not "!BYES_SERVICE_DET_MODEL!"=="" set "HAS_DET_MODEL=1"
+)
 
 if "!HAS_PADDLEOCR!"=="1" (
   set "BYES_SERVICE_OCR_PROVIDER=paddleocr"
@@ -116,11 +123,15 @@ if "!HAS_PADDLEOCR!"=="1" (
   echo [quest3_usb_realstack_v5_03] WARN: paddleocr missing, fallback OCR provider=mock
 )
 
-if "!HAS_ULTRALYTICS!"=="1" (
+if "!HAS_ULTRALYTICS!"=="1" if "!HAS_DET_MODEL!"=="1" (
   set "BYES_SERVICE_DET_PROVIDER=ultralytics"
   set "BYES_SERVICE_DET_OPENVOCAB=1"
 ) else (
-  echo [quest3_usb_realstack_v5_03] WARN: ultralytics missing, fallback DET provider=mock
+  if "!HAS_ULTRALYTICS!"=="0" (
+    echo [quest3_usb_realstack_v5_03] WARN: ultralytics missing, fallback DET provider=mock
+  ) else (
+    echo [quest3_usb_realstack_v5_03] WARN: DET model not configured ^(set BYES_SERVICE_DET_MODEL_PATH or BYES_SERVICE_DET_MODEL^), fallback DET provider=mock
+  )
 )
 
 if "!HAS_ONNXRT!"=="1" (
@@ -137,6 +148,7 @@ if "!HAS_ONNXRT!"=="1" (
 echo [quest3_usb_realstack_v5_03] capability probe:
 echo   paddleocr=!HAS_PADDLEOCR!
 echo   ultralytics=!HAS_ULTRALYTICS!
+echo   det_model=!HAS_DET_MODEL!
 echo   onnxruntime=!HAS_ONNXRT!
 echo   onnx_model=!HAS_ONNX_MODEL!
 echo [quest3_usb_realstack_v5_03] selected providers:

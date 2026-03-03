@@ -930,7 +930,7 @@ namespace BYES.Quest
             _runtimeCanvas = canvas;
 
             var canvasRect = canvasGo.GetComponent<RectTransform>();
-            canvasRect.sizeDelta = new Vector2(1650f, 1180f);
+            canvasRect.sizeDelta = new Vector2(1650f, 1320f);
             canvasRect.localScale = Vector3.one * 0.00025f;
             canvasRect.localPosition = Vector3.zero;
             canvasRect.localRotation = Quaternion.identity;
@@ -938,7 +938,7 @@ namespace BYES.Quest
             canvasGo.AddComponent<CanvasScaler>();
             AddBestRaycaster(canvasGo);
 
-            var panel = CreateUiObject("Panel", canvasGo.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(1650f, 1180f), Vector2.zero);
+            var panel = CreateUiObject("Panel", canvasGo.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(1650f, 1320f), Vector2.zero);
             var panelImage = panel.AddComponent<Image>();
             panelImage.color = new Color(0f, 0f, 0f, 0.8f);
             var panelGroup = panel.AddComponent<CanvasGroup>();
@@ -962,26 +962,26 @@ namespace BYES.Quest
             _lastTargetTextView = CreateText("LastTarget", panel.transform, "Last TARGET: -", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -858f), new Vector2(1480f, 62f));
             _guidanceTextView = CreateText("Guidance", panel.transform, "Guidance: -", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -912f), new Vector2(1480f, 62f));
             _scanStateText = CreateText("ScanState", panel.transform, "Scan: idle", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -966f), new Vector2(1480f, 62f));
-            _selfTestText = CreateText("SelfTest", panel.transform, "SelfTest: IDLE", 28, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1020f), new Vector2(1480f, 62f));
-            _captureText = CreateText("CaptureStats", panel.transform, "Capture: -", 24, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1072f), new Vector2(1480f, 62f));
-            _hitchText = CreateText("HitchStats", panel.transform, "Hitch30s: -", 24, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1124f), new Vector2(1480f, 62f));
-            _toastText = CreateText("Toast", panel.transform, "-", 34, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 168f), new Vector2(1480f, 72f));
-            _rawText = CreateText("Raw", panel.transform, "-", 26, TextAnchor.UpperLeft, new Vector2(0.5f, 0f), new Vector2(0f, 96f), new Vector2(1480f, 124f));
+            _selfTestText = CreateText("SelfTest", panel.transform, "SelfTest: IDLE", 26, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1014f), new Vector2(1480f, 108f));
+            _captureText = CreateText("CaptureStats", panel.transform, "Capture: -", 22, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1116f), new Vector2(1480f, 56f));
+            _hitchText = CreateText("HitchStats", panel.transform, "Hitch30s: -", 22, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -1168f), new Vector2(1480f, 56f));
+            _toastText = CreateText("Toast", panel.transform, "-", 32, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 190f), new Vector2(1480f, 72f));
+            _rawText = CreateText("Raw", panel.transform, "-", 24, TextAnchor.UpperLeft, new Vector2(0.5f, 0f), new Vector2(0f, 120f), new Vector2(1480f, 130f));
 
-            CreateButton(panel.transform, "PingButton", "Ping", new Vector2(-650f, -1030f), OnPingClicked, markAsAction: true);
-            CreateButton(panel.transform, "VersionButton", "Version", new Vector2(-420f, -1030f), OnVersionClicked, markAsAction: true);
-            CreateButton(panel.transform, "ModeReadButton", "Read", new Vector2(-190f, -1030f), () => OnSetModeClicked("read_text"), markAsAction: true);
-            CreateButton(panel.transform, "ModeWalkButton", "Walk", new Vector2(40f, -1030f), () => OnSetModeClicked("walk"), markAsAction: true);
-            CreateButton(panel.transform, "ModeInspectButton", "Inspect", new Vector2(270f, -1030f), () => OnSetModeClicked("inspect"), markAsAction: true);
-            _scanButton = CreateButton(panel.transform, "ScanButton", "Scan Once", new Vector2(500f, -1030f), OnScanClicked, markAsAction: true);
-            _liveButton = CreateButton(panel.transform, "LiveButton", "Live Start", new Vector2(730f, -1030f), OnLiveClicked, markAsAction: true);
-            _liveToggle = CreateLiveToggle(panel.transform, "LiveToggle", "Live", new Vector2(730f, -1110f), OnLiveToggleChanged, markAsAction: true);
+            CreateButton(panel.transform, "PingButton", "Ping", new Vector2(-650f, -1220f), OnPingClicked, markAsAction: true);
+            CreateButton(panel.transform, "VersionButton", "Version", new Vector2(-420f, -1220f), OnVersionClicked, markAsAction: true);
+            CreateButton(panel.transform, "ModeReadButton", "Read", new Vector2(-190f, -1220f), () => OnSetModeClicked("read_text"), markAsAction: true);
+            CreateButton(panel.transform, "ModeWalkButton", "Walk", new Vector2(40f, -1220f), () => OnSetModeClicked("walk"), markAsAction: true);
+            CreateButton(panel.transform, "ModeInspectButton", "Inspect", new Vector2(270f, -1220f), () => OnSetModeClicked("inspect"), markAsAction: true);
+            _scanButton = CreateButton(panel.transform, "ScanButton", "Scan Once", new Vector2(500f, -1220f), OnScanClicked, markAsAction: true);
+            _liveButton = CreateButton(panel.transform, "LiveButton", "Live Start", new Vector2(730f, -1220f), OnLiveClicked, markAsAction: true);
+            _liveToggle = CreateLiveToggle(panel.transform, "LiveToggle", "Live", new Vector2(730f, -1280f), OnLiveToggleChanged, markAsAction: true);
 
-            CreateButton(panel.transform, "RefreshButton", "Refresh", new Vector2(-420f, -1110f), OnRefreshClicked, markAsAction: true);
-            CreateButton(panel.transform, "SelfTestButton", "SelfTest", new Vector2(-190f, -1110f), OnSelfTestClicked, markAsAction: true);
-            CreateButton(panel.transform, "ReconnectWsButton", "WS Reconnect", new Vector2(40f, -1110f), OnReconnectWsClicked, markAsAction: true);
-            CreateButton(panel.transform, "RecordStartButton", "Rec Start", new Vector2(270f, -1110f), OnRecordStartClicked, markAsAction: true);
-            CreateButton(panel.transform, "RecordStopButton", "Rec Stop", new Vector2(500f, -1110f), OnRecordStopClicked, markAsAction: true);
+            CreateButton(panel.transform, "RefreshButton", "Refresh", new Vector2(-420f, -1280f), OnRefreshClicked, markAsAction: true);
+            CreateButton(panel.transform, "SelfTestButton", "SelfTest", new Vector2(-190f, -1280f), OnSelfTestClicked, markAsAction: true);
+            CreateButton(panel.transform, "ReconnectWsButton", "WS Reconnect", new Vector2(40f, -1280f), OnReconnectWsClicked, markAsAction: true);
+            CreateButton(panel.transform, "RecordStartButton", "Rec Start", new Vector2(270f, -1280f), OnRecordStartClicked, markAsAction: true);
+            CreateButton(panel.transform, "RecordStopButton", "Rec Stop", new Vector2(500f, -1280f), OnRecordStopClicked, markAsAction: true);
         }
 
         private void OnPingClicked()
