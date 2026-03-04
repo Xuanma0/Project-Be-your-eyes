@@ -108,7 +108,17 @@ namespace BYES.Plan
             {
                 case "speak":
                     Debug.Log($"[PlanExecutor] SPEAK: {command.text}");
-                    ByesFrameTelemetry.AckFeedback(_runIdForAck, _frameSeqForAck, "tts", true, ByesFrameTelemetry.NowUnixMs());
+                    ByesFrameTelemetry.AckFeedback(
+                        _runIdForAck,
+                        _frameSeqForAck,
+                        "tts",
+                        true,
+                        ByesFrameTelemetry.NowUnixMs(),
+                        providerBackend: "android_tts",
+                        providerModel: "quest-tts",
+                        providerDevice: "quest",
+                        providerReason: "client_tts",
+                        providerIsMock: false);
                     break;
                 case "overlay":
                 case "ar":

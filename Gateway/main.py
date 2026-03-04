@@ -478,6 +478,11 @@ class FrameAckRequest(BaseModel):
     feedbackTsMs: int
     kind: Literal["tts", "ar", "overlay", "haptic", "other", "any"] = "any"
     accepted: bool = True
+    providerBackend: str | None = None
+    providerModel: str | None = None
+    providerDevice: str | None = None
+    providerReason: str | None = None
+    providerIsMock: bool | None = None
     runPackage: str | None = None
 
     @model_validator(mode="after")
@@ -754,6 +759,7 @@ class GatewayApp:
             "seg": {},
             "slam": {},
             "asr": {},
+            "tts": {},
             "pyslamRealtime": {},
         }
         self._forced_crosscheck_kind = "none"
@@ -1018,6 +1024,33 @@ class GatewayApp:
             provider = "slam"
         elif name.startswith("asr.transcript"):
             provider = "asr"
+        elif name == "frame.ack":
+            kind = str(payload.get("kind", "") or "").strip().lower()
+            if kind == "tts":
+                provider = "tts"
+                provider_payload = payload.get("provider")
+                if isinstance(provider_payload, dict):
+                    backend = str(provider_payload.get("backend", "") or "").strip() or backend
+                    model = str(provider_payload.get("model", "") or "").strip() or model
+                    device = str(provider_payload.get("device", "") or "").strip() or device
+                    reason = str(provider_payload.get("reason", "") or "").strip() or reason
+                    infer_ms = _to_nonnegative_int_or_none(provider_payload.get("latencyMs")) or infer_ms
+                    provider_is_mock = provider_payload.get("isMock")
+                    if isinstance(provider_is_mock, bool):
+                        self._record_provider_runtime(
+                            "tts",
+                            backend=backend,
+                            model=model,
+                            device=device,
+                            infer_ms=infer_ms,
+                            ts_ms=event_ts,
+                            reason=reason,
+                            is_mock=provider_is_mock,
+                        )
+                        return
+                backend = backend or "client_ack"
+                model = model or "quest-tts"
+                reason = reason or "frame_ack"
         elif name.startswith("vis.overlay.v1"):
             kind = str(payload.get("kind", "") or "").strip().lower()
             provider = {"det": "det", "seg": "seg", "depth": "depth", "slam": "slam"}.get(kind)
@@ -2867,6 +2900,11 @@ async def frame_ack(request: FrameAckRequest) -> dict[str, Any]:
         feedback_ts_ms=feedback_ts_ms,
         kind=request.kind,
         accepted=bool(request.accepted),
+        provider_backend=request.providerBackend,
+        provider_model=request.providerModel,
+        provider_device=request.providerDevice,
+        provider_reason=request.providerReason,
+        provider_is_mock=request.providerIsMock,
     )
     ack_event = _build_byes_event(
         run_id=run_id,
@@ -3068,6 +3106,10 @@ async def api_capabilities() -> dict[str, Any]:
         pyslam_reason = "path_not_found"
 
     runtime_rows = gateway._provider_runtime_snapshot()  # noqa: SLF001
+    tts_runtime = runtime_rows.get("tts", {})
+    tts_backend = str(tts_runtime.get("backend", "") or "client_ack").strip() or "client_ack"
+    tts_reason = str(tts_runtime.get("reason", "") or "").strip() or "client_ack"
+    tts_enabled = bool(tts_runtime.get("lastTsMs"))
 
     available_providers = {
         "ocr": {
@@ -3151,6 +3193,13 @@ async def api_capabilities() -> dict[str, Any]:
             "reason": asr_reason,
             "enabled": bool(asr_enabled),
         },
+        "tts": {
+            "backend": tts_backend,
+            "model": tts_runtime.get("model") or "quest-tts",
+            "device": tts_runtime.get("device") or "quest",
+            "enabled": tts_enabled,
+            "reason": tts_reason,
+        },
         "pyslamRealtime": {
             "enabled": pyslam_enabled,
             "backend": gateway._provider_backend_effective("pyslamRealtime", "pyslam_http" if pyslam_enabled else "mock"),  # noqa: SLF001
@@ -3195,6 +3244,7 @@ async def api_capabilities() -> dict[str, Any]:
         "costmap": bool(gateway.config.inference_enable_costmap),
         "costmapFused": bool(gateway.config.inference_enable_costmap_fused),
         "asr": asr_enabled,
+        "tts": tts_enabled,
         "pyslamRealtime": pyslam_enabled,
     }
     return {
@@ -6936,6 +6986,11 @@ def _build_frame_ack_payload(
     feedback_ts_ms: int,
     kind: str,
     accepted: bool,
+    provider_backend: str | None = None,
+    provider_model: str | None = None,
+    provider_device: str | None = None,
+    provider_reason: str | None = None,
+    provider_is_mock: bool | None = None,
 ) -> dict[str, Any]:
     normalized_kind = str(kind or "any").strip().lower()
     if normalized_kind == "ar":
@@ -6944,7 +6999,7 @@ def _build_frame_ack_payload(
         normalized_kind = "any"
     if normalized_kind not in {"tts", "overlay", "haptic", "any"}:
         normalized_kind = "any"
-    return {
+    payload: dict[str, Any] = {
         "schemaVersion": "frame.ack.v1",
         "runId": str(run_id or "").strip() or "unknown-run",
         "frameSeq": int(max(1, int(frame_seq))),
@@ -6952,6 +7007,16 @@ def _build_frame_ack_payload(
         "kind": normalized_kind,
         "accepted": bool(accepted),
     }
+    provider_payload = {
+        "backend": str(provider_backend or "").strip() or None,
+        "model": str(provider_model or "").strip() or None,
+        "device": str(provider_device or "").strip() or None,
+        "reason": str(provider_reason or "").strip() or None,
+        "isMock": provider_is_mock,
+    }
+    if any(value is not None for value in provider_payload.values()):
+        payload["provider"] = provider_payload
+    return payload
 
 
 def _build_frame_user_e2e_event(

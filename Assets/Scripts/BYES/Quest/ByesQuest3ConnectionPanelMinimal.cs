@@ -2566,6 +2566,7 @@ namespace BYES.Quest
                     Token(providers, "depth"),
                     Token(providers, "slam"),
                     Token(providers, "asr"),
+                    Token(providers, "tts"),
                 }
             );
         }

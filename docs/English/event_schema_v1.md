@@ -76,6 +76,10 @@
   - `confirmId`
   - `accepted`: bool
   - `latencyMs`: optional (derived from request/response delta when available)
+- `frame.ack` payload:
+  - `schemaVersion`: `frame.ack.v1`
+  - `kind`: `tts|overlay|haptic|any`
+  - optional `provider` object for evidence (`backend/model/device/reason/isMock`)
 
 ## Examples
 
