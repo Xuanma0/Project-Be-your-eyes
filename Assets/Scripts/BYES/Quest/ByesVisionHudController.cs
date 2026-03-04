@@ -15,6 +15,7 @@ namespace BYES.Quest
         [SerializeField] private bool showSegOverlay = true;
         [SerializeField] private bool showDepthOverlay = true;
         [SerializeField] private bool showTargetOverlay = true;
+        [SerializeField] private float detAlpha = 0.45f;
         [SerializeField] private float segAlpha = 0.35f;
         [SerializeField] private float depthAlpha = 0.30f;
         [SerializeField] private float hudDistance = 0.9f;
@@ -24,6 +25,7 @@ namespace BYES.Quest
         private GatewayClient _gatewayClient;
         private Canvas _canvas;
         private RectTransform _overlayRoot;
+        private RawImage _detImage;
         private RawImage _segImage;
         private RawImage _depthImage;
         private Text _statsText;
@@ -46,6 +48,7 @@ namespace BYES.Quest
         public bool ShowSegOverlay => showSegOverlay;
         public bool ShowDepthOverlay => showDepthOverlay;
         public bool ShowTargetOverlay => showTargetOverlay;
+        public float DetAlpha => detAlpha;
         public float SegAlpha => segAlpha;
         public float DepthAlpha => depthAlpha;
         public float OverlayFps => _overlayFps;
@@ -143,6 +146,12 @@ namespace BYES.Quest
             ApplyVisualState();
         }
 
+        public void SetDetAlpha(float value)
+        {
+            detAlpha = Mathf.Clamp01(value);
+            ApplyVisualState();
+        }
+
         public void SetDepthAlpha(float value)
         {
             depthAlpha = Mathf.Clamp01(value);
@@ -155,6 +164,7 @@ namespace BYES.Quest
             showSegOverlay = true;
             showDepthOverlay = true;
             showTargetOverlay = true;
+            detAlpha = 0.45f;
             segAlpha = 0.35f;
             depthAlpha = 0.30f;
             ApplyVisualState();
@@ -177,6 +187,11 @@ namespace BYES.Quest
             canvasRect.localScale = Vector3.one * hudScale;
 
             _overlayRoot = canvasRect;
+
+            var detGo = CreateUiObject("DetOverlay", root.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(960f, 540f), Vector2.zero);
+            _detImage = detGo.AddComponent<RawImage>();
+            _detImage.color = new Color(1f, 1f, 1f, detAlpha);
+            _detImage.raycastTarget = false;
 
             var depthGo = CreateUiObject("DepthOverlay", root.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(960f, 540f), Vector2.zero);
             _depthImage = depthGo.AddComponent<RawImage>();
@@ -428,7 +443,7 @@ namespace BYES.Quest
         private void ApplyVisualState()
         {
             EnsureRenderer();
-            _renderer?.SetVisualState(showDetOverlay, showSegOverlay, showDepthOverlay, segAlpha, depthAlpha);
+            _renderer?.SetVisualState(showDetOverlay, showSegOverlay, showDepthOverlay, detAlpha, segAlpha, depthAlpha);
         }
 
         private void UpdatePose()
@@ -490,7 +505,7 @@ namespace BYES.Quest
                     _renderer = gameObject.AddComponent<ByesVisionHudRenderer>();
                 }
             }
-            _renderer?.Initialize(_segImage, _depthImage, _boxOutlines, _boxLabels, 960f, 540f);
+            _renderer?.Initialize(_detImage, _segImage, _depthImage, _boxOutlines, _boxLabels, 960f, 540f);
         }
 
         private void TickOverlayFps()

@@ -1869,6 +1869,16 @@ namespace BYES.Quest
             StartCoroutine(StopRecording());
         }
 
+        public void TriggerSetProviderEnabledFromUi(string target, bool enabled)
+        {
+            StartCoroutine(SetProviderOverrideRoutine(target, enabled, null));
+        }
+
+        public void TriggerSetProviderBackendFromUi(string target, string backend)
+        {
+            StartCoroutine(SetProviderOverrideRoutine(target, null, backend));
+        }
+
         public void TriggerPlayBeepFromUi()
         {
             ResolveRefs();
@@ -2117,6 +2127,16 @@ namespace BYES.Quest
         public string GetLastTtsText()
         {
             return string.IsNullOrWhiteSpace(_lastTtsText) ? "-" : _lastTtsText;
+        }
+
+        public string GetProviderSummaryText()
+        {
+            return string.IsNullOrWhiteSpace(_providerSummary) ? "providers: -" : _providerSummary;
+        }
+
+        public string GetProviderDetailText()
+        {
+            return string.IsNullOrWhiteSpace(_providerDetail) ? "-" : _providerDetail;
         }
 
         public long GetHudSegAgeMs()
@@ -2427,6 +2447,47 @@ namespace BYES.Quest
             {
                 ShowToast("Capabilities OK");
             }
+        }
+
+        private IEnumerator SetProviderOverrideRoutine(string target, bool? enabled, string backend)
+        {
+            var token = string.IsNullOrWhiteSpace(target) ? string.Empty : target.Trim();
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                ShowToast("Provider target missing");
+                yield break;
+            }
+
+            var uri = $"{_baseUrl}/api/providers/overrides";
+            var payload = new JObject();
+            var row = new JObject();
+            if (enabled.HasValue)
+            {
+                row["enabled"] = enabled.Value;
+            }
+            if (backend != null)
+            {
+                var backendToken = string.IsNullOrWhiteSpace(backend) ? string.Empty : backend.Trim().ToLowerInvariant();
+                row["backend"] = string.IsNullOrWhiteSpace(backendToken) ? null : backendToken;
+            }
+            payload[token] = row;
+
+            TrackProbeRequest("/api/providers/overrides");
+            using var request = new UnityWebRequest(uri, UnityWebRequest.kHttpVerbPOST);
+            request.uploadHandler = new UploadHandlerRaw(System.Text.Encoding.UTF8.GetBytes(payload.ToString(Newtonsoft.Json.Formatting.None)));
+            request.downloadHandler = new DownloadHandlerBuffer();
+            request.timeout = Mathf.CeilToInt(QueryTimeoutSec);
+            request.SetRequestHeader("Content-Type", "application/json");
+            ApplyApiKeyHeader(request);
+            yield return request.SendWebRequest();
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                ShowToast($"Provider override failed: {request.error}");
+                yield break;
+            }
+
+            ShowToast($"Provider override ok: {token}");
+            yield return QueryCapabilities(silent: true);
         }
 
         private bool ShouldRefreshCapabilities()

@@ -726,6 +726,24 @@ class GatewayApp:
         self._last_meta_warn_ms: dict[str, int] = {"meta_missing": -1, "meta_parse_error": -1}
         self._enabled_tools = self._parse_csv_tools(self.config.enabled_tools_csv)
         self._external_readiness: dict[str, dict[str, Any]] = {}
+        self._runtime_target_enabled_overrides: dict[str, bool | None] = {
+            "ocr": None,
+            "risk": None,
+            "det": None,
+            "depth": None,
+            "seg": None,
+            "slam": None,
+        }
+        self._provider_backend_overrides: dict[str, str | None] = {
+            "ocr": None,
+            "det": None,
+            "seg": None,
+            "depth": None,
+            "slam": None,
+            "asr": None,
+            "pyslamRealtime": None,
+        }
+        self._providers_override_updated_ts_ms = -1
         self._forced_crosscheck_kind = "none"
         self._forced_crosscheck_expires_ms = -1
         self._forced_performance_mode = "NORMAL"
@@ -795,6 +813,11 @@ class GatewayApp:
         self.costmap_fuser.reset()
         self.dynamic_mask_cache.reset()
         self._external_readiness = {}
+        for key in list(self._runtime_target_enabled_overrides):
+            self._runtime_target_enabled_overrides[key] = None
+        for key in list(self._provider_backend_overrides):
+            self._provider_backend_overrides[key] = None
+        self._providers_override_updated_ts_ms = -1
         self.registry.clear()
         startup_unavailable_tools: list[str] = []
         if self._tool_enabled("mock_risk"):
@@ -835,6 +858,38 @@ class GatewayApp:
         if cached is None:
             return None
         return (bytes(cached.data), str(cached.content_type or "application/octet-stream"))
+
+    def _configured_target_enabled(self, target: str) -> bool:
+        token = str(target or "").strip().lower()
+        if token == "ocr":
+            return bool(self.config.inference_enable_ocr)
+        if token == "risk":
+            return bool(self.config.inference_enable_risk)
+        if token == "det":
+            return bool(self.config.inference_enable_det)
+        if token == "depth":
+            return bool(self.config.inference_enable_depth)
+        if token == "seg":
+            return bool(self.config.inference_enable_seg)
+        if token == "slam":
+            return bool(self.config.inference_enable_slam)
+        return False
+
+    def _target_enabled(self, target: str) -> bool:
+        token = str(target or "").strip().lower()
+        override = self._runtime_target_enabled_overrides.get(token)
+        if override is None:
+            return self._configured_target_enabled(token)
+        return bool(override)
+
+    def _provider_backend_effective(self, target: str, backend: str | None) -> str | None:
+        token = str(target or "").strip()
+        override = self._provider_backend_overrides.get(token)
+        override_text = str(override or "").strip()
+        if override_text:
+            return override_text
+        backend_text = str(backend or "").strip()
+        return backend_text or None
 
     def _to_run_packages_relative(self, path: Path) -> str:
         root = self.run_packages_root.resolve()
@@ -1172,16 +1227,17 @@ class GatewayApp:
         forced_targets = _resolve_forced_targets(meta)
         det_targets_override, det_prompt_override = _resolve_det_overrides(meta)
 
-        run_ocr = bool(self.config.inference_enable_ocr) and should_run_mode_target(
+        ocr_enabled = self._target_enabled("ocr")
+        run_ocr = bool(ocr_enabled) and should_run_mode_target(
             frame_seq=event_frame_seq,
             mode=mode,
             target="ocr",
             profile=self.mode_profile,
             force_on_mode_change=force_heavy_once,
         )
-        if "ocr" in forced_targets and bool(self.config.inference_enable_ocr):
+        if "ocr" in forced_targets and bool(ocr_enabled):
             run_ocr = True
-        if bool(self.config.inference_enable_ocr) and not run_ocr:
+        if bool(ocr_enabled) and not run_ocr:
             skipped_targets.append("ocr")
         if run_ocr:
             fired_targets.append("ocr")
@@ -1210,16 +1266,17 @@ class GatewayApp:
                 endpoint=getattr(self.ocr_backend, "endpoint", None),
             )
 
-        run_risk = bool(self.config.inference_enable_risk) and should_run_mode_target(
+        risk_enabled = self._target_enabled("risk")
+        run_risk = bool(risk_enabled) and should_run_mode_target(
             frame_seq=event_frame_seq,
             mode=mode,
             target="risk",
             profile=self.mode_profile,
             force_on_mode_change=False,
         )
-        if "risk" in forced_targets and bool(self.config.inference_enable_risk):
+        if "risk" in forced_targets and bool(risk_enabled):
             run_risk = True
-        if bool(self.config.inference_enable_risk) and not run_risk:
+        if bool(risk_enabled) and not run_risk:
             skipped_targets.append("risk")
         if run_risk:
             fired_targets.append("risk")
@@ -1246,16 +1303,17 @@ class GatewayApp:
                 endpoint=getattr(self.risk_backend, "endpoint", None),
             )
 
-        run_det = bool(self.config.inference_enable_det) and should_run_mode_target(
+        det_enabled = self._target_enabled("det")
+        run_det = bool(det_enabled) and should_run_mode_target(
             frame_seq=event_frame_seq,
             mode=mode,
             target="det",
             profile=self.mode_profile,
             force_on_mode_change=force_heavy_once,
         )
-        if "det" in forced_targets and bool(self.config.inference_enable_det):
+        if "det" in forced_targets and bool(det_enabled):
             run_det = True
-        if bool(self.config.inference_enable_det) and not run_det:
+        if bool(det_enabled) and not run_det:
             skipped_targets.append("det")
         if run_det:
             fired_targets.append("det")
@@ -1297,16 +1355,17 @@ class GatewayApp:
                 payload=det_overlay_payload,
             )
 
-        run_depth = bool(self.config.inference_enable_depth) and should_run_mode_target(
+        depth_enabled = self._target_enabled("depth")
+        run_depth = bool(depth_enabled) and should_run_mode_target(
             frame_seq=event_frame_seq,
             mode=mode,
             target="depth",
             profile=self.mode_profile,
             force_on_mode_change=force_heavy_once,
         )
-        if "depth" in forced_targets and bool(self.config.inference_enable_depth):
+        if "depth" in forced_targets and bool(depth_enabled):
             run_depth = True
-        if bool(self.config.inference_enable_depth) and not run_depth:
+        if bool(depth_enabled) and not run_depth:
             skipped_targets.append("depth")
         if run_depth:
             fired_targets.append("depth")
@@ -1380,16 +1439,17 @@ class GatewayApp:
                     }
                 )
 
-        run_seg = bool(self.config.inference_enable_seg) and should_run_mode_target(
+        seg_enabled = self._target_enabled("seg")
+        run_seg = bool(seg_enabled) and should_run_mode_target(
             frame_seq=event_frame_seq,
             mode=mode,
             target="seg",
             profile=self.mode_profile,
             force_on_mode_change=force_heavy_once,
         )
-        if "seg" in forced_targets and bool(self.config.inference_enable_seg):
+        if "seg" in forced_targets and bool(seg_enabled):
             run_seg = True
-        if bool(self.config.inference_enable_seg) and not run_seg:
+        if bool(seg_enabled) and not run_seg:
             skipped_targets.append("seg")
         if run_seg:
             fired_targets.append("seg")
@@ -1485,16 +1545,17 @@ class GatewayApp:
                 seg_payload_for_costmap = dict(seg_payload_for_costmap)
                 seg_payload_for_costmap["segments"] = [row for row in seg_result.segments if isinstance(row, dict)]
 
-        run_slam = bool(self.config.inference_enable_slam) and should_run_mode_target(
+        slam_enabled = self._target_enabled("slam")
+        run_slam = bool(slam_enabled) and should_run_mode_target(
             frame_seq=event_frame_seq,
             mode=mode,
             target="slam",
             profile=self.mode_profile,
             force_on_mode_change=force_heavy_once,
         )
-        if "slam" in forced_targets and bool(self.config.inference_enable_slam):
+        if "slam" in forced_targets and bool(slam_enabled):
             run_slam = True
-        if bool(self.config.inference_enable_slam) and not run_slam:
+        if bool(slam_enabled) and not run_slam:
             skipped_targets.append("slam")
         if run_slam:
             fired_targets.append("slam")
@@ -2841,12 +2902,13 @@ async def api_capabilities() -> dict[str, Any]:
 
     available_providers = {
         "ocr": {
-            "backend": getattr(gateway.ocr_backend, "name", "unknown"),
+            "backend": gateway._provider_backend_effective("ocr", getattr(gateway.ocr_backend, "name", "unknown")),
             "model": getattr(gateway.ocr_backend, "model_id", None),
             "endpoint": getattr(gateway.ocr_backend, "endpoint", None),
-            "enabled": bool(gateway.config.inference_enable_ocr),
+            "enabled": bool(gateway._target_enabled("ocr")),
+            "requestedBackend": gateway._provider_backend_overrides.get("ocr"),
             "reason": _provider_reason(
-                enabled=bool(gateway.config.inference_enable_ocr),
+                enabled=bool(gateway._target_enabled("ocr")),
                 backend=getattr(gateway.ocr_backend, "name", "unknown"),
                 endpoint=getattr(gateway.ocr_backend, "endpoint", None),
                 service_key="real_ocr",
@@ -2856,55 +2918,59 @@ async def api_capabilities() -> dict[str, Any]:
             "backend": getattr(gateway.risk_backend, "name", "unknown"),
             "model": getattr(gateway.risk_backend, "model_id", None),
             "endpoint": getattr(gateway.risk_backend, "endpoint", None),
-            "enabled": bool(gateway.config.inference_enable_risk),
+            "enabled": bool(gateway._target_enabled("risk")),
             "reason": _provider_reason(
-                enabled=bool(gateway.config.inference_enable_risk),
+                enabled=bool(gateway._target_enabled("risk")),
                 backend=getattr(gateway.risk_backend, "name", "unknown"),
                 endpoint=getattr(gateway.risk_backend, "endpoint", None),
             ),
         },
         "det": {
-            "backend": getattr(gateway.det_backend, "name", "unknown"),
+            "backend": gateway._provider_backend_effective("det", getattr(gateway.det_backend, "name", "unknown")),
             "model": getattr(gateway.det_backend, "model_id", None),
             "endpoint": getattr(gateway.det_backend, "endpoint", None),
-            "enabled": bool(gateway.config.inference_enable_det),
+            "enabled": bool(gateway._target_enabled("det")),
+            "requestedBackend": gateway._provider_backend_overrides.get("det"),
             "reason": _provider_reason(
-                enabled=bool(gateway.config.inference_enable_det),
+                enabled=bool(gateway._target_enabled("det")),
                 backend=getattr(gateway.det_backend, "name", "unknown"),
                 endpoint=getattr(gateway.det_backend, "endpoint", None),
                 service_key="real_det",
             ),
         },
         "depth": {
-            "backend": getattr(gateway.depth_backend, "name", "unknown"),
+            "backend": gateway._provider_backend_effective("depth", getattr(gateway.depth_backend, "name", "unknown")),
             "model": getattr(gateway.depth_backend, "model_id", None),
             "endpoint": getattr(gateway.depth_backend, "endpoint", None),
-            "enabled": bool(gateway.config.inference_enable_depth),
+            "enabled": bool(gateway._target_enabled("depth")),
+            "requestedBackend": gateway._provider_backend_overrides.get("depth"),
             "reason": _provider_reason(
-                enabled=bool(gateway.config.inference_enable_depth),
+                enabled=bool(gateway._target_enabled("depth")),
                 backend=getattr(gateway.depth_backend, "name", "unknown"),
                 endpoint=getattr(gateway.depth_backend, "endpoint", None),
                 service_key="real_depth",
             ),
         },
         "seg": {
-            "backend": getattr(gateway.seg_backend, "name", "unknown"),
+            "backend": gateway._provider_backend_effective("seg", getattr(gateway.seg_backend, "name", "unknown")),
             "model": getattr(gateway.seg_backend, "model_id", None),
             "endpoint": getattr(gateway.seg_backend, "endpoint", None),
-            "enabled": bool(gateway.config.inference_enable_seg),
+            "enabled": bool(gateway._target_enabled("seg")),
+            "requestedBackend": gateway._provider_backend_overrides.get("seg"),
             "reason": _provider_reason(
-                enabled=bool(gateway.config.inference_enable_seg),
+                enabled=bool(gateway._target_enabled("seg")),
                 backend=getattr(gateway.seg_backend, "name", "unknown"),
                 endpoint=getattr(gateway.seg_backend, "endpoint", None),
             ),
         },
         "slam": {
-            "backend": getattr(gateway.slam_backend, "name", "unknown"),
+            "backend": gateway._provider_backend_effective("slam", getattr(gateway.slam_backend, "name", "unknown")),
             "model": getattr(gateway.slam_backend, "model_id", None),
             "endpoint": getattr(gateway.slam_backend, "endpoint", None),
-            "enabled": bool(gateway.config.inference_enable_slam),
+            "enabled": bool(gateway._target_enabled("slam")),
+            "requestedBackend": gateway._provider_backend_overrides.get("slam"),
             "reason": _provider_reason(
-                enabled=bool(gateway.config.inference_enable_slam),
+                enabled=bool(gateway._target_enabled("slam")),
                 backend=getattr(gateway.slam_backend, "name", "unknown"),
                 endpoint=getattr(gateway.slam_backend, "endpoint", None),
             ),
@@ -2921,12 +2987,12 @@ async def api_capabilities() -> dict[str, Any]:
         },
     }
     enabled_flags = {
-        "ocr": bool(gateway.config.inference_enable_ocr),
-        "risk": bool(gateway.config.inference_enable_risk),
-        "det": bool(gateway.config.inference_enable_det),
-        "depth": bool(gateway.config.inference_enable_depth),
-        "seg": bool(gateway.config.inference_enable_seg),
-        "slam": bool(gateway.config.inference_enable_slam),
+        "ocr": bool(gateway._target_enabled("ocr")),
+        "risk": bool(gateway._target_enabled("risk")),
+        "det": bool(gateway._target_enabled("det")),
+        "depth": bool(gateway._target_enabled("depth")),
+        "seg": bool(gateway._target_enabled("seg")),
+        "slam": bool(gateway._target_enabled("slam")),
         "costmap": bool(gateway.config.inference_enable_costmap),
         "costmapFused": bool(gateway.config.inference_enable_costmap_fused),
         "asr": asr_enabled,
@@ -2955,6 +3021,72 @@ async def api_capabilities() -> dict[str, Any]:
             "pyslamRealtime": pyslam_enabled,
         },
     }
+
+
+class ProviderOverrideItem(BaseModel):
+    enabled: bool | None = None
+    backend: str | None = None
+
+
+class ProvidersOverrideRequest(BaseModel):
+    ocr: ProviderOverrideItem | None = None
+    risk: ProviderOverrideItem | None = None
+    det: ProviderOverrideItem | None = None
+    depth: ProviderOverrideItem | None = None
+    seg: ProviderOverrideItem | None = None
+    slam: ProviderOverrideItem | None = None
+    asr: ProviderOverrideItem | None = None
+    pyslamRealtime: ProviderOverrideItem | None = None
+
+
+@app.get("/api/providers")
+async def api_providers() -> dict[str, Any]:
+    caps = await api_capabilities()
+    return {
+        "ok": True,
+        "tsMs": _now_ms(),
+        "providers": caps.get("available_providers", {}),
+        "enabledFlags": caps.get("enabled_flags", {}),
+        "runtimeOverrides": {
+            "enabled": dict(gateway._runtime_target_enabled_overrides),  # noqa: SLF001
+            "backend": dict(gateway._provider_backend_overrides),  # noqa: SLF001
+            "updatedTsMs": gateway._providers_override_updated_ts_ms,  # noqa: SLF001
+        },
+    }
+
+
+@app.post("/api/providers/overrides")
+async def api_providers_overrides(request: ProvidersOverrideRequest) -> dict[str, Any]:
+    updated: dict[str, Any] = {}
+
+    def _apply(name: str, item: ProviderOverrideItem | None) -> None:
+        if item is None:
+            return
+        changes: dict[str, Any] = {}
+        if item.enabled is not None and name in gateway._runtime_target_enabled_overrides:  # noqa: SLF001
+            gateway._runtime_target_enabled_overrides[name] = bool(item.enabled)  # noqa: SLF001
+            changes["enabled"] = gateway._runtime_target_enabled_overrides[name]  # noqa: SLF001
+        if item.backend is not None:
+            backend_text = str(item.backend or "").strip().lower() or None
+            if name in gateway._provider_backend_overrides:  # noqa: SLF001
+                gateway._provider_backend_overrides[name] = backend_text  # noqa: SLF001
+                changes["backend"] = backend_text
+        if changes:
+            updated[name] = changes
+
+    _apply("ocr", request.ocr)
+    _apply("risk", request.risk)
+    _apply("det", request.det)
+    _apply("depth", request.depth)
+    _apply("seg", request.seg)
+    _apply("slam", request.slam)
+    _apply("asr", request.asr)
+    _apply("pyslamRealtime", request.pyslamRealtime)
+
+    gateway._providers_override_updated_ts_ms = _now_ms()  # noqa: SLF001
+    providers = await api_providers()
+    providers["updated"] = updated
+    return providers
 
 
 @app.get("/api/ui/state")
@@ -3073,7 +3205,15 @@ def _build_desktop_console_html() -> str:
           `deviceId=${deviceId}`
         ].join('\\n');
         document.getElementById('runtime').textContent = runtime;
-        document.getElementById('providers').textContent = JSON.stringify(prov, null, 2);
+        let providerState = {providers: prov};
+        try{
+          const pr = await fetch('/api/providers',{cache:'no-store'});
+          if(pr.ok){
+            const pb = await pr.json();
+            providerState = {providers: prov, runtimeOverrides: pb.runtimeOverrides || {}, enabledFlags: pb.enabledFlags || {}};
+          }
+        }catch(_ignored){}
+        document.getElementById('providers').textContent = JSON.stringify(providerState, null, 2);
         document.getElementById('events').textContent = JSON.stringify(latest.eventsTail || [], null, 2);
         document.getElementById('actions').textContent = lastAction;
 

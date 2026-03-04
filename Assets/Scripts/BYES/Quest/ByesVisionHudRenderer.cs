@@ -12,6 +12,7 @@ namespace BYES.Quest
     public sealed class ByesVisionHudRenderer : MonoBehaviour
     {
         private GatewayClient _gatewayClient;
+        private RawImage _detImage;
         private RawImage _segImage;
         private RawImage _depthImage;
         private List<Image> _boxOutlines;
@@ -21,6 +22,7 @@ namespace BYES.Quest
         private bool _showDet = true;
         private bool _showSeg = true;
         private bool _showDepth = true;
+        private float _detAlpha = 0.45f;
         private float _segAlpha = 0.35f;
         private float _depthAlpha = 0.30f;
         private bool _bound;
@@ -35,6 +37,7 @@ namespace BYES.Quest
         public long LastDetTsMs { get; private set; } = -1;
 
         public void Initialize(
+            RawImage detImage,
             RawImage segImage,
             RawImage depthImage,
             List<Image> boxOutlines,
@@ -42,6 +45,7 @@ namespace BYES.Quest
             float overlayWidth = 960f,
             float overlayHeight = 540f)
         {
+            _detImage = detImage;
             _segImage = segImage;
             _depthImage = depthImage;
             _boxOutlines = boxOutlines ?? new List<Image>();
@@ -74,11 +78,12 @@ namespace BYES.Quest
             _bound = false;
         }
 
-        public void SetVisualState(bool showDet, bool showSeg, bool showDepth, float segAlpha, float depthAlpha)
+        public void SetVisualState(bool showDet, bool showSeg, bool showDepth, float detAlpha, float segAlpha, float depthAlpha)
         {
             _showDet = showDet;
             _showSeg = showSeg;
             _showDepth = showDepth;
+            _detAlpha = Mathf.Clamp01(detAlpha);
             _segAlpha = Mathf.Clamp01(segAlpha);
             _depthAlpha = Mathf.Clamp01(depthAlpha);
             ApplyVisualState();
@@ -129,13 +134,16 @@ namespace BYES.Quest
 
             switch (name)
             {
+                case "vis.overlay.v1":
+                    HandleOverlayEvent(payload);
+                    break;
                 case "seg.mask.v1":
                     if (_showSeg)
                     {
                         var segAssetId = (payload.Value<string>("assetId") ?? string.Empty).Trim();
                         if (!string.IsNullOrWhiteSpace(segAssetId))
                         {
-                            StartCoroutine(DownloadAsset(segAssetId, applyToSeg: true));
+                            StartCoroutine(DownloadAsset(segAssetId, applyMode: "seg"));
                         }
                         LastSegTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                     }
@@ -146,7 +154,7 @@ namespace BYES.Quest
                         var depthAssetId = (payload.Value<string>("assetId") ?? string.Empty).Trim();
                         if (!string.IsNullOrWhiteSpace(depthAssetId))
                         {
-                            StartCoroutine(DownloadAsset(depthAssetId, applyToSeg: false));
+                            StartCoroutine(DownloadAsset(depthAssetId, applyMode: "depth"));
                         }
                         LastDepthTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                     }
@@ -168,7 +176,65 @@ namespace BYES.Quest
             }
         }
 
-        private IEnumerator DownloadAsset(string assetId, bool applyToSeg)
+        private void HandleOverlayEvent(JObject payload)
+        {
+            if (payload == null)
+            {
+                return;
+            }
+            var kind = (payload.Value<string>("kind") ?? string.Empty).Trim().ToLowerInvariant();
+            var assetId = (payload.Value<string>("assetId") ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(assetId))
+            {
+                return;
+            }
+
+            if (kind == "det")
+            {
+                if (_showDet)
+                {
+                    StartCoroutine(DownloadAsset(assetId, applyMode: "det"));
+                }
+                LastDetTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                return;
+            }
+
+            if (kind == "seg")
+            {
+                if (_showSeg)
+                {
+                    StartCoroutine(DownloadAsset(assetId, applyMode: "seg"));
+                }
+                LastSegTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                return;
+            }
+
+            if (kind == "depth")
+            {
+                if (_showDepth)
+                {
+                    StartCoroutine(DownloadAsset(assetId, applyMode: "depth"));
+                }
+                LastDepthTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                return;
+            }
+
+            if (kind == "combo")
+            {
+                if (_showDet)
+                {
+                    StartCoroutine(DownloadAsset(assetId, applyMode: "det"));
+                }
+                if (_showSeg)
+                {
+                    StartCoroutine(DownloadAsset(assetId, applyMode: "seg"));
+                }
+                LastDetTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                LastSegTsMs = LastDetTsMs;
+            }
+        }
+
+        private IEnumerator DownloadAsset(string assetId, string applyMode)
         {
             if (_gatewayClient == null)
             {
@@ -199,7 +265,14 @@ namespace BYES.Quest
             }
 
             LastAssetBytes = request.downloadHandler?.data != null ? request.downloadHandler.data.Length : 0;
-            if (applyToSeg)
+            if (string.Equals(applyMode, "det", StringComparison.OrdinalIgnoreCase))
+            {
+                if (_detImage != null)
+                {
+                    _detImage.texture = texture;
+                }
+            }
+            else if (string.Equals(applyMode, "seg", StringComparison.OrdinalIgnoreCase))
             {
                 if (_segImage != null)
                 {
@@ -320,6 +393,11 @@ namespace BYES.Quest
 
         private void ApplyVisualState()
         {
+            if (_detImage != null)
+            {
+                _detImage.enabled = _showDet;
+                _detImage.color = new Color(1f, 1f, 1f, _detAlpha);
+            }
             if (_segImage != null)
             {
                 _segImage.enabled = _showSeg;

@@ -90,6 +90,13 @@ def _select_risk_provider() -> RiskProvider:
 
 def _select_depth_provider() -> RiskDepthProvider:
     name = str(os.getenv("BYES_SERVICE_DEPTH_PROVIDER", "none")).strip().lower()
+    if name == "da3":
+        # DA3 often runs as a dedicated service for /depth; for risk-side local heuristics,
+        # try ONNX depth if configured, otherwise keep service boot-safe.
+        try:
+            return OnnxDepthProvider()
+        except Exception:
+            return NoneDepthProvider()
     if name == "synth":
         return SynthDepthProvider()
     if name == "onnx":
@@ -115,7 +122,7 @@ def _select_det_provider() -> DetProvider:
 
 def _select_tool_depth_provider() -> DepthProvider:
     name = str(os.getenv("BYES_SERVICE_DEPTH_PROVIDER", "mock")).strip().lower()
-    if name not in {"mock", "http"}:
+    if name not in {"mock", "http", "da3", "onnx", "none"}:
         name = str(os.getenv("BYES_SERVICE_DEPTH_TOOL_PROVIDER", "mock")).strip().lower()
     return create_depth_provider(name=name or "mock")
 

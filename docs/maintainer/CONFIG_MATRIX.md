@@ -55,7 +55,7 @@
 | `BYES_SERVICE_OCR_PROVIDER` | inference_service OCR provider selector (`mock|reference|http|tesseract|paddleocr`) | `mock` | inference_service OCR router | `Gateway/services/inference_service/app.py` (`_select_ocr_provider`) |
 | `BYES_SERVICE_OCR_LANG` | PaddleOCR language code (`ch|en|...`) | `ch` | inference_service PaddleOCR provider | `Gateway/services/inference_service/providers/paddleocr_ocr.py` |
 | `BYES_SERVICE_OCR_USE_GPU` | PaddleOCR GPU toggle | `0` | inference_service PaddleOCR provider | `Gateway/services/inference_service/providers/paddleocr_ocr.py` |
-| `BYES_SERVICE_DET_PROVIDER` | inference_service DET provider selector (`mock|ultralytics`) | `mock` | inference_service DET router | `Gateway/services/inference_service/app.py` (`_select_det_provider`) |
+| `BYES_SERVICE_DET_PROVIDER` | inference_service DET provider selector (`mock|ultralytics|yolo26`) | `mock` | inference_service DET router | `Gateway/services/inference_service/app.py` (`_select_det_provider`) |
 | `BYES_SERVICE_DET_MODEL_PATH` | Ultralytics model local path (optional alias; preferred when using local weights) | empty | inference_service Ultralytics provider | `Gateway/services/inference_service/providers/ultralytics_det.py` |
 | `BYES_SERVICE_DET_MODEL` | Ultralytics model id/path | `yolo26` | inference_service Ultralytics provider | `Gateway/services/inference_service/providers/ultralytics_det.py` |
 | `BYES_SERVICE_DET_CONF` | Ultralytics confidence threshold | `0.25` | inference_service Ultralytics provider | `Gateway/services/inference_service/providers/ultralytics_det.py` |
@@ -63,7 +63,8 @@
 | `BYES_SERVICE_DET_OPENVOCAB` | Enable open-vocabulary DET prompt mode (used by Find actions) | `0` | inference_service Ultralytics provider | `Gateway/services/inference_service/providers/ultralytics_det.py` |
 | `BYES_SERVICE_DET_PROMPT_DEFAULT` | Default DET prompt labels when request prompt is empty | empty | inference_service Ultralytics provider | `Gateway/services/inference_service/providers/ultralytics_det.py` |
 | `BYES_SERVICE_DET_INCLUDE_MASK` | Include optional DET polygon mask in normalized result | `1` | inference_service Ultralytics provider | `Gateway/services/inference_service/providers/ultralytics_det.py`; `Gateway/services/inference_service/app.py` (`_normalize_det_mask`) |
-| `BYES_SERVICE_DEPTH_PROVIDER` | inference_service depth provider selector (`none|synth|onnx|midas|http`) | `none` | inference_service depth router | `Gateway/services/inference_service/app.py` (`_select_depth_provider`) |
+| `BYES_SERVICE_SEG_PROVIDER` | inference_service SEG provider selector (`mock|http|sam3`) | `mock` | inference_service SEG router | `Gateway/services/inference_service/app.py` (`_select_seg_provider`) |
+| `BYES_SERVICE_DEPTH_PROVIDER` | inference_service depth provider selector (`none|synth|onnx|midas|http|da3`) | `none` | inference_service depth router | `Gateway/services/inference_service/app.py` (`_select_depth_provider`) |
 | `BYES_SERVICE_DEPTH_ONNX_PATH` | ONNX depth model file path (required when depth provider is `onnx`) | empty | inference_service ONNX depth provider | `Gateway/services/inference_service/providers/onnx_depth.py` |
 | `BYES_ASSIST_CACHE_TTL_MS` | Gateway frame cache TTL for `/api/assist` reuse window | `2000` | Gateway frame cache init | `Gateway/main.py` (`GatewayApp.__init__`), `Gateway/byes/frame_cache.py` |
 | `BYES_ASSIST_CACHE_MAX_ENTRIES` | Gateway frame cache max device entries (LRU) | `16` | Gateway frame cache init | `Gateway/main.py` (`GatewayApp.__init__`), `Gateway/byes/frame_cache.py` |

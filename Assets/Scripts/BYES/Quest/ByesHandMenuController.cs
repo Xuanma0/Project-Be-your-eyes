@@ -82,6 +82,7 @@ namespace BYES.Quest
         private Toggle _ocrVerboseToggle;
         private Toggle _autoVoiceCommandToggle;
         private Slider _uiScaleSlider;
+        private Slider _detAlphaSlider;
         private Slider _segAlphaSlider;
         private Slider _depthAlphaSlider;
         private Slider _passthroughOpacitySlider;
@@ -422,12 +423,17 @@ namespace BYES.Quest
                 SetFeedback("Show TARGET " + (value ? "ON" : "OFF"));
             });
 
-            _segAlphaSlider = CreateSlider(page, new Vector2(0f, -170f), 0f, 1f, value =>
+            _detAlphaSlider = CreateSlider(page, new Vector2(0f, -132f), 0f, 1f, value =>
+            {
+                _visionHud?.SetDetAlpha(value);
+                SetFeedback($"DET alpha {value:0.00}");
+            });
+            _segAlphaSlider = CreateSlider(page, new Vector2(0f, -204f), 0f, 1f, value =>
             {
                 _visionHud?.SetSegAlpha(value);
                 SetFeedback($"SEG alpha {value:0.00}");
             });
-            _depthAlphaSlider = CreateSlider(page, new Vector2(0f, -246f), 0f, 1f, value =>
+            _depthAlphaSlider = CreateSlider(page, new Vector2(0f, -276f), 0f, 1f, value =>
             {
                 _visionHud?.SetDepthAlpha(value);
                 SetFeedback($"DEPTH alpha {value:0.00}");
@@ -450,12 +456,42 @@ namespace BYES.Quest
                 _passthroughController?.SetOpacity(value);
                 SetFeedback($"Passthrough opacity {value:0.00}");
             });
-            CreateButton(page, "Reset HUD", new Vector2(-140f, -548f), () =>
+            CreateToggle(page, "DET Service Enabled", new Vector2(0f, -530f), value =>
+            {
+                _panel?.TriggerSetProviderEnabledFromUi("det", value);
+                SetFeedback("DET service " + (value ? "ON" : "OFF"));
+            });
+            CreateToggle(page, "SEG Service Enabled", new Vector2(0f, -580f), value =>
+            {
+                _panel?.TriggerSetProviderEnabledFromUi("seg", value);
+                SetFeedback("SEG service " + (value ? "ON" : "OFF"));
+            });
+            CreateToggle(page, "DEPTH Service Enabled", new Vector2(0f, -630f), value =>
+            {
+                _panel?.TriggerSetProviderEnabledFromUi("depth", value);
+                SetFeedback("DEPTH service " + (value ? "ON" : "OFF"));
+            });
+            CreateButton(page, "DET->YOLO26", new Vector2(-260f, -694f), () =>
+            {
+                _panel?.TriggerSetProviderBackendFromUi("det", "yolo26");
+                SetFeedback("DET backend -> yolo26");
+            });
+            CreateButton(page, "SEG->SAM3", new Vector2(0f, -694f), () =>
+            {
+                _panel?.TriggerSetProviderBackendFromUi("seg", "sam3");
+                SetFeedback("SEG backend -> sam3");
+            });
+            CreateButton(page, "DEPTH->DA3", new Vector2(260f, -694f), () =>
+            {
+                _panel?.TriggerSetProviderBackendFromUi("depth", "da3");
+                SetFeedback("DEPTH backend -> da3");
+            });
+            CreateButton(page, "Reset HUD", new Vector2(-140f, -772f), () =>
             {
                 _visionHud?.ResetHud();
                 SetFeedback("HUD reset");
             });
-            CreateButton(page, "Back", new Vector2(140f, -548f), () => { SetPage("home"); SetFeedback("Home"); });
+            CreateButton(page, "Back", new Vector2(140f, -772f), () => { SetPage("home"); SetFeedback("Home"); });
         }
 
         private void BuildGuidancePage(Transform page)
@@ -895,7 +931,8 @@ namespace BYES.Quest
             _sb.Append("SEG age=").Append(_visionHud != null ? _visionHud.LastSegAgeMs.ToString() : "-").Append("ms  ");
             _sb.Append("DEPTH age=").Append(_visionHud != null ? _visionHud.LastDepthAgeMs.ToString() : "-").Append("ms  ");
             _sb.Append("DET age=").Append(_visionHud != null ? _visionHud.LastDetAgeMs.ToString() : "-").Append("ms\n");
-            _sb.Append("Decode=").Append(_visionHud != null ? _visionHud.LastDecodeMs.ToString("0.0") : "-").Append("ms  Bytes=").Append(_visionHud != null ? _visionHud.LastAssetBytes : 0);
+            _sb.Append("Decode=").Append(_visionHud != null ? _visionHud.LastDecodeMs.ToString("0.0") : "-").Append("ms  Bytes=").Append(_visionHud != null ? _visionHud.LastAssetBytes : 0).Append('\n');
+            _sb.Append("Providers: ").Append(_panel != null ? _panel.GetProviderSummaryText() : "-");
             SetText(_visionText, _sb.ToString());
 
             _sb.Clear();
@@ -950,6 +987,10 @@ namespace BYES.Quest
             if (_depthAlphaSlider != null && _visionHud != null)
             {
                 _depthAlphaSlider.SetValueWithoutNotify(_visionHud.DepthAlpha);
+            }
+            if (_detAlphaSlider != null && _visionHud != null)
+            {
+                _detAlphaSlider.SetValueWithoutNotify(_visionHud.DetAlpha);
             }
             if (_passthroughOpacitySlider != null && _passthroughController != null)
             {
@@ -1040,6 +1081,10 @@ namespace BYES.Quest
             if (_depthAlphaSlider != null && _visionHud != null)
             {
                 _depthAlphaSlider.SetValueWithoutNotify(_visionHud.DepthAlpha);
+            }
+            if (_detAlphaSlider != null && _visionHud != null)
+            {
+                _detAlphaSlider.SetValueWithoutNotify(_visionHud.DetAlpha);
             }
             if (_passthroughOpacitySlider != null && _passthroughController != null)
             {

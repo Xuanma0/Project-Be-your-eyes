@@ -23,6 +23,9 @@ from services.inference_service.providers.reference_ocr import ReferenceOcrProvi
 from services.inference_service.providers.reference_risk import ReferenceRiskProvider
 from services.inference_service.providers.tesseract_ocr import TesseractOcrProvider
 from services.inference_service.providers.ultralytics_det import UltralyticsDetProvider
+from services.inference_service.providers.yolo26_det import Yolo26DetProvider
+from services.inference_service.providers.sam3_seg import Sam3SegProvider
+from services.inference_service.providers.da3_depth import Da3DepthProvider
 
 
 def create_ocr_provider(name: str | None = None) -> OCRProvider:
@@ -44,6 +47,8 @@ def create_ocr_provider(name: str | None = None) -> OCRProvider:
 def create_seg_provider(name: str | None = None) -> SegProvider:
     provider = str(name or os.getenv("BYES_SERVICE_SEG_PROVIDER", "mock")).strip().lower()
     model_id = str(os.getenv("BYES_SERVICE_SEG_MODEL_ID", "")).strip() or None
+    if provider == "sam3":
+        return Sam3SegProvider()
     if provider == "http":
         endpoint = str(os.getenv("BYES_SERVICE_SEG_ENDPOINT", "")).strip()
         timeout_ms = int(str(os.getenv("BYES_SERVICE_SEG_TIMEOUT_MS", "1200")).strip() or "1200")
@@ -62,6 +67,8 @@ def create_seg_provider(name: str | None = None) -> SegProvider:
 def create_det_provider(name: str | None = None) -> DetProvider:
     provider = str(name or os.getenv("BYES_SERVICE_DET_PROVIDER", "mock")).strip().lower()
     model_id = str(os.getenv("BYES_SERVICE_DET_MODEL_ID", "")).strip() or None
+    if provider == "yolo26":
+        return Yolo26DetProvider()
     if provider == "ultralytics":
         return UltralyticsDetProvider()
     return MockDetProvider(model_id=model_id)
@@ -69,9 +76,15 @@ def create_det_provider(name: str | None = None) -> DetProvider:
 
 def create_depth_provider(name: str | None = None) -> DepthProvider:
     provider = str(name or os.getenv("BYES_SERVICE_DEPTH_PROVIDER", "mock")).strip().lower()
-    if provider not in {"mock", "http"}:
+    if provider == "da3":
+        return Da3DepthProvider()
+    if provider == "onnx":
+        return Da3DepthProvider()
+    if provider not in {"mock", "http", "onnx", "none"}:
         provider = str(os.getenv("BYES_SERVICE_DEPTH_TOOL_PROVIDER", "mock")).strip().lower() or "mock"
     model_id = str(os.getenv("BYES_SERVICE_DEPTH_MODEL_ID", "")).strip() or None
+    if provider == "none":
+        return MockDepthProvider(model_id=model_id or "none-depth")
     if provider == "http":
         endpoint = str(os.getenv("BYES_SERVICE_DEPTH_ENDPOINT", "")).strip()
         timeout_ms = int(str(os.getenv("BYES_SERVICE_DEPTH_TIMEOUT_MS", "1200")).strip() or "1200")
@@ -119,14 +132,17 @@ __all__ = [
     "create_seg_provider",
     "MockDetProvider",
     "UltralyticsDetProvider",
+    "Yolo26DetProvider",
     "create_det_provider",
     "MockDepthProvider",
     "HttpDepthProvider",
+    "Da3DepthProvider",
     "create_depth_provider",
     "NoneDepthProvider",
     "SynthDepthProvider",
     "MidasOnnxDepthProvider",
     "OnnxDepthProvider",
+    "Sam3SegProvider",
     "MockSlamProvider",
     "HttpSlamProvider",
     "create_slam_provider",
