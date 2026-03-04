@@ -6,6 +6,8 @@ for %%I in ("%SCRIPT_DIR%..\..") do set "REPO_ROOT=%%~fI"
 set "GATEWAY_PORT=18000"
 set "INFERENCE_PORT=19120"
 set "PYSLAM_PORT=19300"
+set "SAM3_PORT=19271"
+set "DA3_PORT=19281"
 
 if defined ADB_EXE (
   set "ADB_BIN=%ADB_EXE%"
@@ -103,12 +105,14 @@ if /I "%BYES_PROVIDER_DET%"=="yolo26" (
 
 if /I "%BYES_PROVIDER_SEG%"=="sam3" (
   set "BYES_SERVICE_SEG_PROVIDER=sam3"
+  if not defined BYES_SERVICE_SEG_ENDPOINT set "BYES_SERVICE_SEG_ENDPOINT=http://127.0.0.1:%SAM3_PORT%/seg"
 ) else (
   set "BYES_SERVICE_SEG_PROVIDER=mock"
 )
 
 if /I "%BYES_PROVIDER_DEPTH%"=="da3" (
   set "BYES_SERVICE_DEPTH_PROVIDER=da3"
+  if not defined BYES_SERVICE_DEPTH_ENDPOINT set "BYES_SERVICE_DEPTH_ENDPOINT=http://127.0.0.1:%DA3_PORT%/depth"
 ) else if /I "%BYES_PROVIDER_DEPTH%"=="onnx" (
   set "BYES_SERVICE_DEPTH_PROVIDER=onnx"
 ) else (
@@ -168,6 +172,8 @@ echo   OCR provider=%BYES_SERVICE_OCR_PROVIDER% (paddleocr=%HAS_PADDLEOCR%)
 echo   DET provider=%BYES_SERVICE_DET_PROVIDER% (ultralytics=%HAS_ULTRALYTICS%)
 echo   SEG provider=%BYES_SERVICE_SEG_PROVIDER% (sam3_ckpt=%BYES_SERVICE_SAM3_CKPT%)
 echo   DEPTH provider=%BYES_SERVICE_DEPTH_PROVIDER% (onnxrt=%HAS_ONNXRT% depth_model=%BYES_SERVICE_DEPTH_ONNX_PATH%)
+echo   SEG endpoint=%BYES_SERVICE_SEG_ENDPOINT%
+echo   DEPTH endpoint=%BYES_SERVICE_DEPTH_ENDPOINT%
 echo   ASR backend=%BYES_ASR_BACKEND%
 echo   pySLAM realtime=%BYES_ENABLE_PYSLAM_REALTIME% (root=%BYES_PYSLAM_ROOT%)
 
@@ -185,6 +191,36 @@ if "%BYES_ENABLE_PYSLAM_REALTIME%"=="1" (
   )
   echo [quest3_usb_realstack_v5_05] starting optional pyslam_service on %PYSLAM_PORT%...
   start "BYES-pySLAM-v5.05" cmd /c "cd /d \"%REPO_ROOT%\Gateway\" && python -m uvicorn services.pyslam_service.app:app --host 127.0.0.1 --port %PYSLAM_PORT%"
+)
+
+if /I "%BYES_SERVICE_SEG_PROVIDER%"=="sam3" (
+  set "PORT_PID="
+  for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%SAM3_PORT% .*LISTENING"') do (
+    set "PORT_PID=%%P"
+    goto :sam3_port_done
+  )
+  :sam3_port_done
+  if not defined PORT_PID (
+    echo [quest3_usb_realstack_v5_05] starting optional sam3_seg_service on %SAM3_PORT%...
+    start "BYES-SAM3-v5.05" cmd /c "cd /d \"%REPO_ROOT%\Gateway\" && python -m uvicorn services.sam3_seg_service.app:app --host 127.0.0.1 --port %SAM3_PORT%"
+  ) else (
+    echo [quest3_usb_realstack_v5_05] sam3 service already listening on %SAM3_PORT% (PID=%PORT_PID%).
+  )
+)
+
+if /I "%BYES_SERVICE_DEPTH_PROVIDER%"=="da3" (
+  set "PORT_PID="
+  for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%DA3_PORT% .*LISTENING"') do (
+    set "PORT_PID=%%P"
+    goto :da3_port_done
+  )
+  :da3_port_done
+  if not defined PORT_PID (
+    echo [quest3_usb_realstack_v5_05] starting optional da3_depth_service on %DA3_PORT%...
+    start "BYES-DA3-v5.05" cmd /c "cd /d \"%REPO_ROOT%\Gateway\" && python -m uvicorn services.da3_depth_service.app:app --host 127.0.0.1 --port %DA3_PORT%"
+  ) else (
+    echo [quest3_usb_realstack_v5_05] da3 service already listening on %DA3_PORT% (PID=%PORT_PID%).
+  )
 )
 
 echo [quest3_usb_realstack_v5_05] opening desktop console at http://127.0.0.1:%GATEWAY_PORT%/ui

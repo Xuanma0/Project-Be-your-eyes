@@ -46,6 +46,9 @@
 | `BYES_ASR_MOCK_TEXT` | Mock transcript text returned when backend=`mock` | `read this` | Gateway ASR backend | `Gateway/byes/asr.py:28` |
 | `BYES_ASR_DEVICE` | faster-whisper device selector (`cpu|cuda`) | `cpu` | Gateway ASR backend | `Gateway/byes/asr.py:59` |
 | `BYES_ASR_COMPUTE_TYPE` | faster-whisper compute type (`int8|float16|...`) | `int8` | Gateway ASR backend | `Gateway/byes/asr.py:60` |
+| `BYES_WIT_APP_ID` | Optional Meta Voice/Wit app id for Quest-side ASR chain | empty | Quest Voice SDK configuration | `.env.example` |
+| `BYES_WIT_CLIENT_TOKEN` | Optional Meta Voice/Wit client token for Quest-side ASR chain | empty | Quest Voice SDK configuration | `.env.example` |
+| `BYES_VOICE_PROVIDER` | Planned Quest voice routing policy (`auto|meta|gateway`) env hook | `auto` | Quest launcher/runtime env profile | `.env.example` |
 | `BYES_ENABLE_PYSLAM_REALTIME` | Capability flag for realtime pySLAM bridge path (reported by `/api/capabilities`) | `0` | Gateway capabilities payload | `Gateway/main.py:2752` |
 | `BYES_EMIT_SLAM_TRAJECTORY_V1` | Emit low-frequency `slam.trajectory.v1` WS events from accumulated pose points | `1` | Gateway slam trajectory emitter | `Gateway/main.py` (`GatewayApp._maybe_emit_slam_trajectory_v1`) |
 | `BYES_SLAM_TRAJECTORY_EMIT_INTERVAL_MS` | Min interval between `slam.trajectory.v1` emissions per device | `1000` | Gateway slam trajectory emitter | `Gateway/main.py` (`GatewayApp.__init__`) |

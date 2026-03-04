@@ -185,15 +185,25 @@ def test_seg_http_reference_mask_service_e2e(tmp_path: Path) -> None:
                 )
                 assert response.status_code == 200, response.text
 
-        events = gateway.drain_inference_events()
-        seg_rows = [
-            row
-            for row in events
-            if isinstance(row, dict)
-            and str(row.get("name", "")).strip() == "seg.segment"
-            and str(row.get("phase", "")).strip() == "result"
-            and str(row.get("status", "")).strip() == "ok"
-        ]
+        deadline = time.time() + 5.0
+        events: list[dict[str, Any]] = []
+        seg_rows: list[dict[str, Any]] = []
+        while time.time() < deadline and len(seg_rows) < 2:
+            drained = gateway.drain_inference_events()
+            for item in drained:
+                if isinstance(item, dict):
+                    events.append(item)
+            seg_rows = [
+                row
+                for row in events
+                if isinstance(row, dict)
+                and str(row.get("name", "")).strip() == "seg.segment"
+                and str(row.get("phase", "")).strip() == "result"
+                and str(row.get("status", "")).strip() == "ok"
+            ]
+            if len(seg_rows) >= 2:
+                break
+            time.sleep(0.1)
         assert len(seg_rows) >= 2
 
         mask_seen = False

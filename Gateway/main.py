@@ -3288,6 +3288,75 @@ class ProvidersOverrideRequest(BaseModel):
     pyslamRealtime: ProviderOverrideItem | None = None
 
 
+def _resolve_inference_control_url() -> str | None:
+    candidate_urls = [
+        getattr(gateway.config, "inference_det_http_url", None),
+        getattr(gateway.config, "inference_seg_http_url", None),
+        getattr(gateway.config, "inference_depth_http_url", None),
+        getattr(gateway.config, "inference_ocr_http_url", None),
+        getattr(gateway.config, "inference_slam_http_url", None),
+        str(os.getenv("BYES_DET_HTTP_URL", "")).strip() or None,
+        str(os.getenv("BYES_SEG_HTTP_URL", "")).strip() or None,
+        str(os.getenv("BYES_DEPTH_HTTP_URL", "")).strip() or None,
+        str(os.getenv("BYES_OCR_HTTP_URL", "")).strip() or None,
+        str(os.getenv("BYES_SLAM_HTTP_URL", "")).strip() or None,
+    ]
+    for raw in candidate_urls:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        parsed = urlparse(text)
+        if not parsed.scheme or not parsed.netloc:
+            continue
+        return urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
+    return None
+
+
+async def _sync_provider_overrides_to_inference_service(updated: dict[str, Any]) -> dict[str, Any]:
+    # Inference service only understands backend overrides, not enable flags.
+    payload: dict[str, Any] = {}
+    backend_alias: dict[str, dict[str, str]] = {
+        "slam": {"pyslam_http": "http"},
+        "depth": {"none": "none", "da3": "da3", "onnx": "onnx", "mock": "mock", "http": "http"},
+    }
+    for target in ("ocr", "risk", "det", "depth", "seg", "slam"):
+        row = updated.get(target)
+        if not isinstance(row, dict):
+            continue
+        backend_raw = row.get("backend")
+        backend = str(backend_raw or "").strip().lower()
+        if not backend:
+            continue
+        mapped = backend_alias.get(target, {}).get(backend, backend)
+        payload[target] = {"backend": mapped}
+
+    if not payload:
+        return {"ok": True, "skipped": True, "reason": "no_backend_updates"}
+
+    base_url = _resolve_inference_control_url()
+    if not base_url:
+        return {"ok": False, "error": "inference_control_url_unresolved"}
+
+    control_url = f"{base_url.rstrip('/')}/providers/overrides"
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.post(control_url, json=payload)
+        body: Any = None
+        with contextlib.suppress(Exception):
+            body = response.json()
+        if response.status_code >= 400:
+            return {
+                "ok": False,
+                "status": int(response.status_code),
+                "url": control_url,
+                "error": f"http_{response.status_code}",
+                "body": body,
+            }
+        return {"ok": True, "status": int(response.status_code), "url": control_url, "body": body}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "url": control_url, "error": exc.__class__.__name__}
+
+
 @app.get("/api/providers")
 async def api_providers() -> dict[str, Any]:
     caps = await api_capabilities()
@@ -3334,8 +3403,10 @@ async def api_providers_overrides(request: ProvidersOverrideRequest) -> dict[str
     _apply("pyslamRealtime", request.pyslamRealtime)
 
     gateway._providers_override_updated_ts_ms = _now_ms()  # noqa: SLF001
+    downstream = await _sync_provider_overrides_to_inference_service(updated)
     providers = await api_providers()
     providers["updated"] = updated
+    providers["downstreamSync"] = downstream
     return providers
 
 
@@ -3464,10 +3535,18 @@ def _build_desktop_console_html() -> str:
         const latest = (s.latest || {});
         const frameMeta = latest.frameMeta || {};
         deviceId = frameMeta.deviceId || deviceId || 'default';
+        const frameSource = frameMeta.frameSource || '-';
+        const frameSourceMode = frameMeta.frameSourceMode || '-';
+        const frameSourceStatus = frameMeta.frameSourceStatus || frameMeta.pcaStatus || '-';
+        const pcaAvailable = (frameMeta.pcaAvailable === true) ? 'yes' : 'no';
+        const pcaReason = frameMeta.pcaReason || '-';
         const runtime = [
           `version=${s.version} git=${s.gitSha || '-'}`,
           `profile=${s.profile || '-'}`,
           `frameAsset=${latest.frameAssetId || '-'} size=${frameMeta.sizeBytes || '-'}`,
+          `frameSource=${frameSource} mode=${frameSourceMode}`,
+          `frameStatus=${frameSourceStatus}`,
+          `pcaAvailable=${pcaAvailable} reason=${pcaReason}`,
           `eventCount=${latest.eventCount || 0}`,
           `deviceId=${deviceId}`
         ].join('\\n');

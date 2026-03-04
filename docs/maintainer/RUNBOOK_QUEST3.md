@@ -272,6 +272,9 @@ tools\quest3\quest3_usb_realstack_v5_05.cmd
 ```
 2. Browser should auto-open:
    - `http://127.0.0.1:18000/ui`
+3. v5.05 launcher now also auto-starts optional service processes when selected:
+   - `services.sam3_seg_service.app` on `127.0.0.1:19271` (when `BYES_PROVIDER_SEG=sam3`)
+   - `services.da3_depth_service.app` on `127.0.0.1:19281` (when `BYES_PROVIDER_DEPTH=da3`)
 3. Verify desktop console shows:
    - provider status (`real/mock/off`)
    - latest frame preview
@@ -303,6 +306,13 @@ Quest:
 8. Record checks:
    - `Start Record` -> operate 5-10s -> `Stop Record`
    - terminal prints `recordingPath`
+
+Common PC-side misconfiguration guard:
+- If inference returns `503` with `seg_provider_loopback_endpoint` or `depth_provider_loopback_endpoint`,
+  it means SEG/DEPTH provider endpoint incorrectly points back to inference_service itself.
+  Use external endpoints:
+  - `BYES_SERVICE_SEG_ENDPOINT=http://127.0.0.1:19271/seg`
+  - `BYES_SERVICE_DEPTH_ENDPOINT=http://127.0.0.1:19281/depth`
 
 Evidence checklist:
 - Quest screenshot containing:
