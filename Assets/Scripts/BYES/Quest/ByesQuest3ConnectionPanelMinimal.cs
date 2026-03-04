@@ -2518,6 +2518,12 @@ namespace BYES.Quest
                 var backend = (row.Value<string>("backend") ?? "unknown").Trim().ToLowerInvariant();
                 var enabled = row.Value<bool?>("enabled") == true;
                 var reason = (row.Value<string>("reason") ?? string.Empty).Trim().ToLowerInvariant();
+                var model = (row.Value<string>("model") ?? string.Empty).Trim();
+                var runtime = row["runtime"] as JObject;
+                var device = runtime?.Value<string>("device") ?? row.Value<string>("device") ?? string.Empty;
+                var inferMs = runtime?.Value<double?>("inferMs") ?? row.Value<double?>("inferMs");
+                var fps = runtime?.Value<double?>("fps") ?? row.Value<double?>("fps");
+                var ageMs = runtime?.Value<long?>("ageMs") ?? row.Value<long?>("ageMs");
 
                 var mode = "real";
                 if (!enabled)
@@ -2538,7 +2544,16 @@ namespace BYES.Quest
                 }
 
                 var compactBackend = backend.Length > 14 ? backend.Substring(0, 14) : backend;
-                return $"{key}={mode}/{compactBackend}";
+                var compactModel = string.IsNullOrWhiteSpace(model)
+                    ? "-"
+                    : (model.Length > 12 ? model.Substring(0, 12) : model);
+                var compactDevice = string.IsNullOrWhiteSpace(device)
+                    ? "-"
+                    : (device.Length > 8 ? device.Substring(0, 8) : device);
+                var inferText = inferMs.HasValue ? $"{inferMs.Value:0}ms" : "-";
+                var fpsText = fps.HasValue ? $"{fps.Value:0.0}hz" : "-";
+                var ageText = ageMs.HasValue ? $"{Math.Max(0, ageMs.Value)}ms" : "-";
+                return $"{key}={mode}/{compactBackend}({compactModel}|{compactDevice}|{inferText}|{fpsText}|{ageText})";
             }
 
             return string.Join(
@@ -2729,6 +2744,7 @@ namespace BYES.Quest
                     : "Last E2E: -";
                 captureText =
                     $"CaptureHz: {_scanController.CaptureTargetHz} | Src: {_scanController.CaptureSource} {_scanController.CaptureFrameWidth}x{_scanController.CaptureFrameHeight} | Inflight: {_scanController.InflightCount}/{_scanController.LiveMaxInflight} | ReadbackReq: {_scanController.CaptureActiveReadbacks} | Async: {(_scanController.CaptureAsyncReadbackEnabled ? "ON" : "OFF")} / {(_scanController.CaptureSupportsAsyncReadback ? "supported" : "unsupported")}";
+                captureText += $" | SourceStatus: {_scanController.LastFrameSourceStatus}";
             }
             var probeCount10s = GetProbeCount10s();
             captureText += $" | probe10s={probeCount10s}";
@@ -2772,7 +2788,7 @@ namespace BYES.Quest
             if (_visionHud != null)
             {
                 _hudStatsTextView?.Set(
-                    $"HUD: fps={_visionHud.OverlayFps:0.0} decode={_visionHud.LastDecodeMs:0.0}ms bytes={_visionHud.LastAssetBytes} " +
+                    $"HUD: kind={_visionHud.LastOverlayKind} fps={_visionHud.OverlayFps:0.0} fetch={_visionHud.LastFetchMs:0.0}ms decode={_visionHud.LastDecodeMs:0.0}ms bytes={_visionHud.LastAssetBytes} " +
                     $"segAge={(_visionHud.LastSegAgeMs >= 0 ? _visionHud.LastSegAgeMs + "ms" : "-")} " +
                     $"depthAge={(_visionHud.LastDepthAgeMs >= 0 ? _visionHud.LastDepthAgeMs + "ms" : "-")} " +
                     $"detAge={(_visionHud.LastDetAgeMs >= 0 ? _visionHud.LastDetAgeMs + "ms" : "-")}");

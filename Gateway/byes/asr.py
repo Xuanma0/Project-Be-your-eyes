@@ -27,21 +27,31 @@ class AsrBackend:
         self.model = str(os.getenv("BYES_ASR_MODEL", "mock-asr-v1")).strip() or "mock-asr-v1"
         self.mock_text = str(os.getenv("BYES_ASR_MOCK_TEXT", "read this")).strip() or "read this"
 
-    def transcribe(self, *, audio_bytes: bytes, language: str | None = None) -> AsrTranscript:
+    def transcribe(
+        self,
+        *,
+        audio_bytes: bytes,
+        language: str | None = None,
+        backend_override: str | None = None,
+        model_override: str | None = None,
+    ) -> AsrTranscript:
         started = _now_ms()
-        if self.backend == "mock":
+        backend = str(backend_override or self.backend or "").strip().lower() or "mock"
+        model_hint = str(model_override or self.model or "").strip() or "mock-asr-v1"
+
+        if backend == "mock":
             return AsrTranscript(
                 text=self.mock_text,
                 backend="mock",
-                model=self.model,
+                model=model_hint,
                 latency_ms=max(0, _now_ms() - started),
                 language=language or "auto",
             )
 
-        if self.backend == "faster_whisper":
+        if backend == "faster_whisper":
             return self._transcribe_faster_whisper(audio_bytes=audio_bytes, language=language, started_ms=started)
 
-        raise RuntimeError(f"unsupported_asr_backend:{self.backend}")
+        raise RuntimeError(f"unsupported_asr_backend:{backend}")
 
     def _transcribe_faster_whisper(
         self,

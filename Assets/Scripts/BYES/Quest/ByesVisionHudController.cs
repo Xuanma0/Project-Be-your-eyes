@@ -15,11 +15,14 @@ namespace BYES.Quest
         [SerializeField] private bool showSegOverlay = true;
         [SerializeField] private bool showDepthOverlay = true;
         [SerializeField] private bool showTargetOverlay = true;
+        [SerializeField] private bool fullFovOverlayLayer = true;
+        [SerializeField] private bool freezeOverlay = false;
         [SerializeField] private float detAlpha = 0.45f;
         [SerializeField] private float segAlpha = 0.35f;
         [SerializeField] private float depthAlpha = 0.30f;
         [SerializeField] private float hudDistance = 0.9f;
         [SerializeField] private float hudScale = 0.0018f;
+        [SerializeField] private float fullFovCoverage = 1.0f;
         [SerializeField] private int maxBoxes = 8;
 
         private GatewayClient _gatewayClient;
@@ -48,12 +51,16 @@ namespace BYES.Quest
         public bool ShowSegOverlay => showSegOverlay;
         public bool ShowDepthOverlay => showDepthOverlay;
         public bool ShowTargetOverlay => showTargetOverlay;
+        public bool FullFovOverlayLayer => fullFovOverlayLayer;
+        public bool FreezeOverlay => freezeOverlay;
         public float DetAlpha => detAlpha;
         public float SegAlpha => segAlpha;
         public float DepthAlpha => depthAlpha;
         public float OverlayFps => _overlayFps;
         public float LastDecodeMs => _lastDecodeMs;
+        public float LastFetchMs => _renderer != null ? _renderer.LastFetchMs : -1f;
         public int LastAssetBytes => _assetBytes;
+        public string LastOverlayKind => _renderer != null ? _renderer.LastOverlayKind : "-";
 
         public long LastSegAgeMs
         {
@@ -97,6 +104,7 @@ namespace BYES.Quest
             ResolveRefs();
             Bind();
             ApplyVisualState();
+            UpdatePose(force: true);
         }
 
         private void OnEnable()
@@ -112,7 +120,7 @@ namespace BYES.Quest
 
         private void Update()
         {
-            UpdatePose();
+            UpdatePose(force: false);
             UpdateStats();
         }
 
@@ -158,12 +166,25 @@ namespace BYES.Quest
             ApplyVisualState();
         }
 
+        public void SetFreezeOverlay(bool enabled)
+        {
+            freezeOverlay = enabled;
+            ApplyVisualState();
+        }
+
+        public void SetFullFovOverlayLayer(bool enabled)
+        {
+            fullFovOverlayLayer = enabled;
+            UpdatePose(force: true);
+        }
+
         public void ResetHud()
         {
             showDetOverlay = true;
             showSegOverlay = true;
             showDepthOverlay = true;
             showTargetOverlay = true;
+            freezeOverlay = false;
             detAlpha = 0.45f;
             segAlpha = 0.35f;
             depthAlpha = 0.30f;
@@ -183,7 +204,7 @@ namespace BYES.Quest
             _canvas.renderMode = RenderMode.WorldSpace;
             _canvas.sortingOrder = 6100;
             var canvasRect = root.GetComponent<RectTransform>();
-            canvasRect.sizeDelta = new Vector2(1200f, 760f);
+            canvasRect.sizeDelta = new Vector2(960f, 540f);
             canvasRect.localScale = Vector3.one * hudScale;
 
             _overlayRoot = canvasRect;
@@ -216,7 +237,7 @@ namespace BYES.Quest
                 _boxLabels.Add(label);
             }
 
-            _statsText = CreateText("Stats", root.transform, "HUD idle", 22, TextAnchor.UpperLeft, new Vector2(0f, 1f), new Vector2(20f, -16f), new Vector2(760f, 90f));
+            _statsText = CreateText("Stats", root.transform, "HUD idle", 20, TextAnchor.UpperLeft, new Vector2(0f, 1f), new Vector2(16f, -12f), new Vector2(760f, 82f));
             _statsText.raycastTarget = false;
 
             _isInitialized = true;
@@ -444,9 +465,10 @@ namespace BYES.Quest
         {
             EnsureRenderer();
             _renderer?.SetVisualState(showDetOverlay, showSegOverlay, showDepthOverlay, detAlpha, segAlpha, depthAlpha);
+            _renderer?.SetFreezeOverlay(freezeOverlay);
         }
 
-        private void UpdatePose()
+        private void UpdatePose(bool force)
         {
             if (_overlayRoot == null)
             {
@@ -461,8 +483,30 @@ namespace BYES.Quest
             {
                 _canvas.worldCamera = cam;
             }
-            var targetPos = cam.transform.position + cam.transform.forward * hudDistance;
-            _overlayRoot.position = Vector3.Lerp(_overlayRoot.position, targetPos, Time.unscaledDeltaTime * 10f);
+
+            if (fullFovOverlayLayer)
+            {
+                var targetPos = cam.transform.position + cam.transform.forward * hudDistance;
+                _overlayRoot.position = targetPos;
+                _overlayRoot.rotation = cam.transform.rotation;
+
+                var fov = Mathf.Clamp(cam.fieldOfView, 20f, 140f) * Mathf.Deg2Rad;
+                var worldH = 2f * Mathf.Max(0.05f, hudDistance) * Mathf.Tan(fov * 0.5f) * Mathf.Clamp(fullFovCoverage, 0.6f, 1.2f);
+                var worldW = worldH * Mathf.Max(0.5f, cam.aspect);
+                var targetScale = new Vector3(worldW / 960f, worldH / 540f, 1f);
+                if (force)
+                {
+                    _overlayRoot.localScale = targetScale;
+                }
+                else
+                {
+                    _overlayRoot.localScale = Vector3.Lerp(_overlayRoot.localScale, targetScale, Time.unscaledDeltaTime * 10f);
+                }
+                return;
+            }
+
+            var relaxedPos = cam.transform.position + cam.transform.forward * hudDistance;
+            _overlayRoot.position = Vector3.Lerp(_overlayRoot.position, relaxedPos, Time.unscaledDeltaTime * 10f);
             var toCam = cam.transform.position - _overlayRoot.position;
             if (toCam.sqrMagnitude > 0.0001f)
             {
@@ -491,7 +535,9 @@ namespace BYES.Quest
             var segAge = _lastSegTsMs > 0 ? Math.Max(0, now - _lastSegTsMs) : -1;
             var depthAge = _lastDepthTsMs > 0 ? Math.Max(0, now - _lastDepthTsMs) : -1;
             var detAge = _lastDetTsMs > 0 ? Math.Max(0, now - _lastDetTsMs) : -1;
-            _statsText.text = $"HUD fps:{_overlayFps:0.0} decode:{_lastDecodeMs:0.0}ms bytes:{_assetBytes}\n" +
+            var kind = _renderer != null ? _renderer.LastOverlayKind : "-";
+            var fetchMs = _renderer != null ? _renderer.LastFetchMs : -1f;
+            _statsText.text = $"HUD fps:{_overlayFps:0.0} kind:{kind} fetch:{fetchMs:0.0}ms decode:{_lastDecodeMs:0.0}ms bytes:{_assetBytes}\n" +
                               $"segAge:{(segAge >= 0 ? segAge + "ms" : "-")} depthAge:{(depthAge >= 0 ? depthAge + "ms" : "-")} detAge:{(detAge >= 0 ? detAge + "ms" : "-")}";
         }
 

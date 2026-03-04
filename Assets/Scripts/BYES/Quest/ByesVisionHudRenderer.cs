@@ -25,16 +25,20 @@ namespace BYES.Quest
         private float _detAlpha = 0.45f;
         private float _segAlpha = 0.35f;
         private float _depthAlpha = 0.30f;
+        private bool _freezeOverlay;
         private bool _bound;
         private int _overlayUpdates;
         private float _fpsTickStart;
 
         public float OverlayFps { get; private set; }
         public float LastDecodeMs { get; private set; }
+        public float LastFetchMs { get; private set; }
         public int LastAssetBytes { get; private set; }
         public long LastSegTsMs { get; private set; } = -1;
         public long LastDepthTsMs { get; private set; } = -1;
         public long LastDetTsMs { get; private set; } = -1;
+        public string LastOverlayKind { get; private set; } = "-";
+        public bool FreezeOverlay => _freezeOverlay;
 
         public void Initialize(
             RawImage detImage,
@@ -89,6 +93,11 @@ namespace BYES.Quest
             ApplyVisualState();
         }
 
+        public void SetFreezeOverlay(bool freezeOverlay)
+        {
+            _freezeOverlay = freezeOverlay;
+        }
+
         private void OnDisable()
         {
             Unbind();
@@ -128,6 +137,17 @@ namespace BYES.Quest
 
             var payload = evt["payload"] as JObject;
             if (payload == null)
+            {
+                return;
+            }
+
+            if (_freezeOverlay && (
+                    string.Equals(name, "vis.overlay.v1", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(name, "seg.mask.v1", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(name, "depth.map.v1", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(name, "det.objects.v1", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(name, "det.objects", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(name, "target.update", StringComparison.OrdinalIgnoreCase)))
             {
                 return;
             }
@@ -188,6 +208,7 @@ namespace BYES.Quest
             {
                 return;
             }
+            LastOverlayKind = string.IsNullOrWhiteSpace(kind) ? "-" : kind;
 
             if (kind == "det")
             {
@@ -252,7 +273,9 @@ namespace BYES.Quest
                 request.SetRequestHeader("X-BYES-API-Key", apiKey.Trim());
             }
             yield return request.SendWebRequest();
-            LastDecodeMs = Mathf.Max(0f, (Time.realtimeSinceStartup - started) * 1000f);
+            var elapsedMs = Mathf.Max(0f, (Time.realtimeSinceStartup - started) * 1000f);
+            LastFetchMs = elapsedMs;
+            LastDecodeMs = elapsedMs;
             if (request.result != UnityWebRequest.Result.Success)
             {
                 yield break;

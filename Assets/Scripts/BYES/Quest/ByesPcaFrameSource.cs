@@ -26,6 +26,8 @@ namespace BYES.Quest
         private bool _hasIntrinsics;
         private XRCameraIntrinsics _lastIntrinsics;
         private string _lastStatus = "uninitialized";
+        private string _sourceMode = "unavailable";
+        private string _sourceReason = "uninitialized";
 
         public string SourceName => "pca";
         public bool IsAvailable => _cameraManager != null && (!androidOnly || Application.platform == RuntimePlatform.Android);
@@ -40,13 +42,25 @@ namespace BYES.Quest
         private void Awake()
         {
             _cameraManager = FindFirstObjectByType<ARCameraManager>();
+            if (androidOnly && Application.platform != RuntimePlatform.Android)
+            {
+                _sourceMode = "unavailable";
+                _sourceReason = "platform_not_supported";
+                _lastStatus = "unavailable:platform_not_supported";
+                return;
+            }
+
             if (_cameraManager == null)
             {
-                _lastStatus = "missing_ar_camera_manager";
+                _sourceMode = "unavailable";
+                _sourceReason = "missing_ar_camera_manager";
+                _lastStatus = "unavailable:missing_ar_camera_manager";
             }
             else
             {
-                _lastStatus = "ready";
+                _sourceMode = "ar_cpuimage_fallback";
+                _sourceReason = "meta_pca_not_integrated_using_ar_cpuimage";
+                _lastStatus = "ready:ar_cpuimage_fallback";
             }
         }
 
@@ -63,14 +77,18 @@ namespace BYES.Quest
         {
             if (!IsAvailable)
             {
-                _lastStatus = _cameraManager == null ? "missing_ar_camera_manager" : "platform_not_supported";
+                _sourceMode = "unavailable";
+                _sourceReason = _cameraManager == null ? "missing_ar_camera_manager" : "platform_not_supported";
+                _lastStatus = "unavailable:" + _sourceReason;
                 onDone?.Invoke(null);
                 yield break;
             }
 
             if (!_cameraManager.TryAcquireLatestCpuImage(out var cpuImage))
             {
-                _lastStatus = "cpu_image_unavailable";
+                _sourceMode = "ar_cpuimage_fallback";
+                _sourceReason = "cpu_image_unavailable";
+                _lastStatus = "ar_cpuimage_fallback:cpu_image_unavailable";
                 onDone?.Invoke(null);
                 yield break;
             }
@@ -93,7 +111,9 @@ namespace BYES.Quest
             }
             catch (Exception ex)
             {
-                _lastStatus = $"convert_failed:{ex.GetType().Name}";
+                _sourceMode = "ar_cpuimage_fallback";
+                _sourceReason = "convert_failed";
+                _lastStatus = $"ar_cpuimage_fallback:convert_failed:{ex.GetType().Name}";
                 data.Dispose();
                 cpuImage.Dispose();
                 onDone?.Invoke(null);
@@ -110,7 +130,9 @@ namespace BYES.Quest
             _lastWidth = outputWidth;
             _lastHeight = outputHeight;
             _hasIntrinsics = _cameraManager.TryGetIntrinsics(out _lastIntrinsics);
-            _lastStatus = "ok";
+            _sourceMode = "ar_cpuimage_fallback";
+            _sourceReason = "ok";
+            _lastStatus = "ok:ar_cpuimage_fallback";
 
             var jpg = _encodeTexture.EncodeToJPG(Mathf.Clamp(jpegQuality, 1, 100));
             onDone?.Invoke(jpg);
@@ -130,6 +152,10 @@ namespace BYES.Quest
             meta["captureTargetHz"] = CaptureTargetHz;
             meta["captureMaxInflight"] = CaptureMaxInflight;
             meta["pcaStatus"] = _lastStatus;
+            meta["frameSourceMode"] = _sourceMode;
+            meta["frameSourceStatus"] = _lastStatus;
+            meta["pcaAvailable"] = false;
+            meta["pcaReason"] = _sourceReason;
             if (_hasIntrinsics)
             {
                 meta["fx"] = _lastIntrinsics.focalLength.x;

@@ -733,6 +733,8 @@ class GatewayApp:
             "depth": None,
             "seg": None,
             "slam": None,
+            "asr": None,
+            "pyslamRealtime": None,
         }
         self._provider_backend_overrides: dict[str, str | None] = {
             "ocr": None,
@@ -744,6 +746,16 @@ class GatewayApp:
             "pyslamRealtime": None,
         }
         self._providers_override_updated_ts_ms = -1
+        self._provider_runtime_evidence: dict[str, dict[str, Any]] = {
+            "ocr": {},
+            "risk": {},
+            "det": {},
+            "depth": {},
+            "seg": {},
+            "slam": {},
+            "asr": {},
+            "pyslamRealtime": {},
+        }
         self._forced_crosscheck_kind = "none"
         self._forced_crosscheck_expires_ms = -1
         self._forced_performance_mode = "NORMAL"
@@ -818,6 +830,8 @@ class GatewayApp:
         for key in list(self._provider_backend_overrides):
             self._provider_backend_overrides[key] = None
         self._providers_override_updated_ts_ms = -1
+        for key in list(self._provider_runtime_evidence):
+            self._provider_runtime_evidence[key] = {}
         self.registry.clear()
         startup_unavailable_tools: list[str] = []
         if self._tool_enabled("mock_risk"):
@@ -890,6 +904,158 @@ class GatewayApp:
             return override_text
         backend_text = str(backend or "").strip()
         return backend_text or None
+
+    def _effective_asr_enabled(self) -> bool:
+        override = self._runtime_target_enabled_overrides.get("asr")
+        if override is not None:
+            return bool(override)
+        return str(os.getenv("BYES_ENABLE_ASR", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _effective_pyslam_enabled(self) -> bool:
+        override = self._runtime_target_enabled_overrides.get("pyslamRealtime")
+        if override is not None:
+            return bool(override)
+        return str(os.getenv("BYES_ENABLE_PYSLAM_REALTIME", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _effective_asr_backend(self) -> str:
+        backend = self._provider_backend_effective(
+            "asr",
+            str(os.getenv("BYES_ASR_BACKEND", "mock")).strip().lower() or "mock",
+        )
+        token = str(backend or "").strip().lower()
+        return token or "mock"
+
+    def _record_provider_runtime(
+        self,
+        provider: str,
+        *,
+        backend: str | None,
+        model: str | None,
+        device: str | None,
+        infer_ms: int | None,
+        ts_ms: int,
+        reason: str | None = None,
+        is_mock: bool | None = None,
+    ) -> None:
+        key = str(provider or "").strip()
+        if not key:
+            return
+        now_ms = _now_ms()
+        ts_value = int(ts_ms if int(ts_ms or 0) > 0 else now_ms)
+        row = dict(self._provider_runtime_evidence.get(key, {}))
+        prev_ts = int(row.get("lastTsMs", -1) or -1)
+        fps = None
+        if prev_ts > 0 and ts_value > prev_ts:
+            dt_ms = ts_value - prev_ts
+            fps = round(1000.0 / float(dt_ms), 3) if dt_ms > 0 else None
+        if fps is None:
+            try:
+                fps = float(row.get("fps")) if row.get("fps") is not None else None
+            except Exception:
+                fps = None
+
+        backend_text = str(backend or row.get("backend") or "").strip() or None
+        if is_mock is None:
+            lowered = str(backend_text or "").lower()
+            is_mock = lowered.startswith("mock") or ("reference" in lowered) or lowered in {"none", ""}
+
+        row.update(
+            {
+                "backend": backend_text,
+                "model": str(model or row.get("model") or "").strip() or None,
+                "device": str(device or row.get("device") or "").strip() or None,
+                "inferMs": int(infer_ms) if infer_ms is not None else row.get("inferMs"),
+                "fps": fps,
+                "lastTsMs": ts_value,
+                "ageMs": max(0, now_ms - ts_value),
+                "isMock": bool(is_mock),
+                "reason": str(reason or row.get("reason") or "").strip() or None,
+            }
+        )
+        self._provider_runtime_evidence[key] = row
+
+    def _provider_runtime_snapshot(self) -> dict[str, dict[str, Any]]:
+        now_ms = _now_ms()
+        out: dict[str, dict[str, Any]] = {}
+        for key, row in self._provider_runtime_evidence.items():
+            if not isinstance(row, dict):
+                out[key] = {}
+                continue
+            copied = dict(row)
+            ts_value = int(copied.get("lastTsMs", -1) or -1)
+            copied["ageMs"] = max(0, now_ms - ts_value) if ts_value > 0 else None
+            out[key] = copied
+        return out
+
+    def _update_runtime_evidence_from_event(self, event: dict[str, Any]) -> None:
+        if not isinstance(event, dict):
+            return
+        name = str(event.get("name", "") or "").strip().lower()
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        event_ts = _to_nonnegative_int_or_none(event.get("tsMs")) or _now_ms()
+        latency_ms = _to_nonnegative_int_or_none(event.get("latencyMs"))
+        payload_latency = _to_nonnegative_int_or_none(payload.get("latencyMs"))
+        infer_ms = payload_latency if payload_latency is not None else latency_ms
+        backend = str(payload.get("backend", "") or "").strip() or None
+        model = str(payload.get("model", "") or "").strip() or None
+        device = str(payload.get("device", "") or "").strip() or None
+        reason = str(payload.get("reason", "") or "").strip() or None
+
+        provider: str | None = None
+        if name.startswith("ocr.read"):
+            provider = "ocr"
+        elif name.startswith("risk.") or name == "risk":
+            provider = "risk"
+        elif name.startswith("det.objects"):
+            provider = "det"
+        elif name.startswith("depth.") and name != "depth.map.v1":
+            provider = "depth"
+        elif name.startswith("seg.mask") or name.startswith("seg.masks"):
+            provider = "seg"
+        elif name.startswith("slam.pose"):
+            provider = "slam"
+        elif name.startswith("asr.transcript"):
+            provider = "asr"
+        elif name.startswith("vis.overlay.v1"):
+            kind = str(payload.get("kind", "") or "").strip().lower()
+            provider = {"det": "det", "seg": "seg", "depth": "depth", "slam": "slam"}.get(kind)
+            provider_meta = payload.get("providerMeta")
+            if isinstance(provider_meta, dict):
+                backend = str(provider_meta.get("backend", "") or "").strip() or backend
+                model = str(provider_meta.get("model", "") or "").strip() or model
+                device = str(provider_meta.get("device", "") or "").strip() or device
+            infer_ms = _to_nonnegative_int_or_none(payload.get("inferMs")) or infer_ms
+            event_ts = _to_nonnegative_int_or_none(payload.get("tsMs")) or event_ts
+        elif name.startswith("slam.trajectory"):
+            provider = "pyslamRealtime"
+            backend = backend or "pyslam_http"
+        elif name.startswith("slam.debug"):
+            provider = "pyslamRealtime"
+            backend = backend or "pyslam_http"
+
+        if provider is None:
+            return
+        self._record_provider_runtime(
+            provider,
+            backend=backend,
+            model=model,
+            device=device,
+            infer_ms=infer_ms,
+            ts_ms=event_ts,
+            reason=reason,
+        )
+        if provider == "slam" and str(backend or "").strip().lower().startswith("pyslam"):
+            self._record_provider_runtime(
+                "pyslamRealtime",
+                backend=backend,
+                model=model,
+                device=device,
+                infer_ms=infer_ms,
+                ts_ms=event_ts,
+                reason=reason,
+            )
 
     def _to_run_packages_relative(self, path: Path) -> str:
         root = self.run_packages_root.resolve()
@@ -993,6 +1159,7 @@ class GatewayApp:
         if not isinstance(event, dict):
             return
         event_copy = dict(event)
+        self._update_runtime_evidence_from_event(event_copy)
         self._inference_events.append(event_copy)
         if len(self._inference_events) > self._inference_events_limit:
             self._inference_events = self._inference_events[-self._inference_events_limit :]
@@ -2869,11 +3036,11 @@ async def api_version() -> dict[str, Any]:
 @app.get("/api/capabilities")
 async def api_capabilities() -> dict[str, Any]:
     build = get_build_info(profile=gateway.config.gateway_profile)
-    asr_enabled = str(os.getenv("BYES_ENABLE_ASR", "0")).strip().lower() in {"1", "true", "yes", "on"}
-    asr_backend_name = str(os.getenv("BYES_ASR_BACKEND", "mock")).strip().lower() or "mock"
+    asr_enabled = gateway._effective_asr_enabled()  # noqa: SLF001
+    asr_backend_name = gateway._effective_asr_backend()  # noqa: SLF001
     asr_reason = "enabled"
     if not asr_enabled:
-        asr_reason = "disabled_by_env"
+        asr_reason = "disabled_by_flag"
     elif asr_backend_name == "faster_whisper" and importlib.util.find_spec("faster_whisper") is None:
         asr_reason = "missing_dependency:faster_whisper"
 
@@ -2892,13 +3059,15 @@ async def api_capabilities() -> dict[str, Any]:
                 return str(readiness.get("reason", "not_ready") or "not_ready")
         return "ready"
 
-    pyslam_enabled = str(os.getenv("BYES_ENABLE_PYSLAM_REALTIME", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    pyslam_enabled = gateway._effective_pyslam_enabled()  # noqa: SLF001
     pyslam_root = str(os.getenv("BYES_PYSLAM_ROOT", "")).strip()
-    pyslam_reason = "enabled" if pyslam_enabled else "disabled_by_env"
+    pyslam_reason = "enabled" if pyslam_enabled else "disabled_by_flag"
     if pyslam_enabled and not pyslam_root:
         pyslam_reason = "missing_env:BYES_PYSLAM_ROOT"
     elif pyslam_enabled and not Path(pyslam_root).exists():
         pyslam_reason = "path_not_found"
+
+    runtime_rows = gateway._provider_runtime_snapshot()  # noqa: SLF001
 
     available_providers = {
         "ocr": {
@@ -2977,15 +3146,45 @@ async def api_capabilities() -> dict[str, Any]:
         },
         "asr": {
             **asr_capabilities(),
+            "backend": asr_backend_name,
+            "requestedBackend": gateway._provider_backend_overrides.get("asr"),  # noqa: SLF001
             "reason": asr_reason,
+            "enabled": bool(asr_enabled),
         },
         "pyslamRealtime": {
             "enabled": pyslam_enabled,
-            "backend": "pyslam_http" if pyslam_enabled else "mock",
+            "backend": gateway._provider_backend_effective("pyslamRealtime", "pyslam_http" if pyslam_enabled else "mock"),  # noqa: SLF001
+            "requestedBackend": gateway._provider_backend_overrides.get("pyslamRealtime"),  # noqa: SLF001
             "reason": pyslam_reason,
             "root": pyslam_root or None,
         },
     }
+    for key, row in available_providers.items():
+        if not isinstance(row, dict):
+            continue
+        runtime = runtime_rows.get(str(key), {})
+        if not runtime:
+            backend_text = str(row.get("backend", "") or "").strip()
+            backend_lower = backend_text.lower()
+            runtime = {
+                "backend": backend_text or None,
+                "model": row.get("model"),
+                "device": row.get("device"),
+                "inferMs": row.get("inferMs"),
+                "fps": row.get("fps"),
+                "lastTsMs": row.get("lastTsMs"),
+                "ageMs": row.get("ageMs"),
+                "isMock": backend_lower.startswith("mock")
+                or ("reference" in backend_lower)
+                or backend_lower in {"", "none"},
+                "reason": row.get("reason"),
+            }
+        if isinstance(runtime, dict):
+            row["runtime"] = runtime
+            for field in ("inferMs", "fps", "lastTsMs", "ageMs", "device", "isMock"):
+                if field in runtime and row.get(field) is None:
+                    row[field] = runtime.get(field)
+
     enabled_flags = {
         "ocr": bool(gateway._target_enabled("ocr")),
         "risk": bool(gateway._target_enabled("risk")),
@@ -3047,6 +3246,7 @@ async def api_providers() -> dict[str, Any]:
         "tsMs": _now_ms(),
         "providers": caps.get("available_providers", {}),
         "enabledFlags": caps.get("enabled_flags", {}),
+        "runtimeEvidence": gateway._provider_runtime_snapshot(),  # noqa: SLF001
         "runtimeOverrides": {
             "enabled": dict(gateway._runtime_target_enabled_overrides),  # noqa: SLF001
             "backend": dict(gateway._provider_backend_overrides),  # noqa: SLF001
@@ -3165,6 +3365,23 @@ def _build_desktop_console_html() -> str:
     </div>
     <div class="card grow">
       <h3>Providers (real/mock evidence)</h3>
+      <div>
+        <button onclick="providerEnabled('det', true)">DET ON</button>
+        <button onclick="providerEnabled('det', false)">DET OFF</button>
+        <button onclick="providerBackend('det', 'yolo26')">DET->YOLO26</button>
+        <button onclick="providerEnabled('seg', true)">SEG ON</button>
+        <button onclick="providerEnabled('seg', false)">SEG OFF</button>
+        <button onclick="providerBackend('seg', 'sam3')">SEG->SAM3</button>
+        <button onclick="providerEnabled('depth', true)">DEPTH ON</button>
+        <button onclick="providerEnabled('depth', false)">DEPTH OFF</button>
+        <button onclick="providerBackend('depth', 'da3')">DEPTH->DA3</button>
+        <button onclick="providerEnabled('pyslamRealtime', true)">pySLAM ON</button>
+        <button onclick="providerEnabled('pyslamRealtime', false)">pySLAM OFF</button>
+        <button onclick="providerEnabled('asr', true)">ASR ON</button>
+        <button onclick="providerEnabled('asr', false)">ASR OFF</button>
+        <button onclick="providerBackend('asr', 'mock')">ASR->mock</button>
+        <button onclick="providerBackend('asr', 'faster_whisper')">ASR->whisper</button>
+      </div>
       <div id="providers" class="mono">-</div>
     </div>
   </div>
@@ -3250,6 +3467,16 @@ def _build_desktop_console_html() -> str:
       if(prompt){ body.prompt = {text: prompt, openVocab: true, task: 'find'}; }
       await postJson('/api/assist', body);
     }
+    async function providerEnabled(target, enabled){
+      const body = {};
+      body[target] = {enabled: !!enabled};
+      await postJson('/api/providers/overrides', body);
+    }
+    async function providerBackend(target, backend){
+      const body = {};
+      body[target] = {backend};
+      await postJson('/api/providers/overrides', body);
+    }
     async function recordStart(){ await postJson('/api/record/start',{deviceId, note:'desktop-ui'}); }
     async function recordStop(){ await postJson('/api/record/stop',{deviceId}); }
     setInterval(refreshState, 1500);
@@ -3304,11 +3531,18 @@ async def api_asr(
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="audio is required")
 
-    if str(os.getenv("BYES_ENABLE_ASR", "0")).strip().lower() not in {"1", "true", "yes", "on"}:
+    asr_enabled = gateway._effective_asr_enabled()  # noqa: SLF001
+    if not asr_enabled:
         raise HTTPException(status_code=503, detail="asr_disabled")
 
+    asr_backend = gateway._effective_asr_backend()  # noqa: SLF001
+
     try:
-        transcript = gateway.asr_backend.transcribe(audio_bytes=audio_bytes, language=language)
+        transcript = gateway.asr_backend.transcribe(  # type: ignore[arg-type]
+            audio_bytes=audio_bytes,
+            language=language,
+            backend_override=asr_backend,
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -6285,6 +6519,8 @@ async def _emit_vis_overlay_v1_event(
         "backend": payload.get("backend"),
         "model": payload.get("model"),
         "endpoint": payload.get("endpoint"),
+        "device": payload.get("device"),
+        "isMock": payload.get("isMock"),
     }
     infer_ms = _to_nonnegative_int_or_none(payload.get("latencyMs"))
     if infer_ms is None:

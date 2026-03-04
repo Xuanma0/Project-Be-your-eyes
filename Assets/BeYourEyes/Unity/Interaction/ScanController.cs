@@ -75,6 +75,7 @@ namespace BeYourEyes.Unity.Interaction
         private int uploadsFailedCount;
         private int dropBusyCount;
         private int eventsReceivedCount;
+        private string lastFrameSourceStatus = "-";
         private string[] pendingForcedTargets;
         private JObject pendingDetPrompt;
 
@@ -110,6 +111,7 @@ namespace BeYourEyes.Unity.Interaction
         }
         public int CaptureFrameWidth => ResolveFrameSource()?.LastFrameWidth ?? 0;
         public int CaptureFrameHeight => ResolveFrameSource()?.LastFrameHeight ?? 0;
+        public string LastFrameSourceStatus => string.IsNullOrWhiteSpace(lastFrameSourceStatus) ? "-" : lastFrameSourceStatus;
         public event Action<UploadMetrics> OnUploadFinished;
 
         private void Awake()
@@ -387,6 +389,18 @@ namespace BeYourEyes.Unity.Interaction
                 var captureMeta = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
                 source.FillMeta(captureMeta);
                 captureMeta["frameSource"] = source.SourceName;
+                if (captureMeta.TryGetValue("frameSourceStatus", out var sourceStatusObj))
+                {
+                    lastFrameSourceStatus = sourceStatusObj != null ? sourceStatusObj.ToString() : "-";
+                }
+                else if (captureMeta.TryGetValue("pcaStatus", out var pcaStatusObj))
+                {
+                    lastFrameSourceStatus = pcaStatusObj != null ? pcaStatusObj.ToString() : "-";
+                }
+                else
+                {
+                    lastFrameSourceStatus = string.IsNullOrWhiteSpace(source.SourceName) ? "-" : $"{source.SourceName}:ok";
+                }
 
                 yield return source.CaptureJpg(bytes => jpg = bytes);
 

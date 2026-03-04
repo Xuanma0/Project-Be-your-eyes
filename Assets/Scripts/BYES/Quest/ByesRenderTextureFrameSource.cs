@@ -50,6 +50,10 @@ namespace BYES.Quest
             }
             source.FillMeta(meta);
             meta["frameSource"] = SourceName;
+            meta["frameSourceMode"] = "rendertexture_fallback";
+            meta["frameSourceStatus"] = "ok:rendertexture_fallback";
+            meta["pcaAvailable"] = false;
+            meta["pcaReason"] = "pca_unavailable_fallback_rendertexture";
         }
     }
 }
