@@ -1,5 +1,6 @@
 @echo off
 setlocal enableextensions enabledelayedexpansion
+if not defined BYES_PAUSE_ON_ERROR set "BYES_PAUSE_ON_ERROR=1"
 
 set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..\..") do set "REPO_ROOT=%%~fI"
@@ -21,11 +22,13 @@ if defined ADB_EXE (
 
 if not defined ADB_BIN (
   echo [quest3_usb_realstack_v5_05] adb.exe not found. Set ADB_EXE first.
-  exit /b 2
+  set "RC=2"
+  goto :abort
 )
 if not exist "%ADB_BIN%" (
   echo [quest3_usb_realstack_v5_05] adb path does not exist: "%ADB_BIN%"
-  exit /b 2
+  set "RC=2"
+  goto :abort
 )
 
 echo [quest3_usb_realstack_v5_05] adb=%ADB_BIN%
@@ -36,7 +39,8 @@ for /f "skip=1 tokens=1,2" %%A in ('"%ADB_BIN%" devices') do (
 )
 if not defined HAS_DEVICE (
   echo [quest3_usb_realstack_v5_05] no adb device found.
-  exit /b 3
+  set "RC=3"
+  goto :abort
 )
 
 echo [quest3_usb_realstack_v5_05] adb reverse tcp:%GATEWAY_PORT% ^> tcp:%GATEWAY_PORT%
@@ -45,26 +49,24 @@ echo [quest3_usb_realstack_v5_05] adb reverse tcp:%GATEWAY_PORT% ^> tcp:%GATEWAY
 
 set "PORT_PID="
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%GATEWAY_PORT% .*LISTENING"') do (
-  set "PORT_PID=%%P"
-  goto :gateway_port_done
+  if not defined PORT_PID set "PORT_PID=%%P"
 )
-:gateway_port_done
 if defined PORT_PID (
   echo [quest3_usb_realstack_v5_05] Port %GATEWAY_PORT% is already in use by PID %PORT_PID%.
   tasklist /fi "PID eq %PORT_PID%" 2>nul
-  exit /b 5
+  set "RC=5"
+  goto :abort
 )
 
 set "PORT_PID="
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%INFERENCE_PORT% .*LISTENING"') do (
-  set "PORT_PID=%%P"
-  goto :inference_port_done
+  if not defined PORT_PID set "PORT_PID=%%P"
 )
-:inference_port_done
 if defined PORT_PID (
   echo [quest3_usb_realstack_v5_05] Port %INFERENCE_PORT% is already in use by PID %PORT_PID%.
   tasklist /fi "PID eq %PORT_PID%" 2>nul
-  exit /b 5
+  set "RC=5"
+  goto :abort
 )
 
 rem ---- v5.05 defaults (can be overridden before launching) ----
@@ -177,51 +179,9 @@ echo   DEPTH endpoint=%BYES_SERVICE_DEPTH_ENDPOINT%
 echo   ASR backend=%BYES_ASR_BACKEND%
 echo   pySLAM realtime=%BYES_ENABLE_PYSLAM_REALTIME% (root=%BYES_PYSLAM_ROOT%)
 
-if "%BYES_ENABLE_PYSLAM_REALTIME%"=="1" (
-  set "PORT_PID="
-  for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%PYSLAM_PORT% .*LISTENING"') do (
-    set "PORT_PID=%%P"
-    goto :pyslam_port_done
-  )
-  :pyslam_port_done
-  if defined PORT_PID (
-    echo [quest3_usb_realstack_v5_05] Port %PYSLAM_PORT% already used by PID %PORT_PID%.
-    tasklist /fi "PID eq %PORT_PID%" 2>nul
-    exit /b 5
-  )
-  echo [quest3_usb_realstack_v5_05] starting optional pyslam_service on %PYSLAM_PORT%...
-  start "BYES-pySLAM-v5.05" cmd /c "cd /d \"%REPO_ROOT%\Gateway\" && python -m uvicorn services.pyslam_service.app:app --host 127.0.0.1 --port %PYSLAM_PORT%"
-)
-
-if /I "%BYES_SERVICE_SEG_PROVIDER%"=="sam3" (
-  set "PORT_PID="
-  for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%SAM3_PORT% .*LISTENING"') do (
-    set "PORT_PID=%%P"
-    goto :sam3_port_done
-  )
-  :sam3_port_done
-  if not defined PORT_PID (
-    echo [quest3_usb_realstack_v5_05] starting optional sam3_seg_service on %SAM3_PORT%...
-    start "BYES-SAM3-v5.05" cmd /c "cd /d \"%REPO_ROOT%\Gateway\" && python -m uvicorn services.sam3_seg_service.app:app --host 127.0.0.1 --port %SAM3_PORT%"
-  ) else (
-    echo [quest3_usb_realstack_v5_05] sam3 service already listening on %SAM3_PORT% (PID=%PORT_PID%).
-  )
-)
-
-if /I "%BYES_SERVICE_DEPTH_PROVIDER%"=="da3" (
-  set "PORT_PID="
-  for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%DA3_PORT% .*LISTENING"') do (
-    set "PORT_PID=%%P"
-    goto :da3_port_done
-  )
-  :da3_port_done
-  if not defined PORT_PID (
-    echo [quest3_usb_realstack_v5_05] starting optional da3_depth_service on %DA3_PORT%...
-    start "BYES-DA3-v5.05" cmd /c "cd /d \"%REPO_ROOT%\Gateway\" && python -m uvicorn services.da3_depth_service.app:app --host 127.0.0.1 --port %DA3_PORT%"
-  ) else (
-    echo [quest3_usb_realstack_v5_05] da3 service already listening on %DA3_PORT% (PID=%PORT_PID%).
-  )
-)
+if "%BYES_ENABLE_PYSLAM_REALTIME%"=="1" call :start_optional_service "%PYSLAM_PORT%" "BYES-pySLAM-v5.05" "services.pyslam_service.app:app"
+if /I "%BYES_SERVICE_SEG_PROVIDER%"=="sam3" call :start_optional_service "%SAM3_PORT%" "BYES-SAM3-v5.05" "services.sam3_seg_service.app:app"
+if /I "%BYES_SERVICE_DEPTH_PROVIDER%"=="da3" call :start_optional_service "%DA3_PORT%" "BYES-DA3-v5.05" "services.da3_depth_service.app:app"
 
 echo [quest3_usb_realstack_v5_05] opening desktop console at http://127.0.0.1:%GATEWAY_PORT%/ui
 start "" "http://127.0.0.1:%GATEWAY_PORT%/ui"
@@ -232,3 +192,25 @@ python scripts/dev_up.py --with-inference --host 127.0.0.1 --gateway-port %GATEW
 set "RC=%ERRORLEVEL%"
 echo [quest3_usb_realstack_v5_05] stack exited with code %RC%
 exit /b %RC%
+
+:abort
+if not defined RC set "RC=1"
+echo [quest3_usb_realstack_v5_05] aborted with code %RC%
+if "%BYES_PAUSE_ON_ERROR%"=="1" pause
+exit /b %RC%
+
+:start_optional_service
+set "PORT_TO_CHECK=%~1"
+set "WINDOW_TITLE=%~2"
+set "UVICORN_MODULE=%~3"
+set "PORT_PID="
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%PORT_TO_CHECK% .*LISTENING"') do (
+  if not defined PORT_PID set "PORT_PID=%%P"
+)
+if not defined PORT_PID (
+  echo [quest3_usb_realstack_v5_05] starting optional service %UVICORN_MODULE% on %PORT_TO_CHECK%...
+  start "%WINDOW_TITLE%" cmd /c "cd /d \"%REPO_ROOT%\Gateway\" ^&^& python -m uvicorn %UVICORN_MODULE% --host 127.0.0.1 --port %PORT_TO_CHECK%"
+) else (
+  echo [quest3_usb_realstack_v5_05] service %UVICORN_MODULE% already listening on %PORT_TO_CHECK%, PID=%PORT_PID%.
+)
+exit /b 0
