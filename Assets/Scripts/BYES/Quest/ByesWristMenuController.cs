@@ -10,6 +10,7 @@ namespace BYES.Quest
 {
     public sealed class ByesWristMenuController : MonoBehaviour
     {
+        [SerializeField] private bool enableLegacyMenu = false;
         [SerializeField] private bool createRuntimeUi = true;
         [SerializeField] private bool startVisible;
         [SerializeField] private float menuWidth = 640f;
@@ -28,6 +29,12 @@ namespace BYES.Quest
 
         private void Awake()
         {
+            if (Application.isPlaying && !enableLegacyMenu)
+            {
+                gameObject.SetActive(false);
+                return;
+            }
+
             ResolveRefs();
             if (createRuntimeUi)
             {

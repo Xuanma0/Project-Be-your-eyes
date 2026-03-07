@@ -808,6 +808,15 @@ class GatewayApp:
         self._latest_frame_asset_id: str | None = None
         self._latest_frame_meta: dict[str, Any] = {}
         self._latest_overlay_assets: dict[str, dict[str, Any]] = {}
+        self._ui_recording_state: dict[str, Any] = {
+            "active": False,
+            "deviceId": None,
+            "runId": None,
+            "recordingPath": None,
+            "manifestPath": None,
+            "startedTsMs": None,
+            "endedTsMs": None,
+        }
         self.pov_store = PovStore()
 
     async def startup(self) -> None:
@@ -828,6 +837,15 @@ class GatewayApp:
         self._latest_frame_asset_id = None
         self._latest_frame_meta = {}
         self._latest_overlay_assets = {}
+        self._ui_recording_state = {
+            "active": False,
+            "deviceId": None,
+            "runId": None,
+            "recordingPath": None,
+            "manifestPath": None,
+            "startedTsMs": None,
+            "endedTsMs": None,
+        }
         self.costmap_fuser.reset()
         self.dynamic_mask_cache.reset()
         self._external_readiness = {}
@@ -2816,7 +2834,7 @@ async def frame(
             },
         )
         gateway._latest_frame_asset_id = frame_asset.asset_id  # noqa: SLF001
-        gateway._latest_frame_meta = {  # noqa: SLF001
+        latest_frame_meta = {
             "runId": run_id,
             "frameSeq": int(max(1, int(seq))),
             "deviceId": cache_device_id,
@@ -2825,6 +2843,13 @@ async def frame(
             "sizeBytes": int(len(frame_bytes)),
             "assetId": frame_asset.asset_id,
         }
+        capture_payload = meta_json.get("capture")
+        if isinstance(capture_payload, dict):
+            for key, value in capture_payload.items():
+                if value is None:
+                    continue
+                latest_frame_meta[str(key)] = value
+        gateway._latest_frame_meta = latest_frame_meta  # noqa: SLF001
     except Exception:
         pass
     try:
@@ -3071,6 +3096,145 @@ async def api_version() -> dict[str, Any]:
     return get_build_info(profile=gateway.config.gateway_profile)
 
 
+def _normalize_frame_source_truth(frame_meta: dict[str, Any] | None) -> dict[str, Any]:
+    meta = dict(frame_meta or {})
+    source = str(meta.get("frameSource", "") or "").strip().lower()
+    mode = str(meta.get("frameSourceMode", "") or "").strip().lower()
+    status = str(meta.get("frameSourceStatus", "") or meta.get("pcaStatus", "") or "").strip() or None
+    reason = str(meta.get("frameSourceReason", "") or meta.get("pcaReason", "") or "").strip() or None
+    provider = str(meta.get("frameSourceProvider", "") or "").strip() or None
+    kind = str(meta.get("frameSourceKind", "") or "").strip().lower()
+
+    canonical = mode or source
+    if canonical == "pca":
+        canonical = "ar_cpuimage_fallback"
+    elif canonical == "rendertexture":
+        canonical = "rendertexture_fallback"
+    if not canonical:
+        canonical = "unavailable"
+
+    if not kind:
+        if canonical.endswith("_fallback"):
+            kind = "fallback"
+        elif canonical in {"unavailable", "unknown"}:
+            kind = "unavailable"
+        else:
+            kind = "real"
+
+    truth_label = kind if kind in {"real", "mock", "fallback", "unavailable"} else "unavailable"
+    return {
+        "frameSource": canonical,
+        "truthState": truth_label,
+        "truthLabel": truth_label,
+        "status": status,
+        "reason": reason,
+        "provider": provider,
+        "pcaAvailable": bool(meta.get("pcaAvailable") is True),
+    }
+
+
+def _resolve_provider_truth_state(*, enabled: bool, is_mock: bool, backend: str | None, reason: str | None) -> str:
+    if not enabled:
+        return "unavailable"
+
+    backend_text = str(backend or "").strip().lower()
+    reason_text = str(reason or "").strip().lower()
+    if backend_text.endswith("_fallback") or "fallback" in reason_text:
+        return "fallback"
+    if is_mock:
+        return "mock"
+    if any(token in reason_text for token in ("missing", "disabled", "not_ready", "path_not_found", "unresolved", "unavailable")):
+        return "unavailable"
+    return "real"
+
+
+def _normalize_provider_row(
+    name: str,
+    row: dict[str, Any] | None,
+    runtime_rows: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    source_row = dict(row or {})
+    runtime = dict(runtime_rows.get(name, {})) if isinstance(runtime_rows.get(name), dict) else {}
+
+    backend = str(runtime.get("backend") or source_row.get("backend") or "").strip() or None
+    model = str(runtime.get("model") or source_row.get("model") or "").strip() or None
+    device = str(runtime.get("device") or source_row.get("device") or "").strip() or None
+    reason = str(runtime.get("reason") or source_row.get("reason") or "").strip() or None
+    enabled = bool(source_row.get("enabled"))
+    last_success_ts = _to_nonnegative_int_or_none(runtime.get("lastTsMs"))
+    if last_success_ts is None:
+        last_success_ts = _to_nonnegative_int_or_none(source_row.get("lastTsMs"))
+    last_infer_ms = _to_nonnegative_int_or_none(runtime.get("inferMs"))
+    if last_infer_ms is None:
+        last_infer_ms = _to_nonnegative_int_or_none(source_row.get("inferMs"))
+
+    is_mock_value = runtime.get("isMock")
+    if not isinstance(is_mock_value, bool):
+        is_mock_value = source_row.get("isMock")
+    if not isinstance(is_mock_value, bool):
+        backend_lower = str(backend or "").lower()
+        is_mock_value = backend_lower.startswith("mock") or ("reference" in backend_lower) or backend_lower in {"", "none"}
+
+    truth_state = _resolve_provider_truth_state(
+        enabled=enabled,
+        is_mock=bool(is_mock_value),
+        backend=backend,
+        reason=reason,
+    )
+    evidence = {
+        "backend": backend,
+        "model": model,
+        "device": device,
+        "is_mock": bool(is_mock_value),
+        "reason": reason,
+        "last_success_ts": last_success_ts,
+        "last_infer_ms": last_infer_ms,
+    }
+
+    runtime_snapshot = dict(runtime)
+    runtime_snapshot.update(
+        {
+            "backend": backend,
+            "model": model,
+            "device": device,
+            "reason": reason,
+            "isMock": bool(is_mock_value),
+            "lastTsMs": last_success_ts,
+            "inferMs": last_infer_ms,
+        }
+    )
+
+    normalized = dict(source_row)
+    normalized.update(
+        {
+            "backend": backend,
+            "model": model,
+            "device": device,
+            "reason": reason,
+            "enabled": enabled,
+            "isMock": bool(is_mock_value),
+            "lastSuccessTsMs": last_success_ts,
+            "lastInferMs": last_infer_ms,
+            "truthState": truth_state,
+            "truthLabel": truth_state,
+            "evidence": evidence,
+            "runtime": runtime_snapshot,
+        }
+    )
+    return normalized
+
+
+def _build_provider_truth_summary(providers: dict[str, dict[str, Any]]) -> str:
+    order = ("ocr", "risk", "det", "seg", "depth", "slam", "asr", "tts")
+    tokens: list[str] = []
+    for key in order:
+        row = providers.get(key, {}) if isinstance(providers, dict) else {}
+        state = str(row.get("truthState", "") or "unavailable").strip().lower() or "unavailable"
+        backend = str(row.get("backend", "") or "-").strip().lower() or "-"
+        tokens.append(f"{key}[{state}:{backend[:16]}]")
+    return " ".join(tokens)
+
+
 @app.get("/api/capabilities")
 async def api_capabilities() -> dict[str, Any]:
     build = get_build_info(profile=gateway.config.gateway_profile)
@@ -3208,31 +3372,16 @@ async def api_capabilities() -> dict[str, Any]:
             "root": pyslam_root or None,
         },
     }
-    for key, row in available_providers.items():
-        if not isinstance(row, dict):
-            continue
-        runtime = runtime_rows.get(str(key), {})
-        if not runtime:
-            backend_text = str(row.get("backend", "") or "").strip()
-            backend_lower = backend_text.lower()
-            runtime = {
-                "backend": backend_text or None,
-                "model": row.get("model"),
-                "device": row.get("device"),
-                "inferMs": row.get("inferMs"),
-                "fps": row.get("fps"),
-                "lastTsMs": row.get("lastTsMs"),
-                "ageMs": row.get("ageMs"),
-                "isMock": backend_lower.startswith("mock")
-                or ("reference" in backend_lower)
-                or backend_lower in {"", "none"},
-                "reason": row.get("reason"),
-            }
-        if isinstance(runtime, dict):
-            row["runtime"] = runtime
-            for field in ("inferMs", "fps", "lastTsMs", "ageMs", "device", "isMock"):
-                if field in runtime and row.get(field) is None:
-                    row[field] = runtime.get(field)
+    normalized_providers = {
+        key: _normalize_provider_row(str(key), row if isinstance(row, dict) else {}, runtime_rows)
+        for key, row in available_providers.items()
+    }
+    frame_source_truth = _normalize_frame_source_truth(gateway._latest_frame_meta)  # noqa: SLF001
+    truth = {
+        "frameSource": frame_source_truth,
+        "providerSummary": _build_provider_truth_summary(normalized_providers),
+        "providers": normalized_providers,
+    }
 
     enabled_flags = {
         "ocr": bool(gateway._target_enabled("ocr")),
@@ -3253,9 +3402,14 @@ async def api_capabilities() -> dict[str, Any]:
         "startedTsMs": build.get("startedTsMs"),
         "uptimeSec": build.get("uptimeSec"),
         "profile": gateway.config.gateway_profile,
-        "available_providers": available_providers,
+        "available_providers": normalized_providers,
         "enabled_flags": enabled_flags,
+        "frame_source": frame_source_truth.get("frameSource"),
+        "frame_source_kind": frame_source_truth.get("truthState"),
+        "frame_source_status": frame_source_truth.get("status"),
+        "frame_source_reason": frame_source_truth.get("reason"),
         "mode_profile": gateway.mode_profile.profiles if gateway.mode_profile is not None else None,
+        "truth": truth,
         "features": {
             "assist": True,
             "recording": True,
@@ -3365,6 +3519,11 @@ async def api_providers() -> dict[str, Any]:
         "tsMs": _now_ms(),
         "providers": caps.get("available_providers", {}),
         "enabledFlags": caps.get("enabled_flags", {}),
+        "frame_source": caps.get("frame_source"),
+        "frame_source_kind": caps.get("frame_source_kind"),
+        "frame_source_status": caps.get("frame_source_status"),
+        "frame_source_reason": caps.get("frame_source_reason"),
+        "truth": caps.get("truth", {}),
         "runtimeEvidence": gateway._provider_runtime_snapshot(),  # noqa: SLF001
         "runtimeOverrides": {
             "enabled": dict(gateway._runtime_target_enabled_overrides),  # noqa: SLF001
@@ -3418,6 +3577,41 @@ async def api_ui_state(limit: int = 60) -> dict[str, Any]:
     overlay_assets = dict(gateway._latest_overlay_assets)  # noqa: SLF001
     frame_asset_id = gateway._latest_frame_asset_id  # noqa: SLF001
     frame_meta = dict(gateway._latest_frame_meta)  # noqa: SLF001
+    frame_truth = _normalize_frame_source_truth(frame_meta)
+    frame_meta.update(
+        {
+            "frameSource": frame_truth.get("frameSource"),
+            "frameSourceKind": frame_truth.get("truthState"),
+            "frameSourceReason": frame_truth.get("reason"),
+            "frameSourceStatus": frame_truth.get("status"),
+        }
+    )
+    device_id = str(frame_meta.get("deviceId") or gateway._ui_recording_state.get("deviceId") or "default").strip() or "default"  # noqa: SLF001
+    mode_snapshot = gateway.mode_state.get_device_snapshot(device_id=device_id)
+    mode_state = {
+        "deviceId": mode_snapshot.device_id,
+        "mode": mode_snapshot.mode,
+        "updatedTsMs": int(mode_snapshot.updated_ts_ms),
+        "expiresInMs": mode_snapshot.expires_in_ms,
+        "source": mode_snapshot.source,
+    }
+    target_session = gateway.target_tracking.get_session(device_id=device_id)
+    target_payload = build_target_session_payload(target_session, status="active") if target_session is not None else None
+    recording_state = dict(gateway._ui_recording_state)  # noqa: SLF001
+    recording_state["lastRunPackage"] = recording_state.get("recordingPath")
+    overlay_kinds_available = sorted(str(key) for key in overlay_assets.keys())
+    truth = dict(capabilities.get("truth") or {})
+    truth.update(
+        {
+            "frameSource": frame_truth,
+            "providers": capabilities.get("available_providers", {}),
+            "providerSummary": truth.get("providerSummary") or _build_provider_truth_summary(capabilities.get("available_providers", {})),
+            "overlayKindsAvailable": overlay_kinds_available,
+            "currentMode": mode_state.get("mode"),
+            "recording": recording_state,
+            "targetSession": target_payload,
+        }
+    )
     now_ms = _now_ms()
     return {
         "ok": True,
@@ -3426,10 +3620,15 @@ async def api_ui_state(limit: int = 60) -> dict[str, Any]:
         "gitSha": capabilities.get("gitSha"),
         "profile": capabilities.get("profile"),
         "capabilities": capabilities,
+        "mode": mode_state,
+        "recording": recording_state,
+        "targetSession": target_payload,
+        "truth": truth,
         "latest": {
             "frameAssetId": frame_asset_id,
             "frameMeta": frame_meta,
             "overlayAssets": overlay_assets,
+            "overlayKindsAvailable": overlay_kinds_available,
             "eventCount": len(latest_events),
             "lastEvent": latest_events[-1] if latest_events else None,
             "eventsTail": latest_events[-20:],
@@ -3443,7 +3642,7 @@ def _build_desktop_console_html() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>BYES Desktop Console v5.05</title>
+  <title>BYES Desktop Console v5.06</title>
   <style>
     body{font-family:Segoe UI,Arial,sans-serif;background:#111;color:#eee;margin:0;padding:12px}
     .row{display:flex;gap:12px;flex-wrap:wrap}
@@ -3457,13 +3656,24 @@ def _build_desktop_console_html() -> str:
     .w420{width:420px}
     .grow{flex:1;min-width:360px}
     .ok{color:#77e08c}.warn{color:#ffca70}.err{color:#ff8f8f}
+    .small{font-size:11px;color:#b8b8b8}
+    .runtime-line{margin:4px 0}
+    .provider-row{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid #2a2a2a}
+    .provider-row:first-child{border-top:none}
+    .provider-name{width:84px;font-weight:600;text-transform:uppercase}
+    .provider-meta{flex:1;min-width:0}
+    .badge{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid #444;font-size:11px;font-weight:700;text-transform:uppercase}
+    .badge.real{background:#17361f;color:#8be5a0;border-color:#27693a}
+    .badge.mock{background:#47330d;color:#ffd27a;border-color:#9a6a12}
+    .badge.fallback{background:#16344a;color:#95d0ff;border-color:#2f6c94}
+    .badge.unavailable{background:#4a1f1f;color:#ffabab;border-color:#8d3d3d}
   </style>
 </head>
 <body>
-  <h2>BYES Desktop Console (v5.05)</h2>
+  <h2>BYES Desktop Console (v5.06)</h2>
   <div class="row">
     <div class="card w420">
-      <h3>Runtime</h3>
+      <h3>Runtime Truth</h3>
       <div id="runtime" class="mono">loading...</div>
       <div>
         <button onclick="postPing()">Ping</button>
@@ -3485,7 +3695,7 @@ def _build_desktop_console_html() -> str:
       <div id="actions" class="mono">-</div>
     </div>
     <div class="card grow">
-      <h3>Providers (real/mock evidence)</h3>
+      <h3>Providers Truth</h3>
       <div>
         <button onclick="providerEnabled('det', true)">DET ON</button>
         <button onclick="providerEnabled('det', false)">DET OFF</button>
@@ -3503,7 +3713,7 @@ def _build_desktop_console_html() -> str:
         <button onclick="providerBackend('asr', 'mock')">ASR->mock</button>
         <button onclick="providerBackend('asr', 'faster_whisper')">ASR->whisper</button>
       </div>
-      <div id="providers" class="mono">-</div>
+      <div id="providers">-</div>
     </div>
   </div>
 
@@ -3525,41 +3735,102 @@ def _build_desktop_console_html() -> str:
     let lastState = null;
     let lastAction = "-";
     let deviceId = "default";
+
+    function htmlEscape(value){
+      return String(value ?? '-')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function truthState(value){
+      const token = String(value || 'unavailable').trim().toLowerCase();
+      return ['real','mock','fallback','unavailable'].includes(token) ? token : 'unavailable';
+    }
+
+    function badgeHtml(state, label){
+      const safeState = truthState(state);
+      const safeLabel = htmlEscape(label || safeState);
+      return `<span class="badge ${safeState}">${safeLabel}</span>`;
+    }
+
+    function formatMaybe(value, fallback='-'){
+      const text = String(value ?? '').trim();
+      return text ? text : fallback;
+    }
+
+    function buildRuntimeHtml(state){
+      const latest = state.latest || {};
+      const frameMeta = latest.frameMeta || {};
+      const truth = state.truth || {};
+      const frameTruth = truth.frameSource || {};
+      const mode = state.mode || {};
+      const recording = state.recording || {};
+      const target = state.targetSession || null;
+      const overlays = (truth.overlayKindsAvailable || []).join(', ') || '-';
+      const recordLabel = recording.active ? 'active' : 'idle';
+      const recordState = recording.active ? 'real' : 'unavailable';
+
+      return [
+        `<div class="runtime-line"><strong>Version</strong> ${htmlEscape(formatMaybe(state.version))} git=${htmlEscape(formatMaybe(state.gitSha))}</div>`,
+        `<div class="runtime-line"><strong>Profile</strong> ${htmlEscape(formatMaybe(state.profile))}</div>`,
+        `<div class="runtime-line"><strong>Mode</strong> ${htmlEscape(formatMaybe(mode.mode))} <span class="small">source=${htmlEscape(formatMaybe(mode.source))}</span></div>`,
+        `<div class="runtime-line"><strong>Frame Source</strong> ${badgeHtml(frameTruth.truthState, frameTruth.truthLabel)} ${htmlEscape(formatMaybe(frameTruth.frameSource))}</div>`,
+        `<div class="runtime-line small">status=${htmlEscape(formatMaybe(frameTruth.status))} reason=${htmlEscape(formatMaybe(frameTruth.reason))}</div>`,
+        `<div class="runtime-line"><strong>Overlays</strong> ${htmlEscape(overlays)}</div>`,
+        `<div class="runtime-line"><strong>Recording</strong> ${badgeHtml(recordState, recordLabel)} <span class="small">${htmlEscape(formatMaybe(recording.lastRunPackage || recording.recordingPath))}</span></div>`,
+        `<div class="runtime-line"><strong>Target Session</strong> ${target ? htmlEscape(formatMaybe(target.sessionId)) + ' <span class="small">tracker=' + htmlEscape(formatMaybe(target.tracker)) + '</span>' : '-'}</div>`,
+        `<div class="runtime-line"><strong>Latest Frame</strong> ${htmlEscape(formatMaybe(latest.frameAssetId))} <span class="small">size=${htmlEscape(formatMaybe(frameMeta.sizeBytes))} device=${htmlEscape(formatMaybe(frameMeta.deviceId || deviceId))}</span></div>`,
+        `<div class="runtime-line"><strong>Events Tail</strong> ${htmlEscape(String(latest.eventCount || 0))}</div>`
+      ].join('');
+    }
+
+    function buildProviderHtml(providers){
+      const order = ['ocr','risk','det','seg','depth','slam','asr','tts','pyslamRealtime'];
+      return order.map((key) => {
+        const row = providers[key] || {};
+        const evidence = row.evidence || {};
+        const state = truthState(row.truthState || row.truthLabel);
+        const backend = formatMaybe(evidence.backend || row.backend);
+        const model = formatMaybe(evidence.model || row.model);
+        const device = formatMaybe(evidence.device || row.device);
+        const reason = formatMaybe(evidence.reason || row.reason);
+        const isMock = (evidence.is_mock === true || row.isMock === true) ? 'true' : 'false';
+        const lastSuccess = evidence.last_success_ts ?? row.lastSuccessTsMs ?? '-';
+        const lastInfer = evidence.last_infer_ms ?? row.lastInferMs ?? '-';
+        return `
+          <div class="provider-row">
+            <div class="provider-name">${htmlEscape(key)}</div>
+            <div class="provider-meta">
+              <div>${badgeHtml(state, state)} <span class="small">backend=${htmlEscape(backend)} model=${htmlEscape(model)} device=${htmlEscape(device)}</span></div>
+              <div class="small">is_mock=${htmlEscape(isMock)} reason=${htmlEscape(reason)} last_success_ts=${htmlEscape(String(lastSuccess))} last_infer_ms=${htmlEscape(String(lastInfer))}</div>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
     async function refreshState(){
       try{
         const r = await fetch('/api/ui/state?limit=80',{cache:'no-store'});
         const s = await r.json();
         lastState = s;
-        const caps = s.capabilities || {};
-        const prov = (caps.available_providers || {});
+        const truth = s.truth || {};
+        const prov = truth.providers || (s.capabilities || {}).available_providers || {};
         const latest = (s.latest || {});
         const frameMeta = latest.frameMeta || {};
         deviceId = frameMeta.deviceId || deviceId || 'default';
-        const frameSource = frameMeta.frameSource || '-';
-        const frameSourceMode = frameMeta.frameSourceMode || '-';
-        const frameSourceStatus = frameMeta.frameSourceStatus || frameMeta.pcaStatus || '-';
-        const pcaAvailable = (frameMeta.pcaAvailable === true) ? 'yes' : 'no';
-        const pcaReason = frameMeta.pcaReason || '-';
-        const runtime = [
-          `version=${s.version} git=${s.gitSha || '-'}`,
-          `profile=${s.profile || '-'}`,
-          `frameAsset=${latest.frameAssetId || '-'} size=${frameMeta.sizeBytes || '-'}`,
-          `frameSource=${frameSource} mode=${frameSourceMode}`,
-          `frameStatus=${frameSourceStatus}`,
-          `pcaAvailable=${pcaAvailable} reason=${pcaReason}`,
-          `eventCount=${latest.eventCount || 0}`,
-          `deviceId=${deviceId}`
-        ].join('\\n');
-        document.getElementById('runtime').textContent = runtime;
+        document.getElementById('runtime').innerHTML = buildRuntimeHtml(s);
         let providerState = {providers: prov};
         try{
           const pr = await fetch('/api/providers',{cache:'no-store'});
           if(pr.ok){
             const pb = await pr.json();
-            providerState = {providers: prov, runtimeOverrides: pb.runtimeOverrides || {}, enabledFlags: pb.enabledFlags || {}};
+            providerState = {providers: (pb.truth || {}).providers || prov, runtimeOverrides: pb.runtimeOverrides || {}, enabledFlags: pb.enabledFlags || {}};
           }
         }catch(_ignored){}
-        document.getElementById('providers').textContent = JSON.stringify(providerState, null, 2);
+        document.getElementById('providers').innerHTML = buildProviderHtml(providerState.providers || {});
         document.getElementById('events').textContent = JSON.stringify(latest.eventsTail || [], null, 2);
         document.getElementById('actions').textContent = lastAction;
 
@@ -3918,6 +4189,15 @@ async def api_record_start(payload: RecordStartRequest) -> dict[str, Any]:
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    gateway._ui_recording_state = {  # noqa: SLF001
+        "active": True,
+        "deviceId": device_id,
+        "runId": result.get("runId"),
+        "recordingPath": result.get("recordingPath"),
+        "manifestPath": None,
+        "startedTsMs": result.get("startedTsMs"),
+        "endedTsMs": None,
+    }
     return result
 
 
@@ -3933,6 +4213,15 @@ async def api_record_stop(payload: RecordStopRequest, request: Request) -> dict[
         result = gateway.recording.stop(device_id=device_id, base_url=base_url, ws_url=ws_url)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    gateway._ui_recording_state = {  # noqa: SLF001
+        "active": False,
+        "deviceId": device_id,
+        "runId": result.get("runId"),
+        "recordingPath": result.get("recordingPath"),
+        "manifestPath": result.get("manifestPath"),
+        "startedTsMs": gateway._ui_recording_state.get("startedTsMs"),  # noqa: SLF001
+        "endedTsMs": result.get("endedTsMs"),
+    }
     return result
 
 

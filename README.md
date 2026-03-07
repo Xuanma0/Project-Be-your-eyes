@@ -287,10 +287,10 @@ python Gateway/scripts/verify_contracts.py --check-lock
 ## 10) Maintainer Docs
 
 Repo memory is maintained under `docs/maintainer/`.
-Version-specific execution plans live under `docs/codex/`.
+Version-specific execution briefs are external working documents and are not tracked in this repository.
 
 - [docs/maintainer/ARCHITECTURE_REVIEW.md](docs/maintainer/ARCHITECTURE_REVIEW.md)
-- [docs/maintainer/CODEX_HANDOFF.md](docs/maintainer/CODEX_HANDOFF.md)
+- [docs/maintainer/WORKFLOW_HANDOFF.md](docs/maintainer/WORKFLOW_HANDOFF.md)
 - [docs/maintainer/ACTIVE_PLAN.md](docs/maintainer/ACTIVE_PLAN.md)
 - [docs/maintainer/DECISIONS.md](docs/maintainer/DECISIONS.md)
 - [docs/maintainer/REPO_FACTS.json](docs/maintainer/REPO_FACTS.json)
@@ -302,15 +302,15 @@ Version-specific execution plans live under `docs/codex/`.
 - [docs/maintainer/OPEN_QUESTIONS.md](docs/maintainer/OPEN_QUESTIONS.md)
 - [docs/maintainer/MAINTAINER_BRIEF.md](docs/maintainer/MAINTAINER_BRIEF.md)
 
-Current version plans:
-- [docs/codex/codex_v5_06_truth_and_focus.md](docs/codex/codex_v5_06_truth_and_focus.md)
+Current version execution should start from `docs/maintainer/ACTIVE_PLAN.md`.
+If a version-specific brief is used, keep it outside the repository as a temporary working document.
 
 ## Release Tag Suggestion (manual, optional)
 
 If maintainers decide to align release tags with `VERSION`:
 
 ```bash
-git tag -a v5.05 -m "v5.05" <commit>
+git tag -a v5.06 -m "v5.06" <commit>
 ```
 
 Do not run this automatically unless release approval is explicit.

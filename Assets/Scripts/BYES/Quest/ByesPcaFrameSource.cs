@@ -11,6 +11,10 @@ namespace BYES.Quest
 {
     public sealed class ByesPcaFrameSource : MonoBehaviour, IByesFrameSource
     {
+        private const string LegacySourceName = "pca";
+        private const string CanonicalFallbackSourceName = "ar_cpuimage_fallback";
+        private const string SourceProviderName = "ByesPcaFrameSource";
+
         [Header("PCA Capture")]
         [SerializeField] private bool androidOnly = true;
         [SerializeField] private int maxWidth = 960;
@@ -29,7 +33,9 @@ namespace BYES.Quest
         private string _sourceMode = "unavailable";
         private string _sourceReason = "uninitialized";
 
-        public string SourceName => "pca";
+        public string SourceName => string.IsNullOrWhiteSpace(_sourceMode)
+            ? CanonicalFallbackSourceName
+            : _sourceMode;
         public bool IsAvailable => _cameraManager != null && (!androidOnly || Application.platform == RuntimePlatform.Android);
         public bool SupportsAsyncGpuReadback => false;
         public bool AsyncGpuReadbackEnabled => false;
@@ -151,6 +157,11 @@ namespace BYES.Quest
             meta["frameHeight"] = LastFrameHeight;
             meta["captureTargetHz"] = CaptureTargetHz;
             meta["captureMaxInflight"] = CaptureMaxInflight;
+            meta["frameSourceProvider"] = SourceProviderName;
+            meta["frameSourceKind"] = string.Equals(SourceName, "unavailable", StringComparison.OrdinalIgnoreCase) ? "unavailable" : "fallback";
+            meta["frameSourceReason"] = _sourceReason;
+            meta["frameSourceLabel"] = SourceName;
+            meta["frameSourceLegacy"] = LegacySourceName;
             meta["pcaStatus"] = _lastStatus;
             meta["frameSourceMode"] = _sourceMode;
             meta["frameSourceStatus"] = _lastStatus;

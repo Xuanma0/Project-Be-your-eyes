@@ -1,33 +1,41 @@
-> Compatibility note: this versioned file is kept for one-version compatibility.
-> Default fact source: `docs/maintainer/CODEX_HANDOFF.md`.
-> Historical archive: `docs/maintainer/archive/CODEX_HANDOFF_v5.04.md`.
+# WORKFLOW_HANDOFF
 
-# CODEX_HANDOFF_v5.04
+Canonical development-workflow handoff.
+- Source: reorganized from `docs/maintainer/WORKFLOW_HANDOFF_v5.04.md`, `docs/maintainer/ARCHITECTURE_REVIEW_v5.04.md`, and `docs/maintainer/REPO_FACTS_v5.04.json`.
+- Updated: `2026-03-07`.
+- Historical snapshot: `docs/maintainer/archive/WORKFLOW_HANDOFF_v5.04.md`.
 
-Read `docs/maintainer/ARCHITECTURE_REVIEW.md` before implementing vNext.
+## Read First
 
-Snapshot:
-- Branch: `feature/unity-skeleton`
-- HEAD: `86ba11fba56d52cfc6c1f4c54520dbd99cdc0fac`
-- `VERSION`: `v5.05`
-- Filename note: handoff file keeps `v5.04` label by maintainer request, but repo runtime version is already `v5.05`
+For every new session, read in this order:
+
+1. `docs/maintainer/ARCHITECTURE_REVIEW.md`
+2. `docs/maintainer/WORKFLOW_HANDOFF.md`
+3. `docs/maintainer/REPO_FACTS.json`
+4. `docs/maintainer/ACTIVE_PLAN.md`
+5. `docs/maintainer/DECISIONS.md`
+
+If a version-specific execution brief exists, treat it as an external temporary working note rather than repository memory.
 
 ## Current HEAD / VERSION
 
+- Branch: `feature/unity-skeleton`
+- HEAD: `86ba11fba56d52cfc6c1f4c54520dbd99cdc0fac`
+- `VERSION`: `v5.06`
 - Unity editor target: `6000.3.10f1`
 - Enabled build scene: `Assets/Scenes/Quest3SmokeScene.unity`
 - Preferred Quest launcher: `tools/quest3/quest3_usb_realstack_v5_05.cmd`
 
-## This branch's invariants
+## This Branch's Invariants
 
 - Do not casually change `Assets/Editor/ByesQuest3SmokeSceneInstaller.cs`; it enforces the Quest smoke scene object graph and build scene.
 - Do not remove `/api/assets/*`, `/api/ui/state`, or `/ui` unless you replace both Quest HUD and desktop-console consumers.
 - Do not claim `PCA` is real capture integration; current `ByesPcaFrameSource` is an AR CPU image fallback and reports `pcaAvailable=false`.
-- Keep `frame.input`, `frame.ack`, `det.objects.v1`, `seg.mask.v1`, `depth.map.v1`, `vis.overlay.v1`, `target.session`, `target.update` contract-compatible.
+- Keep `frame.input`, `frame.ack`, `det.objects.v1`, `seg.mask.v1`, `depth.map.v1`, `vis.overlay.v1`, `target.session`, and `target.update` contract-compatible.
 - Do not bypass `Gateway/contracts/contract.lock.json`; update contracts deliberately and run the lock gate.
 - Treat Quest local TTS as client-side truth. Gateway only records TTS runtime evidence from `frame.ack`.
 
-## Known fragile files
+## Known Fragile Files
 
 - `Assets/Scripts/BYES/Quest/ByesQuest3ConnectionPanelMinimal.cs`
 - `Assets/Scripts/BYES/Quest/ByesHandMenuController.cs`
@@ -38,18 +46,18 @@ Snapshot:
 - `Gateway/services/inference_service/app.py`
 - `tools/quest3/quest3_usb_realstack_v5_05.cmd`
 
-## How to tell real vs mock quickly
+## How to Tell Real vs Mock Quickly
 
 - Check `GET /api/capabilities` and `GET /api/providers` first.
 - Open `http://127.0.0.1:18000/ui` when using the realstack launcher.
 - In Quest, read provider summary plus HUD output together. Panel-only updates are not enough.
-- If `frameSource=pca` but `frameSourceMode=ar_cpuimage_fallback` and `pcaAvailable=false`, it is fallback, not real PCA.
-- `DET/SEG/DEPTH` are "real enough" only when Quest HUD actually shows overlay assets, not just panel timestamps.
-- `ASR` is real only when backend reports `faster_whisper`; repo default is mock/disabled.
+- If frame source shows `ar_cpuimage_fallback` or `rendertexture_fallback`, it is fallback, not real capture.
+- `DET/SEG/DEPTH` are only "real enough" when Quest HUD actually shows overlay assets, not just panel timestamps.
+- `ASR` is real only when backend reports `faster_whisper`; repo default is mock or disabled.
 - `TTS` is real on Quest whenever Android TTS speaks and `frame.ack` carries TTS evidence.
 - `pySLAM realtime` is not a safe assumption; offline run-package pySLAM is the more credible path.
 
-## Required gates before pushing
+## Required Gates Before Pushing
 
 ```bash
 python Gateway/scripts/verify_contracts.py --check-lock
@@ -72,6 +80,6 @@ and confirm:
 - at least one HUD overlay is visible
 - `SelfTest` does not regress
 
-## Before vNext
+## Before Implementing vNext
 
-Before implementing `vNext`, read `ARCHITECTURE_REVIEW.md` first.
+Before implementing `vNext`, read `docs/maintainer/ARCHITECTURE_REVIEW.md`, `docs/maintainer/WORKFLOW_HANDOFF.md`, `docs/maintainer/REPO_FACTS.json`, `docs/maintainer/ACTIVE_PLAN.md`, and `docs/maintainer/DECISIONS.md` in that order.

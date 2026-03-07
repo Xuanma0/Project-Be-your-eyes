@@ -1,5 +1,12 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v5.06
+- Quest 交互入口统一为 `BYES_HandMenu`：legacy wrist menu 默认禁用，Smoke Panel 退回到状态摘要与少量 fallback 控件。
+- Frame source 真相统一到 Quest Panel、Desktop Console、`/api/capabilities`、`/api/providers`、`/api/ui/state`；fallback 采帧明确显示为 `ar_cpuimage_fallback` 或 `rendertexture_fallback`，不再暗示真 PCA。
+- Desktop Console 强化为运行时事实源：统一展示 provider evidence（`backend`、`model`、`device`、`is_mock`、`reason`、`last_success_ts`、`last_infer_ms`）、当前 mode、recording、target session、overlay kinds 与 latest frame。
+- 在不改 contracts 和 provider 语义的前提下，通过统一 mapping 层和兼容字段完成 Truth & Focus，对 smoke 主链保持兼容。
+- 维护文档层次中性化：仓库长期记忆保留在 `docs/maintainer/`，版本执行提示改为外部临时工作文档，不再作为仓库追踪内容。
+
 ## v5.05
 - Added Quest real-frame source abstraction (IByesFrameSource) with PCA capture scaffolding (ByesPcaFrameSource) and render-texture fallback; frame-source metadata is now attached in /api/frame upload meta.
 - Added Desktop Console (GET /ui, GET /api/ui/state) to show provider real/mock evidence, latest frame/overlay preview, and quick actions (ping/mode/assist/record).

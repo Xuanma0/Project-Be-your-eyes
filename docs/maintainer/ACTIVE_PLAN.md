@@ -24,6 +24,14 @@ Canonical active execution plan.
 - `Assets/BeYourEyes/Unity/Interaction/ScanController.cs`
 - `Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs`
 - `Gateway/main.py`
+- `VERSION`
+- `README.md`
+- `docs/maintainer/WORKFLOW_HANDOFF.md`
+- `docs/maintainer/ARCHITECTURE_REVIEW.md`
+- `docs/maintainer/REPO_FACTS.json`
+- `docs/maintainer/DECISIONS.md`
+- `docs/English/RELEASE_NOTES.md`
+- `docs/Chinese/RELEASE_NOTES.md`
 - `tools/quest3/quest3_usb_realstack_v5_05.cmd` (only if launcher defaults need to reflect the same truth model)
 
 ## Files or Modules Explicitly Not Touched

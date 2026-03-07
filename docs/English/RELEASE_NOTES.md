@@ -4,6 +4,13 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v5.06
+- Unified Quest interaction around `BYES_HandMenu` as the sole primary entry; legacy wrist menu is disabled by default and Smoke Panel is pushed back to status-summary and fallback controls.
+- Normalized frame-source truth across Quest panel, Desktop Console, `/api/capabilities`, `/api/providers`, and `/api/ui/state`; fallback capture now reports `ar_cpuimage_fallback` or `rendertexture_fallback` instead of implying real PCA.
+- Hardened Desktop Console runtime truth view with normalized provider evidence (`backend`, `model`, `device`, `is_mock`, `reason`, `last_success_ts`, `last_infer_ms`), current mode, recording state, target session, overlay kinds, and latest frame summary.
+- Kept smoke mainline compatibility by preserving contracts and provider logic while adding truth-mapping and one-version compatibility fields where needed.
+- Neutralized maintainer memory layout: repository memory now lives under `docs/maintainer/`, while version-specific execution briefs are treated as external working documents instead of tracked repo artifacts.
+
 ## v5.05
 - Added Quest real-frame source abstraction (`IByesFrameSource`) and PCA-ready capture path scaffolding (`ByesPcaFrameSource`) with render-texture fallback, plus frame-source metadata in `/api/frame` uploads.
 - Added Desktop Console runtime UI (`GET /ui`, `GET /api/ui/state`) to expose real/mock evidence, provider status, latest frame/overlay previews, and one-click actions (assist/mode/record/ping).

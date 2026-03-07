@@ -8,9 +8,12 @@ namespace BYES.Quest
 {
     public sealed class ByesRenderTextureFrameSource : MonoBehaviour, IByesFrameSource
     {
+        private const string CanonicalSourceName = "rendertexture_fallback";
+        private const string SourceProviderName = "ByesRenderTextureFrameSource";
+
         [SerializeField] private ScreenFrameGrabber source;
 
-        public string SourceName => "rendertexture";
+        public string SourceName => CanonicalSourceName;
         public bool IsAvailable => source != null;
         public bool SupportsAsyncGpuReadback => source != null && source.SupportsAsyncGpuReadback;
         public bool AsyncGpuReadbackEnabled => source != null && source.AsyncGpuReadbackEnabled;
@@ -50,10 +53,14 @@ namespace BYES.Quest
             }
             source.FillMeta(meta);
             meta["frameSource"] = SourceName;
-            meta["frameSourceMode"] = "rendertexture_fallback";
+            meta["frameSourceMode"] = CanonicalSourceName;
             meta["frameSourceStatus"] = "ok:rendertexture_fallback";
+            meta["frameSourceKind"] = "fallback";
+            meta["frameSourceReason"] = "screen_grabber_fallback";
+            meta["frameSourceLabel"] = CanonicalSourceName;
+            meta["frameSourceProvider"] = SourceProviderName;
             meta["pcaAvailable"] = false;
-            meta["pcaReason"] = "pca_unavailable_fallback_rendertexture";
+            meta["pcaReason"] = "screen_grabber_fallback";
         }
     }
 }

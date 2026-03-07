@@ -83,3 +83,6 @@ Gateway/external/modelpack/weights_test/
 
 # Unity Android temporary native build outputs
 .utmp/
+
+# External version execution briefs are not tracked in repo memory
+docs/codex/

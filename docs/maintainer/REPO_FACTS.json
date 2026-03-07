@@ -4,19 +4,19 @@
   "updatedAt": "2026-03-07",
   "sourceFiles": [
     "docs/maintainer/ARCHITECTURE_REVIEW_v5.04.md",
-    "docs/maintainer/CODEX_HANDOFF_v5.04.md",
+    "docs/maintainer/WORKFLOW_HANDOFF_v5.04.md",
     "docs/maintainer/REPO_FACTS_v5.04.json"
   ],
   "archivedSnapshots": [
     "docs/maintainer/archive/ARCHITECTURE_REVIEW_v5.04.md",
-    "docs/maintainer/archive/CODEX_HANDOFF_v5.04.md",
+    "docs/maintainer/archive/WORKFLOW_HANDOFF_v5.04.md",
     "docs/maintainer/archive/REPO_FACTS_v5.04.json"
   ],
   "capturedAt": "2026-03-07",
   "branch": "feature/unity-skeleton",
   "head": "86ba11fba56d52cfc6c1f4c54520dbd99cdc0fac",
-  "version": "v5.05",
-  "versionLabelNote": "Canonical facts are derived from the v5.04 maintainer review snapshot while repo VERSION remains v5.05.",
+  "version": "v5.06",
+  "versionLabelNote": "Canonical facts reflect repository state after v5.06 Truth & Focus alignment.",
   "unity": {
     "editorVersion": "6000.3.10f1",
     "primaryBuildScene": "Assets/Scenes/Quest3SmokeScene.unity",
@@ -322,16 +322,19 @@
   },
   "build_outputs": {
     "questApkDir": "Builds/Quest3",
-    "latestQuestApk": "Builds/Quest3/BYES_Quest3Smoke_v5.05.apk",
-    "latestQuestSymbols": "Builds/Quest3/BYES_Quest3Smoke_v5.05-2.2.1-v1-IL2CPP.symbols.zip",
+    "latestQuestApk": "Builds/Quest3/BYES_Quest3Smoke_v5.06.apk",
+    "latestQuestSymbols": "Builds/Quest3/BYES_Quest3Smoke_v5.06-2.2.1-v1-IL2CPP.symbols.zip",
     "unityBuildLog": "Builds/logs/unity_build_quest3_android.log",
     "unityBuildSummary": "Builds/logs/unity_build_quest3_android.summary.txt",
     "runPackagesRoot": "Gateway/artifacts/run_packages",
     "questRecordingsRoot": "Gateway/artifacts/run_packages/quest_recordings"
   },
   "runbook_paths": [
-    "docs/maintainer/ARCHITECTURE_REVIEW_v5.04.md",
-    "docs/maintainer/CODEX_HANDOFF_v5.04.md",
+    "docs/maintainer/ARCHITECTURE_REVIEW.md",
+    "docs/maintainer/WORKFLOW_HANDOFF.md",
+    "docs/maintainer/ACTIVE_PLAN.md",
+    "docs/maintainer/DECISIONS.md",
+    "docs/maintainer/REPO_FACTS.json",
     "docs/maintainer/RUNBOOK_QUEST3.md",
     "docs/maintainer/RUNBOOK_LOCAL.md",
     "docs/maintainer/API_INVENTORY.md",

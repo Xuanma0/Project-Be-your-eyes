@@ -1,6 +1,10 @@
-# CODEX_HANDOFF_v5.04
+> Compatibility note: this versioned file is kept for one-version compatibility.
+> Default fact source: `docs/maintainer/WORKFLOW_HANDOFF.md`.
+> Historical archive: `docs/maintainer/archive/WORKFLOW_HANDOFF_v5.04.md`.
 
-Read `docs/maintainer/ARCHITECTURE_REVIEW_v5.04.md` before implementing vNext.
+# WORKFLOW_HANDOFF_v5.04
+
+Read `docs/maintainer/ARCHITECTURE_REVIEW.md` before implementing vNext.
 
 Snapshot:
 - Branch: `feature/unity-skeleton`
@@ -70,4 +74,4 @@ and confirm:
 
 ## Before vNext
 
-Before implementing `vNext`, read `ARCHITECTURE_REVIEW_v5.04.md` first.
+Before implementing `vNext`, read `ARCHITECTURE_REVIEW.md` first.

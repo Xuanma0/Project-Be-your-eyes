@@ -105,7 +105,7 @@ namespace BeYourEyes.Unity.Interaction
             get
             {
                 var source = ResolveFrameSource();
-                var name = source?.SourceName;
+                var name = NormalizeFrameSourceToken(source?.SourceName);
                 return string.IsNullOrWhiteSpace(name) ? "unknown" : name;
             }
         }
@@ -388,7 +388,20 @@ namespace BeYourEyes.Unity.Interaction
 
                 var captureMeta = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
                 source.FillMeta(captureMeta);
-                captureMeta["frameSource"] = source.SourceName;
+                var normalizedFrameSource = NormalizeFrameSourceToken(source.SourceName, captureMeta);
+                captureMeta["frameSource"] = normalizedFrameSource;
+                if (!captureMeta.ContainsKey("frameSourceMode"))
+                {
+                    captureMeta["frameSourceMode"] = normalizedFrameSource;
+                }
+                if (!captureMeta.ContainsKey("frameSourceKind"))
+                {
+                    captureMeta["frameSourceKind"] = ResolveFrameSourceKind(normalizedFrameSource);
+                }
+                if (!captureMeta.ContainsKey("frameSourceLabel"))
+                {
+                    captureMeta["frameSourceLabel"] = normalizedFrameSource;
+                }
                 if (captureMeta.TryGetValue("frameSourceStatus", out var sourceStatusObj))
                 {
                     lastFrameSourceStatus = sourceStatusObj != null ? sourceStatusObj.ToString() : "-";
@@ -681,7 +694,7 @@ namespace BeYourEyes.Unity.Interaction
 
                 fallback ??= candidate;
                 var sourceName = candidate.SourceName ?? string.Empty;
-                if (candidate.IsAvailable && !string.Equals(sourceName, "rendertexture", StringComparison.OrdinalIgnoreCase))
+                if (candidate.IsAvailable && !IsRenderTextureFallbackSource(sourceName))
                 {
                     activeFrameSource = candidate;
                     return activeFrameSource;
@@ -696,6 +709,56 @@ namespace BeYourEyes.Unity.Interaction
 
             activeFrameSource = frameGrabber;
             return activeFrameSource;
+        }
+
+        private static bool IsRenderTextureFallbackSource(string sourceName)
+        {
+            var token = string.IsNullOrWhiteSpace(sourceName) ? string.Empty : sourceName.Trim().ToLowerInvariant();
+            return token.Contains("rendertexture");
+        }
+
+        private static string NormalizeFrameSourceToken(string sourceName, IDictionary<string, object> captureMeta = null)
+        {
+            var token = string.IsNullOrWhiteSpace(sourceName) ? string.Empty : sourceName.Trim().ToLowerInvariant();
+            if (captureMeta != null)
+            {
+                if (captureMeta.TryGetValue("frameSourceMode", out var modeObj))
+                {
+                    var mode = string.IsNullOrWhiteSpace(modeObj?.ToString()) ? string.Empty : modeObj.ToString().Trim().ToLowerInvariant();
+                    if (!string.IsNullOrWhiteSpace(mode) && mode != "unavailable")
+                    {
+                        token = mode;
+                    }
+                }
+            }
+
+            if (token == "pca")
+            {
+                return "ar_cpuimage_fallback";
+            }
+
+            if (token == "rendertexture")
+            {
+                return "rendertexture_fallback";
+            }
+
+            return string.IsNullOrWhiteSpace(token) ? "unknown" : token;
+        }
+
+        private static string ResolveFrameSourceKind(string frameSource)
+        {
+            var token = string.IsNullOrWhiteSpace(frameSource) ? string.Empty : frameSource.Trim().ToLowerInvariant();
+            if (token.EndsWith("_fallback", StringComparison.Ordinal))
+            {
+                return "fallback";
+            }
+
+            if (token is "" or "unknown" or "unavailable")
+            {
+                return "unavailable";
+            }
+
+            return "real";
         }
 
         private void EmitUploadMetrics(bool ok, string error)

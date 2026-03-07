@@ -319,7 +319,7 @@
   },
   "runbook_paths": [
     "docs/maintainer/ARCHITECTURE_REVIEW_v5.04.md",
-    "docs/maintainer/CODEX_HANDOFF_v5.04.md",
+    "docs/maintainer/WORKFLOW_HANDOFF_v5.04.md",
     "docs/maintainer/RUNBOOK_QUEST3.md",
     "docs/maintainer/RUNBOOK_LOCAL.md",
     "docs/maintainer/API_INVENTORY.md",

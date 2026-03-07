@@ -110,6 +110,7 @@ namespace BYES.Quest
         {
             ResolveRefs();
             EnsureOfficialHandMenu();
+            DisableLegacyWristMenus();
             TryEnsureMetaGestureDetector();
             BuildRuntimeUi();
             LoadPrefsAndApply();
@@ -646,7 +647,7 @@ namespace BYES.Quest
                 GUIUtility.systemCopyBuffer = (_panel != null ? _panel.BuildDebugSummary() : "panel missing") + "\nGestures=" + (_shortcuts != null ? _shortcuts.GetRecentTriggersAsText() : "-");
                 SetFeedback("Debug copied");
             });
-            _showFullPanelToggle = CreateToggle(page, "Open Full Connection Panel", new Vector2(0f, -208f), value =>
+            _showFullPanelToggle = CreateToggle(page, "Show Advanced Panel Controls", new Vector2(0f, -208f), value =>
             {
                 PlayerPrefs.SetInt(PrefShowFullPanel, value ? 1 : 0);
                 PlayerPrefs.Save();
@@ -966,6 +967,8 @@ namespace BYES.Quest
             _sb.Clear();
             _sb.Append("HTTP: ").Append(_panel.GetBaseUrl()).Append('\n');
             _sb.Append("WS: ").Append(_panel.IsWsConnected() ? "connected" : "disconnected").Append('\n');
+            _sb.Append("Frame Source: ").Append(_panel.GetFrameSourceText()).Append('\n');
+            _sb.Append("Providers: ").Append(_panel.GetProviderSummaryText()).Append('\n');
             _sb.Append("Record: ").Append(_panel.IsRecording() ? "ON" : "OFF").Append('\n');
             _sb.Append("Overlay: ").Append(_visionHud != null ? "ready" : "unavailable").Append('\n');
             _sb.Append("DeviceId: ").Append(_panel.GetDeviceId()).Append('\n');
@@ -1415,6 +1418,21 @@ namespace BYES.Quest
                 {
                     go.SetActive(false);
                 }
+            }
+        }
+
+        private static void DisableLegacyWristMenus()
+        {
+            var wristMenus = FindObjectsByType<ByesWristMenuController>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            for (var i = 0; i < wristMenus.Length; i += 1)
+            {
+                var wristMenu = wristMenus[i];
+                if (wristMenu == null)
+                {
+                    continue;
+                }
+
+                wristMenu.gameObject.SetActive(false);
             }
         }
     }

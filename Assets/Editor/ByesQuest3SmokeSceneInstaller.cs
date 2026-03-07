@@ -67,11 +67,7 @@ namespace BYES.Editor
             panel.transform.localRotation = Quaternion.identity;
             panel.transform.localScale = Vector3.one;
 
-            var legacyWristMenu = smokeRig.transform.Find(LegacyWristMenuName);
-            if (legacyWristMenu != null)
-            {
-                UnityEngine.Object.DestroyImmediate(legacyWristMenu.gameObject);
-            }
+            RemoveLegacyWristMenus(smokeRig.transform);
 
             var handMenuPrefab = EnsureHandMenuPrefab();
             var handMenuRoot = EnsureHandMenuInstance(smokeRig.transform, handMenuPrefab);
@@ -292,6 +288,24 @@ namespace BYES.Editor
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
             return saved;
+        }
+
+        private static void RemoveLegacyWristMenus(Transform smokeRig)
+        {
+            var legacyWristMenu = smokeRig.Find(LegacyWristMenuName);
+            if (legacyWristMenu != null)
+            {
+                UnityEngine.Object.DestroyImmediate(legacyWristMenu.gameObject);
+            }
+
+            var allWristMenus = UnityEngine.Object.FindObjectsByType<ByesWristMenuController>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            for (var i = 0; i < allWristMenus.Length; i += 1)
+            {
+                if (allWristMenus[i] != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(allWristMenus[i].gameObject);
+                }
+            }
         }
 
         private static GameObject EnsureHandMenuInstance(Transform parent, GameObject prefab)

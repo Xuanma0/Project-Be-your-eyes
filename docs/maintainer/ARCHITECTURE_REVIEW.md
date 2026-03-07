@@ -1,6 +1,7 @@
 > Canonical maintainer memory.
 > Source: reorganized from `docs/maintainer/ARCHITECTURE_REVIEW_v5.04.md`.
 > Updated: `2026-03-07`.
+> Companion files: `docs/maintainer/WORKFLOW_HANDOFF.md`, `docs/maintainer/REPO_FACTS.json`, `docs/maintainer/ACTIVE_PLAN.md`, `docs/maintainer/DECISIONS.md`.
 > Historical snapshot: `docs/maintainer/archive/ARCHITECTURE_REVIEW_v5.04.md`.
 
 # 1. Executive Summary
@@ -30,7 +31,7 @@ Gateway 端已经具备：
 - PC 负责：OCR/DET/SEG/DEPTH/SLAM 等重计算、回放评测、回归门禁、桌面观测台、模型/权重管理
 - Gateway 负责：统一 API、事件归一化、provider 编排、帧缓存/asset cache、recording/run package、contracts/gates
 
-结论：当前分支已经适合作为 `v5.05+` 的“烟测主干”，但还不适合作为长期稳定架构基线；下一阶段应优先做职责边界清理、真实效果优先、real/mock 可观测化，而不是继续堆新按钮和新状态行。
+结论：当前分支已经适合作为 `v5.06+` 的“烟测主干”，但还不适合作为长期稳定架构基线；下一阶段应优先做职责边界清理、真实效果优先、real/mock 可观测化，而不是继续堆新按钮和新状态行。
 
 # 2. Current Repository Architecture
 
@@ -501,7 +502,7 @@ Gateway 必须负责：
 # 9. Concrete Next Milestones
 
 说明：
-- 由于 repo `VERSION` 已是 `v5.05`，下面把 `v5.05` 视为“当前版本的硬化主题”，供后续迭代引用。
+- 由于 repo `VERSION` 已是 `v5.06`，下面的版本段落保留为演进建议记录；当前已批准执行计划以 `docs/maintainer/ACTIVE_PLAN.md` 为准。
 
 ## v5.05: Reality Alignment And Observability Hardening
 
@@ -683,8 +684,8 @@ python Gateway/scripts/pyslam_run_package.py --run-package <path> --pyslam-root 
 - Quest scene: `Assets/Scenes/Quest3SmokeScene.unity`
 - Preferred hand menu prefab: `Assets/Prefabs/BYES/Quest/BYES_HandMenu.prefab`
 - Legacy wrist menu prefab: `Assets/Prefabs/BYES/Quest/BYES_WristMenu.prefab`
-- Android APK output: `Builds/Quest3/BYES_Quest3Smoke_v5.05.apk`
-- Android symbols: `Builds/Quest3/BYES_Quest3Smoke_v5.05-2.2.1-v1-IL2CPP.symbols.zip`
+- Android APK output: `Builds/Quest3/BYES_Quest3Smoke_v5.06.apk`
+- Android symbols: `Builds/Quest3/BYES_Quest3Smoke_v5.06-2.2.1-v1-IL2CPP.symbols.zip`
 - Unity build log: `Builds/logs/unity_build_quest3_android.log`
 - Unity build summary: `Builds/logs/unity_build_quest3_android.summary.txt`
 - Run packages root: `Gateway/artifacts/run_packages/`

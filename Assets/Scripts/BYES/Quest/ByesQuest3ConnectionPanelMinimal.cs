@@ -135,6 +135,7 @@ namespace BYES.Quest
         private string _voiceMicDevice = null;
         private float _voiceRecordingStartRealtime;
         private bool _recordingActive;
+        private string _lastRecordingPath = "-";
         private string _targetSessionId = string.Empty;
         private string _targetTracker = "botsort";
         private readonly JObject _selectedRoi = new JObject
@@ -1065,7 +1066,7 @@ namespace BYES.Quest
             panelGroup.blocksRaycasts = true;
             panelGroup.interactable = true;
 
-            _ = CreateText("Title", panel.transform, "BYES Quest3 Smoke Panel", 46, TextAnchor.MiddleCenter, new Vector2(0.5f, 1f), new Vector2(0f, -64f), new Vector2(1480f, 80f));
+            _ = CreateText("Title", panel.transform, "BYES Quest Status Panel", 46, TextAnchor.MiddleCenter, new Vector2(0.5f, 1f), new Vector2(0f, -64f), new Vector2(1480f, 80f));
             _baseUrlText = CreateText("BaseUrl", panel.transform, "-", 32, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -138f), new Vector2(1480f, 62f));
             _reachabilityText = CreateText("Reachability", panel.transform, "HTTP: probing...", 32, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -194f), new Vector2(1480f, 62f));
             _wsText = CreateText("WsStatus", panel.transform, "WS: disconnected", 32, TextAnchor.MiddleLeft, new Vector2(0.5f, 1f), new Vector2(0f, -250f), new Vector2(1480f, 62f));
@@ -1091,8 +1092,8 @@ namespace BYES.Quest
             _toastText = CreateText("Toast", panel.transform, "-", 32, TextAnchor.MiddleCenter, new Vector2(0.5f, 0f), new Vector2(0f, 290f), new Vector2(1480f, 72f));
             _rawText = CreateText("Raw", panel.transform, "-", 24, TextAnchor.UpperLeft, new Vector2(0.5f, 0f), new Vector2(0f, 210f), new Vector2(1480f, 170f), allowWrap: true);
 
-            CreateButton(panel.transform, "PingButton", "Ping", new Vector2(-650f, -1508f), OnPingClicked, markAsAction: true);
-            CreateButton(panel.transform, "VersionButton", "Version", new Vector2(-420f, -1508f), OnVersionClicked, markAsAction: true);
+            CreateButton(panel.transform, "PingButton", "Ping", new Vector2(-650f, -1508f), OnPingClicked, markAsAction: false);
+            CreateButton(panel.transform, "VersionButton", "Version", new Vector2(-420f, -1508f), OnVersionClicked, markAsAction: false);
             CreateButton(panel.transform, "ModeReadButton", "Read", new Vector2(-190f, -1508f), () => OnSetModeClicked("read_text"), markAsAction: true);
             CreateButton(panel.transform, "ModeWalkButton", "Walk", new Vector2(40f, -1508f), () => OnSetModeClicked("walk"), markAsAction: true);
             CreateButton(panel.transform, "ModeInspectButton", "Inspect", new Vector2(270f, -1508f), () => OnSetModeClicked("inspect"), markAsAction: true);
@@ -1100,9 +1101,9 @@ namespace BYES.Quest
             _liveButton = CreateButton(panel.transform, "LiveButton", "Live Start", new Vector2(730f, -1508f), OnLiveClicked, markAsAction: true);
             _liveToggle = CreateLiveToggle(panel.transform, "LiveToggle", "Live", new Vector2(730f, -1588f), OnLiveToggleChanged, markAsAction: true);
 
-            CreateButton(panel.transform, "RefreshButton", "Refresh", new Vector2(-420f, -1588f), OnRefreshClicked, markAsAction: true);
-            CreateButton(panel.transform, "SelfTestButton", "SelfTest", new Vector2(-190f, -1588f), OnSelfTestClicked, markAsAction: true);
-            CreateButton(panel.transform, "ReconnectWsButton", "WS Reconnect", new Vector2(40f, -1588f), OnReconnectWsClicked, markAsAction: true);
+            CreateButton(panel.transform, "RefreshButton", "Refresh", new Vector2(-420f, -1588f), OnRefreshClicked, markAsAction: false);
+            CreateButton(panel.transform, "SelfTestButton", "SelfTest", new Vector2(-190f, -1588f), OnSelfTestClicked, markAsAction: false);
+            CreateButton(panel.transform, "ReconnectWsButton", "WS Reconnect", new Vector2(40f, -1588f), OnReconnectWsClicked, markAsAction: false);
             CreateButton(panel.transform, "RecordStartButton", "Rec Start", new Vector2(270f, -1588f), OnRecordStartClicked, markAsAction: true);
             CreateButton(panel.transform, "RecordStopButton", "Rec Stop", new Vector2(500f, -1588f), OnRecordStopClicked, markAsAction: true);
         }
@@ -1214,6 +1215,7 @@ namespace BYES.Quest
                 ok = success;
                 if (success && obj != null)
                 {
+                    _lastRecordingPath = NormalizeRecordingPath(obj.Value<string>("recordingPath"), obj.Value<string>("runId"));
                     message = (obj.Value<string>("runId") ?? "record started").Trim();
                 }
                 else
@@ -1262,6 +1264,7 @@ namespace BYES.Quest
                 ok = success;
                 if (success && obj != null)
                 {
+                    _lastRecordingPath = NormalizeRecordingPath(obj.Value<string>("recordingPath"), obj.Value<string>("runId"));
                     message = (obj.Value<string>("recordingPath") ?? "record stopped").Trim();
                 }
                 else
@@ -2029,6 +2032,17 @@ namespace BYES.Quest
             return _passthroughController != null ? _passthroughController.StatusString : "unavailable";
         }
 
+        public string GetFrameSourceText()
+        {
+            ResolveRefs();
+            return _scanController != null ? _scanController.CaptureSource : "-";
+        }
+
+        public string GetRecordingPathText()
+        {
+            return string.IsNullOrWhiteSpace(_lastRecordingPath) ? "-" : _lastRecordingPath;
+        }
+
         public void TriggerRefreshFromUi()
         {
             OnRefreshClicked();
@@ -2218,6 +2232,7 @@ namespace BYES.Quest
                 $"http={(_lastPingRttMs >= 0 ? "reachable" : "unknown")} rttMs={_lastPingRttMs}\n" +
                 $"ws={(_gatewayClient != null && _gatewayClient.IsConnected ? "connected" : "disconnected")}\n" +
                 $"mode={_currentMode}\n" +
+                $"frameSource={GetFrameSourceText()}\n" +
                 $"scan={_scanStatus} err={_scanError}\n" +
                 $"event={_lastEventType} ts={_lastEventTsMs}\n" +
                 $"ocr={_lastOcrText} ts={_lastOcrTsMs}\n" +
@@ -2227,6 +2242,7 @@ namespace BYES.Quest
                 $"target={_lastTargetText} ts={_lastTargetTsMs} session={_targetSessionId}\n" +
                 $"guidance={_guidanceText} ts={_lastGuidanceTsMs}\n" +
                 $"providers={_providerSummary} detail={_providerDetail}\n" +
+                $"recordPath={GetRecordingPathText()}\n" +
                 $"passthrough={GetPassthroughStatus()}\n" +
                 $"selfTest={_selfTestStatus} summary={_selfTestSummary}\n" +
                 $"hitch={(_hitchMonitor != null ? _hitchMonitor.HitchCount30s : -1)}";
@@ -2429,11 +2445,14 @@ namespace BYES.Quest
             try
             {
                 var obj = JObject.Parse(string.IsNullOrWhiteSpace(payload) ? "{}" : payload);
-                var providers = obj["available_providers"] as JObject;
-                _providerSummary = BuildProviderSummary(providers);
+                var truth = obj["truth"] as JObject;
+                var providers = truth?["providers"] as JObject ?? obj["available_providers"] as JObject;
+                _providerSummary = string.IsNullOrWhiteSpace(truth?.Value<string>("providerSummary"))
+                    ? BuildProviderSummary(providers)
+                    : truth.Value<string>("providerSummary");
                 _providerDetail = providers != null
                     ? providers.ToString(Newtonsoft.Json.Formatting.None)
-                    : "available_providers missing";
+                    : (truth != null ? truth.ToString(Newtonsoft.Json.Formatting.None) : "available_providers missing");
             }
             catch (Exception ex)
             {
@@ -2515,45 +2534,36 @@ namespace BYES.Quest
                     return $"{key}=na";
                 }
 
+                var truthState = (row.Value<string>("truthState") ?? row.Value<string>("truthLabel") ?? string.Empty).Trim().ToLowerInvariant();
                 var backend = (row.Value<string>("backend") ?? "unknown").Trim().ToLowerInvariant();
                 var enabled = row.Value<bool?>("enabled") == true;
                 var reason = (row.Value<string>("reason") ?? string.Empty).Trim().ToLowerInvariant();
-                var model = (row.Value<string>("model") ?? string.Empty).Trim();
-                var runtime = row["runtime"] as JObject;
-                var device = runtime?.Value<string>("device") ?? row.Value<string>("device") ?? string.Empty;
-                var inferMs = runtime?.Value<double?>("inferMs") ?? row.Value<double?>("inferMs");
-                var fps = runtime?.Value<double?>("fps") ?? row.Value<double?>("fps");
-                var ageMs = runtime?.Value<long?>("ageMs") ?? row.Value<long?>("ageMs");
-
-                var mode = "real";
-                if (!enabled)
+                var mode = truthState;
+                if (string.IsNullOrWhiteSpace(mode))
                 {
-                    mode = "off";
-                }
-                else if (backend.IndexOf("mock", StringComparison.Ordinal) >= 0
-                         || backend.IndexOf("reference", StringComparison.Ordinal) >= 0
-                         || backend == "none")
-                {
-                    mode = "mock";
-                }
-                else if (reason.IndexOf("missing", StringComparison.Ordinal) >= 0
-                         || reason.IndexOf("disabled", StringComparison.Ordinal) >= 0
-                         || reason.IndexOf("not_ready", StringComparison.Ordinal) >= 0)
-                {
-                    mode = "off";
+                    mode = "real";
+                    if (!enabled)
+                    {
+                        mode = "unavailable";
+                    }
+                    else if (backend.IndexOf("mock", StringComparison.Ordinal) >= 0
+                             || backend.IndexOf("reference", StringComparison.Ordinal) >= 0
+                             || backend == "none")
+                    {
+                        mode = "mock";
+                    }
+                    else if (reason.IndexOf("missing", StringComparison.Ordinal) >= 0
+                             || reason.IndexOf("disabled", StringComparison.Ordinal) >= 0
+                             || reason.IndexOf("not_ready", StringComparison.Ordinal) >= 0)
+                    {
+                        mode = "unavailable";
+                    }
                 }
 
-                var compactBackend = backend.Length > 14 ? backend.Substring(0, 14) : backend;
-                var compactModel = string.IsNullOrWhiteSpace(model)
+                var compactBackend = string.IsNullOrWhiteSpace(backend)
                     ? "-"
-                    : (model.Length > 12 ? model.Substring(0, 12) : model);
-                var compactDevice = string.IsNullOrWhiteSpace(device)
-                    ? "-"
-                    : (device.Length > 8 ? device.Substring(0, 8) : device);
-                var inferText = inferMs.HasValue ? $"{inferMs.Value:0}ms" : "-";
-                var fpsText = fps.HasValue ? $"{fps.Value:0.0}hz" : "-";
-                var ageText = ageMs.HasValue ? $"{Math.Max(0, ageMs.Value)}ms" : "-";
-                return $"{key}={mode}/{compactBackend}({compactModel}|{compactDevice}|{inferText}|{fpsText}|{ageText})";
+                    : (backend.Length > 16 ? backend.Substring(0, 16) : backend);
+                return $"{key}[{mode}:{compactBackend}]";
             }
 
             return string.Join(
@@ -2561,6 +2571,7 @@ namespace BYES.Quest
                 new[]
                 {
                     Token(providers, "ocr"),
+                    Token(providers, "risk"),
                     Token(providers, "det"),
                     Token(providers, "seg"),
                     Token(providers, "depth"),
@@ -2744,7 +2755,7 @@ namespace BYES.Quest
                     ? $"Last E2E: {_scanController.LastE2eMs:0} ms"
                     : "Last E2E: -";
                 captureText =
-                    $"CaptureHz: {_scanController.CaptureTargetHz} | Src: {_scanController.CaptureSource} {_scanController.CaptureFrameWidth}x{_scanController.CaptureFrameHeight} | Inflight: {_scanController.InflightCount}/{_scanController.LiveMaxInflight} | ReadbackReq: {_scanController.CaptureActiveReadbacks} | Async: {(_scanController.CaptureAsyncReadbackEnabled ? "ON" : "OFF")} / {(_scanController.CaptureSupportsAsyncReadback ? "supported" : "unsupported")}";
+                    $"Frame Source: {_scanController.CaptureSource} {_scanController.CaptureFrameWidth}x{_scanController.CaptureFrameHeight} | CaptureHz: {_scanController.CaptureTargetHz} | Inflight: {_scanController.InflightCount}/{_scanController.LiveMaxInflight} | ReadbackReq: {_scanController.CaptureActiveReadbacks} | Async: {(_scanController.CaptureAsyncReadbackEnabled ? "ON" : "OFF")} / {(_scanController.CaptureSupportsAsyncReadback ? "supported" : "unsupported")}";
                 captureText += $" | SourceStatus: {_scanController.LastFrameSourceStatus}";
             }
             var probeCount10s = GetProbeCount10s();
@@ -2816,7 +2827,7 @@ namespace BYES.Quest
             if (_rawVisible)
             {
                 var providerAge = _providerTsMs > 0 ? $"{Math.Max(0, nowMs - _providerTsMs)}ms" : "-";
-                var hint = $"trackSession={_targetSessionId} | passthrough={GetPassthroughStatus()} | guideAudio={(_guidanceAudioEnabled ? "on" : "off")} | guideHaptics={(_guidanceHapticsEnabled ? "on" : "off")} | asr={_lastAsrText}({asrAge}) | tts={_lastTtsText}({ttsAge}) | autoVoice={(_autoVoiceCommandEnabled ? "on" : "off")} | providers=[{_providerSummary}] age={providerAge}";
+                var hint = $"trackSession={_targetSessionId} | recordPath={GetRecordingPathText()} | passthrough={GetPassthroughStatus()} | guideAudio={(_guidanceAudioEnabled ? "on" : "off")} | guideHaptics={(_guidanceHapticsEnabled ? "on" : "off")} | asr={_lastAsrText}({asrAge}) | tts={_lastTtsText}({ttsAge}) | autoVoice={(_autoVoiceCommandEnabled ? "on" : "off")} | providers=[{_providerSummary}] age={providerAge}";
                 if (probeCount10s >= 8 && !liveEnabled)
                 {
                     hint = "MainThread Spike suspect: probe polling | " + hint;
@@ -2861,6 +2872,17 @@ namespace BYES.Quest
             {
                 _probeRequestTsMs.Dequeue();
             }
+        }
+
+        private static string NormalizeRecordingPath(string recordingPath, string runId)
+        {
+            var path = string.IsNullOrWhiteSpace(recordingPath) ? string.Empty : recordingPath.Trim();
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                return path;
+            }
+
+            return string.IsNullOrWhiteSpace(runId) ? "-" : runId.Trim();
         }
 
         private int GetProbeCount10s()

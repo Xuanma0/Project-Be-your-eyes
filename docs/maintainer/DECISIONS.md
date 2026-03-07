@@ -1,7 +1,7 @@
 # DECISIONS
 
 Canonical architecture decisions that should not be re-litigated without explicit maintainer approval.
-- Source: `docs/maintainer/ARCHITECTURE_REVIEW_v5.04.md`, `docs/maintainer/CODEX_HANDOFF_v5.04.md`, `docs/maintainer/REPO_FACTS_v5.04.json`, and the approved `v5.06 Truth & Focus` design.
+- Source: `docs/maintainer/ARCHITECTURE_REVIEW_v5.04.md`, `docs/maintainer/WORKFLOW_HANDOFF_v5.04.md`, `docs/maintainer/REPO_FACTS_v5.04.json`, and the approved `v5.06 Truth & Focus` design.
 - Updated: `2026-03-07`.
 
 ## Interaction and UX
@@ -28,4 +28,4 @@ Canonical architecture decisions that should not be re-litigated without explici
 
 - Contracts remain stable unless intentionally revised and re-locked.
 - Truth alignment should be implemented additively first; avoid destructive field removals when compatibility is still needed.
-- New version execution work belongs under `docs/codex/`; long-term memory belongs under `docs/maintainer/`.
+- Version-specific execution briefs are external working documents and are not tracked in the repository; long-term memory belongs under `docs/maintainer/`.
