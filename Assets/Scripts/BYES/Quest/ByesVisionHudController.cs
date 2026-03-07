@@ -1,10 +1,8 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 using BeYourEyes.Adapters.Networking;
 using UnityEngine;
-using UnityEngine.Networking;
 using UnityEngine.UI;
 
 namespace BYES.Quest
@@ -35,8 +33,6 @@ namespace BYES.Quest
         private readonly List<Image> _boxOutlines = new List<Image>();
         private readonly List<Text> _boxLabels = new List<Text>();
         private ByesVisionHudRenderer _renderer;
-        private Texture2D _segTexture;
-        private Texture2D _depthTexture;
         private long _lastSegTsMs = -1;
         private long _lastDepthTsMs = -1;
         private long _lastDetTsMs = -1;
@@ -184,6 +180,18 @@ namespace BYES.Quest
             UpdatePose(force: true);
         }
 
+        public void SetOverlayUnavailable(string overlayKind, string reason, bool clearTexture)
+        {
+            EnsureRenderer();
+            _renderer?.SetOverlayUnavailable(overlayKind, reason, clearTexture);
+        }
+
+        public void ClearOverlay(string overlayKind, string reason = "cleared")
+        {
+            EnsureRenderer();
+            _renderer?.ClearOverlay(overlayKind, reason);
+        }
+
         public void ResetHud()
         {
             showDetOverlay = true;
@@ -219,23 +227,31 @@ namespace BYES.Quest
             _detImage = detGo.AddComponent<RawImage>();
             _detImage.color = new Color(1f, 1f, 1f, detAlpha);
             _detImage.raycastTarget = false;
+            _detImage.enabled = false;
 
             var depthGo = CreateUiObject("DepthOverlay", root.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(960f, 540f), Vector2.zero);
             _depthImage = depthGo.AddComponent<RawImage>();
             _depthImage.color = new Color(1f, 1f, 1f, depthAlpha);
             _depthImage.raycastTarget = false;
+            _depthImage.enabled = false;
 
             var segGo = CreateUiObject("SegOverlay", root.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(960f, 540f), Vector2.zero);
             _segImage = segGo.AddComponent<RawImage>();
             _segImage.color = new Color(1f, 0.2f, 0.2f, segAlpha);
             _segImage.raycastTarget = false;
+            _segImage.enabled = false;
 
             for (var i = 0; i < Mathf.Max(1, maxBoxes); i += 1)
             {
                 var boxGo = CreateUiObject($"Box_{i}", root.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(100f, 100f), Vector2.zero);
                 var image = boxGo.AddComponent<Image>();
-                image.color = new Color(0.1f, 1f, 0.2f, 0.95f);
+                image.color = new Color(0f, 0f, 0f, 0f);
                 image.raycastTarget = false;
+                var outline = boxGo.AddComponent<Outline>();
+                outline.effectColor = new Color(0.1f, 1f, 0.2f, 0.96f);
+                outline.effectDistance = new Vector2(2f, 2f);
+                outline.useGraphicAlpha = false;
+                image.enabled = false;
                 _boxOutlines.Add(image);
 
                 var label = CreateText($"BoxLabel_{i}", boxGo.transform, "-", 20, TextAnchor.UpperLeft, new Vector2(0f, 1f), new Vector2(20f, 12f), new Vector2(240f, 48f));
@@ -272,113 +288,6 @@ namespace BYES.Quest
         private void Unbind()
         {
             _renderer?.Unbind();
-        }
-
-        private void HandleGatewayEvent(JObject evt)
-        {
-            if (evt == null)
-            {
-                return;
-            }
-
-            var name = (evt.Value<string>("name") ?? evt.Value<string>("type") ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(name))
-            {
-                return;
-            }
-
-            var payload = evt["payload"] as JObject;
-            if (payload == null)
-            {
-                return;
-            }
-
-            switch (name)
-            {
-                case "seg.mask.v1":
-                    if (showSegOverlay)
-                    {
-                        var segAssetId = (payload.Value<string>("assetId") ?? string.Empty).Trim();
-                        if (!string.IsNullOrWhiteSpace(segAssetId))
-                        {
-                            StartCoroutine(DownloadAsset(segAssetId, applyToSeg: true));
-                        }
-                        _lastSegTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                    }
-                    break;
-                case "depth.map.v1":
-                    if (showDepthOverlay)
-                    {
-                        var depthAssetId = (payload.Value<string>("assetId") ?? string.Empty).Trim();
-                        if (!string.IsNullOrWhiteSpace(depthAssetId))
-                        {
-                            StartCoroutine(DownloadAsset(depthAssetId, applyToSeg: false));
-                        }
-                        _lastDepthTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                    }
-                    break;
-                case "det.objects.v1":
-                case "det.objects":
-                    _lastDetTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                    if (showDetOverlay)
-                    {
-                        UpdateDetOverlay(payload);
-                    }
-                    break;
-                case "target.update":
-                    if (showTargetOverlay && showDetOverlay)
-                    {
-                        UpdateDetOverlay(payload);
-                    }
-                    break;
-            }
-        }
-
-        private IEnumerator DownloadAsset(string assetId, bool applyToSeg)
-        {
-            if (_gatewayClient == null)
-            {
-                yield break;
-            }
-            var baseUrl = _gatewayClient.BaseUrl.TrimEnd('/');
-            var url = $"{baseUrl}/api/assets/{UnityWebRequest.EscapeURL(assetId)}";
-            var started = Time.realtimeSinceStartup;
-            using (var request = UnityWebRequestTexture.GetTexture(url, true))
-            {
-                request.timeout = 6;
-                var apiKey = _gatewayClient.ApiKey;
-                if (!string.IsNullOrWhiteSpace(apiKey))
-                {
-                    request.SetRequestHeader("X-BYES-API-Key", apiKey.Trim());
-                }
-                yield return request.SendWebRequest();
-                _lastDecodeMs = Mathf.Max(0f, (Time.realtimeSinceStartup - started) * 1000f);
-                if (request.result != UnityWebRequest.Result.Success)
-                {
-                    yield break;
-                }
-
-                var texture = DownloadHandlerTexture.GetContent(request);
-                if (texture == null)
-                {
-                    yield break;
-                }
-
-                _assetBytes = request.downloadHandler != null && request.downloadHandler.data != null
-                    ? request.downloadHandler.data.Length
-                    : 0;
-
-                if (applyToSeg)
-                {
-                    _segTexture = texture;
-                    _segImage.texture = _segTexture;
-                }
-                else
-                {
-                    _depthTexture = texture;
-                    _depthImage.texture = _depthTexture;
-                }
-            }
         }
 
         private void UpdateDetOverlay(JObject payload)

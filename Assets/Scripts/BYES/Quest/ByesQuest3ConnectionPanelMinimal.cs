@@ -3156,6 +3156,10 @@ namespace BYES.Quest
                 _targetSessionId = (targetSession.Value<string>("sessionId") ?? string.Empty).Trim();
                 _targetTracker = (targetSession.Value<string>("tracker") ?? _targetTracker).Trim();
             }
+
+            ApplyOverlayTruthToHud(
+                providers,
+                stateObj["latest"]?["overlayAssets"] as JObject);
         }
 
         private static string NormalizeTruthStateToken(string value)
@@ -3216,6 +3220,42 @@ namespace BYES.Quest
             }
 
             return null;
+        }
+
+        private void ApplyOverlayTruthToHud(JObject providers, JObject overlayAssets)
+        {
+            if (_visionHud == null)
+            {
+                return;
+            }
+
+            ApplyOverlayTruthToHud("det", providers?["det"] as JObject, overlayAssets?["det"] as JObject);
+            ApplyOverlayTruthToHud("seg", providers?["seg"] as JObject, overlayAssets?["seg"] as JObject);
+            ApplyOverlayTruthToHud("depth", providers?["depth"] as JObject, overlayAssets?["depth"] as JObject);
+        }
+
+        private void ApplyOverlayTruthToHud(string overlayKind, JObject providerRow, JObject overlayRow)
+        {
+            if (_visionHud == null || string.IsNullOrWhiteSpace(overlayKind))
+            {
+                return;
+            }
+
+            var providerState = NormalizeTruthStateToken(providerRow?.Value<string>("truthState") ?? providerRow?.Value<string>("truthLabel"));
+            var providerReason = (providerRow?.Value<string>("reason") ?? "unavailable").Trim().ToLowerInvariant();
+            var overlayAvailable = overlayRow?.Value<bool?>("overlayAvailable") == true;
+            var overlayReason = (overlayRow?.Value<string>("overlayReason") ?? string.Empty).Trim().ToLowerInvariant();
+
+            if (providerState == "unavailable")
+            {
+                _visionHud.SetOverlayUnavailable(overlayKind, providerReason, clearTexture: true);
+                return;
+            }
+
+            if (!overlayAvailable && !string.IsNullOrWhiteSpace(overlayReason) && overlayReason != "asset_not_emitted")
+            {
+                _visionHud.SetOverlayUnavailable(overlayKind, overlayReason, clearTexture: false);
+            }
         }
 
         private void RefreshMicPermissionState()

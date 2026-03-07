@@ -79,6 +79,13 @@ namespace BYES.Quest
         private void ApplyRequestedState()
         {
             var setup = ResolveSetup(createIfMissing: _requestedEnabled && Application.platform == RuntimePlatform.Android);
+            if (!_requestedEnabled)
+            {
+                SafeDisable(setup);
+                SetStatus("unavailable", "disabled");
+                return;
+            }
+
             var availabilityReason = EvaluateAvailabilityReason(setup);
             if (!string.IsNullOrWhiteSpace(availabilityReason))
             {
@@ -90,13 +97,6 @@ namespace BYES.Quest
             if (setup == null)
             {
                 SetStatus("unavailable", "setup_missing");
-                return;
-            }
-
-            if (!_requestedEnabled)
-            {
-                SafeDisable(setup);
-                SetStatus("unavailable", "disabled");
                 return;
             }
 
@@ -115,7 +115,14 @@ namespace BYES.Quest
                     return;
                 }
 
-                SetStatus(setup.IsEnabled ? "real" : "unavailable", setup.IsEnabled ? "quest_passthrough_ok" : "camera_feature_disabled");
+                if (!setup.IsEnabled)
+                {
+                    SafeDisable(setup);
+                    SetStatus("unavailable", "not_ready");
+                    return;
+                }
+
+                SetStatus("real", "quest_passthrough_ok");
             }
             catch (Exception ex)
             {
@@ -127,6 +134,7 @@ namespace BYES.Quest
 
         private static void SafeDisable(ByesQuestPassthroughSetup setup)
         {
+            RestoreStableBackground(setup);
             if (setup == null)
             {
                 return;
@@ -144,9 +152,14 @@ namespace BYES.Quest
 
         private string EvaluateAvailabilityReason(ByesQuestPassthroughSetup setup)
         {
-            if (Application.platform != RuntimePlatform.Android)
+            if (Application.isEditor || Application.platform != RuntimePlatform.Android)
             {
-                return "not_android";
+                return "link_unsupported";
+            }
+
+            if (!IsQuest3Family(SystemInfo.deviceModel))
+            {
+                return "unsupported_device";
             }
 
             if (setup == null)
@@ -164,17 +177,99 @@ namespace BYES.Quest
             var cameraBackgroundType = Type.GetType("UnityEngine.XR.ARFoundation.ARCameraBackground, Unity.XR.ARFoundation", throwOnError: false);
             if (cameraManagerType == null || cameraBackgroundType == null)
             {
-                return "camera_feature_disabled";
+                return "feature_disabled";
             }
 
             var cameraManager = camera.GetComponent(cameraManagerType) as Behaviour;
             var cameraBackground = camera.GetComponent(cameraBackgroundType) as Behaviour;
             if (cameraManager == null || cameraBackground == null)
             {
-                return "camera_feature_disabled";
+                return "feature_disabled";
+            }
+
+            if (!HasRequiredCameraPermission(cameraManager))
+            {
+                return "no_permission";
             }
 
             return null;
+        }
+
+        private static void RestoreStableBackground(ByesQuestPassthroughSetup setup)
+        {
+            try
+            {
+                if (setup != null)
+                {
+                    setup.SetOpacity(1f);
+                    setup.SetColorMode(ByesQuestPassthroughSetup.PassthroughColorMode.Color);
+                    setup.SetEnabled(false);
+                    return;
+                }
+            }
+            catch
+            {
+                // Fall through to a camera-level background reset.
+            }
+
+            var camera = Camera.main != null ? Camera.main : FindFirstObjectByType<Camera>();
+            if (camera == null)
+            {
+                return;
+            }
+
+            camera.clearFlags = CameraClearFlags.SolidColor;
+            var color = camera.backgroundColor;
+            color.a = 1f;
+            color.r = 0.03f;
+            color.g = 0.03f;
+            color.b = 0.03f;
+            camera.backgroundColor = color;
+        }
+
+        private static bool HasRequiredCameraPermission(Behaviour cameraManager)
+        {
+            var arFoundationPermission = false;
+            if (cameraManager != null)
+            {
+                try
+                {
+                    var permissionProperty = cameraManager.GetType().GetProperty("permissionGranted");
+                    if (permissionProperty?.GetValue(cameraManager) is bool granted)
+                    {
+                        arFoundationPermission = granted;
+                    }
+                }
+                catch
+                {
+                    arFoundationPermission = false;
+                }
+            }
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                return arFoundationPermission
+                       || UnityEngine.Android.Permission.HasUserAuthorizedPermission(UnityEngine.Android.Permission.Camera)
+                       || UnityEngine.Android.Permission.HasUserAuthorizedPermission("horizonos.permission.USE_SCENE")
+                       || UnityEngine.Android.Permission.HasUserAuthorizedPermission("horizonos.permission.USE_SCENE_UNDERSTANDING_COARSE");
+            }
+            catch
+            {
+                return arFoundationPermission;
+            }
+#else
+            return arFoundationPermission;
+#endif
+        }
+
+        private static bool IsQuest3Family(string deviceModel)
+        {
+            var lowered = string.IsNullOrWhiteSpace(deviceModel) ? string.Empty : deviceModel.Trim().ToLowerInvariant();
+            return lowered.Contains("quest 3s")
+                   || lowered.Contains("quest3s")
+                   || lowered.Contains("quest 3")
+                   || lowered.Contains("quest3");
         }
 
         private void SetStatus(string truthState, string reason)

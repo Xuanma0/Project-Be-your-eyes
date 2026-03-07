@@ -1,17 +1,17 @@
 # ACTIVE_PLAN
 
 Canonical active execution plan.
-- Source: approved `v5.08.1 Visual Truth Stabilization` hotfix scope from maintainer discussion on `2026-03-08`.
+- Source: approved `v5.08.2 Real Bring-up & UX Hotfix` scope from maintainer discussion on `2026-03-08`.
 - Updated: `2026-03-08`.
 - Scope: current approved version plan until superseded by a newer maintainer decision.
 
 ## Current Version Goal
 
+- Realstack startup must fail closed. Missing YOLO26/SAM3/DA3 weights or missing `BYES_PYSLAM_ROOT` must surface as `UNAVAILABLE_MISSING_PATH`, and missing runtime dependencies or bad endpoints must surface as `UNAVAILABLE_RUNTIME`; no false `READY_REAL` is allowed.
 - Provider truth must say the current truth. If a provider is failing, timed out, disabled, missing, or returning `503/404`, Quest Panel, Desktop Console, `/api/providers`, `/api/capabilities`, and `/api/ui/state` must show `unavailable` or `fallback`, not `real`.
 - Overlay assets must behave like immutable blobs. Quest should download an overlay only when `assetId` changes, cache successful textures locally, keep last-frame hold after success, and stop retry-spamming the same failed asset id.
-- Whole-FOV overlay rendering must stay visually stable. Empty DET/SEG/DEPTH layers should not render default white or red backgrounds, and Desktop preview should show `unavailable + reason` when no valid overlay asset exists.
-- Hand Menu and Smoke Panel interaction must be shorter and safer: reduced page length, non-overlapping sliders and labels, better Meta system-gesture conflict isolation, and panel drag that reorients toward the HMD instead of pitching forward.
-- Passthrough must either be genuinely working or clearly unavailable. Quest and Desktop should show `real`, `fallback`, or `unavailable` plus a reason, and unstable half-enabled visuals should fall back to a stable background.
+- Passthrough and PCA truth must degrade honestly. Unsupported Link/simulator/no-permission/no-provider paths must show `unavailable + reason` and return to a stable opaque background.
+- Hand Menu and Smoke Panel interaction must be shorter and safer: reduced page length, explicit `Input Mode` for hands/controllers/auto, stronger system-gesture conflict isolation, and panel drag that reorients yaw-only toward the HMD.
 
 ## Files to Modify
 
@@ -22,7 +22,12 @@ Canonical active execution plan.
 - `Assets/Scripts/BYES/Quest/ByesQuest3SelfTestRunner.cs`
 - `Assets/Scripts/BYES/Quest/ByesPassthroughController.cs`
 - `Gateway/main.py`
+- `tools/quest3/quest3_usb_realstack_v5_08.cmd`
+- `tools/quest3/quest3_usb_realstack_v5_08_2.cmd`
 - `VERSION`
+- `README.md`
+- `docs/maintainer/RUNBOOK_QUEST3.md`
+- `docs/maintainer/CONFIG_MATRIX.md`
 - `docs/English/RELEASE_NOTES.md`
 - `docs/Chinese/RELEASE_NOTES.md`
 - `docs/maintainer/ACTIVE_PLAN.md`
@@ -51,14 +56,15 @@ Canonical active execution plan.
 
 ## Quest Manual Acceptance Steps
 
-1. Launch the existing realstack flow and confirm the desktop console at `/ui` is reachable.
-2. Launch `Quest3SmokeScene` on Quest and confirm `BYES_HandMenu` remains the only primary entry while Smoke Panel stays a status surface.
-3. Confirm Quest Panel and Desktop Console both show failing DET/SLAM providers as `unavailable` when backend calls return `503`, `404`, timeout, or disabled states.
-4. Trigger `Scan Once` and then `Detect` or `Live`; verify Quest downloads a given overlay asset id once, keeps it visible locally, and does not keep re-requesting the same asset id after a success or `404`.
-5. Verify whole-FOV overlay layers do not show white or red blank quads when a DET/SEG/DEPTH texture is missing or disabled.
-6. Open the Hand Menu and confirm Vision, Voice, and Dev pages are shorter, sliders no longer overlap labels, and system gestures suppress conflicting UI interaction.
-7. Drag the Smoke Panel only after unlocking it, then release it and confirm it faces the HMD with yaw-only alignment instead of pitching toward the floor or ceiling.
-8. Toggle passthrough on and off and confirm Quest and Desktop show `real`, `fallback`, or `unavailable` with a reason, with no ambiguous half-enabled visual state.
+1. Run `tools\\quest3\\quest3_usb_realstack_v5_08_2.cmd --preflight-only` and confirm YOLO26/SAM3/DA3/pySLAM readiness is printed with `READY_REAL / READY_MOCK / UNAVAILABLE_MISSING_PATH / UNAVAILABLE_RUNTIME`.
+2. Launch the realstack flow and confirm the desktop console at `/ui` is reachable.
+3. Launch `Quest3SmokeScene` on Quest and confirm `BYES_HandMenu` remains the only primary entry while Smoke Panel stays a status surface.
+4. Confirm Quest Panel and Desktop Console both show failing DET/SLAM providers as `unavailable` when backend calls return `503`, `404`, timeout, disabled states, or missing-model preflight conditions.
+5. Trigger `Scan Once` and then `Detect` or `Live`; verify Quest downloads a given overlay asset id once, keeps it visible locally, and does not keep re-requesting the same asset id after a success or `404`.
+6. Verify whole-FOV overlay layers do not show white, red, or solid green placeholder blocks when a DET/SEG/DEPTH texture is missing or disabled.
+7. Open the Hand Menu in hands mode and controller mode; confirm pages are shorter, sliders no longer overlap labels, and system gestures suppress conflicting UI interaction.
+8. Drag the Smoke Panel only after unlocking it, then release it and confirm it faces the HMD with yaw-only alignment instead of pitching toward the floor or ceiling.
+9. Toggle passthrough on and off and confirm Quest and Desktop show `real`, `fallback`, or `unavailable` with a reason, with no ambiguous half-enabled visual state.
 
 ## Required Gates
 
@@ -78,6 +84,7 @@ cmd /c tools\unity\build_quest3_android.cmd
 ## Main Risks and Rollback Plan
 
 - Main risk: Quest Panel, Desktop Console, and Gateway truth surfaces drift apart again if only one surface reads normalized provider or overlay state.
-- Secondary risk: overlay stale-hold, passthrough fallback, or gesture isolation logic overcorrects and suppresses legitimate rendering or interaction.
+- Secondary risk: the fail-closed launcher could drift from Gateway runtime truth if preflight categories or missing-path reasons are not mirrored in `/api/capabilities` and `/api/ui/state`.
+- Additional risk: overlay stale-hold, passthrough fallback, or gesture isolation logic overcorrects and suppresses legitimate rendering or interaction.
 - Rollback rule: prefer additive truth fields, cached local hold behavior, and UI gating over destructive rewrites. Preserve contracts and existing provider outputs.
 - First rollback targets if Quest smoke regresses: `Gateway/main.py`, `Assets/Scripts/BYES/Quest/ByesVisionHudRenderer.cs`, `Assets/Scripts/BYES/Quest/ByesQuest3ConnectionPanelMinimal.cs`, `Assets/Scripts/BYES/Quest/ByesHandMenuController.cs`, and `Assets/Scripts/BYES/Quest/ByesPassthroughController.cs`.

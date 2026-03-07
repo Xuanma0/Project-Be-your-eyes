@@ -1595,7 +1595,15 @@ class GatewayApp:
                     prompt=None,
                 )
             except Exception as exc:  # noqa: BLE001
-                ocr_result = OCRResult(status="error", error=exc.__class__.__name__, payload={"reason": exc.__class__.__name__})
+                ocr_reason = _normalize_provider_failure_reason(str(exc))
+                ocr_result = OCRResult(
+                    status="error",
+                    error=exc.__class__.__name__,
+                    payload={
+                        "reason": ocr_reason,
+                        "error": exc.__class__.__name__,
+                    },
+                )
             await emit_ocr_events(
                 ocr_result,
                 frame_seq=event_frame_seq,
@@ -1627,10 +1635,14 @@ class GatewayApp:
             try:
                 risk_result = await self.risk_backend.infer(frame_bytes, seq, ts_ms)
             except Exception as exc:  # noqa: BLE001
+                risk_reason = _normalize_provider_failure_reason(str(exc))
                 risk_result = RiskResult(
                     status="error",
                     error=exc.__class__.__name__,
-                    payload={"reason": exc.__class__.__name__},
+                    payload={
+                        "reason": risk_reason,
+                        "error": exc.__class__.__name__,
+                    },
                     latency_ms=max(0, _now_ms() - risk_started_ms),
                 )
             await emit_risk_events(
@@ -1671,10 +1683,15 @@ class GatewayApp:
                     prompt=det_prompt_override,
                 )
             except Exception as exc:  # noqa: BLE001
+                det_reason = _normalize_provider_failure_reason(str(exc))
                 det_result = DetResult(
                     status="error",
                     error=exc.__class__.__name__,
-                    payload={"reason": exc.__class__.__name__, "objectsCount": 0},
+                    payload={
+                        "reason": det_reason,
+                        "error": exc.__class__.__name__,
+                        "objectsCount": 0,
+                    },
                     latency_ms=max(0, _now_ms() - det_started_ms),
                 )
             await emit_det_events(
@@ -1727,11 +1744,13 @@ class GatewayApp:
                     pose=None,
                 )
             except Exception as exc:  # noqa: BLE001
+                depth_reason = _normalize_provider_failure_reason(str(exc))
                 depth_result = DepthResult(
                     status="error",
                     error=exc.__class__.__name__,
                     payload={
-                        "reason": exc.__class__.__name__,
+                        "reason": depth_reason,
+                        "error": exc.__class__.__name__,
                         "gridCount": 0,
                         "valuesCount": 0,
                     },
@@ -1846,11 +1865,13 @@ class GatewayApp:
                     tracking=bool(self.config.inference_seg_tracking),
                 )
             except Exception as exc:  # noqa: BLE001
+                seg_reason = _normalize_provider_failure_reason(str(exc))
                 seg_result = SegResult(
                     status="error",
                     error=exc.__class__.__name__,
                     payload={
-                        "reason": exc.__class__.__name__,
+                        "reason": seg_reason,
+                        "error": exc.__class__.__name__,
                         "segmentsCount": 0,
                         "targetsCount": len(seg_targets),
                         "targetsUsed": seg_targets,
@@ -1916,10 +1937,14 @@ class GatewayApp:
                     prompt=None,
                 )
             except Exception as exc:  # noqa: BLE001
+                slam_reason = _normalize_provider_failure_reason(str(exc))
                 slam_result = SlamResult(
                     status="error",
                     error=exc.__class__.__name__,
-                    payload={"reason": exc.__class__.__name__},
+                    payload={
+                        "reason": slam_reason,
+                        "error": exc.__class__.__name__,
+                    },
                     latency_ms=max(0, _now_ms() - slam_started_ms),
                 )
             await emit_slam_pose_events(
@@ -3087,7 +3112,7 @@ async def frame_ack(request: FrameAckRequest) -> dict[str, Any]:
             "model": str(request.providerModel or "").strip() or None,
             "device": str(request.providerDevice or "quest").strip() or "quest",
             "enabled": bool(request.accepted),
-            "reason": "endpoint_404" if passthrough_reason == "http_404" else passthrough_reason,
+            "reason": _normalize_provider_failure_reason(passthrough_reason),
             "lastChangedTsMs": feedback_ts_ms,
         }
     ack_event = _build_byes_event(
@@ -3382,6 +3407,146 @@ def _resolve_provider_truth_state(
     return "real"
 
 
+def _first_nonempty_env(*names: str) -> str:
+    for name in names:
+        value = str(os.getenv(name, "")).strip()
+        if value:
+            return value
+    return ""
+
+
+def _looks_like_path_token(value: str | None) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(sep in text for sep in ("/", "\\")) or lowered.endswith((".pt", ".pth", ".onnx", ".ckpt", ".bin", ".safetensors"))
+
+
+def _normalize_provider_failure_reason(raw: str | None) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return "error"
+    lowered = text.lower()
+    match = re.search(r"(?:http|status)[_:]?(\d{3})", lowered)
+    if match:
+        code = match.group(1)
+        return "endpoint_404" if code == "404" else f"http_{code}"
+    if "timeout" in lowered:
+        return "timeout"
+    if "missing_dependency" in lowered:
+        return lowered
+    if "not_installed" in lowered:
+        if "ultralytics" in lowered:
+            return "missing_dependency:ultralytics"
+        if "onnxruntime" in lowered:
+            return "missing_dependency:onnxruntime"
+        if "paddleocr" in lowered:
+            return "missing_dependency:paddleocr"
+    if "checkpoint_not_found" in lowered or "model_not_found" in lowered or "path_not_found" in lowered:
+        return "path_not_found"
+    if "missing_byes_" in lowered or lowered.startswith("missing_"):
+        return lowered.replace("missing_byes_", "missing_env:")
+    if "provider_not_started" in lowered or "not_ready" in lowered:
+        return "not_ready"
+    sanitized = re.sub(r"[^a-z0-9:_-]+", "_", lowered).strip("_")
+    return sanitized or "error"
+
+
+def _preflight_provider_reason(provider_key: str | None, backend: str | None, endpoint: str | None) -> str | None:
+    key = str(provider_key or "").strip().lower()
+    backend_text = str(backend or "").strip().lower()
+    endpoint_text = str(endpoint or "").strip()
+    if not key:
+        return None
+
+    if backend_text.startswith("mock") or backend_text in {"none", "reference"}:
+        return "mock_provider"
+
+    if key == "ocr":
+        service_provider = str(os.getenv("BYES_SERVICE_OCR_PROVIDER", "")).strip().lower()
+        if service_provider == "mock":
+            return "mock_provider"
+        if service_provider == "paddleocr" and importlib.util.find_spec("paddleocr") is None:
+            return "missing_dependency:paddleocr"
+        return None
+
+    if key == "det":
+        if backend_text == "http" and not endpoint_text:
+            return "missing_endpoint"
+        service_provider = str(os.getenv("BYES_SERVICE_DET_PROVIDER", "")).strip().lower()
+        if service_provider == "mock":
+            return "mock_provider"
+        if service_provider in {"yolo26", "ultralytics"}:
+            if importlib.util.find_spec("ultralytics") is None:
+                return "missing_dependency:ultralytics"
+            if service_provider == "yolo26":
+                weights_path = _first_nonempty_env("BYES_YOLO26_WEIGHTS", "BYES_SERVICE_DET_MODEL_PATH")
+                if not weights_path:
+                    return "missing_path:yolo26_weights"
+                if not Path(weights_path).expanduser().exists():
+                    return "path_not_found"
+                return None
+            model_ref = _first_nonempty_env("BYES_SERVICE_DET_MODEL_PATH", "BYES_SERVICE_DET_MODEL", "BYES_SERVICE_DET_MODEL_ID")
+            if not model_ref:
+                return "missing_path:det_model"
+            if _looks_like_path_token(model_ref) and not Path(model_ref).expanduser().exists():
+                return "path_not_found"
+        return None
+
+    if key == "seg":
+        if backend_text == "http" and not endpoint_text:
+            return "missing_endpoint"
+        service_provider = str(os.getenv("BYES_SERVICE_SEG_PROVIDER", "")).strip().lower()
+        if service_provider == "mock":
+            return "mock_provider"
+        if service_provider == "sam3":
+            ckpt_path = _first_nonempty_env(
+                "BYES_SAM3_CKPT_PATH",
+                "BYES_SAM3_CKPT",
+                "BYES_SERVICE_SEG_MODEL_PATH",
+                "BYES_SERVICE_SAM3_CKPT",
+                "BYES_SAM3_WEIGHTS",
+            )
+            if not ckpt_path:
+                return "missing_path:sam3_checkpoint"
+            if not Path(ckpt_path).expanduser().exists():
+                return "path_not_found"
+        return None
+
+    if key == "depth":
+        if backend_text == "http" and not endpoint_text:
+            return "missing_endpoint"
+        service_provider = str(os.getenv("BYES_SERVICE_DEPTH_PROVIDER", "")).strip().lower()
+        if service_provider in {"", "none"}:
+            return "disabled_by_provider"
+        if service_provider == "mock":
+            return "mock_provider"
+        if service_provider in {"da3", "onnx"}:
+            model_path = _first_nonempty_env(
+                "BYES_DA3_MODEL_PATH",
+                "BYES_SERVICE_DEPTH_MODEL_PATH",
+                "BYES_SERVICE_DEPTH_ONNX_PATH",
+                "BYES_DA3_WEIGHTS",
+            )
+            if not model_path:
+                return "missing_path:depth_model"
+            if not Path(model_path).expanduser().exists():
+                return "path_not_found"
+            if service_provider == "onnx" and importlib.util.find_spec("onnxruntime") is None:
+                return "missing_dependency:onnxruntime"
+        return None
+
+    if key == "slam":
+        if backend_text == "http" and endpoint_text:
+            lowered_endpoint = endpoint_text.rstrip("/").lower()
+            if lowered_endpoint.endswith("/slam"):
+                return "endpoint_404"
+        return None
+
+    return None
+
+
 def _normalize_provider_row(
     name: str,
     row: dict[str, Any] | None,
@@ -3394,8 +3559,7 @@ def _normalize_provider_row(
     model = str(runtime.get("model") or source_row.get("model") or "").strip() or None
     device = str(runtime.get("device") or source_row.get("device") or "").strip() or None
     reason = str(runtime.get("reason") or source_row.get("reason") or "").strip() or None
-    if reason == "http_404":
-        reason = "endpoint_404"
+    reason = _normalize_provider_failure_reason(reason) if reason else None
     enabled = bool(source_row.get("enabled"))
     last_success_ts = _to_nonnegative_int_or_none(runtime.get("lastSuccessTsMs"))
     if last_success_ts is None:
@@ -3530,7 +3694,7 @@ def _normalize_passthrough_truth(raw: dict[str, Any] | None) -> dict[str, Any]:
         "model": str(row.get("model") or "").strip() or None,
         "device": str(row.get("device") or "quest").strip() or "quest",
         "enabled": bool(row.get("enabled")) and truth_state != "unavailable",
-        "reason": "endpoint_404" if reason == "http_404" else reason,
+        "reason": _normalize_provider_failure_reason(reason),
         "lastChangedTsMs": _to_nonnegative_int_or_none(row.get("lastChangedTsMs")),
     }
 
@@ -3559,13 +3723,16 @@ async def api_capabilities() -> dict[str, Any]:
     elif asr_backend_name == "faster_whisper" and importlib.util.find_spec("faster_whisper") is None:
         asr_reason = "missing_dependency:faster_whisper"
 
-    def _provider_reason(*, enabled: bool, backend: str | None, endpoint: str | None, service_key: str | None = None) -> str:
+    def _provider_reason(*, provider_key: str, enabled: bool, backend: str | None, endpoint: str | None, service_key: str | None = None) -> str:
         if not enabled:
             return "disabled_by_flag"
         backend_text = str(backend or "").strip().lower()
         endpoint_text = str(endpoint or "").strip()
         if backend_text == "http" and not endpoint_text:
             return "missing_endpoint"
+        preflight_reason = _preflight_provider_reason(provider_key, backend_text, endpoint_text)
+        if preflight_reason:
+            return preflight_reason
         if service_key:
             readiness = gateway._external_readiness.get(service_key)  # noqa: SLF001
             if isinstance(readiness, dict):
@@ -3614,6 +3781,7 @@ async def api_capabilities() -> dict[str, Any]:
             "enabled": bool(gateway._target_enabled("ocr")),
             "requestedBackend": gateway._provider_backend_overrides.get("ocr"),
             "reason": _provider_reason(
+                provider_key="ocr",
                 enabled=bool(gateway._target_enabled("ocr")),
                 backend=getattr(gateway.ocr_backend, "name", "unknown"),
                 endpoint=getattr(gateway.ocr_backend, "endpoint", None),
@@ -3626,6 +3794,7 @@ async def api_capabilities() -> dict[str, Any]:
             "endpoint": getattr(gateway.risk_backend, "endpoint", None),
             "enabled": bool(gateway._target_enabled("risk")),
             "reason": _provider_reason(
+                provider_key="risk",
                 enabled=bool(gateway._target_enabled("risk")),
                 backend=getattr(gateway.risk_backend, "name", "unknown"),
                 endpoint=getattr(gateway.risk_backend, "endpoint", None),
@@ -3638,6 +3807,7 @@ async def api_capabilities() -> dict[str, Any]:
             "enabled": bool(gateway._target_enabled("det")),
             "requestedBackend": gateway._provider_backend_overrides.get("det"),
             "reason": _provider_reason(
+                provider_key="det",
                 enabled=bool(gateway._target_enabled("det")),
                 backend=getattr(gateway.det_backend, "name", "unknown"),
                 endpoint=getattr(gateway.det_backend, "endpoint", None),
@@ -3651,6 +3821,7 @@ async def api_capabilities() -> dict[str, Any]:
             "enabled": bool(gateway._target_enabled("depth")),
             "requestedBackend": gateway._provider_backend_overrides.get("depth"),
             "reason": _provider_reason(
+                provider_key="depth",
                 enabled=bool(gateway._target_enabled("depth")),
                 backend=getattr(gateway.depth_backend, "name", "unknown"),
                 endpoint=getattr(gateway.depth_backend, "endpoint", None),
@@ -3664,6 +3835,7 @@ async def api_capabilities() -> dict[str, Any]:
             "enabled": bool(gateway._target_enabled("seg")),
             "requestedBackend": gateway._provider_backend_overrides.get("seg"),
             "reason": _provider_reason(
+                provider_key="seg",
                 enabled=bool(gateway._target_enabled("seg")),
                 backend=getattr(gateway.seg_backend, "name", "unknown"),
                 endpoint=getattr(gateway.seg_backend, "endpoint", None),
@@ -3676,6 +3848,7 @@ async def api_capabilities() -> dict[str, Any]:
             "enabled": bool(gateway._target_enabled("slam")),
             "requestedBackend": gateway._provider_backend_overrides.get("slam"),
             "reason": _provider_reason(
+                provider_key="slam",
                 enabled=bool(gateway._target_enabled("slam")),
                 backend=getattr(gateway.slam_backend, "name", "unknown"),
                 endpoint=getattr(gateway.slam_backend, "endpoint", None),
@@ -3982,7 +4155,15 @@ async def api_ui_state(limit: int = 60) -> dict[str, Any]:
         asset_id = str(row.get("assetId") or "").strip() or None
         asset_meta = gateway.asset_cache.get_meta(asset_id) if asset_id else None  # noqa: SLF001
         overlay_available = asset_meta is not None
-        overlay_reason = "ok" if overlay_available else ("asset_expired" if asset_id else "asset_not_emitted")
+        provider_row = providers.get(kind, {}) if isinstance(providers, dict) else {}
+        provider_truth_state = str(provider_row.get("truthState") or provider_row.get("truthLabel") or "unavailable").strip().lower() or "unavailable"
+        provider_reason = str(provider_row.get("reason") or "").strip() or "asset_not_emitted"
+        if overlay_available:
+            overlay_reason = "ok"
+        elif provider_truth_state != "real":
+            overlay_reason = provider_reason
+        else:
+            overlay_reason = "asset_expired" if asset_id else "asset_not_emitted"
         normalized_row = dict(row)
         normalized_row.update(
             {
@@ -4058,7 +4239,7 @@ def _build_desktop_console_html() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>BYES Desktop Console v5.08.1</title>
+  <title>BYES Desktop Console v5.08.2</title>
   <style>
     body{font-family:Segoe UI,Arial,sans-serif;background:#111;color:#eee;margin:0;padding:12px}
     .row{display:flex;gap:12px;flex-wrap:wrap}

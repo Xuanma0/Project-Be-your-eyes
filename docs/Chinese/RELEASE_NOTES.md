@@ -1,5 +1,12 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v5.08.2
+- `v5.08.2` realstack 启动脚本改为 fail closed：YOLO26、SAM3、DA3、pySLAM 的启动前状态会先打印为 `READY_REAL`、`READY_MOCK`、`UNAVAILABLE_MISSING_PATH`、`UNAVAILABLE_RUNTIME` 四类之一，缺路径不再伪装成“已准备好”。
+- 修复 Quest realstack 对 `.env.example` / `.env` 空值的解析，避免空模型路径把 `BYES_MODE_PROFILE_JSON`、provider alias、pySLAM root 等变量污染成错误值。
+- Provider truth 与 bring-up 事实继续统一：`503`、`404`、timeout、missing-path、disabled 等原因现在通过同一套 Gateway normalization 同步到 Quest Panel、Desktop Console、`/api/providers`、`/api/capabilities`、`/api/ui/state`。
+- Overlay 资产热修继续收紧：Quest 按不可变 `assetId` 缓存纹理，同一失败 asset 不再重复拉取；当 provider unavailable 或纹理无效时，不再绘制 DET/SEG/DEPTH 空层。
+- Quest 交互不扩 IA，只做 UX 热修：passthrough 不可用时稳定回退到背景；Hand Menu 明确支持 hands/controllers/auto 模式；Smoke Panel 拖拽释放后保持 yaw-only 朝向用户。
+
 ## v5.08.1
 - Provider truth 热修：Quest Panel、Desktop Console、`/api/providers`、`/api/capabilities`、`/api/ui/state` 不再因为 provider “启用中”就把 DET / SLAM 等标成 `real`；最近 `503`、`404`、timeout、disabled、缺路径等情况现在统一显示 `unavailable`，并带明确 `reason`。
 - Overlay 资产链路热修：Quest 把 overlay asset 视为不可变 blob，仅在 `assetId` 变化时下载；下载成功后本地缓存纹理并保持 last-frame hold；同一失败 `assetId` 不再周期性重复 GET。

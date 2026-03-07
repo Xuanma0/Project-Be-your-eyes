@@ -4,6 +4,13 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v5.08.2
+- Hardened the `v5.08.2` realstack launcher to fail closed: YOLO26, SAM3, DA3, and pySLAM readiness now print as `READY_REAL`, `READY_MOCK`, `UNAVAILABLE_MISSING_PATH`, or `UNAVAILABLE_RUNTIME` before launch, and missing model paths no longer masquerade as ready providers.
+- Fixed empty-value parsing from `.env.example` / `.env` in the Quest realstack launcher so blank model-path settings no longer corrupt runtime env vars such as `BYES_MODE_PROFILE_JSON`, provider aliases, or pySLAM root detection.
+- Kept provider truth aligned with bring-up reality by feeding normalized `503`, `404`, timeout, missing-path, and disabled reasons into `/api/providers`, `/api/capabilities`, `/api/ui/state`, Quest Panel, and Desktop Console from the same Gateway normalization path.
+- Tightened overlay asset lifecycle and whole-FOV rendering hotfixes: Quest caches overlay textures by immutable `assetId`, stops re-fetching the same failed id, and suppresses DET/SEG/DEPTH layers when provider truth is unavailable or no valid texture exists.
+- Polished Quest UX without expanding IA: passthrough unavailable states now recover to a stable background, controller-vs-hand input mode is explicit in Hand Menu, and Smoke Panel drag stays yaw-aligned toward the HMD.
+
 ## v5.08.1
 - Hardened provider truth normalization so Quest Panel, Desktop Console, `/api/providers`, `/api/capabilities`, and `/api/ui/state` no longer report `real` when DET, SLAM, or other providers are enabled but currently failing; recent `503`, `404`, timeout, disabled, and missing-path conditions now resolve to `unavailable` with a visible reason.
 - Stabilized Quest overlay asset lifecycle by treating overlay assets as immutable blobs: Quest only downloads when `assetId` changes, caches successful textures locally, preserves last-frame hold after success, and suppresses repeated GETs for the same failed asset id.

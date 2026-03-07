@@ -108,6 +108,38 @@ namespace BYES.Quest
             _freezeOverlay = freezeOverlay;
         }
 
+        public void SetOverlayUnavailable(string applyMode, string reason, bool clearTexture)
+        {
+            var normalizedMode = NormalizeApplyMode(applyMode);
+            if (string.IsNullOrWhiteSpace(normalizedMode))
+            {
+                return;
+            }
+
+            var normalizedReason = string.IsNullOrWhiteSpace(reason) ? "unavailable" : reason.Trim().ToLowerInvariant();
+            if (clearTexture)
+            {
+                ClearOverlayTexture(normalizedMode);
+                _appliedOverlayAssets.Remove(normalizedMode);
+                _overlayAvailability[normalizedMode] = false;
+                _overlayReasons[normalizedMode] = normalizedReason;
+            }
+            else
+            {
+                _overlayAvailability[normalizedMode] = HasValidTexture(normalizedMode);
+                _overlayReasons[normalizedMode] = _overlayAvailability[normalizedMode]
+                    ? "stale_hold:" + normalizedReason
+                    : normalizedReason;
+            }
+
+            RefreshLayerVisibility(normalizedMode);
+        }
+
+        public void ClearOverlay(string applyMode, string reason = "cleared")
+        {
+            SetOverlayUnavailable(applyMode, reason, clearTexture: true);
+        }
+
         private void OnDisable()
         {
             Unbind();
@@ -170,7 +202,7 @@ namespace BYES.Quest
                 case "seg.mask.v1":
                     if (_showSeg)
                     {
-                        var segAssetId = (payload.Value<string>("assetId") ?? string.Empty).Trim();
+                        var segAssetId = NormalizeAssetId(payload.Value<string>("assetId"));
                         if (!string.IsNullOrWhiteSpace(segAssetId))
                         {
                             RequestOverlayAsset(segAssetId, applyMode: "seg");
@@ -181,7 +213,7 @@ namespace BYES.Quest
                 case "depth.map.v1":
                     if (_showDepth)
                     {
-                        var depthAssetId = (payload.Value<string>("assetId") ?? string.Empty).Trim();
+                        var depthAssetId = NormalizeAssetId(payload.Value<string>("assetId"));
                         if (!string.IsNullOrWhiteSpace(depthAssetId))
                         {
                             RequestOverlayAsset(depthAssetId, applyMode: "depth");
@@ -213,7 +245,7 @@ namespace BYES.Quest
                 return;
             }
             var kind = (payload.Value<string>("kind") ?? string.Empty).Trim().ToLowerInvariant();
-            var assetId = (payload.Value<string>("assetId") ?? string.Empty).Trim();
+            var assetId = NormalizeAssetId(payload.Value<string>("assetId"));
             if (string.IsNullOrWhiteSpace(assetId))
             {
                 return;
@@ -267,44 +299,46 @@ namespace BYES.Quest
 
         private void RequestOverlayAsset(string assetId, string applyMode)
         {
-            if (string.IsNullOrWhiteSpace(assetId) || string.IsNullOrWhiteSpace(applyMode))
+            var normalizedAssetId = NormalizeAssetId(assetId);
+            var normalizedMode = NormalizeApplyMode(applyMode);
+            if (string.IsNullOrWhiteSpace(normalizedAssetId) || string.IsNullOrWhiteSpace(normalizedMode))
             {
                 return;
             }
 
-            if (_overlayTextureCache.TryGetValue(assetId, out var cachedTexture) && cachedTexture != null)
+            if (_overlayTextureCache.TryGetValue(normalizedAssetId, out var cachedTexture) && cachedTexture != null)
             {
-                ApplyOverlayTexture(applyMode, cachedTexture);
-                _appliedOverlayAssets[applyMode] = assetId;
-                _overlayAvailability[applyMode] = true;
-                _overlayReasons[applyMode] = "ok";
+                ApplyOverlayTexture(normalizedMode, cachedTexture);
+                _appliedOverlayAssets[normalizedMode] = normalizedAssetId;
+                _overlayAvailability[normalizedMode] = true;
+                _overlayReasons[normalizedMode] = "ok";
                 _overlayUpdates += 1;
                 return;
             }
 
-            if (_appliedOverlayAssets.TryGetValue(applyMode, out var appliedAssetId)
-                && string.Equals(appliedAssetId, assetId, StringComparison.Ordinal)
-                && !_overlayFetchInFlight.Contains(applyMode))
+            if (_appliedOverlayAssets.TryGetValue(normalizedMode, out var appliedAssetId)
+                && string.Equals(appliedAssetId, normalizedAssetId, StringComparison.OrdinalIgnoreCase)
+                && !_overlayFetchInFlight.Contains(normalizedMode))
             {
                 return;
             }
 
-            if (_failedOverlayAssets.TryGetValue(assetId, out var failedReason)
-                && !_overlayFetchInFlight.Contains(applyMode))
+            if (_failedOverlayAssets.TryGetValue(normalizedAssetId, out var failedReason)
+                && !_overlayFetchInFlight.Contains(normalizedMode))
             {
-                _overlayAvailability[applyMode] = HasValidTexture(applyMode);
-                _overlayReasons[applyMode] = _overlayAvailability[applyMode] ? "stale_hold:" + failedReason : failedReason;
-                RefreshLayerVisibility(applyMode);
+                _overlayAvailability[normalizedMode] = HasValidTexture(normalizedMode);
+                _overlayReasons[normalizedMode] = _overlayAvailability[normalizedMode] ? "stale_hold:" + failedReason : failedReason;
+                RefreshLayerVisibility(normalizedMode);
                 return;
             }
 
-            _pendingOverlayAssets[applyMode] = assetId;
-            if (_overlayFetchInFlight.Contains(applyMode))
+            _pendingOverlayAssets[normalizedMode] = normalizedAssetId;
+            if (_overlayFetchInFlight.Contains(normalizedMode))
             {
                 return;
             }
 
-            StartCoroutine(DrainOverlayAssetQueue(applyMode));
+            StartCoroutine(DrainOverlayAssetQueue(normalizedMode));
         }
 
         private IEnumerator DrainOverlayAssetQueue(string applyMode)
@@ -380,8 +414,15 @@ namespace BYES.Quest
                 yield break;
             }
 
+            var normalizedAssetId = NormalizeAssetId(assetId);
+            if (string.IsNullOrWhiteSpace(normalizedAssetId))
+            {
+                onDone?.Invoke(null, 0f, 0, "asset_id_missing");
+                yield break;
+            }
+
             var baseUrl = (_gatewayClient.BaseUrl ?? string.Empty).TrimEnd('/');
-            var url = $"{baseUrl}/api/assets/{UnityWebRequest.EscapeURL(assetId)}";
+            var url = $"{baseUrl}/api/assets/{UnityWebRequest.EscapeURL(normalizedAssetId)}";
             var started = Time.realtimeSinceStartup;
             using var request = UnityWebRequestTexture.GetTexture(url, true);
             request.timeout = 6;
@@ -435,6 +476,33 @@ namespace BYES.Quest
             }
         }
 
+        private void ClearOverlayTexture(string applyMode)
+        {
+            if (string.Equals(applyMode, "det", StringComparison.OrdinalIgnoreCase))
+            {
+                if (_detImage != null)
+                {
+                    _detImage.texture = null;
+                }
+                ClearDetBoxes();
+                return;
+            }
+
+            if (string.Equals(applyMode, "seg", StringComparison.OrdinalIgnoreCase))
+            {
+                if (_segImage != null)
+                {
+                    _segImage.texture = null;
+                }
+                return;
+            }
+
+            if (_depthImage != null)
+            {
+                _depthImage.texture = null;
+            }
+        }
+
         private bool HasValidTexture(string applyMode)
         {
             if (string.Equals(applyMode, "det", StringComparison.OrdinalIgnoreCase))
@@ -483,21 +551,10 @@ namespace BYES.Quest
                 return;
             }
 
+            ClearDetBoxes();
             var objects = payload["objects"] as JArray;
             var imageWidth = Mathf.Max(1f, payload.Value<float?>("imageWidth") ?? 1f);
             var imageHeight = Mathf.Max(1f, payload.Value<float?>("imageHeight") ?? 1f);
-
-            for (var i = 0; i < _boxOutlines.Count; i += 1)
-            {
-                if (_boxOutlines[i] != null)
-                {
-                    _boxOutlines[i].enabled = false;
-                }
-                if (i < _boxLabels.Count && _boxLabels[i] != null)
-                {
-                    _boxLabels[i].enabled = false;
-                }
-            }
 
             if (objects == null)
             {
@@ -578,6 +635,26 @@ namespace BYES.Quest
             _overlayUpdates += 1;
         }
 
+        private void ClearDetBoxes()
+        {
+            if (_boxOutlines == null || _boxLabels == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < _boxOutlines.Count; i += 1)
+            {
+                if (_boxOutlines[i] != null)
+                {
+                    _boxOutlines[i].enabled = false;
+                }
+                if (i < _boxLabels.Count && _boxLabels[i] != null)
+                {
+                    _boxLabels[i].enabled = false;
+                }
+            }
+        }
+
         private void ApplyVisualState()
         {
             if (_detImage != null)
@@ -610,6 +687,41 @@ namespace BYES.Quest
                     _boxLabels[i].enabled = _showDet && _boxLabels[i].enabled;
                 }
             }
+        }
+
+        private static string NormalizeApplyMode(string applyMode)
+        {
+            var normalized = string.IsNullOrWhiteSpace(applyMode) ? string.Empty : applyMode.Trim().ToLowerInvariant();
+            return normalized switch
+            {
+                "det" => "det",
+                "seg" => "seg",
+                "depth" => "depth",
+                _ => string.Empty,
+            };
+        }
+
+        private static string NormalizeAssetId(string assetId)
+        {
+            var normalized = string.IsNullOrWhiteSpace(assetId) ? string.Empty : assetId.Trim();
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                return string.Empty;
+            }
+
+            var queryIndex = normalized.IndexOf('?');
+            if (queryIndex >= 0)
+            {
+                normalized = normalized.Substring(0, queryIndex);
+            }
+
+            var hashIndex = normalized.IndexOf('#');
+            if (hashIndex >= 0)
+            {
+                normalized = normalized.Substring(0, hashIndex);
+            }
+
+            return normalized.Trim();
         }
     }
 }

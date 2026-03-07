@@ -14,9 +14,9 @@
   ],
   "capturedAt": "2026-03-08",
   "branch": "feature/unity-skeleton",
-  "head": "3c9b6d5d72bbf326d8944fea2805c318435ad786",
-  "version": "v5.08.1",
-  "versionLabelNote": "Canonical facts reflect repository state during the v5.08.1 Visual Truth Stabilization hotfix focused on provider evidence honesty, overlay asset lifecycle stability, hand-menu interaction cleanup, and passthrough fallback truth.",
+  "head": "run_git_rev_parse_HEAD",
+  "version": "v5.08.2",
+  "versionLabelNote": "Canonical facts reflect repository state during the v5.08.2 Real Bring-up & UX Hotfix focused on fail-closed realstack preflight, truthful unavailable states for missing YOLO26/SAM3/DA3/pySLAM readiness, overlay asset lifecycle stability, passthrough fallback honesty, and hand-menu/controller usability.",
   "unity": {
     "editorVersion": "6000.3.10f1",
     "primaryBuildScene": "Assets/Scenes/Quest3SmokeScene.unity",
@@ -322,8 +322,8 @@
   },
   "build_outputs": {
     "questApkDir": "Builds/Quest3",
-    "latestQuestApk": "Builds/Quest3/BYES_Quest3Smoke_v5.08.apk",
-    "latestQuestSymbols": "Builds/Quest3/BYES_Quest3Smoke_v5.08-2.2.1-v1-IL2CPP.symbols.zip",
+    "latestQuestApk": "Builds/Quest3/BYES_Quest3Smoke_v5.08.2.apk",
+    "latestQuestSymbols": "Builds/Quest3/BYES_Quest3Smoke_v5.08.2-2.2.1-v1-IL2CPP.symbols.zip",
     "unityBuildLog": "Builds/logs/unity_build_quest3_android.log",
     "unityBuildSummary": "Builds/logs/unity_build_quest3_android.summary.txt",
     "runPackagesRoot": "Gateway/artifacts/run_packages",
@@ -341,10 +341,12 @@
     "docs/maintainer/CONFIG_MATRIX.md",
     "README.md",
     "tools/quest3/quest3_usb_realstack_v5_08.cmd",
+    "tools/quest3/quest3_usb_realstack_v5_08_2.cmd",
     "tools/unity/README_BUILD_ANDROID.md"
   ],
   "known_blockers": [
     "True PCA is proof-gated and may still fall back to AR CPU image or render texture when Quest hardware, permission, runtime, or provider readiness proof is incomplete.",
+    "The v5.08.2 realstack launcher is intentionally fail-closed; without YOLO26/SAM3/DA3 weights and BYES_PYSLAM_ROOT, the corresponding providers remain unavailable by design.",
     "Legacy WS vs events_v1 still depends on BYES_INFERENCE_EMIT_WS_V1.",
     "Quest UI remains dense even after v5.08; whole-FOV overlays and operator controls were layered onto existing surfaces instead of redesigning IA.",
     "Gateway/main.py is monolithic and also serves embedded desktop HTML.",

@@ -260,6 +260,10 @@ namespace BYES.Quest
                     Fail($"capture truth failed: {captureTruthError}");
                     yield break;
                 }
+                if (!string.IsNullOrWhiteSpace(captureTruthError))
+                {
+                    skipNotes.Add("capture:" + captureTruthError);
+                }
 
                 SetStatus("RUNNING", "step7 ocr");
                 var ocrOk = false;
@@ -387,6 +391,10 @@ namespace BYES.Quest
                     Fail("overlay_truth failed: " + overlayTruthError);
                     yield break;
                 }
+                if (!string.IsNullOrWhiteSpace(overlayTruthError))
+                {
+                    skipNotes.Add("overlay:" + overlayTruthError);
+                }
                 _stepDurationsMs["vision_assets"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - visionAssetsStepStartedMs);
 
                 SetStatus("RUNNING", "step10 target tracking");
@@ -438,16 +446,53 @@ namespace BYES.Quest
                 var passthroughStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 var passthroughStatus = _panel != null ? _panel.GetPassthroughStatus() : "panel missing";
                 var passthroughSkipped = false;
-                if (_panel != null && passthroughStatus.IndexOf("unavailable", StringComparison.OrdinalIgnoreCase) < 0)
+                var passthroughReason = ExtractStatusReason(passthroughStatus);
+                var passthroughState = ExtractStatusState(passthroughStatus);
+                if (_panel == null)
+                {
+                    Fail("passthrough panel missing");
+                    yield break;
+                }
+                if (ShouldSkipPassthroughReason(passthroughReason))
+                {
+                    passthroughSkipped = true;
+                    skipNotes.Add("passthrough:skip(" + passthroughReason + ")");
+                }
+                else if (string.Equals(passthroughState, "unavailable", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (IsPassthroughOffReason(passthroughReason))
+                    {
+                        skipNotes.Add("passthrough:pass(off)");
+                    }
+                    else
+                    {
+                        Fail("passthrough unavailable: " + passthroughReason);
+                        yield break;
+                    }
+                }
+                else
                 {
                     _panel.SetPassthroughEnabled(false);
                     yield return new WaitForSecondsRealtime(0.2f);
                     _panel.SetPassthroughEnabled(true);
                     yield return new WaitForSecondsRealtime(0.2f);
-                }
-                else
-                {
-                    passthroughSkipped = true;
+                    passthroughStatus = _panel.GetPassthroughStatus();
+                    passthroughReason = ExtractStatusReason(passthroughStatus);
+                    passthroughState = ExtractStatusState(passthroughStatus);
+                    if (ShouldSkipPassthroughReason(passthroughReason))
+                    {
+                        passthroughSkipped = true;
+                        skipNotes.Add("passthrough:skip(" + passthroughReason + ")");
+                    }
+                    else if (string.Equals(passthroughState, "unavailable", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Fail("passthrough unavailable: " + passthroughReason);
+                        yield break;
+                    }
+                    else if (string.Equals(passthroughState, "fallback", StringComparison.OrdinalIgnoreCase))
+                    {
+                        skipNotes.Add("passthrough:degraded(" + passthroughReason + ")");
+                    }
                 }
                 _stepDurationsMs["passthrough"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - passthroughStepStartedMs);
 
@@ -1193,8 +1238,17 @@ namespace BYES.Quest
                     }
                 }
 
+                if (string.Equals(remoteSource, "unavailable", StringComparison.Ordinal))
+                {
+                    remoteOk = false;
+                    remoteError = "no_capture_path(" + remoteReason + ")";
+                    return;
+                }
+
                 remoteOk = true;
-                remoteError = string.Empty;
+                remoteError = remoteSource.EndsWith("_fallback", StringComparison.Ordinal)
+                    ? $"degraded({remoteSource}:{remoteReason})"
+                    : string.Empty;
             });
 
             onDone?.Invoke(remoteOk, remoteError);
@@ -1224,12 +1278,27 @@ namespace BYES.Quest
                 var remoteKinds = ParseOverlayKinds(truth?["overlayKindsAvailable"] as JArray ?? latest?["overlayKindsAvailable"] as JArray);
                 var overlayAssets = latest?["overlayAssets"] as JObject;
                 var issues = new List<string>();
-                if ((detExpected || segExpected || depthExpected) && (visionHud == null || !visionHud.FullFovOverlayLayer))
+                var notes = new List<string>();
+                var requiresWholeFov = false;
+                if (ProviderNeedsRealOverlay("det", detExpected, truth, notes))
+                {
+                    requiresWholeFov = true;
+                }
+                if (ProviderNeedsRealOverlay("seg", segExpected, truth, notes))
+                {
+                    requiresWholeFov = true;
+                }
+                if (ProviderNeedsRealOverlay("depth", depthExpected, truth, notes))
+                {
+                    requiresWholeFov = true;
+                }
+
+                if (requiresWholeFov && (visionHud == null || !visionHud.FullFovOverlayLayer))
                 {
                     issues.Add("hud_mode_not_whole_fov");
                 }
 
-                if (detExpected)
+                if (ProviderRequiresOverlayCheck("det", detExpected, truth))
                 {
                     var remoteDet = remoteKinds.Contains("det")
                                     || overlayAssets?["det"]?.Value<bool?>("overlayAvailable") == true
@@ -1245,7 +1314,7 @@ namespace BYES.Quest
                     }
                 }
 
-                if (segExpected)
+                if (ProviderRequiresOverlayCheck("seg", segExpected, truth))
                 {
                     var remoteSeg = remoteKinds.Contains("seg")
                                     || overlayAssets?["seg"]?.Value<bool?>("overlayAvailable") == true
@@ -1261,7 +1330,7 @@ namespace BYES.Quest
                     }
                 }
 
-                if (depthExpected)
+                if (ProviderRequiresOverlayCheck("depth", depthExpected, truth))
                 {
                     var remoteDepth = remoteKinds.Contains("depth")
                                       || overlayAssets?["depth"]?.Value<bool?>("overlayAvailable") == true
@@ -1278,7 +1347,13 @@ namespace BYES.Quest
                 }
 
                 remoteOk = issues.Count == 0;
-                remoteError = remoteOk ? string.Empty : string.Join(",", issues);
+                if (!remoteOk)
+                {
+                    remoteError = string.Join(",", issues);
+                    return;
+                }
+
+                remoteError = notes.Count > 0 ? string.Join("; ", notes) : string.Empty;
             });
 
             onDone?.Invoke(remoteOk, remoteError);
@@ -1340,6 +1415,100 @@ namespace BYES.Quest
             }
 
             return result;
+        }
+
+        private static bool ProviderNeedsRealOverlay(string providerName, bool enabled, JObject truth, List<string> notes)
+        {
+            if (!enabled)
+            {
+                notes?.Add($"{providerName}=skip(disabled)");
+                return false;
+            }
+
+            var providerState = GetProviderTruthState(truth, providerName);
+            var providerReason = GetProviderTruthReason(truth, providerName);
+            if (providerState == "real")
+            {
+                return true;
+            }
+
+            notes?.Add($"{providerName}=skip({providerState}:{providerReason})");
+            return false;
+        }
+
+        private static bool ProviderRequiresOverlayCheck(string providerName, bool enabled, JObject truth)
+        {
+            if (!enabled)
+            {
+                return false;
+            }
+
+            return GetProviderTruthState(truth, providerName) == "real";
+        }
+
+        private static string GetProviderTruthState(JObject truth, string providerName)
+        {
+            var provider = truth?["providers"]?[providerName] as JObject;
+            return NormalizeTruthState(provider?.Value<string>("truthState") ?? provider?.Value<string>("truthLabel"));
+        }
+
+        private static string GetProviderTruthReason(JObject truth, string providerName)
+        {
+            var provider = truth?["providers"]?[providerName] as JObject;
+            var reason = (provider?.Value<string>("reason") ?? string.Empty).Trim().ToLowerInvariant();
+            return string.IsNullOrWhiteSpace(reason) ? "unknown" : reason;
+        }
+
+        private static string ExtractStatusState(string statusText)
+        {
+            var text = (statusText ?? string.Empty).Trim().ToLowerInvariant();
+            if (text.StartsWith("fallback", StringComparison.Ordinal))
+            {
+                return "fallback";
+            }
+            if (text.StartsWith("real", StringComparison.Ordinal))
+            {
+                return "real";
+            }
+            if (text.StartsWith("unavailable", StringComparison.Ordinal))
+            {
+                return "unavailable";
+            }
+            return "unavailable";
+        }
+
+        private static string ExtractStatusReason(string statusText)
+        {
+            var text = (statusText ?? string.Empty).Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return "unknown";
+            }
+
+            var token = "reason=";
+            var index = text.IndexOf(token, StringComparison.Ordinal);
+            if (index < 0)
+            {
+                return text;
+            }
+
+            var start = index + token.Length;
+            var end = text.IndexOf(' ', start);
+            var reason = end < 0 ? text.Substring(start) : text.Substring(start, end - start);
+            return string.IsNullOrWhiteSpace(reason) ? "unknown" : reason.Trim();
+        }
+
+        private static bool ShouldSkipPassthroughReason(string reason)
+        {
+            return string.Equals(reason, "link_unsupported", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(reason, "unsupported_device", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(reason, "simulator_unsupported", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsPassthroughOffReason(string reason)
+        {
+            return string.Equals(reason, "disabled", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(reason, "off", StringComparison.OrdinalIgnoreCase);
         }
 
         private (bool ok, bool skipped, string reason) CheckOrRequestMicPermission()

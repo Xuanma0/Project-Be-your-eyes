@@ -44,9 +44,13 @@ tools\quest3\quest3_usb_realstack_v5_03.cmd
 ```bat
 tools\quest3\quest3_usb_realstack_v5_04.cmd
 ```
-   v5.05 launcher (HUD overlays + desktop console `/ui` + provider evidence + optional pySLAM realtime):
+   v5.08.2 launcher (desktop console operator UI + fail-closed YOLO26/SAM3/DA3/pySLAM preflight + honest fallback truth):
 ```bat
-tools\quest3\quest3_usb_realstack_v5_05.cmd
+tools\quest3\quest3_usb_realstack_v5_08_2.cmd
+```
+   Compatibility wrapper:
+```bat
+tools\quest3\quest3_usb_realstack_v5_08.cmd
 ```
 2. On Quest, open `Quest3SmokeScene` app and look at the floating panel in front of you.
 3. Confirm panel base URL is `http://127.0.0.1:18000`.
@@ -56,8 +60,15 @@ Notes:
 - Script uses `adb reverse tcp:18000 tcp:18000`.
 - Script starts Gateway with `BYES_INFERENCE_EMIT_WS_V1=1` and `BYES_EMIT_NET_DEBUG=1` for smoke observability.
 - If adb path is custom, set env `ADB_EXE` before running.
-- Real-stack script starts Gateway + inference_service and sets `BYES_SERVICE_OCR_PROVIDER=paddleocr`, `BYES_SERVICE_DET_PROVIDER=ultralytics`, `BYES_SERVICE_DEPTH_PROVIDER=onnx`.
-- If optional dependencies or model path are missing, capabilities/selftest will show explicit failure reason instead of silent success.
+- Use `tools\quest3\quest3_usb_realstack_v5_08_2.cmd --preflight-only` to print readiness without launching the stack.
+- Real-stack launcher prefers `BYES_PROVIDER_DET=yolo26`, `BYES_PROVIDER_SEG=sam3`, `BYES_PROVIDER_DEPTH=da3` unless shell env explicitly overrides the service provider.
+- Preflight categories are `READY_REAL`, `READY_MOCK`, `UNAVAILABLE_MISSING_PATH`, and `UNAVAILABLE_RUNTIME`.
+- Required real-model paths for a true bring-up:
+  - `BYES_YOLO26_WEIGHTS`
+  - `BYES_SAM3_CKPT` or `BYES_SERVICE_SEG_MODEL_PATH`
+  - `BYES_DA3_MODEL_PATH` or `BYES_SERVICE_DEPTH_MODEL_PATH`
+  - `BYES_PYSLAM_ROOT`
+- If any of those are missing, Quest/Desktop surfaces must show `unavailable + reason` instead of silent success.
 
 ## 4) LAN Mode (Alternative)
 
@@ -122,7 +133,7 @@ python -m uvicorn main:app --app-dir Gateway --host 127.0.0.1 --port 18000
 - `Panels` group controls:
   - `Toggle Smoke Panel`
   - `LockToHead`
-  - `Enable Move/Resize` (default OFF)
+  - `Unlock Panel Move` (default OFF)
   - `Snap Default`
 - Safe mode conflict isolation:
   - no shortcut triggers when hand menu is visible

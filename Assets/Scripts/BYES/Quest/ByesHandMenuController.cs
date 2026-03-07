@@ -11,6 +11,7 @@ using UnityEngine.Events;
 using UnityEngine.InputSystem;
 using UnityEngine.UI;
 using UnityEngine.XR.Interaction.Toolkit.Interactors;
+using UnityEngine.XR.Interaction.Toolkit.Inputs;
 using UnityEngine.XR.Interaction.Toolkit.Samples.Hands;
 using UnityEngine.XR.Interaction.Toolkit.UI.BodyUI;
 
@@ -27,6 +28,7 @@ namespace BYES.Quest
         private const string PrefPassthrough = "BYES_HANDMENU_PASSTHROUGH";
         private const string PrefLockToHead = "BYES_HANDMENU_LOCK_TO_HEAD";
         private const string PrefMoveResize = "BYES_HANDMENU_MOVE_RESIZE";
+        private const string PrefInputMode = "BYES_HANDMENU_INPUT_MODE";
         private const string PrefFavorites = "BYES_HANDMENU_FAVORITES";
         private const int FavoriteSlotCount = 3;
 
@@ -65,6 +67,7 @@ namespace BYES.Quest
         private Text _visionText;
         private Text _guidanceText;
         private Text _voiceText;
+        private Text _inputModeText;
 
         private Toggle _showFullPanelToggle;
         private Toggle _gestureEnabledToggle;
@@ -92,6 +95,9 @@ namespace BYES.Quest
         private bool _systemGestureActive;
         private bool _uiSuppressed;
         private Coroutine _refreshRoutine;
+        private InputAction _controllerMenuToggleAction;
+        private XRInputModalityManager.InputMode _runtimeInputMode = XRInputModalityManager.InputMode.None;
+        private bool _controllerMenuLatched;
 
         private sealed class MenuAction
         {
@@ -106,12 +112,20 @@ namespace BYES.Quest
             Either = 3,
         }
 
+        private enum InputModePref
+        {
+            Auto = 0,
+            Hands = 1,
+            Controllers = 2,
+        }
+
         private void Awake()
         {
             ResolveRefs();
             EnsureOfficialHandMenu();
             DisableLegacyWristMenus();
             TryEnsureMetaGestureDetector();
+            EnsureControllerActions();
             BuildRuntimeUi();
             LoadPrefsAndApply();
             SetPage("home");
@@ -130,6 +144,9 @@ namespace BYES.Quest
             {
                 _refreshRoutine = StartCoroutine(RefreshLoop());
             }
+
+            _controllerMenuToggleAction?.Enable();
+            ApplyInputModePolicy();
         }
 
         private void OnDisable()
@@ -144,6 +161,15 @@ namespace BYES.Quest
                 StopCoroutine(_refreshRoutine);
                 _refreshRoutine = null;
             }
+
+            _controllerMenuToggleAction?.Disable();
+        }
+
+        private void Update()
+        {
+            RefreshRuntimeInputMode();
+            HandleControllerMenuToggle();
+            ApplyInputModePolicy();
         }
 
         public bool IsMenuVisible() => _rootPanel != null && _rootPanel.activeInHierarchy;
@@ -250,6 +276,19 @@ namespace BYES.Quest
                 _metaGestureDetector = null;
                 Debug.LogWarning("[ByesHandMenuController] Failed to wire MetaSystemGestureDetector safely: " + ex.Message);
             }
+        }
+
+        private void EnsureControllerActions()
+        {
+            if (_controllerMenuToggleAction != null)
+            {
+                return;
+            }
+
+            _controllerMenuToggleAction = new InputAction("BYES_ControllerMenuToggle", InputActionType.Button);
+            _controllerMenuToggleAction.AddBinding("<XRController>{LeftHand}/secondaryButton");
+            _controllerMenuToggleAction.AddBinding("<XRController>{RightHand}/secondaryButton");
+            _controllerMenuToggleAction.AddBinding("<XRController>{LeftHand}/menuButton");
         }
 
         private void BuildRuntimeUi()
@@ -614,54 +653,84 @@ namespace BYES.Quest
         private void BuildDev(Transform page)
         {
             _debugText = CreateText("DevText", page, "-", 20, TextAnchor.UpperLeft, new Vector2(0.5f, 0.5f), new Vector2(0f, 266f), new Vector2(780f, 120f));
-            CreateButton(page, "Run SelfTest", new Vector2(-220f, 186f), () => InvokeAction("selftest", "SelfTest started"));
-            CreateButton(page, "Rec Start", new Vector2(0f, 186f), () => InvokeAction("record_start", "Record start"));
-            CreateButton(page, "Rec Stop", new Vector2(220f, 186f), () => InvokeAction("record_stop", "Record stop"));
-            CreateButton(page, "Refresh", new Vector2(-220f, 106f), () =>
+            var sections = new Dictionary<string, GameObject>(StringComparer.OrdinalIgnoreCase);
+            sections["tools"] = CreateSectionGroup(page, "DevToolsSection", new Vector2(820f, 920f), new Vector2(0f, -120f));
+            sections["panel"] = CreateSectionGroup(page, "DevPanelSection", new Vector2(820f, 920f), new Vector2(0f, -120f));
+            sections["input"] = CreateSectionGroup(page, "DevInputSection", new Vector2(820f, 920f), new Vector2(0f, -120f));
+            _ = CreateSectionButton(page, "Tools", new Vector2(-220f, 184f), () => SetActiveSection(sections, "tools"));
+            _ = CreateSectionButton(page, "Panel", new Vector2(0f, 184f), () => SetActiveSection(sections, "panel"));
+            _ = CreateSectionButton(page, "Input", new Vector2(220f, 184f), () => SetActiveSection(sections, "input"));
+
+            var toolsSection = sections["tools"].transform;
+            CreateButton(toolsSection, "Run SelfTest", new Vector2(-220f, 220f), () => InvokeAction("selftest", "SelfTest started"));
+            CreateButton(toolsSection, "Rec Start", new Vector2(0f, 220f), () => InvokeAction("record_start", "Record start"));
+            CreateButton(toolsSection, "Rec Stop", new Vector2(220f, 220f), () => InvokeAction("record_stop", "Record stop"));
+            CreateButton(toolsSection, "Refresh", new Vector2(-220f, 140f), () =>
             {
                 _panel?.TriggerRefreshFromUi();
                 RefreshStatus();
                 SetFeedback("Refreshed");
             });
-            CreateButton(page, "Pin Last Action", new Vector2(0f, 106f), PinLastAction);
-            CreateButton(page, "Copy Debug", new Vector2(220f, 106f), () =>
+            CreateButton(toolsSection, "Pin Last Action", new Vector2(0f, 140f), PinLastAction);
+            CreateButton(toolsSection, "Copy Debug", new Vector2(220f, 140f), () =>
             {
                 GUIUtility.systemCopyBuffer = (_panel != null ? _panel.BuildDebugSummary() : "panel missing") + "\nGestures=" + (_shortcuts != null ? _shortcuts.GetRecentTriggersAsText() : "-");
                 SetFeedback("Debug copied");
             });
-            _showFullPanelToggle = CreateToggle(page, "Show Advanced Panel Controls", new Vector2(0f, 10f), value =>
+            CreateButton(toolsSection, "Clear Favorites", new Vector2(0f, 60f), ClearFavorites);
+            CreateButton(toolsSection, "Back", new Vector2(0f, -250f), () => { SetPage("home"); SetFeedback("Home"); });
+
+            var panelSection = sections["panel"].transform;
+            _showFullPanelToggle = CreateToggle(panelSection, "Show Advanced Panel Controls", new Vector2(0f, 220f), value =>
             {
                 PlayerPrefs.SetInt(PrefShowFullPanel, value ? 1 : 0);
                 PlayerPrefs.Save();
                 _panel?.SetActionControlsVisible(value);
                 SetFeedback("Full panel " + (value ? "ON" : "OFF"));
             });
-            _lockToHeadToggle = CreateToggle(page, "Smoke Panel LockToHead", new Vector2(0f, -60f), value =>
+            _lockToHeadToggle = CreateToggle(panelSection, "Smoke Panel LockToHead", new Vector2(0f, 150f), value =>
             {
                 PlayerPrefs.SetInt(PrefLockToHead, value ? 1 : 0);
                 PlayerPrefs.Save();
                 _panel?.SetLockToHead(value);
                 SetFeedback("LockToHead " + (value ? "ON" : "OFF"));
             });
-            _moveResizeToggle = CreateToggle(page, "Enable Move/Resize", new Vector2(0f, -130f), value =>
+            _moveResizeToggle = CreateToggle(panelSection, "Unlock Panel Move", new Vector2(0f, 80f), value =>
             {
                 PlayerPrefs.SetInt(PrefMoveResize, value ? 1 : 0);
                 PlayerPrefs.Save();
                 _panel?.SetMoveResizeEnabled(value);
-                SetFeedback("Move/Resize " + (value ? "ON" : "OFF"));
+                SetFeedback("Panel move " + (value ? "UNLOCKED" : "LOCKED"));
             });
-            CreateButton(page, "Reset Pose/Scale", new Vector2(-140f, -232f), () => { _panel?.SnapToDefaultPose(); SetFeedback("Panel reset"); });
-            CreateButton(page, "Clear Favorites", new Vector2(140f, -232f), ClearFavorites);
-            _uiScaleSlider = CreateLabeledSlider(page, "UI Scale", new Vector2(0f, -382f), 0.6f, 1.4f, value =>
+            CreateButton(panelSection, "Reset Pose/Scale", new Vector2(0f, -10f), () => { _panel?.SnapToDefaultPose(); SetFeedback("Panel reset"); });
+            _uiScaleSlider = CreateLabeledSlider(panelSection, "UI Scale", new Vector2(0f, -148f), 0.6f, 1.4f, value =>
             {
                 PlayerPrefs.SetFloat(PrefUiScale, value);
                 PlayerPrefs.Save();
                 ApplyUiScale(value);
                 SetFeedback($"UI Scale {value:0.00}x");
             });
-            _scaleText = CreateText("ScaleText", page, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -448f), new Vector2(760f, 32f));
-            _settingsText = CreateText("SettingsText", page, "-", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -486f), new Vector2(780f, 32f));
-            CreateButton(page, "Back", new Vector2(0f, -566f), () => { SetPage("home"); SetFeedback("Home"); });
+            _scaleText = CreateText("ScaleText", panelSection, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -214f), new Vector2(760f, 32f));
+            CreateButton(panelSection, "Back", new Vector2(0f, -300f), () => { SetPage("home"); SetFeedback("Home"); });
+
+            var inputSection = sections["input"].transform;
+            _gestureEnabledToggle = CreateToggle(inputSection, "Gesture Shortcuts Enabled", new Vector2(0f, 220f), value =>
+            {
+                PlayerPrefs.SetInt(PrefGestureEnabled, value ? 1 : 0);
+                PlayerPrefs.Save();
+                ApplyInputModePolicy();
+                SetFeedback("Shortcuts " + (value ? "ON" : "OFF"));
+            });
+            CreateButton(inputSection, "Input Mode", new Vector2(-220f, 132f), CycleInputMode);
+            CreateButton(inputSection, "Shortcut Hand", new Vector2(0f, 132f), CycleShortcutHand);
+            CreateButton(inputSection, "Conflict Mode", new Vector2(220f, 132f), CycleConflictMode);
+            CreateButton(inputSection, "Menu Hand", new Vector2(-220f, 52f), CycleMenuHand);
+            _inputModeText = CreateText("InputModeText", inputSection, "-", 20, TextAnchor.MiddleLeft, new Vector2(0.5f, 0.5f), new Vector2(110f, 52f), new Vector2(500f, 42f));
+            _settingsText = CreateText("SettingsText", inputSection, "-", 19, TextAnchor.UpperLeft, new Vector2(0.5f, 0.5f), new Vector2(0f, -56f), new Vector2(760f, 160f));
+            _ = CreateText("InputHint", inputSection, "Auto: hand gestures pause when controllers are active. Controllers use Left X/Y or menu to latch the hand menu.", 18, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -194f), new Vector2(720f, 90f));
+            CreateButton(inputSection, "Back", new Vector2(0f, -302f), () => { SetPage("home"); SetFeedback("Home"); });
+
+            SetActiveSection(sections, "tools");
         }
 
         private void InvokeFavorite(int index)
@@ -836,12 +905,12 @@ namespace BYES.Quest
                 _panel?.SetLockToHead(value);
                 SetFeedback("LockToHead " + (value ? "ON" : "OFF"));
             });
-            _moveResizeToggle = CreateToggle(page, "Enable Move/Resize", new Vector2(0f, 10f), value =>
+            _moveResizeToggle = CreateToggle(page, "Unlock Panel Move", new Vector2(0f, 10f), value =>
             {
                 PlayerPrefs.SetInt(PrefMoveResize, value ? 1 : 0);
                 PlayerPrefs.Save();
                 _panel?.SetMoveResizeEnabled(value);
-                SetFeedback("Move/Resize " + (value ? "ON" : "OFF"));
+                SetFeedback("Panel move " + (value ? "UNLOCKED" : "LOCKED"));
             });
             CreateButton(page, "Reset Pose/Scale", new Vector2(0f, -70f), () => { _panel?.SnapToDefaultPose(); SetFeedback("Panel reset"); });
             CreateButton(page, "Back", new Vector2(0f, -180f), () => { SetPage("home"); SetFeedback("Home"); });
@@ -998,9 +1067,21 @@ namespace BYES.Quest
             _sb.Append("GuideDisabler=").Append(ByesMrTemplateGuideDisabler.LastSummary);
             SetText(_debugText, _sb.ToString());
 
+            var inputPref = GetInputModePreference();
+            var runtimeModeText = _runtimeInputMode switch
+            {
+                XRInputModalityManager.InputMode.MotionController => "controllers",
+                XRInputModalityManager.InputMode.TrackedHand => "hands",
+                _ => "none",
+            };
+            SetText(_inputModeText, $"Pref={inputPref} runtime={runtimeModeText} latch={(_controllerMenuLatched ? "on" : "off")}");
             if (_shortcuts != null)
             {
-                SetText(_settingsText, $"Shortcuts={(_shortcuts.ShortcutsEnabled ? "ON" : "OFF")} Hand={_shortcuts.ActiveShortcutHand} Conflict={_shortcuts.ActiveConflictMode}");
+                SetText(
+                    _settingsText,
+                    $"Shortcuts={(_shortcuts.ShortcutsEnabled ? "ON" : "OFF")} Hand={_shortcuts.ActiveShortcutHand} Conflict={_shortcuts.ActiveConflictMode}\n" +
+                    $"InputMode={inputPref} runtime={runtimeModeText} menuHand={((MenuHandPref)PlayerPrefs.GetInt(PrefMenuHand, (int)MenuHandPref.Either))}\n" +
+                    $"ControllerHotkey={BuildControllerModeHint(inputPref, runtimeModeText)}");
             }
             _autoSpeakOcrToggle?.SetIsOnWithoutNotify(_panel.AutoSpeakOcrEnabled);
             _autoSpeakDetToggle?.SetIsOnWithoutNotify(_panel.AutoSpeakDetEnabled);
@@ -1159,6 +1240,8 @@ namespace BYES.Quest
             _panel?.SetMoveResizeEnabled(PlayerPrefs.GetInt(PrefMoveResize, 0) == 1);
             ApplyMenuHandPreference((MenuHandPref)PlayerPrefs.GetInt(PrefMenuHand, (int)MenuHandPref.Either));
             _panel?.SetAutoVoiceCommand(PlayerPrefs.GetInt("BYES_AUTO_VOICE_COMMAND", 1) == 1);
+            RefreshRuntimeInputMode();
+            ApplyInputModePolicy();
             LoadFavoritesFromPrefs();
         }
 
@@ -1202,6 +1285,109 @@ namespace BYES.Quest
             PlayerPrefs.Save();
             ApplyMenuHandPreference(next);
             SetFeedback("Menu hand -> " + next);
+        }
+
+        private void CycleInputMode()
+        {
+            var current = GetInputModePreference();
+            var next = current switch
+            {
+                InputModePref.Auto => InputModePref.Hands,
+                InputModePref.Hands => InputModePref.Controllers,
+                _ => InputModePref.Auto,
+            };
+            PlayerPrefs.SetInt(PrefInputMode, (int)next);
+            PlayerPrefs.Save();
+            _controllerMenuLatched = false;
+            ApplyInputModePolicy();
+            SetFeedback("Input mode -> " + next);
+        }
+
+        private InputModePref GetInputModePreference()
+        {
+            var raw = PlayerPrefs.GetInt(PrefInputMode, (int)InputModePref.Auto);
+            return Enum.IsDefined(typeof(InputModePref), raw) ? (InputModePref)raw : InputModePref.Auto;
+        }
+
+        private void RefreshRuntimeInputMode()
+        {
+            try
+            {
+                _runtimeInputMode = XRInputModalityManager.currentInputMode?.Value ?? XRInputModalityManager.InputMode.None;
+            }
+            catch
+            {
+                _runtimeInputMode = XRInputModalityManager.InputMode.None;
+            }
+
+            if (_runtimeInputMode != XRInputModalityManager.InputMode.MotionController)
+            {
+                _controllerMenuLatched = false;
+            }
+        }
+
+        private void HandleControllerMenuToggle()
+        {
+            if (_controllerMenuToggleAction == null || !_controllerMenuToggleAction.enabled)
+            {
+                return;
+            }
+
+            if (!_controllerMenuToggleAction.WasPressedThisFrame())
+            {
+                return;
+            }
+
+            var inputPref = GetInputModePreference();
+            var controllerModeRequested = inputPref == InputModePref.Controllers
+                                          || (inputPref == InputModePref.Auto && _runtimeInputMode == XRInputModalityManager.InputMode.MotionController);
+            if (!controllerModeRequested)
+            {
+                return;
+            }
+
+            _controllerMenuLatched = !_controllerMenuLatched;
+            ApplyInputModePolicy();
+            SetFeedback(_controllerMenuLatched ? "Controller menu latched" : "Controller menu released");
+        }
+
+        private void ApplyInputModePolicy()
+        {
+            var inputPref = GetInputModePreference();
+            var gesturesRequested = PlayerPrefs.GetInt(PrefGestureEnabled, 1) == 1;
+            var controllerModeActive = _runtimeInputMode == XRInputModalityManager.InputMode.MotionController;
+            var allowGestureShortcuts = inputPref switch
+            {
+                InputModePref.Controllers => false,
+                InputModePref.Hands => gesturesRequested,
+                _ => gesturesRequested && !controllerModeActive,
+            };
+
+            _shortcuts?.SetShortcutsEnabled(allowGestureShortcuts);
+            _shortcuts?.SetSystemGestureActive(_systemGestureActive || (controllerModeActive && inputPref != InputModePref.Hands));
+
+            if (_handMenu != null)
+            {
+                var forceControllerReveal = controllerModeActive && _controllerMenuLatched;
+                _handMenu.menuVisibleGazeDivergenceThreshold = forceControllerReveal
+                    ? 180f
+                    : Mathf.Clamp(defaultGazeDivergenceThresholdDeg, 15f, 180f);
+            }
+        }
+
+        private string BuildControllerModeHint(InputModePref inputPref, string runtimeModeText)
+        {
+            if (inputPref == InputModePref.Hands)
+            {
+                return "hands_only";
+            }
+
+            if (_runtimeInputMode == XRInputModalityManager.InputMode.MotionController)
+            {
+                return _controllerMenuLatched ? "Left X/Y -> latched" : "Left X/Y -> summon";
+            }
+
+            return inputPref == InputModePref.Controllers ? "waiting_for_controllers" : "auto:" + runtimeModeText;
         }
 
         private void ApplyMenuHandPreference(MenuHandPref pref)

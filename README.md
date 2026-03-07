@@ -110,16 +110,20 @@ Quest 3 v5.04 pilot launcher (USB + gateway + inference + optional ASR/pySLAM ru
 tools\quest3\quest3_usb_realstack_v5_04.cmd
 ```
 
-Quest 3 v5.08 launcher (USB + gateway + inference + desktop console `/ui` operator UI + optional pySLAM bridge):
+Quest 3 v5.08.2 launcher (USB + gateway + inference + desktop console `/ui` operator UI + fail-closed preflight for YOLO26/SAM3/DA3/pySLAM):
 
+```bat
+tools\quest3\quest3_usb_realstack_v5_08_2.cmd
+```
+
+Compatibility wrapper remains available:
 ```bat
 tools\quest3\quest3_usb_realstack_v5_08.cmd
 ```
 
-Optional online pySLAM bridge in the same launcher:
+Preflight only:
 ```bat
-set BYES_ENABLE_PYSLAM_SERVICE=1
-tools\quest3\quest3_usb_realstack_v5_08.cmd
+tools\quest3\quest3_usb_realstack_v5_08_2.cmd --preflight-only
 ```
 
 Optional hardened profile smoke (still local bind unless you override host):
@@ -146,10 +150,10 @@ python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 12
 
 ### Start Unity
 
-- Open this repo in Unity `6000.3.5f2`.
-- Default enabled scene is `Assets/Scenes/SampleScene.unity`.
-- Demo alternative: `Assets/Scenes/DemoScene.unity`.
-- Default WS URL in scene/client: `ws://127.0.0.1:8000/ws/events`.
+- Open this repo in Unity `6000.3.10f1`.
+- Default enabled build scene is `Assets/Scenes/Quest3SmokeScene.unity`.
+- Legacy desktop alternatives remain `Assets/Scenes/SampleScene.unity` and `Assets/Scenes/DemoScene.unity`.
+- Default Quest smoke base URL is `http://127.0.0.1:18000`, with WS `ws://127.0.0.1:18000/ws/events`.
 
 ### Runtime controls
 
@@ -165,9 +169,9 @@ python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 12
 - v5.02 adds promptable `Find` actions (Door/Exit/Stairs/Elevator/Restroom/Person), `Start Record/Stop Record`, and panel lines for `Last FIND` and `Guidance`.
 - v5.03 adds `Select ROI / Start Track / Track Step / Stop Track`, `Last TARGET`, and optional guidance audio/haptics cues.
 - v5.04 adds vision HUD asset overlays (`det.objects.v1`, `seg.mask.v1`, `depth.map.v1`), optional `/api/asr` transcript flow, and optional realtime pySLAM bridge status in capabilities.
-- v5.08 adds proof-gated PCA truth, whole-FOV hold-style DET/SEG/DEPTH overlays, Desktop Console operator controls on top of existing APIs, and pySLAM realtime visibility fields on Quest + desktop.
+- v5.08.2 hardens real bring-up and UX: fail-closed realstack preflight, honest unavailable states for missing YOLO26/SAM3/DA3/pySLAM paths, stable overlay asset caching by `assetId`, stricter passthrough fallback, and controller-aware hand menu gating.
 - Gesture shortcuts default to `Safe` mode (no trigger while menu/system gesture/UI/grab conflict is active)
-- Smoke panel move/resize is explicit opt-in from `Dev -> Enable Move/Resize`.
+- Smoke panel move/resize is explicit opt-in from `Dev -> Unlock Panel Move`.
 - Passthrough controls are in `Vision` (`On/Off`, `Opacity`, `Color/Gray` if supported).
 
 ### Success signals
