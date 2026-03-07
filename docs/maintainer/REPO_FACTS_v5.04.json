@@ -1,22 +1,12 @@
 {
-  "snapshotLabel": "maintainer-canonical",
-  "canonical": true,
-  "updatedAt": "2026-03-07",
-  "sourceFiles": [
-    "docs/maintainer/ARCHITECTURE_REVIEW_v5.04.md",
-    "docs/maintainer/CODEX_HANDOFF_v5.04.md",
-    "docs/maintainer/REPO_FACTS_v5.04.json"
-  ],
-  "archivedSnapshots": [
-    "docs/maintainer/archive/ARCHITECTURE_REVIEW_v5.04.md",
-    "docs/maintainer/archive/CODEX_HANDOFF_v5.04.md",
-    "docs/maintainer/archive/REPO_FACTS_v5.04.json"
-  ],
+  "snapshotLabel": "v5.04-maintainer-review",
+  "compatibilityNote": "Historical versioned snapshot kept for one-version compatibility. Default fact source moved to docs/maintainer/REPO_FACTS.json.",
+  "archivedCopy": "docs/maintainer/archive/REPO_FACTS_v5.04.json",
   "capturedAt": "2026-03-07",
   "branch": "feature/unity-skeleton",
   "head": "86ba11fba56d52cfc6c1f4c54520dbd99cdc0fac",
   "version": "v5.05",
-  "versionLabelNote": "Canonical facts are derived from the v5.04 maintainer review snapshot while repo VERSION remains v5.05.",
+  "versionLabelNote": "Maintainer files keep v5.04 naming by request, but repo VERSION is v5.05.",
   "unity": {
     "editorVersion": "6000.3.10f1",
     "primaryBuildScene": "Assets/Scenes/Quest3SmokeScene.unity",

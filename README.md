@@ -286,6 +286,13 @@ python Gateway/scripts/verify_contracts.py --check-lock
 
 ## 10) Maintainer Docs
 
+Repo memory is maintained under `docs/maintainer/`.
+Version-specific execution plans live under `docs/codex/`.
+
+- [docs/maintainer/ARCHITECTURE_REVIEW.md](docs/maintainer/ARCHITECTURE_REVIEW.md)
+- [docs/maintainer/CODEX_HANDOFF.md](docs/maintainer/CODEX_HANDOFF.md)
+- [docs/maintainer/ACTIVE_PLAN.md](docs/maintainer/ACTIVE_PLAN.md)
+- [docs/maintainer/DECISIONS.md](docs/maintainer/DECISIONS.md)
 - [docs/maintainer/REPO_FACTS.json](docs/maintainer/REPO_FACTS.json)
 - [docs/maintainer/AUDIT_REPO.md](docs/maintainer/AUDIT_REPO.md)
 - [docs/maintainer/RUNBOOK_LOCAL.md](docs/maintainer/RUNBOOK_LOCAL.md)
@@ -294,6 +301,9 @@ python Gateway/scripts/verify_contracts.py --check-lock
 - [docs/maintainer/SECURITY_REVIEW.md](docs/maintainer/SECURITY_REVIEW.md)
 - [docs/maintainer/OPEN_QUESTIONS.md](docs/maintainer/OPEN_QUESTIONS.md)
 - [docs/maintainer/MAINTAINER_BRIEF.md](docs/maintainer/MAINTAINER_BRIEF.md)
+
+Current version plans:
+- [docs/codex/codex_v5_06_truth_and_focus.md](docs/codex/codex_v5_06_truth_and_focus.md)
 
 ## Release Tag Suggestion (manual, optional)
 
