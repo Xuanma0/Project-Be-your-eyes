@@ -982,6 +982,10 @@ namespace BYES.Quest
             _sb.Append("DEPTH age=").Append(_visionHud != null ? _visionHud.LastDepthAgeMs.ToString() : "-").Append("ms  ");
             _sb.Append("DET age=").Append(_visionHud != null ? _visionHud.LastDetAgeMs.ToString() : "-").Append("ms\n");
             _sb.Append("Decode=").Append(_visionHud != null ? _visionHud.LastDecodeMs.ToString("0.0") : "-").Append("ms  Bytes=").Append(_visionHud != null ? _visionHud.LastAssetBytes : 0).Append('\n');
+            _sb.Append("Mode=").Append(_visionHud != null && _visionHud.FullFovOverlayLayer ? "whole_fov_hold" : "panel_hold");
+            _sb.Append(" Freeze=").Append(_visionHud != null && _visionHud.FreezeOverlay ? "on" : "off");
+            _sb.Append(" Kinds=").Append(_panel != null ? _panel.GetOverlayKindsText() : "-").Append('\n');
+            _sb.Append("pySLAM: ").Append(_panel != null ? _panel.GetPySlamSummaryText() : "-").Append('\n');
             _sb.Append("Providers: ").Append(_panel != null ? _panel.GetProviderSummaryText() : "-");
             SetText(_visionText, _sb.ToString());
 

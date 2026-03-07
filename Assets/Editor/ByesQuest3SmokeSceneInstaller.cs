@@ -116,12 +116,13 @@ namespace BYES.Editor
 
             var gatewayClient = EnsureComponent<GatewayClient>(gatewayClientHost);
             var grabber = EnsureComponent<ScreenFrameGrabber>(frameCaptureHost);
+            var pcaSource = EnsureComponent<ByesPcaFrameSource>(frameCaptureHost);
             var frameCapture = EnsureComponent<FrameCapture>(frameCaptureHost);
             _ = EnsureComponent<GatewayFrameUploader>(frameCaptureHost);
             var scanController = EnsureComponent<ScanController>(frameCaptureHost);
             _ = EnsureComponent<ByesHitchMonitor>(frameCaptureHost);
 
-            ConfigureQuestSmokeDefaults(gatewayClient, grabber, frameCapture, scanController);
+            ConfigureQuestSmokeDefaults(gatewayClient, grabber, pcaSource, frameCapture, scanController);
             var removedTemplateUiCount = RemoveTemplateUiInstances(scene);
             var disabledCoachingCount = DisableCoachingUi(scene);
             EnsureBuildSettingsQuestOnly();
@@ -174,6 +175,7 @@ namespace BYES.Editor
         private static void ConfigureQuestSmokeDefaults(
             GatewayClient gatewayClient,
             ScreenFrameGrabber grabber,
+            ByesPcaFrameSource pcaSource,
             FrameCapture frameCapture,
             ScanController scanController)
         {
@@ -206,6 +208,21 @@ namespace BYES.Editor
                 so.ApplyModifiedPropertiesWithoutUndo();
             }
 
+            if (pcaSource != null)
+            {
+                var so = new SerializedObject(pcaSource);
+                SetBoolIfExists(so, "androidOnly", true);
+                SetIntIfExists(so, "maxWidth", 960);
+                SetIntIfExists(so, "maxHeight", 540);
+                SetIntIfExists(so, "jpegQuality", 70);
+                SetIntIfExists(so, "captureTargetHz", 15);
+                SetIntIfExists(so, "captureMaxInflight", 1);
+                SetIntIfExists(so, "requestedPcaWidth", 1280);
+                SetIntIfExists(so, "requestedPcaHeight", 960);
+                SetFloatIfExists(so, "pcaStartupTimeoutSec", 0.35f);
+                so.ApplyModifiedPropertiesWithoutUndo();
+            }
+
             if (scanController != null)
             {
                 var so = new SerializedObject(scanController);
@@ -213,6 +230,7 @@ namespace BYES.Editor
                 SetFloatIfExists(so, "liveFps", 1f);
                 SetIntIfExists(so, "liveMaxInflight", 1);
                 SetBoolIfExists(so, "liveDropIfBusy", true);
+                SetObjectReferenceIfExists(so, "frameSourceBehaviour", pcaSource);
                 so.ApplyModifiedPropertiesWithoutUndo();
             }
 
@@ -508,6 +526,15 @@ namespace BYES.Editor
             if (prop != null)
             {
                 prop.stringValue = value ?? string.Empty;
+            }
+        }
+
+        private static void SetObjectReferenceIfExists(SerializedObject so, string fieldName, UnityEngine.Object value)
+        {
+            var prop = so.FindProperty(fieldName);
+            if (prop != null)
+            {
+                prop.objectReferenceValue = value;
             }
         }
     }

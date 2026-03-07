@@ -537,8 +537,9 @@ namespace BYES.Quest
             var detAge = _lastDetTsMs > 0 ? Math.Max(0, now - _lastDetTsMs) : -1;
             var kind = _renderer != null ? _renderer.LastOverlayKind : "-";
             var fetchMs = _renderer != null ? _renderer.LastFetchMs : -1f;
+            var mode = fullFovOverlayLayer ? "whole_fov_hold" : "panel_hold";
             _statsText.text = $"HUD fps:{_overlayFps:0.0} kind:{kind} fetch:{fetchMs:0.0}ms decode:{_lastDecodeMs:0.0}ms bytes:{_assetBytes}\n" +
-                              $"segAge:{(segAge >= 0 ? segAge + "ms" : "-")} depthAge:{(depthAge >= 0 ? depthAge + "ms" : "-")} detAge:{(detAge >= 0 ? detAge + "ms" : "-")}";
+                              $"mode:{mode} freeze:{(freezeOverlay ? "on" : "off")} segAge:{(segAge >= 0 ? segAge + "ms" : "-")} depthAge:{(depthAge >= 0 ? depthAge + "ms" : "-")} detAge:{(detAge >= 0 ? detAge + "ms" : "-")}";
         }
 
         private void EnsureRenderer()

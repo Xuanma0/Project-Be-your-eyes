@@ -110,16 +110,16 @@ Quest 3 v5.04 pilot launcher (USB + gateway + inference + optional ASR/pySLAM ru
 tools\quest3\quest3_usb_realstack_v5_04.cmd
 ```
 
-Quest 3 v5.05 launcher (USB + gateway + inference + desktop console `/ui` + optional pySLAM bridge):
+Quest 3 v5.08 launcher (USB + gateway + inference + desktop console `/ui` operator UI + optional pySLAM bridge):
 
 ```bat
-tools\quest3\quest3_usb_realstack_v5_05.cmd
+tools\quest3\quest3_usb_realstack_v5_08.cmd
 ```
 
 Optional online pySLAM bridge in the same launcher:
 ```bat
 set BYES_ENABLE_PYSLAM_SERVICE=1
-tools\quest3\quest3_usb_realstack_v5_03.cmd
+tools\quest3\quest3_usb_realstack_v5_08.cmd
 ```
 
 Optional hardened profile smoke (still local bind unless you override host):
@@ -165,7 +165,7 @@ python -m uvicorn services.inference_service.app:app --app-dir Gateway --host 12
 - v5.02 adds promptable `Find` actions (Door/Exit/Stairs/Elevator/Restroom/Person), `Start Record/Stop Record`, and panel lines for `Last FIND` and `Guidance`.
 - v5.03 adds `Select ROI / Start Track / Track Step / Stop Track`, `Last TARGET`, and optional guidance audio/haptics cues.
 - v5.04 adds vision HUD asset overlays (`det.objects.v1`, `seg.mask.v1`, `depth.map.v1`), optional `/api/asr` transcript flow, and optional realtime pySLAM bridge status in capabilities.
-- v5.05 adds desktop observability (`/ui`, `/api/ui/state`), `vis.overlay.v1` companion events, and frame-source evidence (capture source/resolution/provider summary) on Quest + desktop.
+- v5.08 adds proof-gated PCA truth, whole-FOV hold-style DET/SEG/DEPTH overlays, Desktop Console operator controls on top of existing APIs, and pySLAM realtime visibility fields on Quest + desktop.
 - Gesture shortcuts default to `Safe` mode (no trigger while menu/system gesture/UI/grab conflict is active)
 - Smoke panel move/resize is explicit opt-in from `Dev -> Enable Move/Resize`.
 - Passthrough controls are in `Vision` (`On/Off`, `Opacity`, `Color/Gray` if supported).
@@ -310,7 +310,7 @@ If a version-specific brief is used, keep it outside the repository as a tempora
 If maintainers decide to align release tags with `VERSION`:
 
 ```bash
-git tag -a v5.07 -m "v5.07" <commit>
+git tag -a v5.08 -m "v5.08" <commit>
 ```
 
 Do not run this automatically unless release approval is explicit.

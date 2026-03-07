@@ -399,6 +399,7 @@ namespace BeYourEyes.Unity.Interaction
                     yield break;
                 }
 
+                yield return source.CaptureJpg(bytes => jpg = bytes);
                 var captureMeta = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
                 source.FillMeta(captureMeta);
                 var normalizedFrameSource = NormalizeFrameSourceToken(source.SourceName, captureMeta);
@@ -440,14 +441,14 @@ namespace BeYourEyes.Unity.Interaction
                     lastFrameSourceStatus = string.IsNullOrWhiteSpace(source.SourceName) ? "-" : $"{source.SourceName}:ok";
                 }
 
-                yield return source.CaptureJpg(bytes => jpg = bytes);
-
                 captureInProgress = false;
                 if (jpg == null || jpg.Length == 0)
                 {
                     Debug.LogWarning("[Scan] frame capture failed");
                     lastScanState = "failed";
-                    lastScanError = "capture failed";
+                    lastScanError = string.IsNullOrWhiteSpace(lastFrameSourceReason)
+                        ? "capture failed"
+                        : $"capture failed ({lastFrameSourceReason})";
                     uploadsFailedCount++;
                     EmitUploadMetrics(ok: false, error: lastScanError);
                     yield break;
@@ -815,7 +816,7 @@ namespace BeYourEyes.Unity.Interaction
             return token switch
             {
                 FrameSourcePcaReal => "meta_pca_integrated",
-                FrameSourceArCpuImageFallback => "meta_pca_not_integrated_using_ar_cpuimage",
+                FrameSourceArCpuImageFallback => "using_ar_cpuimage",
                 FrameSourceRenderTextureFallback => "screen_grabber_fallback",
                 _ => "unavailable",
             };

@@ -1,7 +1,7 @@
 # DECISIONS
 
 Canonical architecture decisions that should not be re-litigated without explicit maintainer approval.
-- Source: `docs/maintainer/ARCHITECTURE_REVIEW_v5.04.md`, `docs/maintainer/WORKFLOW_HANDOFF_v5.04.md`, `docs/maintainer/REPO_FACTS_v5.04.json`, the approved `v5.06 Truth & Focus` design, and the approved `v5.07 True Capture + True Voice` design.
+- Source: `docs/maintainer/ARCHITECTURE_REVIEW_v5.04.md`, `docs/maintainer/WORKFLOW_HANDOFF_v5.04.md`, `docs/maintainer/REPO_FACTS_v5.04.json`, the approved `v5.06 Truth & Focus` design, the approved `v5.07 True Capture + True Voice` design, and the approved `v5.08 True PCA + Whole-FOV Overlays + Desktop Console as Operator UI` design.
 - Updated: `2026-03-07`.
 
 ## Interaction and UX
@@ -15,12 +15,16 @@ Canonical architecture decisions that should not be re-litigated without explici
 
 - `real / mock / fallback` state must be consistent on both Quest and Desktop.
 - Desktop Console is one of the runtime fact sources; it is not optional debug chrome.
+- Desktop Console operator UI must stay a thin wrapper around existing Gateway APIs rather than inventing a desktop-only protocol.
 - Panel-only state is insufficient to claim a capability works. Quest-visible output or runtime evidence must agree.
 - Until true Meta PCA exists, fallback capture must not be labeled or implied as real PCA.
 - Capture truth may only surface as `pca_real`, `ar_cpuimage_fallback`, `rendertexture_fallback`, or `unavailable`.
+- `pca_real` is valid only when device, runtime/provider, permission, and initialization proofs are all satisfied on a supported Quest 3 or 3S device outside Link or Simulator fallback environments.
 - If the runtime cannot prove true Meta PCA, it must surface a fallback or unavailable state together with a reason.
 - ASR and TTS are separate truth chains: ASR is Gateway-side recognition evidence; TTS is Quest-local playback evidence.
 - `mock`, `fallback`, `unavailable`, and `muted` states must be explicit in both Quest UI and Desktop Console.
+- Whole-FOV overlay rendering is a hold-style display path, not a requirement for per-frame inference. Latest-frame-wins and last-frame-hold are preferred over queue buildup.
+- pySLAM realtime visibility must show `backend`, `state`, `fps`, `latency`, and `root detected`, even when pySLAM is mock or unavailable.
 
 ## System Boundaries
 

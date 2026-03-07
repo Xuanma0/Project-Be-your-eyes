@@ -1,5 +1,11 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v5.08
+- True PCA 进入 proof-gated 真相模型：Quest Panel、Desktop Console、`/api/capabilities`、`/api/providers`、`/api/ui/state` 中的 `pca_real` 只有在 Quest 3/3S、非 Link、相机权限已授予、provider 可用且 ready 时才成立。
+- Quest HUD 强化为 whole-FOV hold 风格叠加：DET、SEG、DEPTH 不追求每帧推理，而是采用 latest-frame-wins + last-frame-hold，优先保证视野内渲染稳定。
+- Desktop Console 升级为 operator UI，并继续只薄封装现有 API：新增 `Scan Once`、`Live Start/Stop`、`Read Text`、`Find Door`、`Record Start/Stop`，同时显示 frame source truth、provider truth、latest capture success 与 overlay preview。
+- Quest 与 Desktop 新增 pySLAM realtime 可视化字段：`backend`、`state`、`fps`、`latency`、`root detected`，但 pySLAM 仍保持外部可选，不进入默认 CI 成功标准。
+- Quest SelfTest 增加 PCA truth 与 whole-FOV overlay truth 检查；不改 contracts，不改 inference provider 语义。
 ## v5.07
 - True Capture 统一说真话：Quest Panel、Desktop Console、`/api/capabilities`、`/api/providers`、`/api/ui/state` 中的 frame source 现在只允许显示 `pca_real`、`ar_cpuimage_fallback`、`rendertexture_fallback`、`unavailable` 四种之一。
 - True Voice 证据接通到 Quest 和 Desktop：新增 mic permission 状态、`Last Transcript`、`Last Spoken`、`TTS muted`、TTS/ASR backend truth 展示，明确 real/mock/muted/fallback。

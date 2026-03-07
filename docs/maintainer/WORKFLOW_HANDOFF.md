@@ -20,33 +20,36 @@ If a version-specific execution brief exists, treat it as an external temporary 
 ## Current HEAD / VERSION
 
 - Branch: `feature/unity-skeleton`
-- HEAD: `86ba11fba56d52cfc6c1f4c54520dbd99cdc0fac`
-- `VERSION`: `v5.07`
+- HEAD: `3c9b6d5d72bbf326d8944fea2805c318435ad786`
+- `VERSION`: `v5.08`
 - Unity editor target: `6000.3.10f1`
 - Enabled build scene: `Assets/Scenes/Quest3SmokeScene.unity`
-- Preferred Quest launcher: `tools/quest3/quest3_usb_realstack_v5_05.cmd`
+- Preferred Quest launcher: `tools/quest3/quest3_usb_realstack_v5_08.cmd`
 
 ## This Branch's Invariants
 
 - Do not casually change `Assets/Editor/ByesQuest3SmokeSceneInstaller.cs`; it enforces the Quest smoke scene object graph and build scene.
 - Do not remove `/api/assets/*`, `/api/ui/state`, or `/ui` unless you replace both Quest HUD and desktop-console consumers.
 - Do not claim `PCA` is real capture integration unless capture truth is actually `pca_real`; current fallback path must report `ar_cpuimage_fallback`, `rendertexture_fallback`, or `unavailable`.
+- `pca_real` requires supported Quest 3 or 3S hardware, non-Link runtime, camera permission, provider availability, and provider readiness at the same time.
 - Keep `frame.input`, `frame.ack`, `det.objects.v1`, `seg.mask.v1`, `depth.map.v1`, `vis.overlay.v1`, `target.session`, and `target.update` contract-compatible.
 - Do not bypass `Gateway/contracts/contract.lock.json`; update contracts deliberately and run the lock gate.
 - Treat Quest local TTS as client-side truth. Gateway only records TTS runtime evidence from `frame.ack`.
 - Keep ASR and TTS evidence separate: ASR truth comes from Gateway recognition runtime; TTS truth comes from Quest-local playback runtime.
 - Keep `pySLAM` optional. It may be visible in diagnostics, but it is not part of the default smoke success criteria.
+- Keep Desktop Console as a thin wrapper on existing APIs. Add controls there only when they map directly to existing `/api/frame`, `/api/assist`, `/api/record/*`, `/api/mode`, `/api/capabilities`, `/api/providers`, or `/api/ui/state` flows.
 
 ## Known Fragile Files
 
 - `Assets/Scripts/BYES/Quest/ByesQuest3ConnectionPanelMinimal.cs`
 - `Assets/Scripts/BYES/Quest/ByesHandMenuController.cs`
 - `Assets/Scripts/BYES/Quest/ByesVisionHudController.cs`
+- `Assets/Scripts/BYES/Quest/ByesVisionHudRenderer.cs`
 - `Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs`
 - `Assets/Editor/ByesQuest3SmokeSceneInstaller.cs`
 - `Gateway/main.py`
 - `Gateway/services/inference_service/app.py`
-- `tools/quest3/quest3_usb_realstack_v5_05.cmd`
+- `tools/quest3/quest3_usb_realstack_v5_08.cmd`
 
 ## How to Tell Real vs Mock Quickly
 
@@ -77,7 +80,7 @@ cmd /c tools\unity\build_quest3_android.cmd
 If you touched Quest realtime flow, also run:
 
 ```bat
-tools\quest3\quest3_usb_realstack_v5_05.cmd
+tools\quest3\quest3_usb_realstack_v5_08.cmd
 ```
 
 and confirm:

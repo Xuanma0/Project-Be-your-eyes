@@ -323,6 +323,7 @@ namespace BYES.Quest
 
                 SetStatus("RUNNING", "step9 vision assets");
                 var visionAssetsStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var detExpected = IsProviderEnabled(capabilitiesObj, "det");
                 var segExpected = IsProviderEnabled(capabilitiesObj, "seg");
                 var depthExpected = IsProviderEnabled(capabilitiesObj, "depth");
                 if (segExpected || depthExpected)
@@ -369,6 +370,22 @@ namespace BYES.Quest
                 else
                 {
                     skipNotes.Add("vision_assets:providers_disabled");
+                }
+                var overlayTruthOk = false;
+                var overlayTruthError = string.Empty;
+                yield return VerifyOverlayTruth(
+                    detExpected: detExpected,
+                    segExpected: segExpected,
+                    depthExpected: depthExpected,
+                    onDone: (ok, error) =>
+                    {
+                        overlayTruthOk = ok;
+                        overlayTruthError = error;
+                    });
+                if (!overlayTruthOk)
+                {
+                    Fail("overlay_truth failed: " + overlayTruthError);
+                    yield break;
                 }
                 _stepDurationsMs["vision_assets"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - visionAssetsStepStartedMs);
 
@@ -1083,7 +1100,10 @@ namespace BYES.Quest
         private IEnumerator VerifyCaptureTruth(Action<bool, string> onDone)
         {
             var panelSource = NormalizeFrameSourceTruthToken(_panel != null ? _panel.GetFrameSourceText() : string.Empty);
-            var panelState = string.IsNullOrWhiteSpace(_panel?.GetFrameSourceTruthState()) ? "unavailable" : _panel.GetFrameSourceTruthState();
+            var panelState = string.IsNullOrWhiteSpace(_panel?.GetFrameSourceTruthState())
+                ? "unavailable"
+                : NormalizeTruthState(_panel.GetFrameSourceTruthState());
+            var panelReason = (_panel?.GetFrameSourceTruthReason() ?? string.Empty).Trim();
             if (!IsAllowedFrameSourceTruth(panelSource))
             {
                 onDone?.Invoke(false, $"panel_source_invalid:{panelSource}");
@@ -1105,6 +1125,8 @@ namespace BYES.Quest
                 var frameTruth = truth?["frameSource"] as JObject;
                 var remoteSource = NormalizeFrameSourceTruthToken(frameTruth?.Value<string>("frameSource"));
                 var remoteState = NormalizeTruthState(frameTruth?.Value<string>("truthState") ?? frameTruth?.Value<string>("truthLabel"));
+                var remoteReason = (frameTruth?.Value<string>("reason") ?? string.Empty).Trim();
+                var remoteStatus = (frameTruth?.Value<string>("status") ?? string.Empty).Trim();
                 if (!IsAllowedFrameSourceTruth(remoteSource))
                 {
                     remoteOk = false;
@@ -1126,8 +1148,131 @@ namespace BYES.Quest
                     return;
                 }
 
+                if (string.IsNullOrWhiteSpace(remoteReason))
+                {
+                    remoteOk = false;
+                    remoteError = "remote_reason_missing";
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(remoteStatus))
+                {
+                    remoteOk = false;
+                    remoteError = "remote_status_missing";
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(panelReason))
+                {
+                    remoteOk = false;
+                    remoteError = "panel_reason_missing";
+                    return;
+                }
+
+                if (!string.Equals(panelReason, remoteReason, StringComparison.Ordinal))
+                {
+                    remoteOk = false;
+                    remoteError = $"panelReason={panelReason} remoteReason={remoteReason}";
+                    return;
+                }
+
+                if (string.Equals(remoteSource, "pca_real", StringComparison.Ordinal))
+                {
+                    var proof = frameTruth?["proof"] as JObject;
+                    var proofsValid =
+                        proof?.Value<bool?>("deviceSupported") == true &&
+                        proof?.Value<bool?>("runtimeSupported") == true &&
+                        proof?.Value<bool?>("permissionGranted") == true &&
+                        proof?.Value<bool?>("providerAvailable") == true &&
+                        proof?.Value<bool?>("providerReady") == true;
+                    if (!proofsValid)
+                    {
+                        remoteOk = false;
+                        remoteError = "pca_real_missing_proof";
+                        return;
+                    }
+                }
+
                 remoteOk = true;
                 remoteError = string.Empty;
+            });
+
+            onDone?.Invoke(remoteOk, remoteError);
+        }
+
+        private IEnumerator VerifyOverlayTruth(bool detExpected, bool segExpected, bool depthExpected, Action<bool, string> onDone)
+        {
+            var visionHud = FindFirstObjectByType<ByesVisionHudController>();
+            var panelDetObserved = _panel != null && _panel.GetHudDetAgeMs() >= 0;
+            var panelSegObserved = _panel != null && _panel.GetHudSegAgeMs() >= 0;
+            var panelDepthObserved = _panel != null && _panel.GetHudDepthAgeMs() >= 0;
+            var panelKinds = ParseOverlayKinds(_panel != null ? _panel.GetOverlayKindsText() : string.Empty);
+
+            var remoteOk = false;
+            var remoteError = string.Empty;
+            yield return GetJson("/api/ui/state", (ok, obj, error) =>
+            {
+                if (!ok || obj == null)
+                {
+                    remoteOk = false;
+                    remoteError = string.IsNullOrWhiteSpace(error) ? "ui_state_failed" : error;
+                    return;
+                }
+
+                var truth = obj["truth"] as JObject;
+                var latest = obj["latest"] as JObject;
+                var remoteKinds = ParseOverlayKinds(truth?["overlayKindsAvailable"] as JArray ?? latest?["overlayKindsAvailable"] as JArray);
+                var overlayAssets = latest?["overlayAssets"] as JObject;
+                var issues = new List<string>();
+                if ((detExpected || segExpected || depthExpected) && (visionHud == null || !visionHud.FullFovOverlayLayer))
+                {
+                    issues.Add("hud_mode_not_whole_fov");
+                }
+
+                if (detExpected)
+                {
+                    var remoteDet = remoteKinds.Contains("det") || !string.IsNullOrWhiteSpace(overlayAssets?["det"]?["assetId"]?.ToString());
+                    if (!remoteDet)
+                    {
+                        issues.Add("remote_det_missing");
+                    }
+
+                    if (!(panelDetObserved || panelKinds.Contains("det")))
+                    {
+                        issues.Add("quest_det_missing");
+                    }
+                }
+
+                if (segExpected)
+                {
+                    var remoteSeg = remoteKinds.Contains("seg") || !string.IsNullOrWhiteSpace(overlayAssets?["seg"]?["assetId"]?.ToString());
+                    if (!remoteSeg)
+                    {
+                        issues.Add("remote_seg_missing");
+                    }
+
+                    if (!(panelSegObserved || panelKinds.Contains("seg")))
+                    {
+                        issues.Add("quest_seg_missing");
+                    }
+                }
+
+                if (depthExpected)
+                {
+                    var remoteDepth = remoteKinds.Contains("depth") || !string.IsNullOrWhiteSpace(overlayAssets?["depth"]?["assetId"]?.ToString());
+                    if (!remoteDepth)
+                    {
+                        issues.Add("remote_depth_missing");
+                    }
+
+                    if (!(panelDepthObserved || panelKinds.Contains("depth")))
+                    {
+                        issues.Add("quest_depth_missing");
+                    }
+                }
+
+                remoteOk = issues.Count == 0;
+                remoteError = remoteOk ? string.Empty : string.Join(",", issues);
             });
 
             onDone?.Invoke(remoteOk, remoteError);
@@ -1149,6 +1294,46 @@ namespace BYES.Quest
         private static string NormalizeTruthState(string value)
         {
             return GatewayClient.NormalizeRuntimeTruthStateToken(value);
+        }
+
+        private static HashSet<string> ParseOverlayKinds(string csv)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(csv))
+            {
+                return result;
+            }
+
+            var parts = csv.Split(new[] {',', ';', ' '}, StringSplitOptions.RemoveEmptyEntries);
+            for (var i = 0; i < parts.Length; i += 1)
+            {
+                var token = (parts[i] ?? string.Empty).Trim().ToLowerInvariant();
+                if (!string.IsNullOrWhiteSpace(token) && token != "-")
+                {
+                    result.Add(token);
+                }
+            }
+            return result;
+        }
+
+        private static HashSet<string> ParseOverlayKinds(JArray kinds)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (kinds == null)
+            {
+                return result;
+            }
+
+            for (var i = 0; i < kinds.Count; i += 1)
+            {
+                var token = (kinds[i]?.ToString() ?? string.Empty).Trim().ToLowerInvariant();
+                if (!string.IsNullOrWhiteSpace(token) && token != "-")
+                {
+                    result.Add(token);
+                }
+            }
+
+            return result;
         }
 
         private (bool ok, bool skipped, string reason) CheckOrRequestMicPermission()

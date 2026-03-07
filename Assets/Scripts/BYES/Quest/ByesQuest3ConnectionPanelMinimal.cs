@@ -99,6 +99,15 @@ namespace BYES.Quest
         private string _micPermissionState = "unknown";
         private string _providerSummary = "providers: -";
         private string _providerDetail = "-";
+        private string _overlayKindsSummary = "-";
+        private string _pyslamTruthState = "unavailable";
+        private string _pyslamBackend = "-";
+        private string _pyslamState = "-";
+        private float _pyslamFps = -1f;
+        private int _pyslamLatencyMs = -1;
+        private bool? _pyslamRootDetected;
+        private long _pyslamLastSuccessTsMs = -1;
+        private string _pyslamReason = "-";
         private long _providerTsMs = -1;
         private long _lastCapabilitiesFetchTsMs = -1;
         private string _pendingFindPrompt = string.Empty;
@@ -570,7 +579,22 @@ namespace BYES.Quest
                      || string.Equals(lowered, "det.objects.v1", StringComparison.Ordinal)
                      || string.Equals(lowered, "det", StringComparison.Ordinal))
             {
+                NoteOverlayKind("det");
                 UpdateDetFromEvent(payload);
+            }
+            else if (string.Equals(lowered, "vis.overlay.v1", StringComparison.Ordinal))
+            {
+                NoteOverlayKind((payload?.Value<string>("kind") ?? string.Empty).Trim());
+            }
+            else if (string.Equals(lowered, "seg.mask.v1", StringComparison.Ordinal)
+                     || string.Equals(lowered, "seg.mask", StringComparison.Ordinal))
+            {
+                NoteOverlayKind("seg");
+            }
+            else if (string.Equals(lowered, "depth.map.v1", StringComparison.Ordinal)
+                     || string.Equals(lowered, "depth.estimate", StringComparison.Ordinal))
+            {
+                NoteOverlayKind("depth");
             }
             else if (string.Equals(lowered, "risk.fused", StringComparison.Ordinal)
                      || string.Equals(lowered, "risk.hazards", StringComparison.Ordinal))
@@ -589,12 +613,58 @@ namespace BYES.Quest
             {
                 UpdateAsrFromEvent(payload);
             }
+            else if (string.Equals(lowered, "slam.pose.v1", StringComparison.Ordinal)
+                     || string.Equals(lowered, "slam.pose", StringComparison.Ordinal)
+                     || string.Equals(lowered, "slam.trajectory.v1", StringComparison.Ordinal)
+                     || string.Equals(lowered, "slam.debug", StringComparison.Ordinal))
+            {
+                UpdateSlamVisibilityFromEvent(payload, lowered);
+            }
             if (string.Equals(_scanStatus, "sending", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(_scanStatus, "uploaded", StringComparison.OrdinalIgnoreCase))
             {
                 _scanStatus = "event_received";
             }
             RefreshAllStatusLines();
+        }
+
+        private void NoteOverlayKind(string kind)
+        {
+            var token = string.IsNullOrWhiteSpace(kind) ? string.Empty : kind.Trim().ToLowerInvariant();
+            if (token == "combo")
+            {
+                NoteOverlayKind("det");
+                NoteOverlayKind("seg");
+                return;
+            }
+
+            if (token != "det" && token != "seg" && token != "depth" && token != "target")
+            {
+                return;
+            }
+
+            var kinds = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(_overlayKindsSummary) && _overlayKindsSummary != "-")
+            {
+                var parts = _overlayKindsSummary.Split(',');
+                for (var i = 0; i < parts.Length; i += 1)
+                {
+                    var existing = (parts[i] ?? string.Empty).Trim().ToLowerInvariant();
+                    if (string.IsNullOrWhiteSpace(existing) || existing == "-" || !seen.Add(existing))
+                    {
+                        continue;
+                    }
+                    kinds.Add(existing);
+                }
+            }
+
+            if (seen.Add(token))
+            {
+                kinds.Add(token);
+            }
+
+            _overlayKindsSummary = kinds.Count > 0 ? string.Join(",", kinds) : "-";
         }
 
         private void HandleShortcutTriggered(string action)
@@ -956,6 +1026,54 @@ namespace BYES.Quest
             {
                 _lastVoiceAction = "transcript_only";
             }
+        }
+
+        private void UpdateSlamVisibilityFromEvent(JObject payload, string eventName)
+        {
+            if (payload == null)
+            {
+                return;
+            }
+
+            var backend = (payload.Value<string>("backend") ?? string.Empty).Trim().ToLowerInvariant();
+            var trackingState = (payload.Value<string>("trackingState") ?? payload.Value<string>("state") ?? string.Empty).Trim().ToLowerInvariant();
+            var reason = (payload.Value<string>("reason") ?? string.Empty).Trim();
+            var rootDetected = payload.Value<bool?>("rootDetected");
+            if (!rootDetected.HasValue)
+            {
+                rootDetected = payload.Value<bool?>("root_detected");
+            }
+
+            if (!string.IsNullOrWhiteSpace(backend))
+            {
+                if (backend.StartsWith("pyslam", StringComparison.Ordinal))
+                {
+                    _pyslamBackend = backend;
+                    _pyslamTruthState = backend.IndexOf("mock", StringComparison.Ordinal) >= 0 ? "mock" : "real";
+                }
+                else if (string.Equals(eventName, "slam.trajectory.v1", StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(eventName, "slam.debug", StringComparison.OrdinalIgnoreCase))
+                {
+                    _pyslamBackend = backend;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(trackingState))
+            {
+                _pyslamState = trackingState;
+            }
+
+            if (!string.IsNullOrWhiteSpace(reason))
+            {
+                _pyslamReason = reason;
+            }
+
+            if (rootDetected.HasValue)
+            {
+                _pyslamRootDetected = rootDetected.Value;
+            }
+
+            _pyslamLastSuccessTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         }
 
         private float ParseDepthFromRiskText(string text)
@@ -2329,6 +2447,19 @@ namespace BYES.Quest
             return string.IsNullOrWhiteSpace(_providerDetail) ? "-" : _providerDetail;
         }
 
+        public string GetOverlayKindsText()
+        {
+            return string.IsNullOrWhiteSpace(_overlayKindsSummary) ? "-" : _overlayKindsSummary;
+        }
+
+        public string GetPySlamSummaryText()
+        {
+            var fpsText = _pyslamFps >= 0f ? _pyslamFps.ToString("0.0") : "-";
+            var latencyText = _pyslamLatencyMs >= 0 ? _pyslamLatencyMs.ToString() : "-";
+            var rootText = _pyslamRootDetected.HasValue ? (_pyslamRootDetected.Value ? "yes" : "no") : "-";
+            return $"pyslam[{_pyslamTruthState}:{_pyslamBackend}] state={_pyslamState} fps={fpsText} latency={latencyText} root={rootText}";
+        }
+
         public long GetHudSegAgeMs()
         {
             return _visionHud != null ? _visionHud.LastSegAgeMs : -1L;
@@ -2417,6 +2548,8 @@ namespace BYES.Quest
                 $"find={_lastFindText} ts={_lastFindTsMs}\n" +
                 $"target={_lastTargetText} ts={_lastTargetTsMs} session={_targetSessionId}\n" +
                 $"guidance={_guidanceText} ts={_lastGuidanceTsMs}\n" +
+                $"overlays={GetOverlayKindsText()} hudKind={(_visionHud != null ? _visionHud.LastOverlayKind : "-")} hudMode={(_visionHud != null && _visionHud.FullFovOverlayLayer ? "whole_fov_hold" : "panel_hold")} freeze={(_visionHud != null && _visionHud.FreezeOverlay ? "on" : "off")}\n" +
+                $"pyslam={GetPySlamSummaryText()} ts={_pyslamLastSuccessTsMs} reason={_pyslamReason}\n" +
                 $"voice={GetVoiceTruthSummary()} asrText={_lastAsrText} asrTs={_lastAsrTsMs} ttsText={_lastTtsText} ttsTs={_lastTtsTsMs}\n" +
                 $"providers={_providerSummary} detail={_providerDetail}\n" +
                 $"recordPath={GetRecordingPathText()}\n" +
@@ -2748,6 +2881,7 @@ namespace BYES.Quest
                     Token(providers, "slam"),
                     Token(providers, "asr"),
                     Token(providers, "tts"),
+                    Token(providers, "pyslamRealtime"),
                 }
             );
         }
@@ -2768,6 +2902,25 @@ namespace BYES.Quest
             _providerDetail = providers != null
                 ? providers.ToString(Newtonsoft.Json.Formatting.None)
                 : (truth != null ? truth.ToString(Newtonsoft.Json.Formatting.None) : "available_providers missing");
+            var overlayKinds = truth?["overlayKindsAvailable"] as JArray
+                               ?? stateObj["latest"]?["overlayKindsAvailable"] as JArray;
+            if (overlayKinds != null && overlayKinds.Count > 0)
+            {
+                var tokens = new List<string>();
+                for (var i = 0; i < overlayKinds.Count; i += 1)
+                {
+                    var text = (overlayKinds[i]?.ToString() ?? string.Empty).Trim().ToLowerInvariant();
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        tokens.Add(text);
+                    }
+                }
+                _overlayKindsSummary = tokens.Count > 0 ? string.Join(",", tokens) : "-";
+            }
+            else if (string.IsNullOrWhiteSpace(_overlayKindsSummary))
+            {
+                _overlayKindsSummary = "-";
+            }
 
             var frameTruth = truth?["frameSource"] as JObject;
             _frameTruthSource = NormalizeFrameSourceTruthToken(frameTruth?.Value<string>("frameSource"));
@@ -2811,6 +2964,48 @@ namespace BYES.Quest
                 {
                     _lastTtsText = spoken;
                     _lastTtsTsMs = spokenTs;
+                }
+            }
+
+            var pyslamTruth = providers?["pyslamRealtime"] as JObject;
+            if (pyslamTruth != null)
+            {
+                _pyslamTruthState = NormalizeTruthStateToken(pyslamTruth.Value<string>("truthState") ?? pyslamTruth.Value<string>("truthLabel"));
+                _pyslamBackend = string.IsNullOrWhiteSpace(pyslamTruth.Value<string>("backend")) ? "-" : pyslamTruth.Value<string>("backend");
+                _pyslamReason = string.IsNullOrWhiteSpace(pyslamTruth.Value<string>("reason")) ? "-" : pyslamTruth.Value<string>("reason");
+                _pyslamState = string.IsNullOrWhiteSpace(pyslamTruth.Value<string>("state"))
+                    ? (string.IsNullOrWhiteSpace((pyslamTruth["evidence"] as JObject)?.Value<string>("state"))
+                        ? _pyslamState
+                        : (pyslamTruth["evidence"] as JObject).Value<string>("state"))
+                    : pyslamTruth.Value<string>("state");
+                _pyslamFps = ReadNonNegativeFloat(pyslamTruth["fps"]);
+                if (_pyslamFps < 0f)
+                {
+                    _pyslamFps = ReadNonNegativeFloat((pyslamTruth["evidence"] as JObject)?["fps"]);
+                }
+                _pyslamLatencyMs = Mathf.RoundToInt(ReadNonNegativeFloat(pyslamTruth["lastInferMs"]));
+                if (_pyslamLatencyMs < 0)
+                {
+                    _pyslamLatencyMs = Mathf.RoundToInt(ReadNonNegativeFloat((pyslamTruth["evidence"] as JObject)?["last_infer_ms"]));
+                }
+                var rootDetected = ReadNullableBool(pyslamTruth["rootDetected"]);
+                if (!rootDetected.HasValue)
+                {
+                    rootDetected = ReadNullableBool((pyslamTruth["evidence"] as JObject)?["root_detected"]);
+                }
+                if (rootDetected.HasValue)
+                {
+                    _pyslamRootDetected = rootDetected.Value;
+                }
+
+                var pyslamTs = ReadNonNegativeLong(pyslamTruth["lastSuccessTsMs"]);
+                if (pyslamTs <= 0)
+                {
+                    pyslamTs = ReadNonNegativeLong((pyslamTruth["evidence"] as JObject)?["last_success_ts"]);
+                }
+                if (pyslamTs > 0)
+                {
+                    _pyslamLastSuccessTsMs = pyslamTs;
                 }
             }
 
@@ -2863,6 +3058,41 @@ namespace BYES.Quest
             }
 
             return long.TryParse(token.ToString(), out var parsed) ? Math.Max(-1L, parsed) : -1L;
+        }
+
+        private static float ReadNonNegativeFloat(JToken token)
+        {
+            if (token == null)
+            {
+                return -1f;
+            }
+
+            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+            {
+                return Mathf.Max(-1f, token.Value<float>());
+            }
+
+            return float.TryParse(token.ToString(), out var parsed) ? Mathf.Max(-1f, parsed) : -1f;
+        }
+
+        private static bool? ReadNullableBool(JToken token)
+        {
+            if (token == null)
+            {
+                return null;
+            }
+
+            if (token.Type == JTokenType.Boolean)
+            {
+                return token.Value<bool>();
+            }
+
+            if (bool.TryParse(token.ToString(), out var parsed))
+            {
+                return parsed;
+            }
+
+            return null;
         }
 
         private void RefreshMicPermissionState()
@@ -3069,6 +3299,8 @@ namespace BYES.Quest
             {
                 captureText += $" | {_providerSummary}";
             }
+            captureText += $" | overlays={GetOverlayKindsText()}";
+            captureText += $" | {GetPySlamSummaryText()}";
             _lastUploadText.Set(uploadText);
             _lastE2eText.Set(e2eText);
             _captureText.Set(captureText);
@@ -3108,7 +3340,8 @@ namespace BYES.Quest
                     $"HUD: kind={_visionHud.LastOverlayKind} fps={_visionHud.OverlayFps:0.0} fetch={_visionHud.LastFetchMs:0.0}ms decode={_visionHud.LastDecodeMs:0.0}ms bytes={_visionHud.LastAssetBytes} " +
                     $"segAge={(_visionHud.LastSegAgeMs >= 0 ? _visionHud.LastSegAgeMs + "ms" : "-")} " +
                     $"depthAge={(_visionHud.LastDepthAgeMs >= 0 ? _visionHud.LastDepthAgeMs + "ms" : "-")} " +
-                    $"detAge={(_visionHud.LastDetAgeMs >= 0 ? _visionHud.LastDetAgeMs + "ms" : "-")}");
+                    $"detAge={(_visionHud.LastDetAgeMs >= 0 ? _visionHud.LastDetAgeMs + "ms" : "-")} " +
+                    $"mode={(_visionHud.FullFovOverlayLayer ? "whole_fov_hold" : "panel_hold")} freeze={(_visionHud.FreezeOverlay ? "on" : "off")} overlays={GetOverlayKindsText()}");
             }
             else
             {
@@ -3132,7 +3365,7 @@ namespace BYES.Quest
             if (_rawVisible)
             {
                 var providerAge = _providerTsMs > 0 ? $"{Math.Max(0, nowMs - _providerTsMs)}ms" : "-";
-                var hint = $"trackSession={_targetSessionId} | recordPath={GetRecordingPathText()} | passthrough={GetPassthroughStatus()} | guideAudio={(_guidanceAudioEnabled ? "on" : "off")} | guideHaptics={(_guidanceHapticsEnabled ? "on" : "off")} | capture={GetFrameSourceText()}[{GetFrameSourceTruthState()}]({captureAge}) | asr={_lastAsrText}({asrAge})[{_asrTruthState}:{_asrBackend}] | tts={_lastTtsText}({ttsAge})[{_ttsTruthState}:{_ttsBackend}] muted={(_ttsMuted ? "yes" : "no")} | voiceAction={_lastVoiceAction} | autoVoice={(_autoVoiceCommandEnabled ? "on" : "off")} | providers=[{_providerSummary}] age={providerAge}";
+                var hint = $"trackSession={_targetSessionId} | recordPath={GetRecordingPathText()} | passthrough={GetPassthroughStatus()} | guideAudio={(_guidanceAudioEnabled ? "on" : "off")} | guideHaptics={(_guidanceHapticsEnabled ? "on" : "off")} | capture={GetFrameSourceText()}[{GetFrameSourceTruthState()}]({captureAge}) reason={GetFrameSourceTruthReason()} | overlays={GetOverlayKindsText()} hudMode={(_visionHud != null && _visionHud.FullFovOverlayLayer ? "whole_fov_hold" : "panel_hold")} freeze={(_visionHud != null && _visionHud.FreezeOverlay ? "on" : "off")} | {GetPySlamSummaryText()} | asr={_lastAsrText}({asrAge})[{_asrTruthState}:{_asrBackend}] | tts={_lastTtsText}({ttsAge})[{_ttsTruthState}:{_ttsBackend}] muted={(_ttsMuted ? "yes" : "no")} | voiceAction={_lastVoiceAction} | autoVoice={(_autoVoiceCommandEnabled ? "on" : "off")} | providers=[{_providerSummary}] age={providerAge}";
                 if (probeCount10s >= 8 && !liveEnabled)
                 {
                     hint = "MainThread Spike suspect: probe polling | " + hint;

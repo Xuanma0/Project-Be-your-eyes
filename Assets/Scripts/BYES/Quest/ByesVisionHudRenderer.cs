@@ -29,6 +29,9 @@ namespace BYES.Quest
         private bool _bound;
         private int _overlayUpdates;
         private float _fpsTickStart;
+        private readonly Dictionary<string, string> _pendingOverlayAssets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> _appliedOverlayAssets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _overlayFetchInFlight = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         public float OverlayFps { get; private set; }
         public float LastDecodeMs { get; private set; }
@@ -163,7 +166,7 @@ namespace BYES.Quest
                         var segAssetId = (payload.Value<string>("assetId") ?? string.Empty).Trim();
                         if (!string.IsNullOrWhiteSpace(segAssetId))
                         {
-                            StartCoroutine(DownloadAsset(segAssetId, applyMode: "seg"));
+                            RequestOverlayAsset(segAssetId, applyMode: "seg");
                         }
                         LastSegTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                     }
@@ -174,7 +177,7 @@ namespace BYES.Quest
                         var depthAssetId = (payload.Value<string>("assetId") ?? string.Empty).Trim();
                         if (!string.IsNullOrWhiteSpace(depthAssetId))
                         {
-                            StartCoroutine(DownloadAsset(depthAssetId, applyMode: "depth"));
+                            RequestOverlayAsset(depthAssetId, applyMode: "depth");
                         }
                         LastDepthTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                     }
@@ -214,7 +217,7 @@ namespace BYES.Quest
             {
                 if (_showDet)
                 {
-                    StartCoroutine(DownloadAsset(assetId, applyMode: "det"));
+                    RequestOverlayAsset(assetId, applyMode: "det");
                 }
                 LastDetTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 return;
@@ -224,7 +227,7 @@ namespace BYES.Quest
             {
                 if (_showSeg)
                 {
-                    StartCoroutine(DownloadAsset(assetId, applyMode: "seg"));
+                    RequestOverlayAsset(assetId, applyMode: "seg");
                 }
                 LastSegTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 return;
@@ -234,7 +237,7 @@ namespace BYES.Quest
             {
                 if (_showDepth)
                 {
-                    StartCoroutine(DownloadAsset(assetId, applyMode: "depth"));
+                    RequestOverlayAsset(assetId, applyMode: "depth");
                 }
                 LastDepthTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 return;
@@ -244,21 +247,98 @@ namespace BYES.Quest
             {
                 if (_showDet)
                 {
-                    StartCoroutine(DownloadAsset(assetId, applyMode: "det"));
+                    RequestOverlayAsset(assetId, applyMode: "det");
                 }
                 if (_showSeg)
                 {
-                    StartCoroutine(DownloadAsset(assetId, applyMode: "seg"));
+                    RequestOverlayAsset(assetId, applyMode: "seg");
                 }
                 LastDetTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 LastSegTsMs = LastDetTsMs;
             }
         }
 
-        private IEnumerator DownloadAsset(string assetId, string applyMode)
+        private void RequestOverlayAsset(string assetId, string applyMode)
+        {
+            if (string.IsNullOrWhiteSpace(assetId) || string.IsNullOrWhiteSpace(applyMode))
+            {
+                return;
+            }
+
+            if (_appliedOverlayAssets.TryGetValue(applyMode, out var appliedAssetId)
+                && string.Equals(appliedAssetId, assetId, StringComparison.Ordinal)
+                && !_overlayFetchInFlight.Contains(applyMode))
+            {
+                return;
+            }
+
+            _pendingOverlayAssets[applyMode] = assetId;
+            if (_overlayFetchInFlight.Contains(applyMode))
+            {
+                return;
+            }
+
+            StartCoroutine(DrainOverlayAssetQueue(applyMode));
+        }
+
+        private IEnumerator DrainOverlayAssetQueue(string applyMode)
+        {
+            if (!_overlayFetchInFlight.Add(applyMode))
+            {
+                yield break;
+            }
+
+            try
+            {
+                while (true)
+                {
+                    if (!_pendingOverlayAssets.TryGetValue(applyMode, out var assetId) || string.IsNullOrWhiteSpace(assetId))
+                    {
+                        yield break;
+                    }
+
+                    _pendingOverlayAssets.Remove(applyMode);
+                    Texture texture = null;
+                    var bytes = 0;
+                    var elapsedMs = 0f;
+                    yield return DownloadAssetInternal(assetId, (downloaded, fetchMs, assetBytes) =>
+                    {
+                        texture = downloaded;
+                        elapsedMs = fetchMs;
+                        bytes = assetBytes;
+                    });
+
+                    if (_pendingOverlayAssets.TryGetValue(applyMode, out var newerAssetId)
+                        && !string.IsNullOrWhiteSpace(newerAssetId)
+                        && !string.Equals(newerAssetId, assetId, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    LastFetchMs = elapsedMs;
+                    LastDecodeMs = elapsedMs;
+                    if (texture == null)
+                    {
+                        continue;
+                    }
+
+                    LastAssetBytes = bytes;
+                    ApplyOverlayTexture(applyMode, texture);
+                    _appliedOverlayAssets[applyMode] = assetId;
+                    _overlayUpdates += 1;
+                }
+            }
+            finally
+            {
+                _overlayFetchInFlight.Remove(applyMode);
+            }
+        }
+
+        private IEnumerator DownloadAssetInternal(string assetId, Action<Texture, float, int> onDone)
         {
             if (_gatewayClient == null)
             {
+                onDone?.Invoke(null, 0f, 0);
                 yield break;
             }
 
@@ -274,42 +354,46 @@ namespace BYES.Quest
             }
             yield return request.SendWebRequest();
             var elapsedMs = Mathf.Max(0f, (Time.realtimeSinceStartup - started) * 1000f);
-            LastFetchMs = elapsedMs;
-            LastDecodeMs = elapsedMs;
             if (request.result != UnityWebRequest.Result.Success)
             {
+                onDone?.Invoke(null, elapsedMs, 0);
                 yield break;
             }
 
             var texture = DownloadHandlerTexture.GetContent(request);
+            var bytes = request.downloadHandler?.data != null ? request.downloadHandler.data.Length : 0;
+            onDone?.Invoke(texture, elapsedMs, bytes);
+        }
+
+        private void ApplyOverlayTexture(string applyMode, Texture texture)
+        {
             if (texture == null)
             {
-                yield break;
+                return;
             }
 
-            LastAssetBytes = request.downloadHandler?.data != null ? request.downloadHandler.data.Length : 0;
             if (string.Equals(applyMode, "det", StringComparison.OrdinalIgnoreCase))
             {
                 if (_detImage != null)
                 {
                     _detImage.texture = texture;
                 }
+                return;
             }
-            else if (string.Equals(applyMode, "seg", StringComparison.OrdinalIgnoreCase))
+
+            if (string.Equals(applyMode, "seg", StringComparison.OrdinalIgnoreCase))
             {
                 if (_segImage != null)
                 {
                     _segImage.texture = texture;
                 }
+                return;
             }
-            else
+
+            if (_depthImage != null)
             {
-                if (_depthImage != null)
-                {
-                    _depthImage.texture = texture;
-                }
+                _depthImage.texture = texture;
             }
-            _overlayUpdates += 1;
         }
 
         private void UpdateDetOverlay(JObject payload)

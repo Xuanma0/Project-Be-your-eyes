@@ -4,6 +4,13 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v5.08
+- Added proof-gated PCA truth across Quest panel, Desktop Console, `/api/capabilities`, `/api/providers`, and `/api/ui/state`; `pca_real` now requires supported Quest 3 or 3S hardware, non-Link runtime, camera permission, provider availability, and provider readiness at the same time.
+- Hardened whole-FOV overlay rendering on Quest by keeping DET, SEG, and DEPTH in a last-frame-hold path with latest-frame-wins asset fetch behavior instead of stacking overlay downloads or chasing per-frame inference.
+- Promoted Desktop Console into an operator UI on top of existing APIs by adding `Scan Once`, `Live Start/Stop`, `Read Text`, `Find Door`, and `Record Start/Stop` controls plus frame-source truth, provider truth, latest capture success, and overlay previews.
+- Added explicit pySLAM realtime visibility to Quest and Desktop surfaces with `backend`, `state`, `fps`, `latency`, and `root detected` evidence while keeping pySLAM optional and outside default CI success criteria.
+- Extended Quest self-test to validate capture truth, whole-FOV overlay truth, and Desktop alignment without touching contracts or inference-provider semantics.
+
 ## v5.07
 - Added strict frame-source truth normalization across Quest panel, Desktop Console, `/api/capabilities`, `/api/providers`, and `/api/ui/state`; capture can now surface only `pca_real`, `ar_cpuimage_fallback`, `rendertexture_fallback`, or `unavailable`.
 - Added Quest-visible voice truth evidence: mic permission state, last transcript, last spoken text, TTS muted state, and backend truth now appear on the Quest panel, hand-menu voice page, and Desktop Console.

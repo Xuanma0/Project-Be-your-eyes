@@ -22,7 +22,7 @@ Gateway 端已经具备：
 但当前系统仍未完全产品化，主要短板是：
 - Quest 端仍有大量状态型 UI，真实效果与状态信息混杂
 - “real vs mock” 和 “legacy WS vs events_v1” 仍然需要靠环境变量与经验判断
-- 所谓 `PCA` 帧源并不是真 Meta PCA，而是 `ARCameraManager` CPU image fallback
+- `PCA` 帧源已经进入 proof-gated 路径：仅在支持设备、权限、provider 可用且 ready 时才可报 `pca_real`，否则明确回退到 `ar_cpuimage_fallback` / `rendertexture_fallback` / `unavailable`
 - `pySLAM realtime` 更像桥接脚手架；离线 run package runner 比实时链路更成熟
 - UI 信息架构仍然拥挤，存在 hand menu / smoke panel / legacy wrist menu 多套入口并存
 
@@ -104,7 +104,7 @@ Project-Be-your-eyes/
 
 ```mermaid
 flowchart LR
-  Q[Quest3SmokeScene\nScanController] --> FS[Frame Source\nPCA fallback or RenderTexture]
+  Q[Quest3SmokeScene\nScanController] --> FS[Frame Source\nProof-gated PCA or fallback]
   FS --> UP[GatewayFrameUploader]
   UP --> F[/POST /api/frame/]
   F --> G[Gateway main.py]
@@ -191,7 +191,7 @@ Key scene objects observed in `Quest3SmokeScene`:
 | Scan controller | `Assets/BeYourEyes/Unity/Interaction/ScanController.cs` | 真正驱动 scan once/live、forced targets、upload、WS wait | `stable` |
 | Frame uploader | `Assets/BeYourEyes/Adapters/Networking/GatewayFrameUploader.cs` | 真正调用 `POST /api/frame` | `stable` |
 | Frame streamer wrapper | `Assets/Scripts/BYES/Quest/ByesFrameStreamer.cs` | 轻量包装 live/scan state | `stable` |
-| PCA frame source | `Assets/Scripts/BYES/Quest/ByesPcaFrameSource.cs` | 名义上是 `pca`，实际 `frameSourceMode=ar_cpuimage_fallback`，`pcaAvailable=false`，不是 Meta PCA | `incomplete / placeholder` |
+| PCA frame source | `Assets/Scripts/BYES/Quest/ByesPcaFrameSource.cs` | proof-gated PCA source；仅在支持设备、权限、provider 与初始化证明同时满足时才显示 `pca_real`，否则明确回退到 `ar_cpuimage_fallback` / `rendertexture_fallback` / `unavailable` | `experimental / proof-gated` |
 | RenderTexture fallback | `Assets/Scripts/BYES/Quest/ByesRenderTextureFrameSource.cs`, `Assets/BeYourEyes/Unity/Capture/ScreenFrameGrabber.cs` | 当前可靠兜底方案 | `stable` |
 
 ## 4.5 HUD / Overlay
@@ -339,7 +339,7 @@ Repo 级补充 schema：
 关键现状说明：
 - Gateway 内部与 recording/report 更偏向 `byes.event.v1` 包装的主链。
 - 直播 WS 是否直接发 v1 事件，受 `BYES_INFERENCE_EMIT_WS_V1` 控制。
-- `quest3_usb_realstack_v5_05.cmd` 默认把 `BYES_INFERENCE_EMIT_WS_V1=1` 打开，因此当前 Quest 真机 smoke 推荐链路是 v1 live stream。
+- `quest3_usb_realstack_v5_08.cmd` 默认把 `BYES_INFERENCE_EMIT_WS_V1=1` 打开，因此当前 Quest 真机 smoke 推荐链路是 v1 live stream。
 
 # 6. Real vs Mock Capability Matrix
 
@@ -367,7 +367,7 @@ Repo 级补充 schema：
 - True passthrough: `Yes`
 - True ASR: `Optional`
 - True TTS: `Yes`, but client-side
-- True PCA frame source: `No`
+- True PCA frame source: `Proof-gated / conditional`
 - True overlay: `Yes`, but current是 world-space HUD overlay，不是系统 compositor overlay
 
 # 7. Current Performance / UX Bottlenecks
@@ -429,7 +429,7 @@ Repo 级补充 schema：
 建议方向：
 - Quest panel + desktop console 强制显示每个能力的 `backend/model/reason/last evidence`
 - 对 mock/default/fallback 路径用统一 badge
-- 把 `PCA` 改名为 `PCA-ready fallback` 或同类明确标签
+- 保持 `PCA` truth 只在 proof 完整时显示 `pca_real`，否则一律显示明确 fallback/unavailable 标签
 
 # 8. Target Architecture (Recommended)
 
@@ -562,6 +562,24 @@ Note: this branch's approved v5.07 scope is runtime truth hardening for capture 
 
 # 10. Appendices
 
+## v5.08: True PCA + Whole-FOV Overlays + Desktop Console as Operator UI
+
+目标：
+- 让 `pca_real` 成为可证明、可失败、可回退的真实采帧状态，而不是命名层假象。
+- 让 Quest whole-FOV overlay 以稳定渲染优先，采用 latest-frame-wins + last-frame-hold，而不是追求每帧推理。
+- 让 Desktop Console 成为 operator UI，同时继续只封装现有 Gateway API。
+
+不做什么：
+- 不修改 `Gateway/contracts/**`
+- 不修改 `Gateway/services/inference_service/providers/**`
+- 不把 `pySLAM` 并入默认主链或 CI 成功条件
+
+验收标准：
+- Quest、Desktop、`/api/capabilities`、`/api/providers`、`/api/ui/state` 对 frame source truth 完全一致。
+- DET / SEG / DEPTH overlay 在 Quest 侧以 whole-FOV hold 风格可见，Desktop 能看到相同 overlay preview。
+- Desktop `/ui` 首页可直接执行 `Scan Once`、`Live`、`Read Text`、`Find Door`、`Record Start/Stop`，且全部复用现有 API。
+- pySLAM realtime 的 `backend/state/fps/latency/root detected` 在 Quest 与 Desktop 双端可见。
+
 ## 10.1 Key Environment Variables
 
 Gateway / WS:
@@ -632,7 +650,7 @@ Cache / runtime:
 Quest realstack smoke:
 
 ```bat
-tools\quest3\quest3_usb_realstack_v5_05.cmd
+tools\quest3\quest3_usb_realstack_v5_08.cmd
 ```
 
 Gateway only:
@@ -686,8 +704,8 @@ python Gateway/scripts/pyslam_run_package.py --run-package <path> --pyslam-root 
 - Quest scene: `Assets/Scenes/Quest3SmokeScene.unity`
 - Preferred hand menu prefab: `Assets/Prefabs/BYES/Quest/BYES_HandMenu.prefab`
 - Legacy wrist menu prefab: `Assets/Prefabs/BYES/Quest/BYES_WristMenu.prefab`
-- Android APK output: `Builds/Quest3/BYES_Quest3Smoke_v5.07.apk`
-- Android symbols: `Builds/Quest3/BYES_Quest3Smoke_v5.07-2.2.1-v1-IL2CPP.symbols.zip`
+- Android APK output: `Builds/Quest3/BYES_Quest3Smoke_v5.08.apk`
+- Android symbols: `Builds/Quest3/BYES_Quest3Smoke_v5.08-2.2.1-v1-IL2CPP.symbols.zip`
 - Unity build log: `Builds/logs/unity_build_quest3_android.log`
 - Unity build summary: `Builds/logs/unity_build_quest3_android.summary.txt`
 - Run packages root: `Gateway/artifacts/run_packages/`
