@@ -83,6 +83,20 @@ namespace BYES.Quest
         private long _lastAsrTsMs = -1;
         private string _lastTtsText = "-";
         private long _lastTtsTsMs = -1;
+        private string _frameTruthSource = "unavailable";
+        private string _frameTruthState = "unavailable";
+        private string _frameTruthReason = "uninitialized";
+        private string _frameTruthStatus = "-";
+        private long _lastCaptureSuccessTsMs = -1;
+        private string _asrTruthState = "unavailable";
+        private string _asrBackend = "-";
+        private string _asrReason = "-";
+        private string _ttsTruthState = "unavailable";
+        private string _ttsBackend = "-";
+        private string _ttsReason = "-";
+        private bool _ttsMuted;
+        private string _lastVoiceAction = "-";
+        private string _micPermissionState = "unknown";
         private string _providerSummary = "providers: -";
         private string _providerDetail = "-";
         private long _providerTsMs = -1;
@@ -909,6 +923,17 @@ namespace BYES.Quest
             }
 
             var source = payload["result"] as JObject ?? payload;
+            var backend = (source.Value<string>("backend") ?? payload.Value<string>("backend") ?? string.Empty).Trim().ToLowerInvariant();
+            if (!string.IsNullOrWhiteSpace(backend))
+            {
+                _asrBackend = backend;
+                _asrTruthState = backend.IndexOf("mock", StringComparison.Ordinal) >= 0 ? "mock" : "real";
+            }
+            var reason = (source.Value<string>("reason") ?? payload.Value<string>("reason") ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(reason))
+            {
+                _asrReason = reason;
+            }
             var text = (source.Value<string>("text") ?? payload.Value<string>("text") ?? string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(text))
             {
@@ -925,6 +950,11 @@ namespace BYES.Quest
             if (_autoVoiceCommandEnabled && _voiceCommandRouter != null)
             {
                 _voiceCommandRouter.RouteTranscript(text, this);
+                _lastVoiceAction = _voiceCommandRouter.LastAction;
+            }
+            else
+            {
+                _lastVoiceAction = "transcript_only";
             }
         }
 
@@ -1035,7 +1065,100 @@ namespace BYES.Quest
                 _lastSpokenDigest = digest;
                 _lastTtsText = normalized;
                 _lastTtsTsMs = nowMs;
+                UpdateLocalTtsTruth(normalized, nowMs);
             }
+            else
+            {
+                _ttsTruthState = "unavailable";
+                _ttsBackend = "unavailable";
+                _ttsReason = "tts_backend_unavailable";
+                _ttsMuted = true;
+            }
+        }
+
+        private void UpdateLocalTtsTruth(string spokenText, long spokenAtMs)
+        {
+            ResolveRefs();
+            string backend;
+            string model;
+            string device;
+            string reason;
+            bool isMock;
+            bool muted;
+
+            if (_localTtsReady && _localTtsBackend != null && Application.platform == RuntimePlatform.Android)
+            {
+                backend = "android_tts";
+                model = "quest_local_android_tts";
+                device = "quest";
+                reason = "quest_local_tts";
+                isMock = false;
+                muted = false;
+            }
+            else if (_speechOrchestrator != null)
+            {
+                backend = string.IsNullOrWhiteSpace(_speechOrchestrator.BackendName) ? "unavailable" : _speechOrchestrator.BackendName;
+                model = string.IsNullOrWhiteSpace(_speechOrchestrator.BackendModel) ? "quest_tts" : _speechOrchestrator.BackendModel;
+                device = string.IsNullOrWhiteSpace(_speechOrchestrator.BackendDevice) ? "quest" : _speechOrchestrator.BackendDevice;
+                muted = _speechOrchestrator.BackendMuted;
+                isMock = _speechOrchestrator.BackendIsMock;
+                reason = muted ? "muted" : (isMock ? "speech_orchestrator_mock_tts" : "quest_local_tts");
+            }
+            else
+            {
+                backend = "unavailable";
+                model = "quest_tts_unavailable";
+                device = "quest";
+                reason = "tts_backend_unavailable";
+                isMock = false;
+                muted = true;
+            }
+
+            _ttsBackend = backend;
+            _ttsReason = reason;
+            _ttsMuted = muted;
+            _ttsTruthState = muted ? "unavailable" : (isMock ? "mock" : "real");
+            StartCoroutine(PostQuestTtsEvidence(spokenText, spokenAtMs, backend, model, device, reason, isMock, muted));
+        }
+
+        private IEnumerator PostQuestTtsEvidence(string spokenText, long feedbackTsMs, string backend, string model, string device, string reason, bool isMock, bool muted)
+        {
+            if (string.IsNullOrWhiteSpace(_baseUrl))
+            {
+                yield break;
+            }
+
+            var runId = "quest3-smoke";
+            var frameSeq = 1;
+            if (ByesFrameTelemetry.TryGetLatestFrameContext(out var latestRunId, out var latestFrameSeq))
+            {
+                runId = latestRunId;
+                frameSeq = latestFrameSeq;
+            }
+
+            var payload = new JObject
+            {
+                ["runId"] = runId,
+                ["frameSeq"] = Math.Max(1, frameSeq),
+                ["feedbackTsMs"] = Math.Max(0L, feedbackTsMs),
+                ["kind"] = "tts",
+                ["accepted"] = true,
+                ["providerBackend"] = backend,
+                ["providerModel"] = model,
+                ["providerDevice"] = device,
+                ["providerReason"] = reason,
+                ["providerIsMock"] = isMock,
+                ["spokenText"] = string.IsNullOrWhiteSpace(spokenText) ? null : spokenText,
+                ["muted"] = muted,
+            };
+
+            using var request = new UnityWebRequest($"{_baseUrl}/api/frame/ack", UnityWebRequest.kHttpVerbPOST);
+            request.uploadHandler = new UploadHandlerRaw(System.Text.Encoding.UTF8.GetBytes(payload.ToString(Newtonsoft.Json.Formatting.None)));
+            request.downloadHandler = new DownloadHandlerBuffer();
+            request.timeout = Mathf.CeilToInt(QueryTimeoutSec);
+            request.SetRequestHeader("Content-Type", "application/json");
+            ApplyApiKeyHeader(request);
+            yield return request.SendWebRequest();
         }
 
         private void BuildRuntimeUi()
@@ -1893,12 +2016,14 @@ namespace BYES.Quest
             _beepAudioSource.PlayOneShot(_beepClip, 1f);
             _lastTtsText = "beep";
             _lastTtsTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            _lastVoiceAction = "beep_test";
             ShowToast("Beep");
         }
 
         public void TriggerSpeakTestFromUi()
         {
             SpeakWithGuard("hello from be your eyes");
+            _lastVoiceAction = "speak_test";
             ShowToast("Speak test");
         }
 
@@ -2035,7 +2160,42 @@ namespace BYES.Quest
         public string GetFrameSourceText()
         {
             ResolveRefs();
+            if (!string.IsNullOrWhiteSpace(_frameTruthSource)
+                && !string.Equals(_frameTruthSource, "-", StringComparison.Ordinal)
+                && !string.Equals(_frameTruthSource, "unavailable", StringComparison.OrdinalIgnoreCase))
+            {
+                return _frameTruthSource;
+            }
             return _scanController != null ? _scanController.CaptureSource : "-";
+        }
+
+        public string GetFrameSourceTruthState()
+        {
+            if (!string.IsNullOrWhiteSpace(_frameTruthState) && !string.Equals(_frameTruthState, "unavailable", StringComparison.OrdinalIgnoreCase))
+            {
+                return _frameTruthState;
+            }
+            return _scanController != null && !string.IsNullOrWhiteSpace(_scanController.CaptureSourceTruth)
+                ? (_scanController.CaptureSourceTruth.EndsWith("_fallback", StringComparison.Ordinal) ? "fallback" : (_scanController.CaptureSourceTruth == "pca_real" ? "real" : "unavailable"))
+                : "unavailable";
+        }
+
+        public string GetFrameSourceTruthReason()
+        {
+            if (!string.IsNullOrWhiteSpace(_frameTruthReason) && !string.Equals(_frameTruthReason, "unknown", StringComparison.OrdinalIgnoreCase))
+            {
+                return _frameTruthReason;
+            }
+            return _scanController != null ? _scanController.CaptureSourceReason : "-";
+        }
+
+        public long GetLastCaptureSuccessTsMs()
+        {
+            if (_lastCaptureSuccessTsMs > 0)
+            {
+                return _lastCaptureSuccessTsMs;
+            }
+            return _scanController != null ? _scanController.LastCaptureSuccessTsMs : -1L;
         }
 
         public string GetRecordingPathText()
@@ -2143,6 +2303,22 @@ namespace BYES.Quest
             return string.IsNullOrWhiteSpace(_lastTtsText) ? "-" : _lastTtsText;
         }
 
+        public string GetMicPermissionStatus()
+        {
+            RefreshMicPermissionState();
+            return string.IsNullOrWhiteSpace(_micPermissionState) ? "unknown" : _micPermissionState;
+        }
+
+        public string GetVoiceTruthSummary()
+        {
+            return $"mic={GetMicPermissionStatus()} asr[{_asrTruthState}:{_asrBackend}] tts[{_ttsTruthState}:{_ttsBackend}] muted={(_ttsMuted ? "yes" : "no")} action={_lastVoiceAction}";
+        }
+
+        public string GetLastVoiceActionText()
+        {
+            return string.IsNullOrWhiteSpace(_lastVoiceAction) ? "-" : _lastVoiceAction;
+        }
+
         public string GetProviderSummaryText()
         {
             return string.IsNullOrWhiteSpace(_providerSummary) ? "providers: -" : _providerSummary;
@@ -2232,7 +2408,7 @@ namespace BYES.Quest
                 $"http={(_lastPingRttMs >= 0 ? "reachable" : "unknown")} rttMs={_lastPingRttMs}\n" +
                 $"ws={(_gatewayClient != null && _gatewayClient.IsConnected ? "connected" : "disconnected")}\n" +
                 $"mode={_currentMode}\n" +
-                $"frameSource={GetFrameSourceText()}\n" +
+                $"frameSource={GetFrameSourceText()} state={GetFrameSourceTruthState()} reason={GetFrameSourceTruthReason()} status={_frameTruthStatus} captureTs={GetLastCaptureSuccessTsMs()}\n" +
                 $"scan={_scanStatus} err={_scanError}\n" +
                 $"event={_lastEventType} ts={_lastEventTsMs}\n" +
                 $"ocr={_lastOcrText} ts={_lastOcrTsMs}\n" +
@@ -2241,6 +2417,7 @@ namespace BYES.Quest
                 $"find={_lastFindText} ts={_lastFindTsMs}\n" +
                 $"target={_lastTargetText} ts={_lastTargetTsMs} session={_targetSessionId}\n" +
                 $"guidance={_guidanceText} ts={_lastGuidanceTsMs}\n" +
+                $"voice={GetVoiceTruthSummary()} asrText={_lastAsrText} asrTs={_lastAsrTsMs} ttsText={_lastTtsText} ttsTs={_lastTtsTsMs}\n" +
                 $"providers={_providerSummary} detail={_providerDetail}\n" +
                 $"recordPath={GetRecordingPathText()}\n" +
                 $"passthrough={GetPassthroughStatus()}\n" +
@@ -2422,8 +2599,8 @@ namespace BYES.Quest
 
         private IEnumerator QueryCapabilities(bool silent)
         {
-            var uri = $"{_baseUrl}/api/capabilities";
-            TrackProbeRequest("/api/capabilities");
+            var uri = $"{_baseUrl}/api/ui/state?limit=40";
+            TrackProbeRequest("/api/ui/state");
             using var request = UnityWebRequest.Get(uri);
             ApplyApiKeyHeader(request);
             request.timeout = Mathf.CeilToInt(QueryTimeoutSec);
@@ -2436,7 +2613,7 @@ namespace BYES.Quest
                 _lastCapabilitiesFetchTsMs = _providerTsMs;
                 if (!silent)
                 {
-                    ShowToast("Capabilities failed");
+                    ShowToast("Runtime state failed");
                 }
                 yield break;
             }
@@ -2445,14 +2622,7 @@ namespace BYES.Quest
             try
             {
                 var obj = JObject.Parse(string.IsNullOrWhiteSpace(payload) ? "{}" : payload);
-                var truth = obj["truth"] as JObject;
-                var providers = truth?["providers"] as JObject ?? obj["available_providers"] as JObject;
-                _providerSummary = string.IsNullOrWhiteSpace(truth?.Value<string>("providerSummary"))
-                    ? BuildProviderSummary(providers)
-                    : truth.Value<string>("providerSummary");
-                _providerDetail = providers != null
-                    ? providers.ToString(Newtonsoft.Json.Formatting.None)
-                    : (truth != null ? truth.ToString(Newtonsoft.Json.Formatting.None) : "available_providers missing");
+                ApplyUiStateSnapshot(obj);
             }
             catch (Exception ex)
             {
@@ -2464,7 +2634,7 @@ namespace BYES.Quest
             _lastCapabilitiesFetchTsMs = _providerTsMs;
             if (!silent)
             {
-                ShowToast("Capabilities OK");
+                ShowToast("Runtime state OK");
             }
         }
 
@@ -2580,6 +2750,137 @@ namespace BYES.Quest
                     Token(providers, "tts"),
                 }
             );
+        }
+
+        private void ApplyUiStateSnapshot(JObject stateObj)
+        {
+            if (stateObj == null)
+            {
+                return;
+            }
+
+            var capabilities = stateObj["capabilities"] as JObject ?? stateObj;
+            var truth = stateObj["truth"] as JObject ?? capabilities["truth"] as JObject;
+            var providers = truth?["providers"] as JObject ?? capabilities["available_providers"] as JObject;
+            _providerSummary = string.IsNullOrWhiteSpace(truth?.Value<string>("providerSummary"))
+                ? BuildProviderSummary(providers)
+                : truth.Value<string>("providerSummary");
+            _providerDetail = providers != null
+                ? providers.ToString(Newtonsoft.Json.Formatting.None)
+                : (truth != null ? truth.ToString(Newtonsoft.Json.Formatting.None) : "available_providers missing");
+
+            var frameTruth = truth?["frameSource"] as JObject;
+            _frameTruthSource = NormalizeFrameSourceTruthToken(frameTruth?.Value<string>("frameSource"));
+            _frameTruthState = NormalizeTruthStateToken(frameTruth?.Value<string>("truthState") ?? frameTruth?.Value<string>("truthLabel"));
+            _frameTruthReason = string.IsNullOrWhiteSpace(frameTruth?.Value<string>("reason")) ? "unknown" : frameTruth.Value<string>("reason");
+            _frameTruthStatus = string.IsNullOrWhiteSpace(frameTruth?.Value<string>("status")) ? "-" : frameTruth.Value<string>("status");
+
+            var captureTruth = truth?["capture"] as JObject;
+            var captureTs = ReadNonNegativeLong(captureTruth?["lastSuccessTsMs"]);
+            if (captureTs > 0)
+            {
+                _lastCaptureSuccessTsMs = captureTs;
+            }
+
+            var voiceTruth = truth?["voice"] as JObject;
+            var asrTruth = voiceTruth?["asr"] as JObject;
+            if (asrTruth != null)
+            {
+                _asrTruthState = NormalizeTruthStateToken(asrTruth.Value<string>("truthState") ?? asrTruth.Value<string>("truthLabel"));
+                _asrBackend = string.IsNullOrWhiteSpace(asrTruth.Value<string>("backend")) ? "-" : asrTruth.Value<string>("backend");
+                _asrReason = string.IsNullOrWhiteSpace(asrTruth.Value<string>("reason")) ? "-" : asrTruth.Value<string>("reason");
+                var transcript = (asrTruth.Value<string>("transcript") ?? string.Empty).Trim();
+                var transcriptTs = ReadNonNegativeLong(asrTruth["transcriptTsMs"]);
+                if (!string.IsNullOrWhiteSpace(transcript) && transcriptTs >= _lastAsrTsMs)
+                {
+                    _lastAsrText = transcript;
+                    _lastAsrTsMs = transcriptTs;
+                }
+            }
+
+            var ttsTruth = voiceTruth?["tts"] as JObject;
+            if (ttsTruth != null)
+            {
+                _ttsTruthState = NormalizeTruthStateToken(ttsTruth.Value<string>("truthState") ?? ttsTruth.Value<string>("truthLabel"));
+                _ttsBackend = string.IsNullOrWhiteSpace(ttsTruth.Value<string>("backend")) ? "-" : ttsTruth.Value<string>("backend");
+                _ttsReason = string.IsNullOrWhiteSpace(ttsTruth.Value<string>("reason")) ? "-" : ttsTruth.Value<string>("reason");
+                _ttsMuted = ttsTruth.Value<bool?>("muted") == true;
+                var spoken = (ttsTruth.Value<string>("lastSpoken") ?? string.Empty).Trim();
+                var spokenTs = ReadNonNegativeLong(ttsTruth["lastSpokenTsMs"]);
+                if (!string.IsNullOrWhiteSpace(spoken) && spokenTs >= _lastTtsTsMs)
+                {
+                    _lastTtsText = spoken;
+                    _lastTtsTsMs = spokenTs;
+                }
+            }
+
+            var modeObj = stateObj["mode"] as JObject;
+            var remoteMode = (modeObj?.Value<string>("mode") ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(remoteMode))
+            {
+                _currentMode = remoteMode;
+            }
+
+            var recordingObj = stateObj["recording"] as JObject;
+            if (recordingObj != null)
+            {
+                _recordingActive = recordingObj.Value<bool?>("active") == true;
+                var recordingPath = (recordingObj.Value<string>("lastRunPackage") ?? recordingObj.Value<string>("recordingPath") ?? string.Empty).Trim();
+                if (!string.IsNullOrWhiteSpace(recordingPath))
+                {
+                    _lastRecordingPath = recordingPath;
+                }
+            }
+
+            var targetSession = stateObj["targetSession"] as JObject ?? truth?["targetSession"] as JObject;
+            if (targetSession != null)
+            {
+                _targetSessionId = (targetSession.Value<string>("sessionId") ?? string.Empty).Trim();
+                _targetTracker = (targetSession.Value<string>("tracker") ?? _targetTracker).Trim();
+            }
+        }
+
+        private static string NormalizeTruthStateToken(string value)
+        {
+            return GatewayClient.NormalizeRuntimeTruthStateToken(value);
+        }
+
+        private static string NormalizeFrameSourceTruthToken(string value)
+        {
+            return GatewayClient.NormalizeFrameSourceTruthToken(value);
+        }
+
+        private static long ReadNonNegativeLong(JToken token)
+        {
+            if (token == null)
+            {
+                return -1;
+            }
+
+            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+            {
+                return Math.Max(-1L, token.Value<long>());
+            }
+
+            return long.TryParse(token.ToString(), out var parsed) ? Math.Max(-1L, parsed) : -1L;
+        }
+
+        private void RefreshMicPermissionState()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                _micPermissionState = UnityEngine.Android.Permission.HasUserAuthorizedPermission(UnityEngine.Android.Permission.Microphone)
+                    ? "granted"
+                    : "missing";
+            }
+            catch
+            {
+                _micPermissionState = "check_failed";
+            }
+#else
+            _micPermissionState = "non_android";
+#endif
         }
 
         private IEnumerator SetMode(string mode)
@@ -2739,6 +3040,7 @@ namespace BYES.Quest
 
             var wsConnected = (_gatewayClient != null && _gatewayClient.IsConnected)
                               || (_gatewayWsClient != null && string.Equals(_gatewayWsClient.ConnectionState, "Connected", StringComparison.Ordinal));
+            RefreshMicPermissionState();
             _baseUrlText.Set($"Base URL: {_baseUrl} (apiKey: {(string.IsNullOrWhiteSpace(_apiKey) ? "not-set" : "set")})");
             _wsText.Set($"WS: {(wsConnected ? "connected" : "disconnected")}");
             _pingText.Set(_lastPingRttMs >= 0 ? $"Ping RTT: {_lastPingRttMs} ms" : "Ping RTT: -");
@@ -2755,9 +3057,12 @@ namespace BYES.Quest
                     ? $"Last E2E: {_scanController.LastE2eMs:0} ms"
                     : "Last E2E: -";
                 captureText =
-                    $"Frame Source: {_scanController.CaptureSource} {_scanController.CaptureFrameWidth}x{_scanController.CaptureFrameHeight} | CaptureHz: {_scanController.CaptureTargetHz} | Inflight: {_scanController.InflightCount}/{_scanController.LiveMaxInflight} | ReadbackReq: {_scanController.CaptureActiveReadbacks} | Async: {(_scanController.CaptureAsyncReadbackEnabled ? "ON" : "OFF")} / {(_scanController.CaptureSupportsAsyncReadback ? "supported" : "unsupported")}";
+                    $"Frame Source: {GetFrameSourceText()} [{GetFrameSourceTruthState()}] {_scanController.CaptureFrameWidth}x{_scanController.CaptureFrameHeight} | reason={GetFrameSourceTruthReason()} | CaptureHz: {_scanController.CaptureTargetHz} | Inflight: {_scanController.InflightCount}/{_scanController.LiveMaxInflight} | ReadbackReq: {_scanController.CaptureActiveReadbacks} | Async: {(_scanController.CaptureAsyncReadbackEnabled ? "ON" : "OFF")} / {(_scanController.CaptureSupportsAsyncReadback ? "supported" : "unsupported")}";
                 captureText += $" | SourceStatus: {_scanController.LastFrameSourceStatus}";
             }
+            var lastCaptureTs = GetLastCaptureSuccessTsMs();
+            var captureAge = lastCaptureTs > 0 ? $"{Math.Max(0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - lastCaptureTs)}ms" : "-";
+            captureText += $" | captureOkAge={captureAge}";
             var probeCount10s = GetProbeCount10s();
             captureText += $" | probe10s={probeCount10s}";
             if (!string.IsNullOrWhiteSpace(_providerSummary))
@@ -2794,8 +3099,8 @@ namespace BYES.Quest
             _lastFindTextView?.Set($"Last FIND: {_lastFindText} | Age: {findAge}");
             _lastTargetTextView?.Set($"Last TARGET: {_lastTargetText} | Age: {targetAge}");
             _guidanceTextView?.Set($"Guidance: {_guidanceText} | Age: {guidanceAge}");
-            _lastAsrTextView?.Set($"Last ASR: {_lastAsrText} | Age: {asrAge}");
-            _lastTtsTextView?.Set($"Last TTS: {_lastTtsText} | Age: {ttsAge}");
+            _lastAsrTextView?.Set($"Last ASR: {_lastAsrText} | Age: {asrAge} | asr[{_asrTruthState}:{_asrBackend}] mic={_micPermissionState} action={_lastVoiceAction}");
+            _lastTtsTextView?.Set($"Last TTS: {_lastTtsText} | Age: {ttsAge} | tts[{_ttsTruthState}:{_ttsBackend}] muted={(_ttsMuted ? "yes" : "no")}");
 
             if (_visionHud != null)
             {
@@ -2827,7 +3132,7 @@ namespace BYES.Quest
             if (_rawVisible)
             {
                 var providerAge = _providerTsMs > 0 ? $"{Math.Max(0, nowMs - _providerTsMs)}ms" : "-";
-                var hint = $"trackSession={_targetSessionId} | recordPath={GetRecordingPathText()} | passthrough={GetPassthroughStatus()} | guideAudio={(_guidanceAudioEnabled ? "on" : "off")} | guideHaptics={(_guidanceHapticsEnabled ? "on" : "off")} | asr={_lastAsrText}({asrAge}) | tts={_lastTtsText}({ttsAge}) | autoVoice={(_autoVoiceCommandEnabled ? "on" : "off")} | providers=[{_providerSummary}] age={providerAge}";
+                var hint = $"trackSession={_targetSessionId} | recordPath={GetRecordingPathText()} | passthrough={GetPassthroughStatus()} | guideAudio={(_guidanceAudioEnabled ? "on" : "off")} | guideHaptics={(_guidanceHapticsEnabled ? "on" : "off")} | capture={GetFrameSourceText()}[{GetFrameSourceTruthState()}]({captureAge}) | asr={_lastAsrText}({asrAge})[{_asrTruthState}:{_asrBackend}] | tts={_lastTtsText}({ttsAge})[{_ttsTruthState}:{_ttsBackend}] muted={(_ttsMuted ? "yes" : "no")} | voiceAction={_lastVoiceAction} | autoVoice={(_autoVoiceCommandEnabled ? "on" : "off")} | providers=[{_providerSummary}] age={providerAge}";
                 if (probeCount10s >= 8 && !liveEnabled)
                 {
                     hint = "MainThread Spike suspect: probe polling | " + hint;
@@ -2943,9 +3248,11 @@ namespace BYES.Quest
             {
                 return;
             }
+            RefreshMicPermissionState();
 #if UNITY_ANDROID && !UNITY_EDITOR
             if (!UnityEngine.Android.Permission.HasUserAuthorizedPermission(UnityEngine.Android.Permission.Microphone))
             {
+                _micPermissionState = "requested";
                 UnityEngine.Android.Permission.RequestUserPermission(UnityEngine.Android.Permission.Microphone);
                 ShowToast("Mic permission requested");
                 return;
@@ -2953,6 +3260,7 @@ namespace BYES.Quest
 #endif
             if (Microphone.devices == null || Microphone.devices.Length == 0)
             {
+                _micPermissionState = "unavailable";
                 ShowToast("Mic unavailable");
                 return;
             }
@@ -2962,6 +3270,8 @@ namespace BYES.Quest
             _voiceMicClip = Microphone.Start(_voiceMicDevice, false, 8, _voiceMicFrequency);
             _voiceRecordingStartRealtime = Time.realtimeSinceStartup;
             _voiceRecordingActive = _voiceMicClip != null;
+            _micPermissionState = _voiceRecordingActive ? "granted" : _micPermissionState;
+            _lastVoiceAction = "ptt_start";
             ShowToast(_voiceRecordingActive ? "PTT recording..." : "PTT start failed");
         }
 
@@ -3003,6 +3313,7 @@ namespace BYES.Quest
                 return;
             }
             var wav = EncodePcm16Wav(samples, clip.frequency, channels);
+            _lastVoiceAction = "ptt_stop";
             StartCoroutine(PostAsrAudio(wav));
         }
 
@@ -3036,6 +3347,9 @@ namespace BYES.Quest
                 var payload = new JObject
                 {
                     ["text"] = (obj.Value<string>("text") ?? string.Empty).Trim(),
+                    ["backend"] = (obj.Value<string>("backend") ?? string.Empty).Trim(),
+                    ["model"] = (obj.Value<string>("model") ?? string.Empty).Trim(),
+                    ["device"] = (obj.Value<string>("device") ?? string.Empty).Trim(),
                 };
                 UpdateAsrFromEvent(payload);
             }

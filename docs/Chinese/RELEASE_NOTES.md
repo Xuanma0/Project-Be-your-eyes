@@ -1,5 +1,12 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v5.07
+- True Capture 统一说真话：Quest Panel、Desktop Console、`/api/capabilities`、`/api/providers`、`/api/ui/state` 中的 frame source 现在只允许显示 `pca_real`、`ar_cpuimage_fallback`、`rendertexture_fallback`、`unavailable` 四种之一。
+- True Voice 证据接通到 Quest 和 Desktop：新增 mic permission 状态、`Last Transcript`、`Last Spoken`、`TTS muted`、TTS/ASR backend truth 展示，明确 real/mock/muted/fallback。
+- Gateway 将 ASR/TTS runtime evidence 接入 `/api/providers` 与 `/api/ui/state`，Desktop Console 首页可以直接看到 transcript、spoken、capture success、backend/model/device/is_mock/reason。
+- Quest SelfTest 新增 capture truth 对齐检查，同时保留现有 TTS/ASR smoke；不改 contracts，不改 inference providers，不改 recording/replay/report/regression 语义。
+- 保持 v5.06 的交互边界：不新增新的主入口，不重构 Hand Menu，pySLAM 仍是外部可选链路，不揉进默认主链。
+
 ## v5.06
 - Quest 交互入口统一为 `BYES_HandMenu`：legacy wrist menu 默认禁用，Smoke Panel 退回到状态摘要与少量 fallback 控件。
 - Frame source 真相统一到 Quest Panel、Desktop Console、`/api/capabilities`、`/api/providers`、`/api/ui/state`；fallback 采帧明确显示为 `ar_cpuimage_fallback` 或 `rendertexture_fallback`，不再暗示真 PCA。

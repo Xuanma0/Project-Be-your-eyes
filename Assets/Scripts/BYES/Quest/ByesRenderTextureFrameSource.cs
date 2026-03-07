@@ -47,8 +47,21 @@ namespace BYES.Quest
 
         public void FillMeta(IDictionary<string, object> meta)
         {
-            if (source == null || meta == null)
+            if (meta == null)
             {
+                return;
+            }
+            if (source == null)
+            {
+                meta["frameSource"] = "unavailable";
+                meta["frameSourceMode"] = "unavailable";
+                meta["frameSourceStatus"] = "unavailable:missing_screen_grabber";
+                meta["frameSourceKind"] = "unavailable";
+                meta["frameSourceReason"] = "missing_screen_grabber";
+                meta["frameSourceLabel"] = "unavailable";
+                meta["frameSourceProvider"] = SourceProviderName;
+                meta["pcaAvailable"] = false;
+                meta["pcaReason"] = "missing_screen_grabber";
                 return;
             }
             source.FillMeta(meta);

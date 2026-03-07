@@ -310,7 +310,7 @@ If a version-specific brief is used, keep it outside the repository as a tempora
 If maintainers decide to align release tags with `VERSION`:
 
 ```bash
-git tag -a v5.06 -m "v5.06" <commit>
+git tag -a v5.07 -m "v5.07" <commit>
 ```
 
 Do not run this automatically unless release approval is explicit.

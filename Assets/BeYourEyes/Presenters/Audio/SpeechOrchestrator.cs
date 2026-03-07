@@ -38,7 +38,13 @@ namespace BeYourEyes.Presenters.Audio
         public long DroppedByCooldownCount { get; private set; }
         public long DroppedByPolicyCount { get; private set; }
         public string LastSpokenKind { get; private set; } = "-";
+        public string LastSpokenText { get; private set; } = "-";
         public long LastSpokenAtMs { get; private set; } = -1;
+        public string BackendName { get; private set; } = "unavailable";
+        public string BackendModel { get; private set; } = "unavailable";
+        public string BackendDevice { get; private set; } = "quest";
+        public bool BackendIsMock { get; private set; } = true;
+        public bool BackendMuted { get; private set; }
 
         private struct SpeechRecord
         {
@@ -85,6 +91,11 @@ namespace BeYourEyes.Presenters.Audio
             if (androidBackend.Initialize(this, speechRate, pitch))
             {
                 ttsBackend = androidBackend;
+                BackendName = "android_tts";
+                BackendModel = "quest_local_android_tts";
+                BackendDevice = "quest";
+                BackendIsMock = false;
+                BackendMuted = false;
                 return;
             }
 
@@ -92,6 +103,11 @@ namespace BeYourEyes.Presenters.Audio
             var dummy = new DummyTtsBackend();
             dummy.Initialize(this, speechRate, pitch);
             ttsBackend = dummy;
+            BackendName = "dummy_tts";
+            BackendModel = "dummy_tts";
+            BackendDevice = Application.platform == RuntimePlatform.Android ? "quest" : "editor";
+            BackendIsMock = true;
+            BackendMuted = false;
         }
 
         private void BindGatewayEvents()
@@ -381,6 +397,7 @@ namespace BeYourEyes.Presenters.Audio
 
             SpokenCount++;
             LastSpokenKind = kind;
+            LastSpokenText = text;
             LastSpokenAtMs = nowMs;
         }
 

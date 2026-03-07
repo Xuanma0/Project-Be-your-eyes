@@ -31,6 +31,10 @@ namespace BeYourEyes.Unity.Interaction
         }
 
         private const float NoGatewayPromptThrottleSec = 5f;
+        private const string FrameSourcePcaReal = "pca_real";
+        private const string FrameSourceArCpuImageFallback = "ar_cpuimage_fallback";
+        private const string FrameSourceRenderTextureFallback = "rendertexture_fallback";
+        private const string FrameSourceUnavailable = "unavailable";
 
         public KeyCode scanKey = KeyCode.S;
         public KeyCode liveToggleKey = KeyCode.L;
@@ -76,6 +80,9 @@ namespace BeYourEyes.Unity.Interaction
         private int dropBusyCount;
         private int eventsReceivedCount;
         private string lastFrameSourceStatus = "-";
+        private string lastFrameSourceTruth = FrameSourceUnavailable;
+        private string lastFrameSourceReason = "uninitialized";
+        private long lastCaptureSuccessTsMs = -1;
         private string[] pendingForcedTargets;
         private JObject pendingDetPrompt;
 
@@ -112,6 +119,9 @@ namespace BeYourEyes.Unity.Interaction
         public int CaptureFrameWidth => ResolveFrameSource()?.LastFrameWidth ?? 0;
         public int CaptureFrameHeight => ResolveFrameSource()?.LastFrameHeight ?? 0;
         public string LastFrameSourceStatus => string.IsNullOrWhiteSpace(lastFrameSourceStatus) ? "-" : lastFrameSourceStatus;
+        public string CaptureSourceTruth => NormalizeFrameSourceToken(lastFrameSourceTruth);
+        public string CaptureSourceReason => string.IsNullOrWhiteSpace(lastFrameSourceReason) ? "-" : lastFrameSourceReason;
+        public long LastCaptureSuccessTsMs => lastCaptureSuccessTsMs;
         public event Action<UploadMetrics> OnUploadFinished;
 
         private void Awake()
@@ -379,6 +389,9 @@ namespace BeYourEyes.Unity.Interaction
                 if (source == null)
                 {
                     Debug.LogWarning("[Scan] frame source missing");
+                    lastFrameSourceTruth = FrameSourceUnavailable;
+                    lastFrameSourceReason = "missing_frame_source";
+                    lastFrameSourceStatus = "unavailable:missing_frame_source";
                     lastScanState = "failed";
                     lastScanError = "frame source missing";
                     uploadsFailedCount++;
@@ -390,6 +403,7 @@ namespace BeYourEyes.Unity.Interaction
                 source.FillMeta(captureMeta);
                 var normalizedFrameSource = NormalizeFrameSourceToken(source.SourceName, captureMeta);
                 captureMeta["frameSource"] = normalizedFrameSource;
+                lastFrameSourceTruth = normalizedFrameSource;
                 if (!captureMeta.ContainsKey("frameSourceMode"))
                 {
                     captureMeta["frameSourceMode"] = normalizedFrameSource;
@@ -401,6 +415,17 @@ namespace BeYourEyes.Unity.Interaction
                 if (!captureMeta.ContainsKey("frameSourceLabel"))
                 {
                     captureMeta["frameSourceLabel"] = normalizedFrameSource;
+                }
+                if (captureMeta.TryGetValue("frameSourceReason", out var sourceReasonObj))
+                {
+                    lastFrameSourceReason = string.IsNullOrWhiteSpace(sourceReasonObj?.ToString())
+                        ? "unknown"
+                        : sourceReasonObj.ToString();
+                }
+                else
+                {
+                    lastFrameSourceReason = ResolveDefaultFrameSourceReason(normalizedFrameSource);
+                    captureMeta["frameSourceReason"] = lastFrameSourceReason;
                 }
                 if (captureMeta.TryGetValue("frameSourceStatus", out var sourceStatusObj))
                 {
@@ -454,6 +479,7 @@ namespace BeYourEyes.Unity.Interaction
                 {
                     uploadsOkCount++;
                     pendingE2eStartTsMs = sendTsMs;
+                    lastCaptureSuccessTsMs = sendTsMs;
                     lastScanState = "uploaded";
                     lastScanError = string.Empty;
                     EmitUploadMetrics(ok: true, error: string.Empty);
@@ -720,6 +746,13 @@ namespace BeYourEyes.Unity.Interaction
         private static string NormalizeFrameSourceToken(string sourceName, IDictionary<string, object> captureMeta = null)
         {
             var token = string.IsNullOrWhiteSpace(sourceName) ? string.Empty : sourceName.Trim().ToLowerInvariant();
+            var pcaAvailable = captureMeta != null
+                               && captureMeta.TryGetValue("pcaAvailable", out var pcaAvailableObj)
+                               && pcaAvailableObj is bool pcaAvailableBool
+                               && pcaAvailableBool;
+            var truthKind = captureMeta != null && captureMeta.TryGetValue("frameSourceKind", out var kindObj)
+                ? (kindObj?.ToString() ?? string.Empty).Trim().ToLowerInvariant()
+                : string.Empty;
             if (captureMeta != null)
             {
                 if (captureMeta.TryGetValue("frameSourceMode", out var modeObj))
@@ -734,20 +767,35 @@ namespace BeYourEyes.Unity.Interaction
 
             if (token == "pca")
             {
-                return "ar_cpuimage_fallback";
+                return pcaAvailable || string.Equals(truthKind, "real", StringComparison.Ordinal)
+                    ? FrameSourcePcaReal
+                    : FrameSourceArCpuImageFallback;
             }
 
             if (token == "rendertexture")
             {
-                return "rendertexture_fallback";
+                return FrameSourceRenderTextureFallback;
             }
 
-            return string.IsNullOrWhiteSpace(token) ? "unknown" : token;
+            if (token != FrameSourcePcaReal
+                && token != FrameSourceArCpuImageFallback
+                && token != FrameSourceRenderTextureFallback
+                && token != FrameSourceUnavailable)
+            {
+                return FrameSourceUnavailable;
+            }
+
+            return string.IsNullOrWhiteSpace(token) ? FrameSourceUnavailable : token;
         }
 
         private static string ResolveFrameSourceKind(string frameSource)
         {
             var token = string.IsNullOrWhiteSpace(frameSource) ? string.Empty : frameSource.Trim().ToLowerInvariant();
+            if (token == FrameSourcePcaReal)
+            {
+                return "real";
+            }
+
             if (token.EndsWith("_fallback", StringComparison.Ordinal))
             {
                 return "fallback";
@@ -758,7 +806,19 @@ namespace BeYourEyes.Unity.Interaction
                 return "unavailable";
             }
 
-            return "real";
+            return "unavailable";
+        }
+
+        private static string ResolveDefaultFrameSourceReason(string frameSource)
+        {
+            var token = NormalizeFrameSourceToken(frameSource);
+            return token switch
+            {
+                FrameSourcePcaReal => "meta_pca_integrated",
+                FrameSourceArCpuImageFallback => "meta_pca_not_integrated_using_ar_cpuimage",
+                FrameSourceRenderTextureFallback => "screen_grabber_fallback",
+                _ => "unavailable",
+            };
         }
 
         private void EmitUploadMetrics(bool ok, string error)

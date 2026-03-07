@@ -15,8 +15,8 @@
   "capturedAt": "2026-03-07",
   "branch": "feature/unity-skeleton",
   "head": "86ba11fba56d52cfc6c1f4c54520dbd99cdc0fac",
-  "version": "v5.06",
-  "versionLabelNote": "Canonical facts reflect repository state after v5.06 Truth & Focus alignment.",
+  "version": "v5.07",
+  "versionLabelNote": "Canonical facts reflect repository state after v5.07 True Capture + True Voice alignment.",
   "unity": {
     "editorVersion": "6000.3.10f1",
     "primaryBuildScene": "Assets/Scenes/Quest3SmokeScene.unity",
@@ -277,14 +277,14 @@
       "questVisibleOutput": true,
       "realProviderAvailable": true,
       "repoDefaultBackend": "quest_local_android_tts",
-      "status": "stable"
+      "status": "stable_with_runtime_evidence"
     },
     "asr": {
       "questVisibleOutput": "partial",
       "realProviderAvailable": "optional",
       "repoDefaultBackend": "disabled_or_mock",
       "realstackDefaultBackend": "mock_or_faster_whisper_auto",
-      "status": "experimental"
+      "status": "experimental_with_truth_evidence"
     },
     "recording": {
       "questVisibleOutput": true,
@@ -322,8 +322,8 @@
   },
   "build_outputs": {
     "questApkDir": "Builds/Quest3",
-    "latestQuestApk": "Builds/Quest3/BYES_Quest3Smoke_v5.06.apk",
-    "latestQuestSymbols": "Builds/Quest3/BYES_Quest3Smoke_v5.06-2.2.1-v1-IL2CPP.symbols.zip",
+    "latestQuestApk": "Builds/Quest3/BYES_Quest3Smoke_v5.07.apk",
+    "latestQuestSymbols": "Builds/Quest3/BYES_Quest3Smoke_v5.07-2.2.1-v1-IL2CPP.symbols.zip",
     "unityBuildLog": "Builds/logs/unity_build_quest3_android.log",
     "unityBuildSummary": "Builds/logs/unity_build_quest3_android.summary.txt",
     "runPackagesRoot": "Gateway/artifacts/run_packages",
@@ -344,12 +344,12 @@
     "tools/unity/README_BUILD_ANDROID.md"
   ],
   "known_blockers": [
-    "True Meta PCA capture is not integrated; current pca source is AR CPU image fallback.",
+    "True Meta PCA capture is still not integrated on this branch; current truth mapping can report pca_real only when a real PCA-backed source is actually present.",
     "Legacy WS vs events_v1 still depends on BYES_INFERENCE_EMIT_WS_V1.",
-    "Quest UI is overloaded: hand menu, smoke panel, and legacy wrist menu overlap.",
+    "Quest UI remains dense even after v5.06; v5.07 only adds true-capture and true-voice evidence to existing surfaces instead of redesigning IA.",
     "Gateway/main.py is monolithic and also serves embedded desktop HTML.",
     "Requested DET backend yoloe26 is not evidenced in the current repo; only ultralytics and yolo26 were found.",
-    "Realtime pySLAM path is optional and not proven as a stable default; offline run-package pySLAM tooling is more concrete.",
+    "Realtime pySLAM path remains optional and not proven as a stable default; offline run-package pySLAM tooling is more concrete.",
     "README and older maintainer docs contain version/build-scene drift relative to current branch reality."
   ]
 }

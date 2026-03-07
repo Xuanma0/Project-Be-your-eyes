@@ -541,7 +541,9 @@ Gateway 必须负责：
 - overlay 上能直接看出 provider/source/mock-real badge
 - Quest 实机体验中“只看面板猜状态”的流程显著减少
 
-## v5.07: Recording / Replay / Report Productization
+## v5.07: True Capture + True Voice
+
+Note: this branch's approved v5.07 scope is runtime truth hardening for capture and voice. Recording/replay/report remains important, but it is no longer the first milestone theme for this version.
 
 目标：
 - 让 Quest record -> run package -> replay -> report -> regression 成为维护标准流程
@@ -684,8 +686,8 @@ python Gateway/scripts/pyslam_run_package.py --run-package <path> --pyslam-root 
 - Quest scene: `Assets/Scenes/Quest3SmokeScene.unity`
 - Preferred hand menu prefab: `Assets/Prefabs/BYES/Quest/BYES_HandMenu.prefab`
 - Legacy wrist menu prefab: `Assets/Prefabs/BYES/Quest/BYES_WristMenu.prefab`
-- Android APK output: `Builds/Quest3/BYES_Quest3Smoke_v5.06.apk`
-- Android symbols: `Builds/Quest3/BYES_Quest3Smoke_v5.06-2.2.1-v1-IL2CPP.symbols.zip`
+- Android APK output: `Builds/Quest3/BYES_Quest3Smoke_v5.07.apk`
+- Android symbols: `Builds/Quest3/BYES_Quest3Smoke_v5.07-2.2.1-v1-IL2CPP.symbols.zip`
 - Unity build log: `Builds/logs/unity_build_quest3_android.log`
 - Unity build summary: `Builds/logs/unity_build_quest3_android.summary.txt`
 - Run packages root: `Gateway/artifacts/run_packages/`

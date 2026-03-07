@@ -245,6 +245,22 @@ namespace BYES.Quest
                     yield break;
                 }
 
+                SetStatus("RUNNING", "step6b capture truth");
+                var captureTruthOk = false;
+                var captureTruthError = string.Empty;
+                var captureTruthStepStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                yield return VerifyCaptureTruth((ok, error) =>
+                {
+                    captureTruthOk = ok;
+                    captureTruthError = error;
+                });
+                _stepDurationsMs["capture_truth"] = Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - captureTruthStepStartedMs);
+                if (!captureTruthOk)
+                {
+                    Fail($"capture truth failed: {captureTruthError}");
+                    yield break;
+                }
+
                 SetStatus("RUNNING", "step7 ocr");
                 var ocrOk = false;
                 var ocrError = string.Empty;
@@ -523,7 +539,7 @@ namespace BYES.Quest
                 SetStatus(
                     "PASS",
                     $"ping={pingRttMs}ms " +
-                    $"stepMs(ping={GetStepMs("ping")},version={GetStepMs("version")},cap={GetStepMs("capabilities")},ws={GetStepMs("ws")},mode={GetStepMs("mode")},depthRisk={GetStepMs("depth_risk")},ocr={GetStepMs("ocr")},det={GetStepMs("det")},vision={GetStepMs("vision_assets")},track={GetStepMs("track")},guidance={GetStepMs("guidance")},passthrough={GetStepMs("passthrough")},tts={GetStepMs("tts")},asr={GetStepMs("asr")},pyslam={GetStepMs("pyslam")},record={GetStepMs("record")}) " +
+                    $"stepMs(ping={GetStepMs("ping")},version={GetStepMs("version")},cap={GetStepMs("capabilities")},ws={GetStepMs("ws")},mode={GetStepMs("mode")},depthRisk={GetStepMs("depth_risk")},captureTruth={GetStepMs("capture_truth")},ocr={GetStepMs("ocr")},det={GetStepMs("det")},vision={GetStepMs("vision_assets")},track={GetStepMs("track")},guidance={GetStepMs("guidance")},passthrough={GetStepMs("passthrough")},tts={GetStepMs("tts")},asr={GetStepMs("asr")},pyslam={GetStepMs("pyslam")},record={GetStepMs("record")}) " +
                     $"version={versionText} ws=ok mode=ok depthRisk=ok ocr=ok det=ok track=ok guidance=ok passthrough={(passthroughSkipped ? "skip" : "ok")} record=ok path={recordPath}" +
                     (skipNotes.Count > 0 ? $" skip=[{string.Join(";", skipNotes)}]" : string.Empty));
                 if (verboseLogs)
@@ -1062,6 +1078,77 @@ namespace BYES.Quest
             var providers = capabilitiesObj["available_providers"] as JObject;
             var asr = providers?["asr"] as JObject;
             return asr != null && asr.Value<bool?>("enabled") == true;
+        }
+
+        private IEnumerator VerifyCaptureTruth(Action<bool, string> onDone)
+        {
+            var panelSource = NormalizeFrameSourceTruthToken(_panel != null ? _panel.GetFrameSourceText() : string.Empty);
+            var panelState = string.IsNullOrWhiteSpace(_panel?.GetFrameSourceTruthState()) ? "unavailable" : _panel.GetFrameSourceTruthState();
+            if (!IsAllowedFrameSourceTruth(panelSource))
+            {
+                onDone?.Invoke(false, $"panel_source_invalid:{panelSource}");
+                yield break;
+            }
+
+            var remoteOk = false;
+            var remoteError = string.Empty;
+            yield return GetJson("/api/ui/state", (ok, obj, error) =>
+            {
+                if (!ok || obj == null)
+                {
+                    remoteOk = false;
+                    remoteError = string.IsNullOrWhiteSpace(error) ? "ui_state_failed" : error;
+                    return;
+                }
+
+                var truth = obj["truth"] as JObject;
+                var frameTruth = truth?["frameSource"] as JObject;
+                var remoteSource = NormalizeFrameSourceTruthToken(frameTruth?.Value<string>("frameSource"));
+                var remoteState = NormalizeTruthState(frameTruth?.Value<string>("truthState") ?? frameTruth?.Value<string>("truthLabel"));
+                if (!IsAllowedFrameSourceTruth(remoteSource))
+                {
+                    remoteOk = false;
+                    remoteError = $"remote_source_invalid:{remoteSource}";
+                    return;
+                }
+
+                if (!string.Equals(panelSource, remoteSource, StringComparison.Ordinal))
+                {
+                    remoteOk = false;
+                    remoteError = $"panel={panelSource} remote={remoteSource}";
+                    return;
+                }
+
+                if (!string.Equals(panelState, remoteState, StringComparison.Ordinal))
+                {
+                    remoteOk = false;
+                    remoteError = $"panelState={panelState} remoteState={remoteState}";
+                    return;
+                }
+
+                remoteOk = true;
+                remoteError = string.Empty;
+            });
+
+            onDone?.Invoke(remoteOk, remoteError);
+        }
+
+        private static bool IsAllowedFrameSourceTruth(string value)
+        {
+            return value == "pca_real"
+                   || value == "ar_cpuimage_fallback"
+                   || value == "rendertexture_fallback"
+                   || value == "unavailable";
+        }
+
+        private static string NormalizeFrameSourceTruthToken(string value)
+        {
+            return GatewayClient.NormalizeFrameSourceTruthToken(value);
+        }
+
+        private static string NormalizeTruthState(string value)
+        {
+            return GatewayClient.NormalizeRuntimeTruthStateToken(value);
         }
 
         private (bool ok, bool skipped, string reason) CheckOrRequestMicPermission()

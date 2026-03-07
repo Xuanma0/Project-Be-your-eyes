@@ -23,6 +23,11 @@ namespace BeYourEyes.Adapters.Networking
 
     public sealed class GatewayClient : MonoBehaviour
     {
+        public const string FrameSourcePcaReal = "pca_real";
+        public const string FrameSourceArCpuImageFallback = "ar_cpuimage_fallback";
+        public const string FrameSourceRenderTextureFallback = "rendertexture_fallback";
+        public const string FrameSourceUnavailable = "unavailable";
+
         [Header("Gateway")]
         [SerializeField] private string baseUrl = "http://127.0.0.1:8000";
         [SerializeField] private string wsUrl = "ws://127.0.0.1:8000/ws/events";
@@ -154,6 +159,30 @@ namespace BeYourEyes.Adapters.Networking
         public long ActionPlanGateBlockedCount => localActionPlanGate != null ? localActionPlanGate.BlockedCount : 0;
         public long ActionPlanGatePatchedCount => localActionPlanGate != null ? localActionPlanGate.PatchedCount : 0;
         public string ActionPlanGateLastReason => localActionPlanGate != null ? localActionPlanGate.LastReason : "n/a";
+
+        public static string NormalizeRuntimeTruthStateToken(string value)
+        {
+            var token = string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToLowerInvariant();
+            return token switch
+            {
+                "real" => "real",
+                "mock" => "mock",
+                "fallback" => "fallback",
+                _ => "unavailable",
+            };
+        }
+
+        public static string NormalizeFrameSourceTruthToken(string value)
+        {
+            var token = string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToLowerInvariant();
+            return token switch
+            {
+                FrameSourcePcaReal => FrameSourcePcaReal,
+                FrameSourceArCpuImageFallback => FrameSourceArCpuImageFallback,
+                FrameSourceRenderTextureFallback => FrameSourceRenderTextureFallback,
+                _ => FrameSourceUnavailable,
+            };
+        }
 
         private void OnEnable()
         {

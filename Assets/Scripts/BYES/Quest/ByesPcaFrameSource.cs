@@ -11,6 +11,7 @@ namespace BYES.Quest
 {
     public sealed class ByesPcaFrameSource : MonoBehaviour, IByesFrameSource
     {
+        private const string CanonicalRealSourceName = "pca_real";
         private const string LegacySourceName = "pca";
         private const string CanonicalFallbackSourceName = "ar_cpuimage_fallback";
         private const string SourceProviderName = "ByesPcaFrameSource";
@@ -158,14 +159,16 @@ namespace BYES.Quest
             meta["captureTargetHz"] = CaptureTargetHz;
             meta["captureMaxInflight"] = CaptureMaxInflight;
             meta["frameSourceProvider"] = SourceProviderName;
-            meta["frameSourceKind"] = string.Equals(SourceName, "unavailable", StringComparison.OrdinalIgnoreCase) ? "unavailable" : "fallback";
+            meta["frameSourceKind"] = string.Equals(SourceName, CanonicalRealSourceName, StringComparison.OrdinalIgnoreCase)
+                ? "real"
+                : (string.Equals(SourceName, "unavailable", StringComparison.OrdinalIgnoreCase) ? "unavailable" : "fallback");
             meta["frameSourceReason"] = _sourceReason;
             meta["frameSourceLabel"] = SourceName;
             meta["frameSourceLegacy"] = LegacySourceName;
             meta["pcaStatus"] = _lastStatus;
             meta["frameSourceMode"] = _sourceMode;
             meta["frameSourceStatus"] = _lastStatus;
-            meta["pcaAvailable"] = false;
+            meta["pcaAvailable"] = string.Equals(SourceName, CanonicalRealSourceName, StringComparison.OrdinalIgnoreCase);
             meta["pcaReason"] = _sourceReason;
             if (_hasIntrinsics)
             {

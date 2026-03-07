@@ -995,6 +995,7 @@ namespace BYES.Quest
             _sb.Clear();
             _sb.Append("Last ASR: ").Append(_panel.GetLastAsrText()).Append('\n');
             _sb.Append("Last TTS: ").Append(_panel.GetLastTtsText()).Append('\n');
+            _sb.Append("Truth: ").Append(_panel.GetVoiceTruthSummary()).Append('\n');
             _sb.Append("AutoVoiceCmd: ").Append(_panel.AutoVoiceCommandEnabled ? "on" : "off");
             SetText(_voiceText, _sb.ToString());
 

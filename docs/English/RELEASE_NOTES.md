@@ -4,6 +4,13 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v5.07
+- Added strict frame-source truth normalization across Quest panel, Desktop Console, `/api/capabilities`, `/api/providers`, and `/api/ui/state`; capture can now surface only `pca_real`, `ar_cpuimage_fallback`, `rendertexture_fallback`, or `unavailable`.
+- Added Quest-visible voice truth evidence: mic permission state, last transcript, last spoken text, TTS muted state, and backend truth now appear on the Quest panel, hand-menu voice page, and Desktop Console.
+- Extended Gateway ASR/TTS runtime evidence so `/api/providers`, `/api/ui/state`, and the Desktop Console expose `backend`, `model`, `device`, `is_mock`, `reason`, `last_success_ts`, `last_infer_ms`, transcript history, spoken history, and muted status.
+- Hardened true-capture and true-voice smoke validation by adding capture-truth alignment checks to Quest self-test while keeping contracts, inference providers, recording, replay, and regression semantics unchanged.
+- Preserved the v5.06 interaction boundary: no new primary Quest entry was added, pySLAM remains optional, and true-capture/true-voice evidence is layered into existing Hand Menu + Smoke Panel surfaces.
+
 ## v5.06
 - Unified Quest interaction around `BYES_HandMenu` as the sole primary entry; legacy wrist menu is disabled by default and Smoke Panel is pushed back to status-summary and fallback controls.
 - Normalized frame-source truth across Quest panel, Desktop Console, `/api/capabilities`, `/api/providers`, and `/api/ui/state`; fallback capture now reports `ar_cpuimage_fallback` or `rendertexture_fallback` instead of implying real PCA.

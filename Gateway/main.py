@@ -483,6 +483,8 @@ class FrameAckRequest(BaseModel):
     providerDevice: str | None = None
     providerReason: str | None = None
     providerIsMock: bool | None = None
+    spokenText: str | None = None
+    muted: bool | None = None
     runPackage: str | None = None
 
     @model_validator(mode="after")
@@ -817,6 +819,25 @@ class GatewayApp:
             "startedTsMs": None,
             "endedTsMs": None,
         }
+        self._ui_voice_state: dict[str, Any] = {
+            "lastTranscript": None,
+            "lastTranscriptTsMs": None,
+            "lastTranscriptBackend": None,
+            "lastTranscriptModel": None,
+            "lastTranscriptDevice": None,
+            "lastTranscriptLatencyMs": None,
+            "lastSpoken": None,
+            "lastSpokenTsMs": None,
+            "ttsMuted": False,
+        }
+        self._ui_capture_state: dict[str, Any] = {
+            "lastSuccessTsMs": None,
+            "frameSource": "unavailable",
+            "truthState": "unavailable",
+            "status": None,
+            "reason": None,
+            "assetId": None,
+        }
         self.pov_store = PovStore()
 
     async def startup(self) -> None:
@@ -845,6 +866,25 @@ class GatewayApp:
             "manifestPath": None,
             "startedTsMs": None,
             "endedTsMs": None,
+        }
+        self._ui_voice_state = {
+            "lastTranscript": None,
+            "lastTranscriptTsMs": None,
+            "lastTranscriptBackend": None,
+            "lastTranscriptModel": None,
+            "lastTranscriptDevice": None,
+            "lastTranscriptLatencyMs": None,
+            "lastSpoken": None,
+            "lastSpokenTsMs": None,
+            "ttsMuted": False,
+        }
+        self._ui_capture_state = {
+            "lastSuccessTsMs": None,
+            "frameSource": "unavailable",
+            "truthState": "unavailable",
+            "status": None,
+            "reason": None,
+            "assetId": None,
         }
         self.costmap_fuser.reset()
         self.dynamic_mask_cache.reset()
@@ -1042,6 +1082,18 @@ class GatewayApp:
             provider = "slam"
         elif name.startswith("asr.transcript"):
             provider = "asr"
+            transcript_text = str(payload.get("text", "") or "").strip() or None
+            if transcript_text:
+                self._ui_voice_state.update(
+                    {
+                        "lastTranscript": transcript_text,
+                        "lastTranscriptTsMs": event_ts,
+                        "lastTranscriptBackend": backend,
+                        "lastTranscriptModel": model,
+                        "lastTranscriptDevice": device,
+                        "lastTranscriptLatencyMs": infer_ms,
+                    }
+                )
         elif name == "frame.ack":
             kind = str(payload.get("kind", "") or "").strip().lower()
             if kind == "tts":
@@ -2850,6 +2902,15 @@ async def frame(
                     continue
                 latest_frame_meta[str(key)] = value
         gateway._latest_frame_meta = latest_frame_meta  # noqa: SLF001
+        frame_truth = _normalize_frame_source_truth(latest_frame_meta)
+        gateway._ui_capture_state = {  # noqa: SLF001
+            "lastSuccessTsMs": _to_nonnegative_int_or_none(capture_ts_ms) or int(recv_ts_ms),
+            "frameSource": frame_truth.get("frameSource"),
+            "truthState": frame_truth.get("truthState"),
+            "status": frame_truth.get("status"),
+            "reason": frame_truth.get("reason"),
+            "assetId": frame_asset.asset_id,
+        }
     except Exception:
         pass
     try:
@@ -2919,6 +2980,8 @@ async def frame_ack(request: FrameAckRequest) -> dict[str, Any]:
     run_id = str(request.runId or "").strip() or "unknown-run"
     frame_seq = int(max(1, int(request.frameSeq)))
     feedback_ts_ms = int(max(0, int(request.feedbackTsMs)))
+    spoken_text = str(request.spokenText or "").strip() or None
+    muted = request.muted if isinstance(request.muted, bool) else None
     ack_payload = _build_frame_ack_payload(
         run_id=run_id,
         frame_seq=frame_seq,
@@ -2931,6 +2994,14 @@ async def frame_ack(request: FrameAckRequest) -> dict[str, Any]:
         provider_reason=request.providerReason,
         provider_is_mock=request.providerIsMock,
     )
+    if str(request.kind or "").strip().lower() == "tts":
+        if spoken_text:
+            gateway._ui_voice_state["lastSpoken"] = spoken_text  # noqa: SLF001
+            gateway._ui_voice_state["lastSpokenTsMs"] = feedback_ts_ms  # noqa: SLF001
+        elif gateway._ui_voice_state.get("lastSpokenTsMs") is None:  # noqa: SLF001
+            gateway._ui_voice_state["lastSpokenTsMs"] = feedback_ts_ms  # noqa: SLF001
+        if muted is not None:
+            gateway._ui_voice_state["ttsMuted"] = muted  # noqa: SLF001
     ack_event = _build_byes_event(
         run_id=run_id,
         frame_seq=frame_seq,
@@ -3104,17 +3175,24 @@ def _normalize_frame_source_truth(frame_meta: dict[str, Any] | None) -> dict[str
     reason = str(meta.get("frameSourceReason", "") or meta.get("pcaReason", "") or "").strip() or None
     provider = str(meta.get("frameSourceProvider", "") or "").strip() or None
     kind = str(meta.get("frameSourceKind", "") or "").strip().lower()
+    pca_available = bool(meta.get("pcaAvailable") is True)
 
     canonical = mode or source
-    if canonical == "pca":
+    if canonical == "pca" and pca_available:
+        canonical = "pca_real"
+    elif canonical == "pca":
         canonical = "ar_cpuimage_fallback"
     elif canonical == "rendertexture":
         canonical = "rendertexture_fallback"
+    elif canonical not in {"pca_real", "ar_cpuimage_fallback", "rendertexture_fallback", "unavailable"}:
+        canonical = "unavailable"
     if not canonical:
         canonical = "unavailable"
 
     if not kind:
-        if canonical.endswith("_fallback"):
+        if canonical == "pca_real":
+            kind = "real"
+        elif canonical.endswith("_fallback"):
             kind = "fallback"
         elif canonical in {"unavailable", "unknown"}:
             kind = "unavailable"
@@ -3129,7 +3207,7 @@ def _normalize_frame_source_truth(frame_meta: dict[str, Any] | None) -> dict[str
         "status": status,
         "reason": reason,
         "provider": provider,
-        "pcaAvailable": bool(meta.get("pcaAvailable") is True),
+        "pcaAvailable": pca_available,
     }
 
 
@@ -3271,9 +3349,14 @@ async def api_capabilities() -> dict[str, Any]:
 
     runtime_rows = gateway._provider_runtime_snapshot()  # noqa: SLF001
     tts_runtime = runtime_rows.get("tts", {})
+    voice_state = dict(gateway._ui_voice_state)  # noqa: SLF001
+    capture_state = dict(gateway._ui_capture_state)  # noqa: SLF001
     tts_backend = str(tts_runtime.get("backend", "") or "client_ack").strip() or "client_ack"
     tts_reason = str(tts_runtime.get("reason", "") or "").strip() or "client_ack"
-    tts_enabled = bool(tts_runtime.get("lastTsMs"))
+    tts_muted = bool(voice_state.get("ttsMuted") is True)
+    if tts_muted:
+        tts_reason = "muted"
+    tts_enabled = bool(tts_runtime.get("lastTsMs")) and not tts_muted
 
     available_providers = {
         "ocr": {
@@ -3363,6 +3446,7 @@ async def api_capabilities() -> dict[str, Any]:
             "device": tts_runtime.get("device") or "quest",
             "enabled": tts_enabled,
             "reason": tts_reason,
+            "muted": tts_muted,
         },
         "pyslamRealtime": {
             "enabled": pyslam_enabled,
@@ -3377,10 +3461,41 @@ async def api_capabilities() -> dict[str, Any]:
         for key, row in available_providers.items()
     }
     frame_source_truth = _normalize_frame_source_truth(gateway._latest_frame_meta)  # noqa: SLF001
+    capture_truth = {
+        "lastSuccessTsMs": _to_nonnegative_int_or_none(capture_state.get("lastSuccessTsMs")),
+        "assetId": capture_state.get("assetId") or gateway._latest_frame_asset_id,  # noqa: SLF001
+        "frameSource": frame_source_truth,
+    }
+    voice_truth = {
+        "asr": {
+            "truthState": normalized_providers.get("asr", {}).get("truthState", "unavailable"),
+            "truthLabel": normalized_providers.get("asr", {}).get("truthLabel", "unavailable"),
+            "backend": normalized_providers.get("asr", {}).get("backend"),
+            "model": normalized_providers.get("asr", {}).get("model"),
+            "device": normalized_providers.get("asr", {}).get("device"),
+            "reason": normalized_providers.get("asr", {}).get("reason"),
+            "transcript": voice_state.get("lastTranscript"),
+            "transcriptTsMs": _to_nonnegative_int_or_none(voice_state.get("lastTranscriptTsMs")),
+            "latencyMs": _to_nonnegative_int_or_none(voice_state.get("lastTranscriptLatencyMs")),
+        },
+        "tts": {
+            "truthState": normalized_providers.get("tts", {}).get("truthState", "unavailable"),
+            "truthLabel": normalized_providers.get("tts", {}).get("truthLabel", "unavailable"),
+            "backend": normalized_providers.get("tts", {}).get("backend"),
+            "model": normalized_providers.get("tts", {}).get("model"),
+            "device": normalized_providers.get("tts", {}).get("device"),
+            "reason": normalized_providers.get("tts", {}).get("reason"),
+            "muted": tts_muted,
+            "lastSpoken": voice_state.get("lastSpoken"),
+            "lastSpokenTsMs": _to_nonnegative_int_or_none(voice_state.get("lastSpokenTsMs")),
+        },
+    }
     truth = {
         "frameSource": frame_source_truth,
         "providerSummary": _build_provider_truth_summary(normalized_providers),
         "providers": normalized_providers,
+        "capture": capture_truth,
+        "voice": voice_truth,
     }
 
     enabled_flags = {
@@ -3606,6 +3721,11 @@ async def api_ui_state(limit: int = 60) -> dict[str, Any]:
             "frameSource": frame_truth,
             "providers": capabilities.get("available_providers", {}),
             "providerSummary": truth.get("providerSummary") or _build_provider_truth_summary(capabilities.get("available_providers", {})),
+            "capture": {
+                **(truth.get("capture") or {}),
+                "frameSource": frame_truth,
+            },
+            "voice": truth.get("voice") or {},
             "overlayKindsAvailable": overlay_kinds_available,
             "currentMode": mode_state.get("mode"),
             "recording": recording_state,
@@ -3766,6 +3886,10 @@ def _build_desktop_console_html() -> str:
       const frameMeta = latest.frameMeta || {};
       const truth = state.truth || {};
       const frameTruth = truth.frameSource || {};
+      const capture = truth.capture || {};
+      const voice = truth.voice || {};
+      const asr = voice.asr || {};
+      const tts = voice.tts || {};
       const mode = state.mode || {};
       const recording = state.recording || {};
       const target = state.targetSession || null;
@@ -3779,6 +3903,11 @@ def _build_desktop_console_html() -> str:
         `<div class="runtime-line"><strong>Mode</strong> ${htmlEscape(formatMaybe(mode.mode))} <span class="small">source=${htmlEscape(formatMaybe(mode.source))}</span></div>`,
         `<div class="runtime-line"><strong>Frame Source</strong> ${badgeHtml(frameTruth.truthState, frameTruth.truthLabel)} ${htmlEscape(formatMaybe(frameTruth.frameSource))}</div>`,
         `<div class="runtime-line small">status=${htmlEscape(formatMaybe(frameTruth.status))} reason=${htmlEscape(formatMaybe(frameTruth.reason))}</div>`,
+        `<div class="runtime-line"><strong>Capture Success</strong> ${htmlEscape(formatMaybe(capture.assetId || latest.frameAssetId))} <span class="small">ts=${htmlEscape(formatMaybe(capture.lastSuccessTsMs))}</span></div>`,
+        `<div class="runtime-line"><strong>ASR</strong> ${badgeHtml(asr.truthState, asr.truthLabel)} <span class="small">backend=${htmlEscape(formatMaybe(asr.backend))} model=${htmlEscape(formatMaybe(asr.model))} device=${htmlEscape(formatMaybe(asr.device))}</span></div>`,
+        `<div class="runtime-line small">transcript=${htmlEscape(formatMaybe(asr.transcript))} ts=${htmlEscape(formatMaybe(asr.transcriptTsMs))} latency=${htmlEscape(formatMaybe(asr.latencyMs))}</div>`,
+        `<div class="runtime-line"><strong>TTS</strong> ${badgeHtml(tts.truthState, tts.truthLabel)} <span class="small">backend=${htmlEscape(formatMaybe(tts.backend))} model=${htmlEscape(formatMaybe(tts.model))} device=${htmlEscape(formatMaybe(tts.device))} muted=${htmlEscape(String(tts.muted === true))}</span></div>`,
+        `<div class="runtime-line small">spoken=${htmlEscape(formatMaybe(tts.lastSpoken))} ts=${htmlEscape(formatMaybe(tts.lastSpokenTsMs))} reason=${htmlEscape(formatMaybe(tts.reason))}</div>`,
         `<div class="runtime-line"><strong>Overlays</strong> ${htmlEscape(overlays)}</div>`,
         `<div class="runtime-line"><strong>Recording</strong> ${badgeHtml(recordState, recordLabel)} <span class="small">${htmlEscape(formatMaybe(recording.lastRunPackage || recording.recordingPath))}</span></div>`,
         `<div class="runtime-line"><strong>Target Session</strong> ${target ? htmlEscape(formatMaybe(target.sessionId)) + ' <span class="small">tracker=' + htmlEscape(formatMaybe(target.tracker)) + '</span>' : '-'}</div>`,
@@ -3798,6 +3927,7 @@ def _build_desktop_console_html() -> str:
         const device = formatMaybe(evidence.device || row.device);
         const reason = formatMaybe(evidence.reason || row.reason);
         const isMock = (evidence.is_mock === true || row.isMock === true) ? 'true' : 'false';
+        const muted = row.muted === true ? 'true' : 'false';
         const lastSuccess = evidence.last_success_ts ?? row.lastSuccessTsMs ?? '-';
         const lastInfer = evidence.last_infer_ms ?? row.lastInferMs ?? '-';
         return `
@@ -3805,7 +3935,7 @@ def _build_desktop_console_html() -> str:
             <div class="provider-name">${htmlEscape(key)}</div>
             <div class="provider-meta">
               <div>${badgeHtml(state, state)} <span class="small">backend=${htmlEscape(backend)} model=${htmlEscape(model)} device=${htmlEscape(device)}</span></div>
-              <div class="small">is_mock=${htmlEscape(isMock)} reason=${htmlEscape(reason)} last_success_ts=${htmlEscape(String(lastSuccess))} last_infer_ms=${htmlEscape(String(lastInfer))}</div>
+              <div class="small">is_mock=${htmlEscape(isMock)}${key === 'tts' ? ' muted=' + htmlEscape(muted) : ''} reason=${htmlEscape(reason)} last_success_ts=${htmlEscape(String(lastSuccess))} last_infer_ms=${htmlEscape(String(lastInfer))}</div>
             </div>
           </div>`;
       }).join('');
@@ -3960,6 +4090,7 @@ async def api_asr(
         "language": transcript.language,
         "backend": transcript.backend,
         "model": transcript.model,
+        "device": transcript.device,
         "latencyMs": int(max(0, transcript.latency_ms)),
     }
     event = _build_byes_event(

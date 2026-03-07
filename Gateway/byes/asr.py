@@ -17,6 +17,7 @@ class AsrTranscript:
     text: str
     backend: str
     model: str
+    device: str
     latency_ms: int
     language: str | None = None
 
@@ -44,6 +45,7 @@ class AsrBackend:
                 text=self.mock_text,
                 backend="mock",
                 model=model_hint,
+                device="mock",
                 latency_ms=max(0, _now_ms() - started),
                 language=language or "auto",
             )
@@ -90,6 +92,7 @@ class AsrBackend:
                 text=text,
                 backend="faster_whisper",
                 model=model_size,
+                device=device,
                 latency_ms=max(0, _now_ms() - started_ms),
                 language=lang,
             )
@@ -103,8 +106,10 @@ class AsrBackend:
 def asr_capabilities() -> dict[str, Any]:
     backend = str(os.getenv("BYES_ASR_BACKEND", "mock")).strip().lower() or "mock"
     enabled = str(os.getenv("BYES_ENABLE_ASR", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    device = "mock" if backend == "mock" else (str(os.getenv("BYES_ASR_DEVICE", "cpu")).strip() or "cpu")
     return {
         "enabled": bool(enabled),
         "backend": backend,
         "model": str(os.getenv("BYES_ASR_MODEL", "mock-asr-v1")).strip() or "mock-asr-v1",
+        "device": device,
     }
