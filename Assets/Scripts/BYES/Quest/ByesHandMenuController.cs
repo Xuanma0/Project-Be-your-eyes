@@ -33,7 +33,7 @@ namespace BYES.Quest
         [SerializeField] private float baseUiScale = 0.00038f;
         [SerializeField] private float refreshIntervalSec = 0.75f;
         [SerializeField] private bool disableCompetingTemplateMenus = true;
-        [SerializeField] private float defaultGazeDivergenceThresholdDeg = 120f;
+        [SerializeField] private float defaultGazeDivergenceThresholdDeg = 95f;
 
         private HandMenu _handMenu;
         private MetaSystemGestureDetector _metaGestureDetector;
@@ -273,7 +273,7 @@ namespace BYES.Quest
             _canvas.worldCamera = Camera.main;
             _canvas.sortingOrder = 6200;
             var rect = canvasGo.GetComponent<RectTransform>();
-            rect.sizeDelta = new Vector2(980f, 2300f);
+            rect.sizeDelta = new Vector2(980f, 1860f);
             rect.localScale = Vector3.one * baseUiScale;
 
             var trackedType = Type.GetType("UnityEngine.XR.Interaction.Toolkit.UI.TrackedDeviceGraphicRaycaster, Unity.XR.Interaction.Toolkit");
@@ -286,15 +286,15 @@ namespace BYES.Quest
                 canvasGo.AddComponent<GraphicRaycaster>();
             }
 
-            _rootPanel = CreateUiObject("PanelRoot", canvasGo.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(940f, 2200f), Vector2.zero);
+            _rootPanel = CreateUiObject("PanelRoot", canvasGo.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(940f, 1760f), Vector2.zero);
             var bg = _rootPanel.AddComponent<Image>();
             bg.color = new Color(0f, 0f, 0f, 0.82f);
             var cg = _rootPanel.AddComponent<CanvasGroup>();
             cg.blocksRaycasts = true;
             cg.interactable = true;
 
-            _ = CreateText("Hint", _rootPanel.transform, "Flip wrist palm-up to open menu (no pinch needed)", 28, TextAnchor.MiddleCenter, new Vector2(0.5f, 1f), new Vector2(0f, -34f), new Vector2(820f, 48f));
-            _feedbackText = CreateText("Feedback", _rootPanel.transform, "-", 22, TextAnchor.MiddleLeft, new Vector2(0.5f, 0f), new Vector2(0f, 24f), new Vector2(840f, 40f));
+            _ = CreateText("Hint", _rootPanel.transform, "Flip wrist palm-up to open menu (no pinch needed)", 26, TextAnchor.MiddleCenter, new Vector2(0.5f, 1f), new Vector2(0f, -30f), new Vector2(820f, 44f));
+            _feedbackText = CreateText("Feedback", _rootPanel.transform, "-", 21, TextAnchor.MiddleLeft, new Vector2(0.5f, 0f), new Vector2(0f, 22f), new Vector2(840f, 38f));
 
             BuildPages(_rootPanel.transform);
         }
@@ -317,8 +317,8 @@ namespace BYES.Quest
 
         private GameObject CreatePage(Transform root, string title)
         {
-            var page = CreateUiObject("Page_" + title, root, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(860f, 2040f), new Vector2(0f, -34f));
-            _ = CreateText("Title", page.transform, title, 30, TextAnchor.MiddleCenter, new Vector2(0.5f, 1f), new Vector2(0f, -40f), new Vector2(760f, 50f));
+            var page = CreateUiObject("Page_" + title, root, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(860f, 1560f), new Vector2(0f, -22f));
+            _ = CreateText("Title", page.transform, title, 30, TextAnchor.MiddleCenter, new Vector2(0.5f, 1f), new Vector2(0f, -34f), new Vector2(760f, 44f));
             return page;
         }
 
@@ -403,128 +403,118 @@ namespace BYES.Quest
 
         private void BuildVision(Transform page)
         {
-            _visionText = CreateText("VisionText", page, "-", 21, TextAnchor.UpperLeft, new Vector2(0.5f, 0.5f), new Vector2(0f, 170f), new Vector2(780f, 150f));
-            CreateToggle(page, "Show DET Overlay", new Vector2(0f, 92f), value =>
+            _visionText = CreateText("VisionText", page, "-", 20, TextAnchor.UpperLeft, new Vector2(0.5f, 0.5f), new Vector2(0f, 266f), new Vector2(780f, 110f));
+            var sections = new Dictionary<string, GameObject>(StringComparer.OrdinalIgnoreCase);
+            sections["overlay"] = CreateSectionGroup(page, "VisionOverlaySection", new Vector2(820f, 920f), new Vector2(0f, -120f));
+            sections["alpha"] = CreateSectionGroup(page, "VisionAlphaSection", new Vector2(820f, 920f), new Vector2(0f, -120f));
+            sections["providers"] = CreateSectionGroup(page, "VisionProviderSection", new Vector2(820f, 920f), new Vector2(0f, -120f));
+            _ = CreateSectionButton(page, "Overlay", new Vector2(-220f, 184f), () => SetActiveSection(sections, "overlay"));
+            _ = CreateSectionButton(page, "Alpha/Passthru", new Vector2(0f, 184f), () => SetActiveSection(sections, "alpha"));
+            _ = CreateSectionButton(page, "Providers", new Vector2(220f, 184f), () => SetActiveSection(sections, "providers"));
+
+            var overlaySection = sections["overlay"].transform;
+            CreateToggle(overlaySection, "Show DET Overlay", new Vector2(0f, 220f), value =>
             {
                 _visionHud?.SetShowDet(value);
                 SetFeedback("Show DET " + (value ? "ON" : "OFF"));
             });
-            CreateToggle(page, "Show SEG Overlay", new Vector2(0f, 34f), value =>
+            CreateToggle(overlaySection, "Show SEG Overlay", new Vector2(0f, 150f), value =>
             {
                 _visionHud?.SetShowSeg(value);
                 SetFeedback("Show SEG " + (value ? "ON" : "OFF"));
             });
-            CreateToggle(page, "Show DEPTH Overlay", new Vector2(0f, -24f), value =>
+            CreateToggle(overlaySection, "Show DEPTH Overlay", new Vector2(0f, 80f), value =>
             {
                 _visionHud?.SetShowDepth(value);
                 SetFeedback("Show DEPTH " + (value ? "ON" : "OFF"));
             });
-            CreateToggle(page, "Show TARGET Overlay", new Vector2(0f, -82f), value =>
+            CreateToggle(overlaySection, "Show TARGET Overlay", new Vector2(0f, 10f), value =>
             {
                 _visionHud?.SetShowTarget(value);
                 SetFeedback("Show TARGET " + (value ? "ON" : "OFF"));
             });
-            CreateToggle(page, "Full-FOV Overlay Layer", new Vector2(0f, -132f), value =>
+            CreateToggle(overlaySection, "Full-FOV Overlay Layer", new Vector2(0f, -60f), value =>
             {
                 _visionHud?.SetFullFovOverlayLayer(value);
                 SetFeedback("Full-FOV Layer " + (value ? "ON" : "OFF"));
             });
-            _freezeOverlayToggle = CreateToggle(page, "Freeze Overlay", new Vector2(0f, -182f), value =>
+            _freezeOverlayToggle = CreateToggle(overlaySection, "Freeze Overlay", new Vector2(0f, -130f), value =>
             {
                 _visionHud?.SetFreezeOverlay(value);
                 SetFeedback("Freeze Overlay " + (value ? "ON" : "OFF"));
             });
+            CreateButton(overlaySection, "Reset HUD", new Vector2(-140f, -230f), () =>
+            {
+                _visionHud?.ResetHud();
+                SetFeedback("HUD reset");
+            });
+            CreateButton(overlaySection, "Back", new Vector2(140f, -230f), () => { SetPage("home"); SetFeedback("Home"); });
 
-            _detAlphaSlider = CreateSlider(page, new Vector2(0f, -238f), 0f, 1f, value =>
+            var alphaSection = sections["alpha"].transform;
+            _detAlphaSlider = CreateLabeledSlider(alphaSection, "DET Alpha", new Vector2(0f, 182f), 0f, 1f, value =>
             {
                 _visionHud?.SetDetAlpha(value);
                 SetFeedback($"DET alpha {value:0.00}");
             });
-            _segAlphaSlider = CreateSlider(page, new Vector2(0f, -296f), 0f, 1f, value =>
+            _segAlphaSlider = CreateLabeledSlider(alphaSection, "SEG Alpha", new Vector2(0f, 48f), 0f, 1f, value =>
             {
                 _visionHud?.SetSegAlpha(value);
                 SetFeedback($"SEG alpha {value:0.00}");
             });
-            _depthAlphaSlider = CreateSlider(page, new Vector2(0f, -354f), 0f, 1f, value =>
+            _depthAlphaSlider = CreateLabeledSlider(alphaSection, "DEPTH Alpha", new Vector2(0f, -86f), 0f, 1f, value =>
             {
                 _visionHud?.SetDepthAlpha(value);
                 SetFeedback($"DEPTH alpha {value:0.00}");
             });
-
-            _passthroughToggle = CreateToggle(page, "Passthrough", new Vector2(0f, -406f), value =>
+            _passthroughToggle = CreateToggle(alphaSection, "Passthrough", new Vector2(0f, -220f), value =>
             {
                 PlayerPrefs.SetInt(PrefPassthrough, value ? 1 : 0);
                 PlayerPrefs.Save();
                 _panel?.SetPassthroughEnabled(value);
                 SetFeedback("Passthrough " + (value ? "ON" : "OFF"));
             });
-            _passthroughGrayToggle = CreateToggle(page, "Passthrough Gray", new Vector2(0f, -464f), value =>
+            _passthroughGrayToggle = CreateToggle(alphaSection, "Passthrough Gray", new Vector2(0f, -290f), value =>
             {
                 _passthroughController?.SetColorMode(value ? ByesPassthroughController.DisplayMode.Gray : ByesPassthroughController.DisplayMode.Color);
                 SetFeedback(value ? "Passthrough gray" : "Passthrough color");
             });
-            _passthroughOpacitySlider = CreateSlider(page, new Vector2(0f, -520f), 0f, 1f, value =>
+            _passthroughOpacitySlider = CreateLabeledSlider(alphaSection, "Passthrough Opacity", new Vector2(0f, -412f), 0f, 1f, value =>
             {
                 _passthroughController?.SetOpacity(value);
                 SetFeedback($"Passthrough opacity {value:0.00}");
             });
-            CreateToggle(page, "DET Service Enabled", new Vector2(0f, -572f), value =>
+            CreateButton(alphaSection, "Back", new Vector2(0f, -520f), () => { SetPage("home"); SetFeedback("Home"); });
+
+            var providerSection = sections["providers"].transform;
+            CreateToggle(providerSection, "DET Service Enabled", new Vector2(0f, 190f), value =>
             {
                 _panel?.TriggerSetProviderEnabledFromUi("det", value);
                 SetFeedback("DET service " + (value ? "ON" : "OFF"));
             });
-            CreateToggle(page, "SEG Service Enabled", new Vector2(0f, -622f), value =>
+            CreateToggle(providerSection, "SEG Service Enabled", new Vector2(0f, 120f), value =>
             {
                 _panel?.TriggerSetProviderEnabledFromUi("seg", value);
                 SetFeedback("SEG service " + (value ? "ON" : "OFF"));
             });
-            CreateToggle(page, "DEPTH Service Enabled", new Vector2(0f, -672f), value =>
+            CreateToggle(providerSection, "DEPTH Service Enabled", new Vector2(0f, 50f), value =>
             {
                 _panel?.TriggerSetProviderEnabledFromUi("depth", value);
                 SetFeedback("DEPTH service " + (value ? "ON" : "OFF"));
             });
-            CreateToggle(page, "SLAM Service Enabled", new Vector2(0f, -722f), value =>
+            CreateToggle(providerSection, "SLAM Service Enabled", new Vector2(0f, -20f), value =>
             {
                 _panel?.TriggerSetProviderEnabledFromUi("slam", value);
                 SetFeedback("SLAM service " + (value ? "ON" : "OFF"));
             });
-            CreateToggle(page, "pySLAM Realtime Enabled", new Vector2(0f, -772f), value =>
+            CreateToggle(providerSection, "pySLAM Realtime Enabled", new Vector2(0f, -90f), value =>
             {
                 _panel?.TriggerSetProviderEnabledFromUi("pyslamRealtime", value);
                 SetFeedback("pySLAM realtime " + (value ? "ON" : "OFF"));
             });
-            CreateButton(page, "DET->YOLO26", new Vector2(-260f, -826f), () =>
-            {
-                _panel?.TriggerSetProviderBackendFromUi("det", "yolo26");
-                SetFeedback("DET backend -> yolo26");
-            });
-            CreateButton(page, "SEG->SAM3", new Vector2(0f, -826f), () =>
-            {
-                _panel?.TriggerSetProviderBackendFromUi("seg", "sam3");
-                SetFeedback("SEG backend -> sam3");
-            });
-            CreateButton(page, "DEPTH->DA3", new Vector2(260f, -826f), () =>
-            {
-                _panel?.TriggerSetProviderBackendFromUi("depth", "da3");
-                SetFeedback("DEPTH backend -> da3");
-            });
-            CreateButton(page, "SLAM->pyslam_http", new Vector2(-200f, -892f), () =>
-            {
-                _panel?.TriggerSetProviderBackendFromUi("slam", "pyslam_http");
-                _panel?.TriggerSetProviderBackendFromUi("pyslamRealtime", "pyslam_http");
-                SetFeedback("SLAM backend -> pyslam_http");
-            });
-            CreateButton(page, "SLAM->mock", new Vector2(200f, -892f), () =>
-            {
-                _panel?.TriggerSetProviderBackendFromUi("slam", "mock");
-                SetFeedback("SLAM backend -> mock");
-            });
-            CreateButton(page, "Reset HUD", new Vector2(-140f, -958f), () =>
-            {
-                _visionHud?.ResetHud();
-                SetFeedback("HUD reset");
-            });
-            CreateButton(page, "Back", new Vector2(140f, -958f), () => { SetPage("home"); SetFeedback("Home"); });
+            _ = CreateText("ProviderHint", providerSection, "Backend overrides stay on the Smoke Panel / Desktop Console to keep the wrist menu short.", 18, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -188f), new Vector2(720f, 80f));
+            CreateButton(providerSection, "Back", new Vector2(0f, -290f), () => { SetPage("home"); SetFeedback("Home"); });
+
+            SetActiveSection(sections, "overlay");
         }
 
         private void BuildGuidancePage(Transform page)
@@ -545,7 +535,7 @@ namespace BYES.Quest
                 _panel?.SetGuidanceHaptics(value);
                 SetFeedback("Guidance Haptics " + (value ? "ON" : "OFF"));
             });
-            _guidanceRateSlider = CreateSlider(page, new Vector2(0f, -108f), 0.2f, 1.2f, value =>
+            _guidanceRateSlider = CreateLabeledSlider(page, "Guidance Rate", new Vector2(0f, -110f), 0.2f, 1.2f, value =>
             {
                 _panel?.SetGuidanceRate(value);
                 SetFeedback($"Guidance rate {value:0.00}s");
@@ -560,125 +550,118 @@ namespace BYES.Quest
 
         private void BuildVoice(Transform page)
         {
-            _voiceText = CreateText("VoiceText", page, "-", 21, TextAnchor.UpperLeft, new Vector2(0.5f, 0.5f), new Vector2(0f, 178f), new Vector2(780f, 150f));
-            _autoSpeakOcrToggle = CreateToggle(page, "Auto Speak OCR", new Vector2(0f, 94f), value =>
+            _voiceText = CreateText("VoiceText", page, "-", 20, TextAnchor.UpperLeft, new Vector2(0.5f, 0.5f), new Vector2(0f, 266f), new Vector2(780f, 110f));
+            var sections = new Dictionary<string, GameObject>(StringComparer.OrdinalIgnoreCase);
+            sections["actions"] = CreateSectionGroup(page, "VoiceActionSection", new Vector2(820f, 920f), new Vector2(0f, -120f));
+            sections["gestures"] = CreateSectionGroup(page, "VoiceGestureSection", new Vector2(820f, 920f), new Vector2(0f, -120f));
+            _ = CreateSectionButton(page, "Voice Actions", new Vector2(-130f, 184f), () => SetActiveSection(sections, "actions"));
+            _ = CreateSectionButton(page, "Gestures", new Vector2(130f, 184f), () => SetActiveSection(sections, "gestures"));
+
+            var actionSection = sections["actions"].transform;
+            _autoVoiceCommandToggle = CreateToggle(actionSection, "Auto Voice Command", new Vector2(0f, 210f), value =>
             {
-                _panel?.SetAutoSpeakOcr(value);
-                SetFeedback("AutoSpeak OCR " + (value ? "ON" : "OFF"));
+                _panel?.SetAutoVoiceCommand(value);
+                SetFeedback("Auto Voice Cmd " + (value ? "ON" : "OFF"));
             });
-            _autoSpeakDetToggle = CreateToggle(page, "Auto Speak DET", new Vector2(0f, 36f), value =>
+            CreateToggle(actionSection, "ASR Service Enabled", new Vector2(0f, 140f), value =>
             {
-                _panel?.SetAutoSpeakDet(value);
-                SetFeedback("AutoSpeak DET " + (value ? "ON" : "OFF"));
+                _panel?.TriggerSetProviderEnabledFromUi("asr", value);
+                SetFeedback("ASR service " + (value ? "ON" : "OFF"));
             });
-            _autoSpeakRiskToggle = CreateToggle(page, "Auto Speak RISK", new Vector2(0f, -22f), value =>
-            {
-                _panel?.SetAutoSpeakRisk(value);
-                SetFeedback("AutoSpeak RISK " + (value ? "ON" : "OFF"));
-            });
-            _autoSpeakFindToggle = CreateToggle(page, "Auto Speak FIND", new Vector2(0f, -80f), value =>
-            {
-                _panel?.SetAutoSpeakFind(value);
-                SetFeedback("AutoSpeak FIND " + (value ? "ON" : "OFF"));
-            });
-            _ocrVerboseToggle = CreateToggle(page, "OCR Verbose", new Vector2(0f, -138f), value =>
-            {
-                _panel?.SetOcrVerbose(value);
-                SetFeedback("OCR Verbose " + (value ? "ON" : "OFF"));
-            });
-            _gestureEnabledToggle = CreateToggle(page, "Gesture Shortcuts Enabled", new Vector2(0f, -196f), value =>
+            CreateButton(actionSection, "Play Beep", new Vector2(-200f, 46f), () => InvokeAction("beep", "Beep played"));
+            CreateButton(actionSection, "Speak Test", new Vector2(0f, 46f), () => InvokeAction("speak_test", "Speak test"));
+            CreateButton(actionSection, "PTT Start", new Vector2(200f, 46f), () => InvokeAction("ptt_start", "PTT start"));
+            CreateButton(actionSection, "PTT Stop", new Vector2(0f, -36f), () => InvokeAction("ptt_stop", "PTT stop"));
+            _ = CreateText("VoiceActionHint", actionSection, "ASR backend overrides stay on the Desktop Console / Smoke Panel to reduce menu length.", 18, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -136f), new Vector2(720f, 80f));
+            CreateButton(actionSection, "Back", new Vector2(0f, -248f), () => { SetPage("home"); SetFeedback("Home"); });
+
+            var gestureSection = sections["gestures"].transform;
+            _gestureEnabledToggle = CreateToggle(gestureSection, "Gesture Shortcuts Enabled", new Vector2(0f, 210f), value =>
             {
                 PlayerPrefs.SetInt(PrefGestureEnabled, value ? 1 : 0);
                 PlayerPrefs.Save();
                 _shortcuts?.SetShortcutsEnabled(value);
                 SetFeedback("Shortcuts " + (value ? "ON" : "OFF"));
             });
-            _autoVoiceCommandToggle = CreateToggle(page, "Auto Voice Command", new Vector2(0f, -254f), value =>
+            _autoSpeakOcrToggle = CreateToggle(gestureSection, "Auto Speak OCR", new Vector2(0f, 140f), value =>
             {
-                _panel?.SetAutoVoiceCommand(value);
-                SetFeedback("Auto Voice Cmd " + (value ? "ON" : "OFF"));
+                _panel?.SetAutoSpeakOcr(value);
+                SetFeedback("AutoSpeak OCR " + (value ? "ON" : "OFF"));
             });
-            CreateToggle(page, "ASR Service Enabled", new Vector2(0f, -312f), value =>
+            _autoSpeakDetToggle = CreateToggle(gestureSection, "Auto Speak DET", new Vector2(0f, 70f), value =>
             {
-                _panel?.TriggerSetProviderEnabledFromUi("asr", value);
-                SetFeedback("ASR service " + (value ? "ON" : "OFF"));
+                _panel?.SetAutoSpeakDet(value);
+                SetFeedback("AutoSpeak DET " + (value ? "ON" : "OFF"));
             });
-            CreateButton(page, "ASR->mock", new Vector2(-200f, -376f), () =>
+            _autoSpeakRiskToggle = CreateToggle(gestureSection, "Auto Speak RISK", new Vector2(0f, 0f), value =>
             {
-                _panel?.TriggerSetProviderBackendFromUi("asr", "mock");
-                SetFeedback("ASR backend -> mock");
+                _panel?.SetAutoSpeakRisk(value);
+                SetFeedback("AutoSpeak RISK " + (value ? "ON" : "OFF"));
             });
-            CreateButton(page, "ASR->faster_whisper", new Vector2(200f, -376f), () =>
+            _autoSpeakFindToggle = CreateToggle(gestureSection, "Auto Speak FIND", new Vector2(0f, -70f), value =>
             {
-                _panel?.TriggerSetProviderBackendFromUi("asr", "faster_whisper");
-                SetFeedback("ASR backend -> faster_whisper");
+                _panel?.SetAutoSpeakFind(value);
+                SetFeedback("AutoSpeak FIND " + (value ? "ON" : "OFF"));
             });
-            CreateButton(page, "Shortcut Hand", new Vector2(-260f, -448f), CycleShortcutHand);
-            CreateButton(page, "Conflict Mode", new Vector2(0f, -448f), CycleConflictMode);
-            CreateButton(page, "Menu Hand", new Vector2(260f, -448f), CycleMenuHand);
-            CreateButton(page, "Play Beep", new Vector2(-260f, -524f), () => InvokeAction("beep", "Beep played"));
-            CreateButton(page, "Speak Test", new Vector2(0f, -524f), () => InvokeAction("speak_test", "Speak test"));
-            CreateButton(page, "PTT Start", new Vector2(260f, -524f), () => InvokeAction("ptt_start", "PTT start"));
-            CreateButton(page, "PTT Stop", new Vector2(-260f, -600f), () => InvokeAction("ptt_stop", "PTT stop"));
-            CreateButton(page, "Back", new Vector2(260f, -600f), () => { SetPage("home"); SetFeedback("Home"); });
+            CreateButton(gestureSection, "Shortcut Hand", new Vector2(-220f, -170f), CycleShortcutHand);
+            CreateButton(gestureSection, "Conflict Mode", new Vector2(0f, -170f), CycleConflictMode);
+            CreateButton(gestureSection, "Menu Hand", new Vector2(220f, -170f), CycleMenuHand);
+            CreateButton(gestureSection, "Back", new Vector2(0f, -262f), () => { SetPage("home"); SetFeedback("Home"); });
+
+            SetActiveSection(sections, "actions");
         }
 
         private void BuildDev(Transform page)
         {
-            _debugText = CreateText("DevText", page, "-", 20, TextAnchor.UpperLeft, new Vector2(0.5f, 0.5f), new Vector2(0f, 196f), new Vector2(780f, 210f));
-            CreateButton(page, "Run SelfTest", new Vector2(-260f, 90f), () => InvokeAction("selftest", "SelfTest started"));
-            CreateButton(page, "Rec Start", new Vector2(0f, 90f), () => InvokeAction("record_start", "Record start"));
-            CreateButton(page, "Rec Stop", new Vector2(260f, 90f), () => InvokeAction("record_stop", "Record stop"));
-            CreateButton(page, "ROI Select", new Vector2(-260f, 16f), () => InvokeAction("roi_select", "ROI selected"));
-            CreateButton(page, "Track Start", new Vector2(0f, 16f), () => InvokeAction("track_start", "Track start"));
-            CreateButton(page, "Track Step", new Vector2(260f, 16f), () => InvokeAction("track_step", "Track step"));
-            CreateButton(page, "Track Stop", new Vector2(-260f, -58f), () => InvokeAction("track_stop", "Track stop"));
-            CreateButton(page, "Export Debug", new Vector2(0f, -58f), () => InvokeAction("export_debug", "Debug exported"));
-            CreateButton(page, "Refresh", new Vector2(260f, -58f), () =>
+            _debugText = CreateText("DevText", page, "-", 20, TextAnchor.UpperLeft, new Vector2(0.5f, 0.5f), new Vector2(0f, 266f), new Vector2(780f, 120f));
+            CreateButton(page, "Run SelfTest", new Vector2(-220f, 186f), () => InvokeAction("selftest", "SelfTest started"));
+            CreateButton(page, "Rec Start", new Vector2(0f, 186f), () => InvokeAction("record_start", "Record start"));
+            CreateButton(page, "Rec Stop", new Vector2(220f, 186f), () => InvokeAction("record_stop", "Record stop"));
+            CreateButton(page, "Refresh", new Vector2(-220f, 106f), () =>
             {
                 _panel?.TriggerRefreshFromUi();
                 RefreshStatus();
                 SetFeedback("Refreshed");
             });
-            CreateButton(page, "Pin Last Action", new Vector2(-260f, -132f), PinLastAction);
-            CreateButton(page, "Clear Favorites", new Vector2(0f, -132f), ClearFavorites);
-            CreateButton(page, "Copy Debug", new Vector2(260f, -132f), () =>
+            CreateButton(page, "Pin Last Action", new Vector2(0f, 106f), PinLastAction);
+            CreateButton(page, "Copy Debug", new Vector2(220f, 106f), () =>
             {
                 GUIUtility.systemCopyBuffer = (_panel != null ? _panel.BuildDebugSummary() : "panel missing") + "\nGestures=" + (_shortcuts != null ? _shortcuts.GetRecentTriggersAsText() : "-");
                 SetFeedback("Debug copied");
             });
-            _showFullPanelToggle = CreateToggle(page, "Show Advanced Panel Controls", new Vector2(0f, -208f), value =>
+            _showFullPanelToggle = CreateToggle(page, "Show Advanced Panel Controls", new Vector2(0f, 10f), value =>
             {
                 PlayerPrefs.SetInt(PrefShowFullPanel, value ? 1 : 0);
                 PlayerPrefs.Save();
                 _panel?.SetActionControlsVisible(value);
                 SetFeedback("Full panel " + (value ? "ON" : "OFF"));
             });
-            _lockToHeadToggle = CreateToggle(page, "Smoke Panel LockToHead", new Vector2(0f, -266f), value =>
+            _lockToHeadToggle = CreateToggle(page, "Smoke Panel LockToHead", new Vector2(0f, -60f), value =>
             {
                 PlayerPrefs.SetInt(PrefLockToHead, value ? 1 : 0);
                 PlayerPrefs.Save();
                 _panel?.SetLockToHead(value);
                 SetFeedback("LockToHead " + (value ? "ON" : "OFF"));
             });
-            _moveResizeToggle = CreateToggle(page, "Enable Move/Resize", new Vector2(0f, -324f), value =>
+            _moveResizeToggle = CreateToggle(page, "Enable Move/Resize", new Vector2(0f, -130f), value =>
             {
                 PlayerPrefs.SetInt(PrefMoveResize, value ? 1 : 0);
                 PlayerPrefs.Save();
                 _panel?.SetMoveResizeEnabled(value);
                 SetFeedback("Move/Resize " + (value ? "ON" : "OFF"));
             });
-            CreateButton(page, "Reset Pose/Scale", new Vector2(-140f, -402f), () => { _panel?.SnapToDefaultPose(); SetFeedback("Panel reset"); });
-            _uiScaleSlider = CreateSlider(page, new Vector2(140f, -402f), 0.6f, 1.4f, value =>
+            CreateButton(page, "Reset Pose/Scale", new Vector2(-140f, -232f), () => { _panel?.SnapToDefaultPose(); SetFeedback("Panel reset"); });
+            CreateButton(page, "Clear Favorites", new Vector2(140f, -232f), ClearFavorites);
+            _uiScaleSlider = CreateLabeledSlider(page, "UI Scale", new Vector2(0f, -382f), 0.6f, 1.4f, value =>
             {
                 PlayerPrefs.SetFloat(PrefUiScale, value);
                 PlayerPrefs.Save();
                 ApplyUiScale(value);
                 SetFeedback($"UI Scale {value:0.00}x");
             });
-            _scaleText = CreateText("ScaleText", page, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -454f), new Vector2(760f, 32f));
-            _settingsText = CreateText("SettingsText", page, "-", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -490f), new Vector2(780f, 32f));
-            CreateButton(page, "Back", new Vector2(0f, -558f), () => { SetPage("home"); SetFeedback("Home"); });
+            _scaleText = CreateText("ScaleText", page, "UI Scale: 1.00x", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -448f), new Vector2(760f, 32f));
+            _settingsText = CreateText("SettingsText", page, "-", 20, TextAnchor.MiddleCenter, new Vector2(0.5f, 0.5f), new Vector2(0f, -486f), new Vector2(780f, 32f));
+            CreateButton(page, "Back", new Vector2(0f, -566f), () => { SetPage("home"); SetFeedback("Home"); });
         }
 
         private void InvokeFavorite(int index)
@@ -970,7 +953,7 @@ namespace BYES.Quest
             _sb.Append("Frame Source: ").Append(_panel.GetFrameSourceText()).Append('\n');
             _sb.Append("Providers: ").Append(_panel.GetProviderSummaryText()).Append('\n');
             _sb.Append("Record: ").Append(_panel.IsRecording() ? "ON" : "OFF").Append('\n');
-            _sb.Append("Overlay: ").Append(_visionHud != null ? "ready" : "unavailable").Append('\n');
+            _sb.Append("Overlay: ").Append(_panel.GetOverlayKindsText()).Append(" / ").Append(_panel.GetFrameSourceTruthState()).Append('\n');
             _sb.Append("DeviceId: ").Append(_panel.GetDeviceId()).Append('\n');
             _sb.Append("Upload/E2E: ").Append(_panel.GetLastUploadMs()).Append("ms / ").Append(_panel.GetLastE2eMs()).Append("ms");
             SetText(_connectionText, _sb.ToString());
@@ -1064,7 +1047,7 @@ namespace BYES.Quest
         {
             _systemGestureActive = true;
             ApplyConflictIsolation(true);
-            SetFeedback("Menu active");
+            SetFeedback("System gesture active");
         }
 
         private void OnSystemGestureEnded()
@@ -1097,6 +1080,13 @@ namespace BYES.Quest
             if (suppressUi)
             {
                 _panel?.SetMoveResizeEnabled(false);
+            }
+
+            var panelGroup = _rootPanel != null ? _rootPanel.GetComponent<CanvasGroup>() : null;
+            if (panelGroup != null)
+            {
+                panelGroup.blocksRaycasts = !suppressUi;
+                panelGroup.interactable = !suppressUi;
             }
 
             _shortcuts?.SetSystemGestureActive(suppressUi);
@@ -1292,6 +1282,47 @@ namespace BYES.Quest
             text.verticalOverflow = VerticalWrapMode.Truncate;
             text.text = value;
             return text;
+        }
+
+        private static GameObject CreateSectionGroup(Transform parent, string name, Vector2 size, Vector2 pos)
+        {
+            var go = CreateUiObject(name, parent, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), size, pos);
+            var image = go.AddComponent<Image>();
+            image.color = new Color(0.08f, 0.12f, 0.18f, 0.78f);
+            return go;
+        }
+
+        private static Button CreateSectionButton(Transform parent, string label, Vector2 pos, Action onClick)
+        {
+            var button = CreateButton(parent, label, pos, onClick);
+            var rect = button.GetComponent<RectTransform>();
+            if (rect != null)
+            {
+                rect.sizeDelta = new Vector2(180f, 50f);
+            }
+            var text = button.GetComponentInChildren<Text>();
+            if (text != null)
+            {
+                text.fontSize = 18;
+            }
+            return button;
+        }
+
+        private static void SetActiveSection(IReadOnlyDictionary<string, GameObject> sections, string activeKey)
+        {
+            foreach (var entry in sections)
+            {
+                if (entry.Value != null)
+                {
+                    entry.Value.SetActive(string.Equals(entry.Key, activeKey, StringComparison.Ordinal));
+                }
+            }
+        }
+
+        private static Slider CreateLabeledSlider(Transform parent, string label, Vector2 pos, float min, float max, Action<float> onChanged)
+        {
+            _ = CreateText(label.Replace(" ", string.Empty) + "Label", parent, label, 19, TextAnchor.MiddleLeft, new Vector2(0.5f, 0.5f), pos + new Vector2(0f, 28f), new Vector2(620f, 28f));
+            return CreateSlider(parent, pos - new Vector2(0f, 10f), min, max, onChanged);
         }
 
         private static Button CreateButton(Transform parent, string label, Vector2 pos, Action onClick)

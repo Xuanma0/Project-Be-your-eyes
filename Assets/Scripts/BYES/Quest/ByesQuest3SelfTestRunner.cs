@@ -1231,7 +1231,9 @@ namespace BYES.Quest
 
                 if (detExpected)
                 {
-                    var remoteDet = remoteKinds.Contains("det") || !string.IsNullOrWhiteSpace(overlayAssets?["det"]?["assetId"]?.ToString());
+                    var remoteDet = remoteKinds.Contains("det")
+                                    || overlayAssets?["det"]?.Value<bool?>("overlayAvailable") == true
+                                    || (!string.IsNullOrWhiteSpace(overlayAssets?["det"]?["assetId"]?.ToString()) && panelDetObserved);
                     if (!remoteDet)
                     {
                         issues.Add("remote_det_missing");
@@ -1245,7 +1247,9 @@ namespace BYES.Quest
 
                 if (segExpected)
                 {
-                    var remoteSeg = remoteKinds.Contains("seg") || !string.IsNullOrWhiteSpace(overlayAssets?["seg"]?["assetId"]?.ToString());
+                    var remoteSeg = remoteKinds.Contains("seg")
+                                    || overlayAssets?["seg"]?.Value<bool?>("overlayAvailable") == true
+                                    || (!string.IsNullOrWhiteSpace(overlayAssets?["seg"]?["assetId"]?.ToString()) && panelSegObserved);
                     if (!remoteSeg)
                     {
                         issues.Add("remote_seg_missing");
@@ -1259,7 +1263,9 @@ namespace BYES.Quest
 
                 if (depthExpected)
                 {
-                    var remoteDepth = remoteKinds.Contains("depth") || !string.IsNullOrWhiteSpace(overlayAssets?["depth"]?["assetId"]?.ToString());
+                    var remoteDepth = remoteKinds.Contains("depth")
+                                      || overlayAssets?["depth"]?.Value<bool?>("overlayAvailable") == true
+                                      || (!string.IsNullOrWhiteSpace(overlayAssets?["depth"]?["assetId"]?.ToString()) && panelDepthObserved);
                     if (!remoteDepth)
                     {
                         issues.Add("remote_depth_missing");

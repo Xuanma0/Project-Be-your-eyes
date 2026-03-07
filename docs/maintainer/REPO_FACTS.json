@@ -1,7 +1,7 @@
 {
   "snapshotLabel": "maintainer-canonical",
   "canonical": true,
-  "updatedAt": "2026-03-07",
+  "updatedAt": "2026-03-08",
   "sourceFiles": [
     "docs/maintainer/ARCHITECTURE_REVIEW_v5.04.md",
     "docs/maintainer/WORKFLOW_HANDOFF_v5.04.md",
@@ -12,11 +12,11 @@
     "docs/maintainer/archive/WORKFLOW_HANDOFF_v5.04.md",
     "docs/maintainer/archive/REPO_FACTS_v5.04.json"
   ],
-  "capturedAt": "2026-03-07",
+  "capturedAt": "2026-03-08",
   "branch": "feature/unity-skeleton",
   "head": "3c9b6d5d72bbf326d8944fea2805c318435ad786",
-  "version": "v5.08",
-  "versionLabelNote": "Canonical facts reflect repository state during v5.08 True PCA + Whole-FOV Overlays + Desktop Console as Operator UI alignment.",
+  "version": "v5.08.1",
+  "versionLabelNote": "Canonical facts reflect repository state during the v5.08.1 Visual Truth Stabilization hotfix focused on provider evidence honesty, overlay asset lifecycle stability, hand-menu interaction cleanup, and passthrough fallback truth.",
   "unity": {
     "editorVersion": "6000.3.10f1",
     "primaryBuildScene": "Assets/Scenes/Quest3SmokeScene.unity",

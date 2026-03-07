@@ -1,5 +1,12 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v5.08.1
+- Provider truth 热修：Quest Panel、Desktop Console、`/api/providers`、`/api/capabilities`、`/api/ui/state` 不再因为 provider “启用中”就把 DET / SLAM 等标成 `real`；最近 `503`、`404`、timeout、disabled、缺路径等情况现在统一显示 `unavailable`，并带明确 `reason`。
+- Overlay 资产链路热修：Quest 把 overlay asset 视为不可变 blob，仅在 `assetId` 变化时下载；下载成功后本地缓存纹理并保持 last-frame hold；同一失败 `assetId` 不再周期性重复 GET。
+- Whole-FOV overlay 渲染热修：DET / SEG / DEPTH 在没有有效纹理时不再继续渲染空层，从而去掉之前遮挡真实世界和面板的半透明白底 / 红底失败中间态。
+- Hand Menu 交互热修：Vision / Voice / Dev 页面压缩为更短的分组视图，slider 与文本重新排版，并加强系统手势冲突隔离，降低 palm-up 菜单与 Meta 系统手势互抢的问题。
+- Passthrough 热修：Quest 与 Desktop 都会明确显示 `Passthrough: unavailable|fallback|real` 及原因；当实际 provider 不可用时会稳定回退，不再留下模糊的半启用视觉状态。
+
 ## v5.08
 - True PCA 进入 proof-gated 真相模型：Quest Panel、Desktop Console、`/api/capabilities`、`/api/providers`、`/api/ui/state` 中的 `pca_real` 只有在 Quest 3/3S、非 Link、相机权限已授予、provider 可用且 ready 时才成立。
 - Quest HUD 强化为 whole-FOV hold 风格叠加：DET、SEG、DEPTH 不追求每帧推理，而是采用 latest-frame-wins + last-frame-hold，优先保证视野内渲染稳定。

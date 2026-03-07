@@ -2,7 +2,7 @@
 
 Canonical development-workflow handoff.
 - Source: reorganized from `docs/maintainer/WORKFLOW_HANDOFF_v5.04.md`, `docs/maintainer/ARCHITECTURE_REVIEW_v5.04.md`, and `docs/maintainer/REPO_FACTS_v5.04.json`.
-- Updated: `2026-03-07`.
+- Updated: `2026-03-08`.
 - Historical snapshot: `docs/maintainer/archive/WORKFLOW_HANDOFF_v5.04.md`.
 
 ## Read First
@@ -20,8 +20,8 @@ If a version-specific execution brief exists, treat it as an external temporary 
 ## Current HEAD / VERSION
 
 - Branch: `feature/unity-skeleton`
-- HEAD: `3c9b6d5d72bbf326d8944fea2805c318435ad786`
-- `VERSION`: `v5.08`
+- HEAD: release commit for `v5.08.1` hotfix; use `git rev-parse HEAD` for the exact current value.
+- `VERSION`: `v5.08.1`
 - Unity editor target: `6000.3.10f1`
 - Enabled build scene: `Assets/Scenes/Quest3SmokeScene.unity`
 - Preferred Quest launcher: `tools/quest3/quest3_usb_realstack_v5_08.cmd`
@@ -38,6 +38,7 @@ If a version-specific execution brief exists, treat it as an external temporary 
 - Keep ASR and TTS evidence separate: ASR truth comes from Gateway recognition runtime; TTS truth comes from Quest-local playback runtime.
 - Keep `pySLAM` optional. It may be visible in diagnostics, but it is not part of the default smoke success criteria.
 - Keep Desktop Console as a thin wrapper on existing APIs. Add controls there only when they map directly to existing `/api/frame`, `/api/assist`, `/api/record/*`, `/api/mode`, `/api/capabilities`, `/api/providers`, or `/api/ui/state` flows.
+- In the `v5.08.1` hotfix band, prioritize truth stabilization over new features: provider evidence, overlay asset lifecycle, passthrough fallback honesty, and hand-menu usability outrank new capability work.
 
 ## Known Fragile Files
 

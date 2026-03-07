@@ -31,6 +31,10 @@ namespace BYES.Quest
         private float _fpsTickStart;
         private readonly Dictionary<string, string> _pendingOverlayAssets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _appliedOverlayAssets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Texture> _overlayTextureCache = new Dictionary<string, Texture>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> _failedOverlayAssets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, bool> _overlayAvailability = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> _overlayReasons = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _overlayFetchInFlight = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         public float OverlayFps { get; private set; }
@@ -42,6 +46,9 @@ namespace BYES.Quest
         public long LastDetTsMs { get; private set; } = -1;
         public string LastOverlayKind { get; private set; } = "-";
         public bool FreezeOverlay => _freezeOverlay;
+        public bool IsOverlayAvailable(string applyMode) => _overlayAvailability.TryGetValue(applyMode ?? string.Empty, out var available) && available;
+        public string GetOverlayReason(string applyMode) => _overlayReasons.TryGetValue(applyMode ?? string.Empty, out var reason) ? reason : "unavailable";
+        public string GetAppliedOverlayAssetId(string applyMode) => _appliedOverlayAssets.TryGetValue(applyMode ?? string.Empty, out var assetId) ? assetId : null;
 
         public void Initialize(
             RawImage detImage,
@@ -265,10 +272,29 @@ namespace BYES.Quest
                 return;
             }
 
+            if (_overlayTextureCache.TryGetValue(assetId, out var cachedTexture) && cachedTexture != null)
+            {
+                ApplyOverlayTexture(applyMode, cachedTexture);
+                _appliedOverlayAssets[applyMode] = assetId;
+                _overlayAvailability[applyMode] = true;
+                _overlayReasons[applyMode] = "ok";
+                _overlayUpdates += 1;
+                return;
+            }
+
             if (_appliedOverlayAssets.TryGetValue(applyMode, out var appliedAssetId)
                 && string.Equals(appliedAssetId, assetId, StringComparison.Ordinal)
                 && !_overlayFetchInFlight.Contains(applyMode))
             {
+                return;
+            }
+
+            if (_failedOverlayAssets.TryGetValue(assetId, out var failedReason)
+                && !_overlayFetchInFlight.Contains(applyMode))
+            {
+                _overlayAvailability[applyMode] = HasValidTexture(applyMode);
+                _overlayReasons[applyMode] = _overlayAvailability[applyMode] ? "stale_hold:" + failedReason : failedReason;
+                RefreshLayerVisibility(applyMode);
                 return;
             }
 
@@ -301,11 +327,13 @@ namespace BYES.Quest
                     Texture texture = null;
                     var bytes = 0;
                     var elapsedMs = 0f;
-                    yield return DownloadAssetInternal(assetId, (downloaded, fetchMs, assetBytes) =>
+                    string fetchReason = null;
+                    yield return DownloadAssetInternal(assetId, (downloaded, fetchMs, assetBytes, reason) =>
                     {
                         texture = downloaded;
                         elapsedMs = fetchMs;
                         bytes = assetBytes;
+                        fetchReason = reason;
                     });
 
                     if (_pendingOverlayAssets.TryGetValue(applyMode, out var newerAssetId)
@@ -319,12 +347,22 @@ namespace BYES.Quest
                     LastDecodeMs = elapsedMs;
                     if (texture == null)
                     {
+                        _failedOverlayAssets[assetId] = string.IsNullOrWhiteSpace(fetchReason) ? "asset_fetch_failed" : fetchReason;
+                        _overlayAvailability[applyMode] = HasValidTexture(applyMode);
+                        _overlayReasons[applyMode] = _overlayAvailability[applyMode]
+                            ? "stale_hold:" + _failedOverlayAssets[assetId]
+                            : _failedOverlayAssets[assetId];
+                        RefreshLayerVisibility(applyMode);
                         continue;
                     }
 
                     LastAssetBytes = bytes;
+                    _overlayTextureCache[assetId] = texture;
+                    _failedOverlayAssets.Remove(assetId);
                     ApplyOverlayTexture(applyMode, texture);
                     _appliedOverlayAssets[applyMode] = assetId;
+                    _overlayAvailability[applyMode] = true;
+                    _overlayReasons[applyMode] = "ok";
                     _overlayUpdates += 1;
                 }
             }
@@ -334,11 +372,11 @@ namespace BYES.Quest
             }
         }
 
-        private IEnumerator DownloadAssetInternal(string assetId, Action<Texture, float, int> onDone)
+        private IEnumerator DownloadAssetInternal(string assetId, Action<Texture, float, int, string> onDone)
         {
             if (_gatewayClient == null)
             {
-                onDone?.Invoke(null, 0f, 0);
+                onDone?.Invoke(null, 0f, 0, "gateway_unavailable");
                 yield break;
             }
 
@@ -356,27 +394,26 @@ namespace BYES.Quest
             var elapsedMs = Mathf.Max(0f, (Time.realtimeSinceStartup - started) * 1000f);
             if (request.result != UnityWebRequest.Result.Success)
             {
-                onDone?.Invoke(null, elapsedMs, 0);
+                var reason = request.responseCode > 0
+                    ? $"http_{request.responseCode}"
+                    : (string.IsNullOrWhiteSpace(request.error) ? "asset_fetch_failed" : request.error.Trim().Replace(' ', '_').ToLowerInvariant());
+                onDone?.Invoke(null, elapsedMs, 0, reason);
                 yield break;
             }
 
             var texture = DownloadHandlerTexture.GetContent(request);
             var bytes = request.downloadHandler?.data != null ? request.downloadHandler.data.Length : 0;
-            onDone?.Invoke(texture, elapsedMs, bytes);
+            onDone?.Invoke(texture, elapsedMs, bytes, "ok");
         }
 
         private void ApplyOverlayTexture(string applyMode, Texture texture)
         {
-            if (texture == null)
-            {
-                return;
-            }
-
             if (string.Equals(applyMode, "det", StringComparison.OrdinalIgnoreCase))
             {
                 if (_detImage != null)
                 {
                     _detImage.texture = texture;
+                    RefreshLayerVisibility("det");
                 }
                 return;
             }
@@ -386,6 +423,7 @@ namespace BYES.Quest
                 if (_segImage != null)
                 {
                     _segImage.texture = texture;
+                    RefreshLayerVisibility("seg");
                 }
                 return;
             }
@@ -393,6 +431,48 @@ namespace BYES.Quest
             if (_depthImage != null)
             {
                 _depthImage.texture = texture;
+                RefreshLayerVisibility("depth");
+            }
+        }
+
+        private bool HasValidTexture(string applyMode)
+        {
+            if (string.Equals(applyMode, "det", StringComparison.OrdinalIgnoreCase))
+            {
+                return _detImage != null && _detImage.texture != null;
+            }
+
+            if (string.Equals(applyMode, "seg", StringComparison.OrdinalIgnoreCase))
+            {
+                return _segImage != null && _segImage.texture != null;
+            }
+
+            return _depthImage != null && _depthImage.texture != null;
+        }
+
+        private void RefreshLayerVisibility(string applyMode)
+        {
+            if (string.Equals(applyMode, "det", StringComparison.OrdinalIgnoreCase))
+            {
+                if (_detImage != null)
+                {
+                    _detImage.enabled = _showDet && _detImage.texture != null && _detAlpha > 0.001f;
+                }
+                return;
+            }
+
+            if (string.Equals(applyMode, "seg", StringComparison.OrdinalIgnoreCase))
+            {
+                if (_segImage != null)
+                {
+                    _segImage.enabled = _showSeg && _segImage.texture != null && _segAlpha > 0.001f;
+                }
+                return;
+            }
+
+            if (_depthImage != null)
+            {
+                _depthImage.enabled = _showDepth && _depthImage.texture != null && _depthAlpha > 0.001f;
             }
         }
 
@@ -502,19 +582,19 @@ namespace BYES.Quest
         {
             if (_detImage != null)
             {
-                _detImage.enabled = _showDet;
                 _detImage.color = new Color(1f, 1f, 1f, _detAlpha);
             }
             if (_segImage != null)
             {
-                _segImage.enabled = _showSeg;
                 _segImage.color = new Color(1f, 0.25f, 0.25f, _segAlpha);
             }
             if (_depthImage != null)
             {
-                _depthImage.enabled = _showDepth;
                 _depthImage.color = new Color(1f, 1f, 1f, _depthAlpha);
             }
+            RefreshLayerVisibility("det");
+            RefreshLayerVisibility("seg");
+            RefreshLayerVisibility("depth");
             if (_boxOutlines == null || _boxLabels == null)
             {
                 return;

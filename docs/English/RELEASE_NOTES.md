@@ -4,6 +4,13 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v5.08.1
+- Hardened provider truth normalization so Quest Panel, Desktop Console, `/api/providers`, `/api/capabilities`, and `/api/ui/state` no longer report `real` when DET, SLAM, or other providers are enabled but currently failing; recent `503`, `404`, timeout, disabled, and missing-path conditions now resolve to `unavailable` with a visible reason.
+- Stabilized Quest overlay asset lifecycle by treating overlay assets as immutable blobs: Quest only downloads when `assetId` changes, caches successful textures locally, preserves last-frame hold after success, and suppresses repeated GETs for the same failed asset id.
+- Removed blank overlay layers from the whole-FOV HUD by disabling DET, SEG, and DEPTH renderers when no valid texture exists, preventing the white or red fallback-looking backgrounds that previously occluded passthrough and panel content.
+- Compressed the Hand Menu interaction surface into smaller in-page sections, labeled sliders, and stronger system-gesture conflict isolation so the palm-up menu is shorter, less overlapping, and less likely to fight Meta system gestures.
+- Added explicit passthrough truth reporting and fallback disable behavior so Quest and Desktop surfaces now show `Passthrough: unavailable|fallback|real` with reasons instead of leaving users in an ambiguous half-enabled visual state.
+
 ## v5.08
 - Added proof-gated PCA truth across Quest panel, Desktop Console, `/api/capabilities`, `/api/providers`, and `/api/ui/state`; `pca_real` now requires supported Quest 3 or 3S hardware, non-Link runtime, camera permission, provider availability, and provider readiness at the same time.
 - Hardened whole-FOV overlay rendering on Quest by keeping DET, SEG, and DEPTH in a last-frame-hold path with latest-frame-wins asset fetch behavior instead of stacking overlay downloads or chasing per-frame inference.

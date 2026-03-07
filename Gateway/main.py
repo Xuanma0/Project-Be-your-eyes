@@ -775,7 +775,7 @@ class GatewayApp:
         assist_cache_ttl_ms = max(200, int(os.getenv("BYES_ASSIST_CACHE_TTL_MS", "2000") or "2000"))
         assist_cache_max_entries = max(1, int(os.getenv("BYES_ASSIST_CACHE_MAX_ENTRIES", "16") or "16"))
         self.frame_cache = FrameCache(ttl_ms=assist_cache_ttl_ms, max_entries=assist_cache_max_entries)
-        asset_cache_ttl_ms = max(1000, int(os.getenv("BYES_ASSET_CACHE_TTL_MS", "12000") or "12000"))
+        asset_cache_ttl_ms = max(30000, int(os.getenv("BYES_ASSET_CACHE_TTL_MS", "30000") or "30000"))
         asset_cache_max_entries = max(1, int(os.getenv("BYES_ASSET_CACHE_MAX_ENTRIES", "256") or "256"))
         asset_cache_max_bytes = max(1024, int(os.getenv("BYES_ASSET_CACHE_MAX_BYTES", str(32 * 1024 * 1024)) or str(32 * 1024 * 1024)))
         self.asset_cache = AssetCache(
@@ -838,6 +838,16 @@ class GatewayApp:
             "reason": None,
             "assetId": None,
         }
+        self._ui_passthrough_state: dict[str, Any] = {
+            "truthState": "unavailable",
+            "truthLabel": "unavailable",
+            "backend": "quest_passthrough",
+            "model": None,
+            "device": "quest",
+            "enabled": False,
+            "reason": "unknown",
+            "lastChangedTsMs": None,
+        }
         self.pov_store = PovStore()
 
     async def startup(self) -> None:
@@ -885,6 +895,16 @@ class GatewayApp:
             "status": None,
             "reason": None,
             "assetId": None,
+        }
+        self._ui_passthrough_state = {
+            "truthState": "unavailable",
+            "truthLabel": "unavailable",
+            "backend": "quest_passthrough",
+            "model": None,
+            "device": "quest",
+            "enabled": False,
+            "reason": "unknown",
+            "lastChangedTsMs": None,
         }
         self.costmap_fuser.reset()
         self.dynamic_mask_cache.reset()
@@ -1003,6 +1023,7 @@ class GatewayApp:
         fps_override: float | None = None,
         state: str | None = None,
         root_detected: bool | None = None,
+        outcome: str | None = None,
     ) -> None:
         key = str(provider or "").strip()
         if not key:
@@ -1031,6 +1052,23 @@ class GatewayApp:
             lowered = str(backend_text or "").lower()
             is_mock = lowered.startswith("mock") or ("reference" in lowered) or lowered in {"none", ""}
         state_text = str(state or row.get("state") or "").strip().lower() or None
+        outcome_text = str(outcome or "").strip().lower()
+        if outcome_text not in {"ok", "error", "timeout"}:
+            outcome_text = None
+        reason_text = str(reason or "").strip() or None
+        if outcome_text == "ok" and reason_text is None:
+            reason_text = "ok"
+        elif reason_text is None:
+            reason_text = str(row.get("reason") or "").strip() or None
+
+        previous_failures = int(row.get("consecutiveFailures", 0) or 0)
+        consecutive_failures = previous_failures
+        if outcome_text == "ok":
+            consecutive_failures = 0
+            row["lastSuccessTsMs"] = ts_value
+        elif outcome_text in {"error", "timeout"}:
+            consecutive_failures = previous_failures + 1
+            row["lastErrorTsMs"] = ts_value
 
         row.update(
             {
@@ -1042,8 +1080,11 @@ class GatewayApp:
                 "lastTsMs": ts_value,
                 "ageMs": max(0, now_ms - ts_value),
                 "isMock": bool(is_mock),
-                "reason": str(reason or row.get("reason") or "").strip() or None,
+                "reason": reason_text,
                 "state": state_text,
+                "lastOutcome": outcome_text or row.get("lastOutcome"),
+                "lastOutcomeTsMs": ts_value if outcome_text is not None else row.get("lastOutcomeTsMs"),
+                "consecutiveFailures": consecutive_failures,
             }
         )
         if isinstance(root_detected, bool):
@@ -1074,10 +1115,11 @@ class GatewayApp:
         latency_ms = _to_nonnegative_int_or_none(event.get("latencyMs"))
         payload_latency = _to_nonnegative_int_or_none(payload.get("latencyMs"))
         infer_ms = payload_latency if payload_latency is not None else latency_ms
+        event_status = str(event.get("status", "") or "").strip().lower()
         backend = str(payload.get("backend", "") or "").strip() or None
         model = str(payload.get("model", "") or "").strip() or None
         device = str(payload.get("device", "") or "").strip() or None
-        reason = str(payload.get("reason", "") or "").strip() or None
+        reason = str(payload.get("reason", "") or payload.get("error", "") or "").strip() or None
         tracking_state = str(payload.get("trackingState", "") or payload.get("state", "") or "").strip().lower() or None
         root_detected = payload.get("rootDetected")
         if not isinstance(root_detected, bool):
@@ -1138,6 +1180,7 @@ class GatewayApp:
                             ts_ms=event_ts,
                             reason=reason,
                             is_mock=provider_is_mock,
+                            outcome="ok" if bool(payload.get("accepted", True)) else "error",
                         )
                         return
                 backend = backend or "client_ack"
@@ -1173,6 +1216,7 @@ class GatewayApp:
             fps_override=fps_override,
             state=tracking_state,
             root_detected=root_detected if isinstance(root_detected, bool) else None,
+            outcome=event_status,
         )
         if provider == "slam" and str(backend or "").strip().lower().startswith("pyslam"):
             self._record_provider_runtime(
@@ -1186,6 +1230,7 @@ class GatewayApp:
                 fps_override=fps_override,
                 state=tracking_state,
                 root_detected=root_detected if isinstance(root_detected, bool) else None,
+                outcome=event_status,
             )
 
     def _to_run_packages_relative(self, path: Path) -> str:
@@ -3030,6 +3075,21 @@ async def frame_ack(request: FrameAckRequest) -> dict[str, Any]:
             gateway._ui_voice_state["lastSpokenTsMs"] = feedback_ts_ms  # noqa: SLF001
         if muted is not None:
             gateway._ui_voice_state["ttsMuted"] = muted  # noqa: SLF001
+    elif str(request.kind or "").strip().lower() == "ar":
+        passthrough_reason = str(request.providerReason or "").strip() or ("ok" if bool(request.accepted) else "unavailable")
+        passthrough_truth = "real" if bool(request.accepted) else "unavailable"
+        if "fallback" in passthrough_reason.lower():
+            passthrough_truth = "fallback"
+        gateway._ui_passthrough_state = {  # noqa: SLF001
+            "truthState": passthrough_truth,
+            "truthLabel": passthrough_truth,
+            "backend": str(request.providerBackend or "quest_passthrough").strip() or "quest_passthrough",
+            "model": str(request.providerModel or "").strip() or None,
+            "device": str(request.providerDevice or "quest").strip() or "quest",
+            "enabled": bool(request.accepted),
+            "reason": "endpoint_404" if passthrough_reason == "http_404" else passthrough_reason,
+            "lastChangedTsMs": feedback_ts_ms,
+        }
     ack_event = _build_byes_event(
         run_id=run_id,
         frame_seq=frame_seq,
@@ -3282,17 +3342,42 @@ def _normalize_frame_source_truth(frame_meta: dict[str, Any] | None) -> dict[str
     }
 
 
-def _resolve_provider_truth_state(*, enabled: bool, is_mock: bool, backend: str | None, reason: str | None) -> str:
+def _resolve_provider_truth_state(
+    *,
+    enabled: bool,
+    is_mock: bool,
+    backend: str | None,
+    reason: str | None,
+    last_success_ts: int | None,
+    last_outcome: str | None,
+    consecutive_failures: int,
+) -> str:
     if not enabled:
         return "unavailable"
 
     backend_text = str(backend or "").strip().lower()
     reason_text = str(reason or "").strip().lower()
-    if backend_text.endswith("_fallback") or "fallback" in reason_text:
-        return "fallback"
+    failure_tokens = (
+        "missing",
+        "disabled",
+        "not_ready",
+        "path_not_found",
+        "unresolved",
+        "unavailable",
+        "http_",
+        "endpoint_",
+        "timeout",
+        "error",
+    )
+    if last_outcome in {"error", "timeout"} or consecutive_failures > 0:
+        return "unavailable"
+    if any(token in reason_text for token in failure_tokens):
+        return "unavailable"
     if is_mock:
         return "mock"
-    if any(token in reason_text for token in ("missing", "disabled", "not_ready", "path_not_found", "unresolved", "unavailable")):
+    if backend_text.endswith("_fallback") or "fallback" in reason_text:
+        return "fallback"
+    if last_success_ts is None:
         return "unavailable"
     return "real"
 
@@ -3309,10 +3394,15 @@ def _normalize_provider_row(
     model = str(runtime.get("model") or source_row.get("model") or "").strip() or None
     device = str(runtime.get("device") or source_row.get("device") or "").strip() or None
     reason = str(runtime.get("reason") or source_row.get("reason") or "").strip() or None
+    if reason == "http_404":
+        reason = "endpoint_404"
     enabled = bool(source_row.get("enabled"))
-    last_success_ts = _to_nonnegative_int_or_none(runtime.get("lastTsMs"))
+    last_success_ts = _to_nonnegative_int_or_none(runtime.get("lastSuccessTsMs"))
+    if last_success_ts is None:
+        last_success_ts = _to_nonnegative_int_or_none(runtime.get("lastTsMs"))
     if last_success_ts is None:
         last_success_ts = _to_nonnegative_int_or_none(source_row.get("lastTsMs"))
+    last_error_ts = _to_nonnegative_int_or_none(runtime.get("lastErrorTsMs"))
     last_infer_ms = _to_nonnegative_int_or_none(runtime.get("inferMs"))
     if last_infer_ms is None:
         last_infer_ms = _to_nonnegative_int_or_none(source_row.get("inferMs"))
@@ -3327,6 +3417,8 @@ def _normalize_provider_row(
     except Exception:
         fps = None
     state = str(runtime.get("state") or source_row.get("state") or "").strip().lower() or None
+    last_outcome = str(runtime.get("lastOutcome") or "").strip().lower() or None
+    consecutive_failures = int(runtime.get("consecutiveFailures", 0) or 0)
     root_detected = runtime.get("rootDetected")
     if not isinstance(root_detected, bool):
         root_detected = source_row.get("rootDetected")
@@ -3345,6 +3437,9 @@ def _normalize_provider_row(
         is_mock=bool(is_mock_value),
         backend=backend,
         reason=reason,
+        last_success_ts=last_success_ts,
+        last_outcome=last_outcome,
+        consecutive_failures=consecutive_failures,
     )
     evidence = {
         "backend": backend,
@@ -3353,11 +3448,14 @@ def _normalize_provider_row(
         "is_mock": bool(is_mock_value),
         "reason": reason,
         "last_success_ts": last_success_ts,
+        "last_error_ts": last_error_ts,
         "last_infer_ms": last_infer_ms,
         "fps": fps,
         "state": state,
         "root_detected": root_detected,
         "age_ms": age_ms,
+        "last_outcome": last_outcome,
+        "consecutive_failures": consecutive_failures,
     }
 
     runtime_snapshot = dict(runtime)
@@ -3368,12 +3466,16 @@ def _normalize_provider_row(
             "device": device,
             "reason": reason,
             "isMock": bool(is_mock_value),
-            "lastTsMs": last_success_ts,
+            "lastTsMs": _to_nonnegative_int_or_none(runtime.get("lastTsMs")),
+            "lastSuccessTsMs": last_success_ts,
+            "lastErrorTsMs": last_error_ts,
             "inferMs": last_infer_ms,
             "fps": fps,
             "state": state,
             "rootDetected": root_detected,
             "ageMs": age_ms,
+            "lastOutcome": last_outcome,
+            "consecutiveFailures": consecutive_failures,
         }
     )
 
@@ -3387,11 +3489,14 @@ def _normalize_provider_row(
             "enabled": enabled,
             "isMock": bool(is_mock_value),
             "lastSuccessTsMs": last_success_ts,
+            "lastErrorTsMs": last_error_ts,
             "lastInferMs": last_infer_ms,
             "fps": fps,
             "state": state,
             "rootDetected": root_detected,
             "ageMs": age_ms,
+            "lastOutcome": last_outcome,
+            "consecutiveFailures": consecutive_failures,
             "truthState": truth_state,
             "truthLabel": truth_state,
             "evidence": evidence,
@@ -3410,6 +3515,37 @@ def _build_provider_truth_summary(providers: dict[str, dict[str, Any]]) -> str:
         backend = str(row.get("backend", "") or "-").strip().lower() or "-"
         tokens.append(f"{key}[{state}:{backend[:16]}]")
     return " ".join(tokens)
+
+
+def _normalize_passthrough_truth(raw: dict[str, Any] | None) -> dict[str, Any]:
+    row = dict(raw or {})
+    truth_state = str(row.get("truthState") or row.get("truthLabel") or "").strip().lower()
+    if truth_state not in {"real", "fallback", "unavailable"}:
+        truth_state = "unavailable"
+    reason = str(row.get("reason") or "").strip() or ("ok" if truth_state != "unavailable" else "unknown")
+    return {
+        "truthState": truth_state,
+        "truthLabel": truth_state,
+        "backend": str(row.get("backend") or "quest_passthrough").strip() or "quest_passthrough",
+        "model": str(row.get("model") or "").strip() or None,
+        "device": str(row.get("device") or "quest").strip() or "quest",
+        "enabled": bool(row.get("enabled")) and truth_state != "unavailable",
+        "reason": "endpoint_404" if reason == "http_404" else reason,
+        "lastChangedTsMs": _to_nonnegative_int_or_none(row.get("lastChangedTsMs")),
+    }
+
+
+def _infer_overlay_reason(providers: dict[str, Any] | None) -> str:
+    provider_map = providers if isinstance(providers, dict) else {}
+    for key in ("det", "seg", "depth"):
+        row = provider_map.get(key)
+        if not isinstance(row, dict):
+            continue
+        truth_state = str(row.get("truthState") or row.get("truthLabel") or "unavailable").strip().lower() or "unavailable"
+        reason = str(row.get("reason") or "").strip() or "asset_not_emitted"
+        if truth_state in {"unavailable", "fallback"}:
+            return "endpoint_404" if reason == "http_404" else reason
+    return "asset_not_emitted"
 
 
 @app.get("/api/capabilities")
@@ -3451,12 +3587,13 @@ async def api_capabilities() -> dict[str, Any]:
     pyslam_runtime = runtime_rows.get("pyslamRealtime", {})
     voice_state = dict(gateway._ui_voice_state)  # noqa: SLF001
     capture_state = dict(gateway._ui_capture_state)  # noqa: SLF001
+    passthrough_state = _normalize_passthrough_truth(gateway._ui_passthrough_state)  # noqa: SLF001
     tts_backend = str(tts_runtime.get("backend", "") or "client_ack").strip() or "client_ack"
     tts_reason = str(tts_runtime.get("reason", "") or "").strip() or "client_ack"
     tts_muted = bool(voice_state.get("ttsMuted") is True)
     if tts_muted:
         tts_reason = "muted"
-    tts_enabled = bool(tts_runtime.get("lastTsMs")) and not tts_muted
+    tts_enabled = bool(tts_runtime.get("lastSuccessTsMs") or tts_runtime.get("lastTsMs")) and not tts_muted
     pyslam_root_detected = bool(pyslam_root) and Path(pyslam_root).exists()
     pyslam_state = str(pyslam_runtime.get("state", "") or "").strip().lower() or None
     if not pyslam_state:
@@ -3612,6 +3749,7 @@ async def api_capabilities() -> dict[str, Any]:
         "providers": normalized_providers,
         "capture": capture_truth,
         "voice": voice_truth,
+        "passthrough": passthrough_state,
     }
 
     enabled_flags = {
@@ -3805,7 +3943,7 @@ async def api_ui_state(limit: int = 60) -> dict[str, Any]:
     safe_limit = max(10, min(240, int(limit)))
     capabilities = await api_capabilities()
     latest_events = gateway.snapshot_inference_events(limit=safe_limit)
-    overlay_assets = dict(gateway._latest_overlay_assets)  # noqa: SLF001
+    overlay_assets_raw = dict(gateway._latest_overlay_assets)  # noqa: SLF001
     frame_asset_id = gateway._latest_frame_asset_id  # noqa: SLF001
     frame_meta = dict(gateway._latest_frame_meta)  # noqa: SLF001
     frame_truth = _normalize_frame_source_truth(frame_meta)
@@ -3830,19 +3968,58 @@ async def api_ui_state(limit: int = 60) -> dict[str, Any]:
     target_payload = build_target_session_payload(target_session, status="active") if target_session is not None else None
     recording_state = dict(gateway._ui_recording_state)  # noqa: SLF001
     recording_state["lastRunPackage"] = recording_state.get("recordingPath")
-    overlay_kinds_available = sorted(str(key) for key in overlay_assets.keys())
+    providers = capabilities.get("available_providers", {})
+    overlay_assets: dict[str, dict[str, Any]] = {}
+    latest_overlay_asset_id: str | None = None
+    latest_overlay_available = False
+    latest_overlay_reason = "asset_not_emitted"
+    latest_overlay_ts_ms = -1
+    for key, raw_row in overlay_assets_raw.items():
+        kind = str(key or "").strip().lower()
+        if not kind:
+            continue
+        row = dict(raw_row) if isinstance(raw_row, dict) else {}
+        asset_id = str(row.get("assetId") or "").strip() or None
+        asset_meta = gateway.asset_cache.get_meta(asset_id) if asset_id else None  # noqa: SLF001
+        overlay_available = asset_meta is not None
+        overlay_reason = "ok" if overlay_available else ("asset_expired" if asset_id else "asset_not_emitted")
+        normalized_row = dict(row)
+        normalized_row.update(
+            {
+                "assetId": asset_id,
+                "overlayAvailable": overlay_available,
+                "overlayReason": overlay_reason,
+                "assetMeta": asset_meta,
+                "expiresTsMs": asset_meta.get("expiresTsMs") if isinstance(asset_meta, dict) else None,
+                "ageMs": asset_meta.get("ageMs") if isinstance(asset_meta, dict) else None,
+            }
+        )
+        overlay_assets[kind] = normalized_row
+        ts_ms = _to_nonnegative_int_or_none(normalized_row.get("tsMs")) or -1
+        if ts_ms >= latest_overlay_ts_ms:
+            latest_overlay_ts_ms = ts_ms
+            latest_overlay_asset_id = asset_id
+            latest_overlay_available = overlay_available
+            latest_overlay_reason = overlay_reason
+    if latest_overlay_ts_ms < 0:
+        latest_overlay_reason = _infer_overlay_reason(providers)
+    overlay_kinds_available = sorted(kind for kind, row in overlay_assets.items() if bool(row.get("overlayAvailable")))
     truth = dict(capabilities.get("truth") or {})
     truth.update(
         {
             "frameSource": frame_truth,
-            "providers": capabilities.get("available_providers", {}),
-            "providerSummary": truth.get("providerSummary") or _build_provider_truth_summary(capabilities.get("available_providers", {})),
+            "providers": providers,
+            "providerSummary": truth.get("providerSummary") or _build_provider_truth_summary(providers),
             "capture": {
                 **(truth.get("capture") or {}),
                 "frameSource": frame_truth,
             },
             "voice": truth.get("voice") or {},
+            "passthrough": truth.get("passthrough") or _normalize_passthrough_truth(gateway._ui_passthrough_state),  # noqa: SLF001
             "overlayKindsAvailable": overlay_kinds_available,
+            "latestOverlayAssetId": latest_overlay_asset_id,
+            "overlayAvailable": latest_overlay_available,
+            "overlayReason": latest_overlay_reason,
             "currentMode": mode_state.get("mode"),
             "recording": recording_state,
             "targetSession": target_payload,
@@ -3865,6 +4042,9 @@ async def api_ui_state(limit: int = 60) -> dict[str, Any]:
             "frameMeta": frame_meta,
             "overlayAssets": overlay_assets,
             "overlayKindsAvailable": overlay_kinds_available,
+            "latestOverlayAssetId": latest_overlay_asset_id,
+            "overlayAvailable": latest_overlay_available,
+            "overlayReason": latest_overlay_reason,
             "eventCount": len(latest_events),
             "lastEvent": latest_events[-1] if latest_events else None,
             "eventsTail": latest_events[-20:],
@@ -3878,7 +4058,7 @@ def _build_desktop_console_html() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>BYES Desktop Console v5.08</title>
+  <title>BYES Desktop Console v5.08.1</title>
   <style>
     body{font-family:Segoe UI,Arial,sans-serif;background:#111;color:#eee;margin:0;padding:12px}
     .row{display:flex;gap:12px;flex-wrap:wrap}
@@ -3906,7 +4086,7 @@ def _build_desktop_console_html() -> str:
   </style>
 </head>
 <body>
-  <h2>BYES Desktop Console (v5.08)</h2>
+  <h2>BYES Desktop Console (v5.08.1)</h2>
   <div class="row">
     <div class="card w420">
       <h3>Runtime Truth</h3>
@@ -3958,10 +4138,10 @@ def _build_desktop_console_html() -> str:
   </div>
 
   <div class="row" style="margin-top:12px">
-    <div class="card w320"><h3>Latest Frame</h3><img id="imgFrame" alt="frame preview"/></div>
-    <div class="card w320"><h3>DET Overlay</h3><img id="imgDet" alt="det overlay"/></div>
-    <div class="card w320"><h3>SEG Overlay</h3><img id="imgSeg" alt="seg overlay"/></div>
-    <div class="card w320"><h3>DEPTH Overlay</h3><img id="imgDepth" alt="depth overlay"/></div>
+    <div class="card w320"><h3>Latest Frame</h3><img id="imgFrame" alt="frame preview"/><div id="imgFrameMeta" class="small">-</div></div>
+    <div class="card w320"><h3>DET Overlay</h3><img id="imgDet" alt="det overlay"/><div id="imgDetMeta" class="small">-</div></div>
+    <div class="card w320"><h3>SEG Overlay</h3><img id="imgSeg" alt="seg overlay"/><div id="imgSegMeta" class="small">-</div></div>
+    <div class="card w320"><h3>DEPTH Overlay</h3><img id="imgDepth" alt="depth overlay"/><div id="imgDepthMeta" class="small">-</div></div>
   </div>
 
   <div class="row" style="margin-top:12px">
@@ -4013,6 +4193,7 @@ def _build_desktop_console_html() -> str:
       const voice = truth.voice || {};
       const asr = voice.asr || {};
       const tts = voice.tts || {};
+      const passthrough = truth.passthrough || {};
       const pyslam = providers.pyslamRealtime || {};
       const pyslamEvidence = pyslam.evidence || {};
       const mode = state.mode || {};
@@ -4020,6 +4201,7 @@ def _build_desktop_console_html() -> str:
       const target = state.targetSession || null;
       const overlays = (truth.overlayKindsAvailable || []).join(', ') || '-';
       const overlayAssets = latest.overlayAssets || {};
+      const overlayState = truthState(truth.overlayAvailable ? 'real' : 'unavailable');
       const overlayPreviewIds = [
         `det=${formatMaybe((overlayAssets.det || {}).assetId)}`,
         `seg=${formatMaybe((overlayAssets.seg || {}).assetId)}`,
@@ -4039,8 +4221,11 @@ def _build_desktop_console_html() -> str:
         `<div class="runtime-line small">transcript=${htmlEscape(formatMaybe(asr.transcript))} ts=${htmlEscape(formatMaybe(asr.transcriptTsMs))} latency=${htmlEscape(formatMaybe(asr.latencyMs))}</div>`,
         `<div class="runtime-line"><strong>TTS</strong> ${badgeHtml(tts.truthState, tts.truthLabel)} <span class="small">backend=${htmlEscape(formatMaybe(tts.backend))} model=${htmlEscape(formatMaybe(tts.model))} device=${htmlEscape(formatMaybe(tts.device))} muted=${htmlEscape(String(tts.muted === true))}</span></div>`,
         `<div class="runtime-line small">spoken=${htmlEscape(formatMaybe(tts.lastSpoken))} ts=${htmlEscape(formatMaybe(tts.lastSpokenTsMs))} reason=${htmlEscape(formatMaybe(tts.reason))}</div>`,
+        `<div class="runtime-line"><strong>Passthrough</strong> ${badgeHtml(passthrough.truthState, passthrough.truthLabel)} <span class="small">backend=${htmlEscape(formatMaybe(passthrough.backend))} device=${htmlEscape(formatMaybe(passthrough.device))}</span></div>`,
+        `<div class="runtime-line small">reason=${htmlEscape(formatMaybe(passthrough.reason))} ts=${htmlEscape(formatMaybe(passthrough.lastChangedTsMs))}</div>`,
         `<div class="runtime-line"><strong>pySLAM</strong> ${badgeHtml(pyslam.truthState, pyslam.truthLabel)} <span class="small">backend=${htmlEscape(formatMaybe(pyslam.backend || pyslamEvidence.backend))} state=${htmlEscape(formatMaybe(pyslam.state || pyslamEvidence.state))} fps=${htmlEscape(formatMaybe(pyslam.fps ?? pyslamEvidence.fps))} latency=${htmlEscape(formatMaybe(pyslam.lastInferMs ?? pyslamEvidence.last_infer_ms))} root=${htmlEscape(String((pyslam.rootDetected ?? pyslamEvidence.root_detected) === true))}</span></div>`,
-        `<div class="runtime-line"><strong>Overlays</strong> ${htmlEscape(overlays)}</div>`,
+        `<div class="runtime-line"><strong>Overlays</strong> ${badgeHtml(overlayState, overlayState)} ${htmlEscape(overlays)}</div>`,
+        `<div class="runtime-line small">latest=${htmlEscape(formatMaybe(truth.latestOverlayAssetId || latest.latestOverlayAssetId))} available=${htmlEscape(String(truth.overlayAvailable === true || latest.overlayAvailable === true))} reason=${htmlEscape(formatMaybe(truth.overlayReason || latest.overlayReason))}</div>`,
         `<div class="runtime-line small">previewAssets=${htmlEscape(overlayPreviewIds)}</div>`,
         `<div class="runtime-line"><strong>Recording</strong> ${badgeHtml(recordState, recordLabel)} <span class="small">${htmlEscape(formatMaybe(recording.lastRunPackage || recording.recordingPath))}</span></div>`,
         `<div class="runtime-line"><strong>Target Session</strong> ${target ? htmlEscape(formatMaybe(target.sessionId)) + ' <span class="small">tracker=' + htmlEscape(formatMaybe(target.tracker)) + '</span>' : '-'}</div>`,
@@ -4101,10 +4286,11 @@ def _build_desktop_console_html() -> str:
         document.getElementById('actions').textContent = `${lastAction}\nlive=${desktopLiveEnabled ? 'ON' : 'OFF'} busy=${desktopLiveBusy ? 'yes' : 'no'}`;
 
         setImg('imgFrame', latest.frameAssetId);
+        setMeta('imgFrameMeta', latest.frameAssetId ? `asset=${formatMaybe(latest.frameAssetId)} size=${formatMaybe(frameMeta.sizeBytes)}` : 'unavailable');
         const overlays = latest.overlayAssets || {};
-        setImg('imgDet', overlays.det ? overlays.det.assetId : null);
-        setImg('imgSeg', overlays.seg ? overlays.seg.assetId : null);
-        setImg('imgDepth', overlays.depth ? overlays.depth.assetId : null);
+        setPreview('imgDet', 'imgDetMeta', overlays.det || {});
+        setPreview('imgSeg', 'imgSegMeta', overlays.seg || {});
+        setPreview('imgDepth', 'imgDepthMeta', overlays.depth || {});
       }catch(err){
         document.getElementById('runtime').textContent = 'state refresh failed: ' + err;
       }
@@ -4112,8 +4298,33 @@ def _build_desktop_console_html() -> str:
     function setImg(id, assetId){
       const el = document.getElementById(id);
       if(!el){return;}
-      if(!assetId){el.removeAttribute('src'); return;}
-      el.src = `/api/assets/${encodeURIComponent(assetId)}?t=${Date.now()}`;
+      const nextId = assetId ? String(assetId).trim() : '';
+      if(!nextId){
+        el.removeAttribute('src');
+        el.dataset.assetId = '';
+        return;
+      }
+      if(el.dataset.assetId === nextId){
+        return;
+      }
+      el.src = `/api/assets/${encodeURIComponent(nextId)}`;
+      el.dataset.assetId = nextId;
+    }
+    function setMeta(id, text){
+      const el = document.getElementById(id);
+      if(el){ el.textContent = text || '-'; }
+    }
+    function setPreview(imgId, metaId, row){
+      const assetId = row.assetId || null;
+      const available = row.overlayAvailable === true;
+      const reason = formatMaybe(row.overlayReason);
+      if(available && assetId){
+        setImg(imgId, assetId);
+        setMeta(metaId, `asset=${formatMaybe(assetId)} reason=${reason}`);
+        return;
+      }
+      setImg(imgId, null);
+      setMeta(metaId, `unavailable reason=${reason}`);
     }
     async function postJson(url, body){
       const r = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
@@ -4247,7 +4458,7 @@ async def api_assets_get(asset_id: str) -> Response:
     if cached is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     headers = {
-        "Cache-Control": "no-store",
+        "Cache-Control": "public, max-age=30, immutable",
         "X-BYES-Asset-Id": cached.asset_id,
     }
     return Response(content=bytes(cached.data), media_type=str(cached.content_type), headers=headers)

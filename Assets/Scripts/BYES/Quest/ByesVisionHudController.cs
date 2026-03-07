@@ -61,6 +61,12 @@ namespace BYES.Quest
         public float LastFetchMs => _renderer != null ? _renderer.LastFetchMs : -1f;
         public int LastAssetBytes => _assetBytes;
         public string LastOverlayKind => _renderer != null ? _renderer.LastOverlayKind : "-";
+        public string LastDetOverlayReason => _renderer != null ? _renderer.GetOverlayReason("det") : "unavailable";
+        public string LastSegOverlayReason => _renderer != null ? _renderer.GetOverlayReason("seg") : "unavailable";
+        public string LastDepthOverlayReason => _renderer != null ? _renderer.GetOverlayReason("depth") : "unavailable";
+        public bool IsDetOverlayAvailable => _renderer != null && _renderer.IsOverlayAvailable("det");
+        public bool IsSegOverlayAvailable => _renderer != null && _renderer.IsOverlayAvailable("seg");
+        public bool IsDepthOverlayAvailable => _renderer != null && _renderer.IsOverlayAvailable("depth");
 
         public long LastSegAgeMs
         {
@@ -540,6 +546,7 @@ namespace BYES.Quest
             var mode = fullFovOverlayLayer ? "whole_fov_hold" : "panel_hold";
             _statsText.text = $"HUD fps:{_overlayFps:0.0} kind:{kind} fetch:{fetchMs:0.0}ms decode:{_lastDecodeMs:0.0}ms bytes:{_assetBytes}\n" +
                               $"mode:{mode} freeze:{(freezeOverlay ? "on" : "off")} segAge:{(segAge >= 0 ? segAge + "ms" : "-")} depthAge:{(depthAge >= 0 ? depthAge + "ms" : "-")} detAge:{(detAge >= 0 ? detAge + "ms" : "-")}";
+            _statsText.text += $"\ndet={(_renderer != null && _renderer.IsOverlayAvailable("det") ? "ok" : LastDetOverlayReason)} seg={(_renderer != null && _renderer.IsOverlayAvailable("seg") ? "ok" : LastSegOverlayReason)} depth={(_renderer != null && _renderer.IsOverlayAvailable("depth") ? "ok" : LastDepthOverlayReason)}";
         }
 
         private void EnsureRenderer()

@@ -100,6 +100,9 @@ namespace BYES.Quest
         private string _providerSummary = "providers: -";
         private string _providerDetail = "-";
         private string _overlayKindsSummary = "-";
+        private bool _overlayAvailable;
+        private string _overlayReason = "asset_not_emitted";
+        private string _latestOverlayAssetId = "-";
         private string _pyslamTruthState = "unavailable";
         private string _pyslamBackend = "-";
         private string _pyslamState = "-";
@@ -128,6 +131,7 @@ namespace BYES.Quest
         private string _lastSpokenDigest = string.Empty;
         private Coroutine _reachabilityCoroutine;
         private Coroutine _statusRefreshCoroutine;
+        private string _lastPassthroughEvidenceDigest = string.Empty;
 
         private readonly Queue<long> _probeRequestTsMs = new Queue<long>();
 
@@ -289,11 +293,17 @@ namespace BYES.Quest
             }
         }
 
+        private void LateUpdate()
+        {
+            StabilizePanelPose();
+        }
+
         private IEnumerator StatusRefreshLoop()
         {
             while (enabled)
             {
                 RefreshAllStatusLines();
+                MaybePostPassthroughEvidence();
                 yield return new WaitForSecondsRealtime(0.5f);
             }
         }
@@ -2527,8 +2537,100 @@ namespace BYES.Quest
                 return;
             }
 
+            if (enabled && IsLockToHead())
+            {
+                ShowToast("Unlock panel before drag");
+                enabled = false;
+            }
+
             _grabHandle.SetMoveResizeEnabled(enabled);
             RefreshAllStatusLines();
+        }
+
+        private void StabilizePanelPose()
+        {
+            if (_grabHandle == null || _headLockedPanel == null)
+            {
+                return;
+            }
+
+            if (_grabHandle.IsGrabInProgress || _headLockedPanel.IsLockToHeadEnabled)
+            {
+                return;
+            }
+
+            var cam = ResolveWorldCamera();
+            if (cam == null)
+            {
+                return;
+            }
+
+            var toCamera = cam.transform.position - transform.position;
+            toCamera.y = 0f;
+            if (toCamera.sqrMagnitude < 0.0001f)
+            {
+                return;
+            }
+
+            var targetRotation = Quaternion.LookRotation(toCamera.normalized, Vector3.up);
+            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, Time.unscaledDeltaTime * 10f);
+        }
+
+        private void MaybePostPassthroughEvidence()
+        {
+            if (_passthroughController == null || string.IsNullOrWhiteSpace(_baseUrl))
+            {
+                return;
+            }
+
+            var digest = $"{_passthroughController.TruthState}|{_passthroughController.Reason}|{_passthroughController.RequestedEnabled}|{_passthroughController.ColorMode}|{_passthroughController.Opacity:0.00}";
+            if (string.Equals(digest, _lastPassthroughEvidenceDigest, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _lastPassthroughEvidenceDigest = digest;
+            StartCoroutine(PostPassthroughEvidence(
+                _passthroughController.TruthState,
+                _passthroughController.Reason,
+                _passthroughController.RequestedEnabled,
+                _passthroughController.ColorMode,
+                _passthroughController.Opacity));
+        }
+
+        private IEnumerator PostPassthroughEvidence(string truthState, string reason, bool requestedEnabled, ByesPassthroughController.DisplayMode mode, float opacity)
+        {
+            var runId = "quest3-smoke";
+            var frameSeq = 1;
+            if (ByesFrameTelemetry.TryGetLatestFrameContext(out var latestRunId, out var latestFrameSeq))
+            {
+                runId = latestRunId;
+                frameSeq = latestFrameSeq;
+            }
+
+            var payload = new JObject
+            {
+                ["runId"] = runId,
+                ["frameSeq"] = Math.Max(1, frameSeq),
+                ["feedbackTsMs"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ["kind"] = "ar",
+                ["accepted"] = !string.Equals(truthState, "unavailable", StringComparison.OrdinalIgnoreCase),
+                ["providerBackend"] = "quest_passthrough",
+                ["providerModel"] = $"{mode.ToString().ToLowerInvariant()} opacity={opacity:0.00}",
+                ["providerDevice"] = string.IsNullOrWhiteSpace(SystemInfo.deviceModel) ? "quest" : SystemInfo.deviceModel,
+                ["providerReason"] = string.IsNullOrWhiteSpace(reason)
+                    ? (requestedEnabled ? "unknown" : "disabled")
+                    : reason,
+                ["providerIsMock"] = false,
+            };
+
+            using var request = new UnityWebRequest($"{_baseUrl}/api/frame/ack", UnityWebRequest.kHttpVerbPOST);
+            request.uploadHandler = new UploadHandlerRaw(System.Text.Encoding.UTF8.GetBytes(payload.ToString(Newtonsoft.Json.Formatting.None)));
+            request.downloadHandler = new DownloadHandlerBuffer();
+            request.timeout = Mathf.CeilToInt(QueryTimeoutSec);
+            request.SetRequestHeader("Content-Type", "application/json");
+            ApplyApiKeyHeader(request);
+            yield return request.SendWebRequest();
         }
 
         public string BuildDebugSummary()
@@ -2841,19 +2943,25 @@ namespace BYES.Quest
                 var backend = (row.Value<string>("backend") ?? "unknown").Trim().ToLowerInvariant();
                 var enabled = row.Value<bool?>("enabled") == true;
                 var reason = (row.Value<string>("reason") ?? string.Empty).Trim().ToLowerInvariant();
+                var lastSuccessTs = ReadNonNegativeLong(row["lastSuccessTsMs"]);
                 var mode = truthState;
                 if (string.IsNullOrWhiteSpace(mode))
                 {
-                    mode = "real";
-                    if (!enabled)
-                    {
-                        mode = "unavailable";
-                    }
-                    else if (backend.IndexOf("mock", StringComparison.Ordinal) >= 0
-                             || backend.IndexOf("reference", StringComparison.Ordinal) >= 0
-                             || backend == "none")
+                    mode = "unavailable";
+                    if (enabled
+                        && (backend.IndexOf("mock", StringComparison.Ordinal) >= 0
+                            || backend.IndexOf("reference", StringComparison.Ordinal) >= 0
+                            || backend == "none"))
                     {
                         mode = "mock";
+                    }
+                    else if (enabled && lastSuccessTs > 0 && reason.IndexOf("fallback", StringComparison.Ordinal) >= 0)
+                    {
+                        mode = "fallback";
+                    }
+                    else if (enabled && lastSuccessTs > 0)
+                    {
+                        mode = "real";
                     }
                     else if (reason.IndexOf("missing", StringComparison.Ordinal) >= 0
                              || reason.IndexOf("disabled", StringComparison.Ordinal) >= 0
@@ -2920,6 +3028,21 @@ namespace BYES.Quest
             else if (string.IsNullOrWhiteSpace(_overlayKindsSummary))
             {
                 _overlayKindsSummary = "-";
+            }
+            _overlayAvailable = truth?.Value<bool?>("overlayAvailable") == true || stateObj["latest"]?.Value<bool?>("overlayAvailable") == true;
+            _overlayReason = (truth?.Value<string>("overlayReason")
+                              ?? stateObj["latest"]?.Value<string>("overlayReason")
+                              ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(_overlayReason))
+            {
+                _overlayReason = _overlayAvailable ? "ok" : "asset_not_emitted";
+            }
+            _latestOverlayAssetId = (truth?.Value<string>("latestOverlayAssetId")
+                                     ?? stateObj["latest"]?.Value<string>("latestOverlayAssetId")
+                                     ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(_latestOverlayAssetId))
+            {
+                _latestOverlayAssetId = "-";
             }
 
             var frameTruth = truth?["frameSource"] as JObject;
@@ -3300,6 +3423,7 @@ namespace BYES.Quest
                 captureText += $" | {_providerSummary}";
             }
             captureText += $" | overlays={GetOverlayKindsText()}";
+            captureText += $" | overlayAvail={(_overlayAvailable ? "yes" : "no")} asset={_latestOverlayAssetId} reason={_overlayReason}";
             captureText += $" | {GetPySlamSummaryText()}";
             _lastUploadText.Set(uploadText);
             _lastE2eText.Set(e2eText);
@@ -3341,7 +3465,8 @@ namespace BYES.Quest
                     $"segAge={(_visionHud.LastSegAgeMs >= 0 ? _visionHud.LastSegAgeMs + "ms" : "-")} " +
                     $"depthAge={(_visionHud.LastDepthAgeMs >= 0 ? _visionHud.LastDepthAgeMs + "ms" : "-")} " +
                     $"detAge={(_visionHud.LastDetAgeMs >= 0 ? _visionHud.LastDetAgeMs + "ms" : "-")} " +
-                    $"mode={(_visionHud.FullFovOverlayLayer ? "whole_fov_hold" : "panel_hold")} freeze={(_visionHud.FreezeOverlay ? "on" : "off")} overlays={GetOverlayKindsText()}");
+                    $"mode={(_visionHud.FullFovOverlayLayer ? "whole_fov_hold" : "panel_hold")} freeze={(_visionHud.FreezeOverlay ? "on" : "off")} overlays={GetOverlayKindsText()} " +
+                    $"overlayAvail={(_overlayAvailable ? "yes" : "no")} reason={_overlayReason} det={_visionHud.LastDetOverlayReason} seg={_visionHud.LastSegOverlayReason} depth={_visionHud.LastDepthOverlayReason}");
             }
             else
             {
@@ -3365,7 +3490,7 @@ namespace BYES.Quest
             if (_rawVisible)
             {
                 var providerAge = _providerTsMs > 0 ? $"{Math.Max(0, nowMs - _providerTsMs)}ms" : "-";
-                var hint = $"trackSession={_targetSessionId} | recordPath={GetRecordingPathText()} | passthrough={GetPassthroughStatus()} | guideAudio={(_guidanceAudioEnabled ? "on" : "off")} | guideHaptics={(_guidanceHapticsEnabled ? "on" : "off")} | capture={GetFrameSourceText()}[{GetFrameSourceTruthState()}]({captureAge}) reason={GetFrameSourceTruthReason()} | overlays={GetOverlayKindsText()} hudMode={(_visionHud != null && _visionHud.FullFovOverlayLayer ? "whole_fov_hold" : "panel_hold")} freeze={(_visionHud != null && _visionHud.FreezeOverlay ? "on" : "off")} | {GetPySlamSummaryText()} | asr={_lastAsrText}({asrAge})[{_asrTruthState}:{_asrBackend}] | tts={_lastTtsText}({ttsAge})[{_ttsTruthState}:{_ttsBackend}] muted={(_ttsMuted ? "yes" : "no")} | voiceAction={_lastVoiceAction} | autoVoice={(_autoVoiceCommandEnabled ? "on" : "off")} | providers=[{_providerSummary}] age={providerAge}";
+                var hint = $"trackSession={_targetSessionId} | recordPath={GetRecordingPathText()} | passthrough={GetPassthroughStatus()} | guideAudio={(_guidanceAudioEnabled ? "on" : "off")} | guideHaptics={(_guidanceHapticsEnabled ? "on" : "off")} | capture={GetFrameSourceText()}[{GetFrameSourceTruthState()}]({captureAge}) reason={GetFrameSourceTruthReason()} | overlays={GetOverlayKindsText()} asset={_latestOverlayAssetId} avail={(_overlayAvailable ? "yes" : "no")} overlayReason={_overlayReason} hudMode={(_visionHud != null && _visionHud.FullFovOverlayLayer ? "whole_fov_hold" : "panel_hold")} freeze={(_visionHud != null && _visionHud.FreezeOverlay ? "on" : "off")} | {GetPySlamSummaryText()} | asr={_lastAsrText}({asrAge})[{_asrTruthState}:{_asrBackend}] | tts={_lastTtsText}({ttsAge})[{_ttsTruthState}:{_ttsBackend}] muted={(_ttsMuted ? "yes" : "no")} | voiceAction={_lastVoiceAction} | autoVoice={(_autoVoiceCommandEnabled ? "on" : "off")} | providers=[{_providerSummary}] age={providerAge}";
                 if (probeCount10s >= 8 && !liveEnabled)
                 {
                     hint = "MainThread Spike suspect: probe polling | " + hint;
