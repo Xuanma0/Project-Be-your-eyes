@@ -15,8 +15,8 @@
   "capturedAt": "2026-03-08",
   "branch": "feature/unity-skeleton",
   "head": "run_git_rev_parse_HEAD",
-  "version": "v5.08.2",
-  "versionLabelNote": "Canonical facts reflect repository state during the v5.08.2 Real Bring-up & UX Hotfix focused on fail-closed realstack preflight, truthful unavailable states for missing YOLO26/SAM3/DA3/pySLAM readiness, overlay asset lifecycle stability, passthrough fallback honesty, and hand-menu/controller usability.",
+  "version": "v5.08.4",
+  "versionLabelNote": "Canonical facts reflect repository state during the v5.08.4 Real SEG/DEPTH Activation patch focused on replacing SAM3 and DA3 service stubs with real inference, aligning provider truth to real runtime evidence, and feeding real seg/depth overlay assets through the existing Desktop Console and Quest HUD pipeline.",
   "unity": {
     "editorVersion": "6000.3.10f1",
     "primaryBuildScene": "Assets/Scenes/Quest3SmokeScene.unity",

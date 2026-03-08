@@ -14,6 +14,11 @@
 - SEG / DEPTH 一旦真实推理成功，Gateway 会把 `/api/providers`、`/api/capabilities`、`/api/ui/state`、Desktop Console、Quest provider summary 中的 truth 从 `unavailable(not_started)` 更新为 `real`。
 - 保持 contracts 与 overlay 资产机制不变：真实 SAM3 仍通过 `seg.mask.v1` 资产进入 whole-FOV overlay，真实 DA3 仍通过 `depth.map.v1` 资产进入现有 depth overlay 链路。
 
+## v5.08.4
+- 窄版本激活补丁：保留 `sam3` 与 `da3` 的真实推理路径，不再扩散 UI 或 contracts，只重新对齐并验证它们在现有 Gateway 主链、provider truth、overlay asset 链路中的真实状态。
+- 确认本机直接服务验证保持为真：`/seg` 返回 `200` 且产出真实 masks，`/depth` 返回 `200` 且产出真实 depth grid；两者都明确返回 `backend`、`model`、`device`、`inferMs` 与数量字段。
+- 确认主链 truth 已打通：跑一次 `/api/frame` 后，`seg.truthState` 与 `depth.truthState` 都能变为 `real`，而 `/api/ui/state.latest.overlayAssets` 同时出现 `seg` / `depth` 的 asset id，供 Desktop Console 与 Quest HUD 复用。
+
 ## v5.08.1
 - Provider truth 热修：Quest Panel、Desktop Console、`/api/providers`、`/api/capabilities`、`/api/ui/state` 不再因为 provider “启用中”就把 DET / SLAM 等标成 `real`；最近 `503`、`404`、timeout、disabled、缺路径等情况现在统一显示 `unavailable`，并带明确 `reason`。
 - Overlay 资产链路热修：Quest 把 overlay asset 视为不可变 blob，仅在 `assetId` 变化时下载；下载成功后本地缓存纹理并保持 last-frame hold；同一失败 `assetId` 不再周期性重复 GET。

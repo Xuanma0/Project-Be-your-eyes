@@ -18,6 +18,11 @@ This changelog summarizes delivered capabilities from `v4.38` onward for reviewe
 - Kept provider truth aligned with service reality: once `/seg` and `/depth` succeed, Gateway now promotes `SEG` and `DEPTH` to `real` in `/api/providers`, `/api/capabilities`, `/api/ui/state`, Desktop Console, and Quest-facing provider summaries.
 - Preserved current contracts and overlay transport: real SAM3 masks still flow through `seg.mask.v1` assets and real DA3 depth still flows through `depth.map.v1` assets without introducing a new protocol.
 
+## v5.08.4
+- Narrow activation patch for real `SEG` and `DEPTH`: retained the new `sam3` and `da3` runtime paths and revalidated them against the existing Gateway frame, provider-truth, and overlay-asset pipeline without expanding UI or contracts.
+- Confirmed direct service bring-up stays real on this machine: `/seg` returns `200` with real masks and `/depth` returns `200` with real depth grids, each reporting `backend`, `model`, `device`, `inferMs`, and count metadata.
+- Confirmed main-chain truth alignment: after `/api/frame`, `seg.truthState` and `depth.truthState` resolve to `real`, and `/api/ui/state.latest.overlayAssets` carries both `seg` and `depth` asset ids for Desktop Console and Quest HUD consumers.
+
 ## v5.08.1
 - Hardened provider truth normalization so Quest Panel, Desktop Console, `/api/providers`, `/api/capabilities`, and `/api/ui/state` no longer report `real` when DET, SLAM, or other providers are enabled but currently failing; recent `503`, `404`, timeout, disabled, and missing-path conditions now resolve to `unavailable` with a visible reason.
 - Stabilized Quest overlay asset lifecycle by treating overlay assets as immutable blobs: Quest only downloads when `assetId` changes, caches successful textures locally, preserves last-frame hold after success, and suppresses repeated GETs for the same failed asset id.
