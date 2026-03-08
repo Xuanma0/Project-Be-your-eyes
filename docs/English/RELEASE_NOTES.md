@@ -11,6 +11,13 @@ This changelog summarizes delivered capabilities from `v4.38` onward for reviewe
 - Tightened overlay asset lifecycle and whole-FOV rendering hotfixes: Quest caches overlay textures by immutable `assetId`, stops re-fetching the same failed id, and suppresses DET/SEG/DEPTH layers when provider truth is unavailable or no valid texture exists.
 - Polished Quest UX without expanding IA: passthrough unavailable states now recover to a stable background, controller-vs-hand input mode is explicit in Hand Menu, and Smoke Panel drag stays yaw-aligned toward the HMD.
 
+## v5.08.3
+- Replaced the `sam3` segmentation-service stub with real inference in `Gateway/services/sam3_seg_service/app.py`, keeping the existing `/seg` response shape while emitting real `segments`, `inferMs`, `device`, and failure reasons instead of `sam3_mode_stub_no_inference`.
+- Replaced the `da3` depth-service stub with real inference in `Gateway/services/da3_depth_service/app.py`, keeping the existing `/depth` response shape while emitting real depth grids, `inferMs`, `device`, and load-time health metadata.
+- Added lazy singleton model loading plus startup eager-load for both services so local real bring-up can warm large checkpoints once per process instead of paying model-load cost on every request.
+- Kept provider truth aligned with service reality: once `/seg` and `/depth` succeed, Gateway now promotes `SEG` and `DEPTH` to `real` in `/api/providers`, `/api/capabilities`, `/api/ui/state`, Desktop Console, and Quest-facing provider summaries.
+- Preserved current contracts and overlay transport: real SAM3 masks still flow through `seg.mask.v1` assets and real DA3 depth still flows through `depth.map.v1` assets without introducing a new protocol.
+
 ## v5.08.1
 - Hardened provider truth normalization so Quest Panel, Desktop Console, `/api/providers`, `/api/capabilities`, and `/api/ui/state` no longer report `real` when DET, SLAM, or other providers are enabled but currently failing; recent `503`, `404`, timeout, disabled, and missing-path conditions now resolve to `unavailable` with a visible reason.
 - Stabilized Quest overlay asset lifecycle by treating overlay assets as immutable blobs: Quest only downloads when `assetId` changes, caches successful textures locally, preserves last-frame hold after success, and suppresses repeated GETs for the same failed asset id.

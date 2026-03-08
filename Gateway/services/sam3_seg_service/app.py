@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +28,8 @@ class SegRequest(BaseModel):
 
 
 app = FastAPI(title=APP_TITLE)
+_SAM3_RUNTIME_LOCK = threading.Lock()
+_SAM3_CPU_PATCHED = False
 
 
 def _repo_root() -> Path:
@@ -238,6 +244,299 @@ def _resolve_fixture_inputs() -> tuple[Path, Path]:
     return fixture_dir, _fixture_path_from_dir(fixture_dir)
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = str(os.getenv(name, "")).strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except Exception:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = str(os.getenv(name, "")).strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except Exception:
+        return default
+
+
+def _decode_image_b64(image_b64: str | None):
+    from PIL import Image
+
+    text = str(image_b64 or "").strip()
+    if not text:
+        raise ValueError("missing_image_b64")
+    try:
+        payload = base64.b64decode(text, validate=False)
+    except Exception as exc:
+        raise ValueError("invalid_image_b64") from exc
+    with Image.open(io.BytesIO(payload)) as image:
+        return image.convert("RGB")
+
+
+def _resolve_runtime_device(requested: str | None) -> tuple[str, str | None, str | None]:
+    import torch
+
+    requested_text = str(requested or "").strip().lower() or "auto"
+    if requested_text not in {"auto", "cpu", "cuda", "gpu"}:
+        requested_text = "auto"
+    if requested_text == "cpu":
+        return "cpu", "forced_cpu", None
+    try:
+        if not torch.cuda.is_available():
+            return "cpu", "cuda_unavailable", None
+        device_name = str(torch.cuda.get_device_name(0) or "").strip() or None
+        capability = torch.cuda.get_device_capability(0)
+        capability_token = f"sm_{int(capability[0])}{int(capability[1])}"
+        arch_list = {str(item).strip().lower() for item in torch.cuda.get_arch_list() if str(item).strip()}
+        if arch_list and capability_token.lower() not in arch_list:
+            return "cpu", f"cuda_arch_unsupported:{capability_token}", device_name
+        return "cuda", "cuda_ok", device_name
+    except Exception as exc:
+        return "cpu", f"cuda_probe_failed:{exc.__class__.__name__}", None
+
+
+def _patch_sam3_for_cpu() -> None:
+    global _SAM3_CPU_PATCHED
+    if _SAM3_CPU_PATCHED:
+        return
+
+    import torch
+    import torchvision
+    import sam3.model_builder as model_builder
+    from sam3.model.box_ops import box_cxcywh_to_xyxy
+    from sam3.model.decoder import TransformerDecoder
+    from sam3.model.geometry_encoders import SequenceGeometryEncoder
+    from sam3.model.position_encoding import PositionEmbeddingSine
+
+    def safe_position_encoding(precompute_resolution=None):
+        return PositionEmbeddingSine(
+            num_pos_feats=256,
+            normalize=True,
+            scale=None,
+            temperature=10000,
+            precompute_resolution=None,
+        )
+
+    def safe_get_coords(height, width, device):
+        return (
+            torch.arange(0, height, device="cpu", dtype=torch.float32) / max(1, int(height)),
+            torch.arange(0, width, device="cpu", dtype=torch.float32) / max(1, int(width)),
+        )
+
+    def safe_encode_boxes(self, boxes, boxes_mask, boxes_labels, img_feats):
+        boxes_embed = None
+        n_boxes, batch_size = boxes.shape[:2]
+
+        if self.boxes_direct_project is not None:
+            boxes_embed = self.boxes_direct_project(boxes)
+
+        if self.boxes_pool_project is not None:
+            feat_h, feat_w = img_feats.shape[-2:]
+            boxes_xyxy = box_cxcywh_to_xyxy(boxes)
+            scale = torch.tensor(
+                [feat_w, feat_h, feat_w, feat_h],
+                dtype=boxes_xyxy.dtype,
+                device=boxes_xyxy.device,
+            ).view(1, 1, 4)
+            boxes_xyxy = boxes_xyxy * scale
+            sampled = torchvision.ops.roi_align(
+                img_feats,
+                boxes_xyxy.float().transpose(0, 1).unbind(0),
+                self.roi_size,
+            )
+            projected = self.boxes_pool_project(sampled)
+            projected = projected.view(batch_size, n_boxes, self.d_model).transpose(0, 1)
+            boxes_embed = projected if boxes_embed is None else boxes_embed + projected
+
+        if self.boxes_pos_enc_project is not None:
+            cx, cy, w, h = boxes.unbind(-1)
+            encoded = self.pos_enc.encode_boxes(cx.flatten(), cy.flatten(), w.flatten(), h.flatten())
+            encoded = encoded.view(boxes.shape[0], boxes.shape[1], encoded.shape[-1])
+            projected = self.boxes_pos_enc_project(encoded)
+            boxes_embed = projected if boxes_embed is None else boxes_embed + projected
+
+        type_embed = self.label_embed(boxes_labels.long())
+        return type_embed + boxes_embed, boxes_mask
+
+    torch.cuda.is_available = lambda: False  # type: ignore[assignment]
+    model_builder._create_position_encoding = safe_position_encoding
+    TransformerDecoder._get_coords = staticmethod(safe_get_coords)
+    SequenceGeometryEncoder._encode_boxes = safe_encode_boxes
+    _SAM3_CPU_PATCHED = True
+
+
+def _ensure_sam3_runtime(state: dict[str, Any]) -> dict[str, Any]:
+    runtime = state.get("runtime")
+    if isinstance(runtime, dict) and runtime.get("processor") is not None:
+        return runtime
+
+    with _SAM3_RUNTIME_LOCK:
+        runtime = state.get("runtime")
+        if isinstance(runtime, dict) and runtime.get("processor") is not None:
+            return runtime
+
+        load_error = str(state.get("sam3LoadError") or "").strip()
+        if load_error:
+            raise RuntimeError(load_error)
+
+        import torch
+        import sam3.model_builder as model_builder
+        from sam3.model.sam3_image_processor import Sam3Processor
+
+        selected_device, device_reason, device_name = _resolve_runtime_device(state.get("device"))
+        if selected_device == "cpu":
+            _patch_sam3_for_cpu()
+
+        started = time.perf_counter()
+        model = model_builder.build_sam3_image_model(
+            device=selected_device,
+            checkpoint_path=state.get("ckptPath"),
+            load_from_HF=False,
+        )
+        processor = Sam3Processor(
+            model,
+            resolution=max(128, _env_int("BYES_SAM3_RESOLUTION", 1008)),
+            device=selected_device,
+            confidence_threshold=max(0.0, min(1.0, _env_float("BYES_SAM3_CONF_THRESH", 0.5))),
+        )
+        runtime = {
+            "processor": processor,
+            "device": selected_device,
+            "deviceReason": device_reason,
+            "deviceName": device_name,
+            "loadMs": int(max(0.0, (time.perf_counter() - started) * 1000.0)),
+            "loadedAtMs": int(time.time() * 1000),
+            "torchVersion": getattr(torch, "__version__", None),
+        }
+        state["runtime"] = runtime
+        state["actualDevice"] = selected_device
+        state["deviceReason"] = device_reason
+        state["deviceName"] = device_name
+        state["sam3Ready"] = True
+        state["sam3LoadError"] = None
+        return runtime
+
+
+def _candidate_prompts(targets: list[str], prompt: dict[str, Any] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: Any) -> None:
+        text = str(raw or "").strip()
+        key = text.lower()
+        if not text or key in seen:
+            return
+        seen.add(key)
+        out.append(text)
+
+    if isinstance(prompt, dict):
+        prompt_text = str(prompt.get("text", "")).strip()
+        if prompt_text:
+            add(prompt_text)
+        prompt_targets = prompt.get("targets")
+        if isinstance(prompt_targets, list):
+            for item in prompt_targets:
+                add(item)
+    for item in targets:
+        add(item)
+
+    fallback_prompt = str(os.getenv("BYES_SAM3_DEFAULT_PROMPT", "")).strip()
+    if fallback_prompt:
+        add(fallback_prompt)
+    return out
+
+
+def _encode_rle_mask(raw_mask: Any) -> dict[str, Any] | None:
+    import numpy as np
+
+    mask = raw_mask
+    if hasattr(mask, "detach"):
+        mask = mask.detach()
+    if hasattr(mask, "cpu"):
+        mask = mask.cpu()
+    if hasattr(mask, "numpy"):
+        mask = mask.numpy()
+    mask_array = np.asarray(mask)
+    if mask_array.ndim == 3 and mask_array.shape[0] == 1:
+        mask_array = mask_array[0]
+    if mask_array.ndim != 2:
+        return None
+    bool_mask = mask_array.astype(bool, copy=False)
+    height, width = bool_mask.shape
+    flat = bool_mask.reshape(-1)
+    counts: list[int] = []
+    current = False
+    run_length = 0
+    for value in flat:
+        bit = bool(value)
+        if bit == current:
+            run_length += 1
+            continue
+        counts.append(run_length)
+        current = bit
+        run_length = 1
+    counts.append(run_length)
+    return {"format": "rle_v1", "size": [int(height), int(width)], "counts": [int(item) for item in counts]}
+
+
+def _segment_from_output(prompt_text: str, output: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    import numpy as np
+
+    masks = output.get("masks")
+    boxes = output.get("boxes")
+    scores = output.get("scores")
+    if masks is None or boxes is None or scores is None:
+        return []
+
+    if hasattr(scores, "detach"):
+        scores = scores.detach()
+    if hasattr(scores, "cpu"):
+        scores = scores.cpu()
+    if hasattr(scores, "numpy"):
+        scores = scores.numpy()
+    scores_array = np.asarray(scores, dtype=np.float32).reshape(-1)
+    if scores_array.size == 0:
+        return []
+
+    if hasattr(boxes, "detach"):
+        boxes = boxes.detach()
+    if hasattr(boxes, "cpu"):
+        boxes = boxes.cpu()
+    if hasattr(boxes, "numpy"):
+        boxes = boxes.numpy()
+    boxes_array = np.asarray(boxes, dtype=np.float32)
+
+    if hasattr(masks, "detach"):
+        masks = masks.detach()
+    if hasattr(masks, "cpu"):
+        masks = masks.cpu()
+    if hasattr(masks, "numpy"):
+        masks = masks.numpy()
+    masks_array = np.asarray(masks)
+
+    order = list(np.argsort(scores_array)[::-1])
+    segments: list[dict[str, Any]] = []
+    for idx in order[: max(1, int(limit))]:
+        bbox = _normalize_bbox(boxes_array[idx].tolist() if idx < len(boxes_array) else None)
+        mask = _encode_rle_mask(masks_array[idx] if idx < len(masks_array) else None)
+        if bbox is None or mask is None:
+            continue
+        segments.append(
+            {
+                "label": str(prompt_text).strip().lower() or "segment",
+                "score": max(0.0, min(1.0, float(scores_array[idx]))),
+                "bbox": bbox,
+                "mask": mask,
+            }
+        )
+    return segments
+
+
 def _load_state() -> dict[str, Any]:
     mode = _normalize_mode(os.getenv("BYES_SAM3_MODE", "fixture"))
     expected_run_id = str(os.getenv("BYES_SAM3_RUN_ID", "fixture-seg-gt")).strip() or "fixture-seg-gt"
@@ -256,11 +555,15 @@ def _load_state() -> dict[str, Any]:
         "ckptPath": ckpt_path,
         "sam3Ready": False,
         "sam3LoadError": None,
+        "actualDevice": None,
+        "deviceReason": None,
+        "deviceName": None,
         "fixtureDir": None,
         "fixturePath": None,
         "expectedRunId": expected_run_id,
         "mapping": {},
         "warningsCount": 0,
+        "runtime": None,
     }
 
     if mode == "fixture":
@@ -289,7 +592,14 @@ def _load_state() -> dict[str, Any]:
 
 @app.on_event("startup")
 def _startup() -> None:
-    app.state.sam3_state = _load_state()
+    state = _load_state()
+    app.state.sam3_state = state
+    eager_load = str(os.getenv("BYES_SAM3_EAGER_LOAD", "1")).strip().lower() not in {"0", "false", "no", "off"}
+    if eager_load and str(state.get("mode") or "") == "sam3" and not state.get("sam3LoadError"):
+        try:
+            _ensure_sam3_runtime(state)
+        except Exception as exc:
+            state["sam3LoadError"] = f"runtime_load_failed:{exc.__class__.__name__}:{exc}"
 
 
 @app.get("/healthz")
@@ -305,11 +615,16 @@ def healthz() -> dict[str, Any]:
         "sam3Ready": bool(state.get("sam3Ready")),
         "sam3LoadError": state.get("sam3LoadError"),
         "device": state.get("device"),
+        "actualDevice": state.get("actualDevice"),
+        "deviceReason": state.get("deviceReason"),
+        "deviceName": state.get("deviceName"),
         "ckptPath": state.get("ckptPath"),
         "fixtureDir": state.get("fixtureDir"),
         "fixturePath": state.get("fixturePath"),
         "runIds": sorted(str(k) for k in mapping.keys()),
         "warningsCount": int(state.get("warningsCount", 0) or 0),
+        "modelLoaded": bool(isinstance(state.get("runtime"), dict) and state["runtime"].get("processor") is not None),
+        "loadMs": (state.get("runtime") or {}).get("loadMs") if isinstance(state.get("runtime"), dict) else None,
     }
 
 
@@ -330,9 +645,37 @@ def segment(request: SegRequest, raw_request: Request) -> dict[str, Any]:
         load_error = str(state.get("sam3LoadError") or "").strip()
         if load_error:
             raise HTTPException(status_code=500, detail=f"sam3_not_ready:{load_error}")
-        # Stub behavior in v4.65: keep contract shape and health observability without heavy runtime deps.
-        warning = "sam3_mode_stub_no_inference"
-        warnings_count += 1
+        try:
+            image = _decode_image_b64(request.image_b64)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            runtime = _ensure_sam3_runtime(state)
+        except Exception as exc:
+            state["sam3LoadError"] = f"runtime_load_failed:{exc.__class__.__name__}"
+            raise HTTPException(status_code=500, detail=f"sam3_not_ready:{exc}") from exc
+
+        prompt_candidates = _candidate_prompts(targets, request.prompt)
+        if not prompt_candidates:
+            warning = "no_prompt_candidates"
+            warnings_count += 1
+        else:
+            processor = runtime.get("processor")
+            infer_started = time.perf_counter()
+            max_segments = max(1, _env_int("BYES_SAM3_MAX_SEGMENTS", 12))
+            max_prompts = max(1, _env_int("BYES_SAM3_MAX_PROMPTS", 3))
+            try:
+                state_payload = processor.set_image(image)
+                for prompt_text in prompt_candidates[:max_prompts]:
+                    processor.reset_all_prompts(state_payload)
+                    output = processor.set_text_prompt(prompt_text, state=state_payload)
+                    segments.extend(_segment_from_output(prompt_text, output, max_segments))
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"sam3_infer_failed:{exc.__class__.__name__}:{exc}") from exc
+            if not segments:
+                warning = "no_segments"
+                warnings_count += 1
+            infer_ms = int(max(0.0, (time.perf_counter() - infer_started) * 1000.0))
     else:
         mapping = state.get("mapping")
         mapping = mapping if isinstance(mapping, dict) else {}
@@ -374,6 +717,12 @@ def segment(request: SegRequest, raw_request: Request) -> dict[str, Any]:
         "endpoint": endpoint,
         "trackingUsed": tracking_used,
     }
+    if mode == "sam3":
+        response["device"] = str(state.get("actualDevice") or state.get("device") or "cpu")
+        response["inferMs"] = int(locals().get("infer_ms", 0) or 0)
+        device_reason = str(state.get("deviceReason") or "").strip()
+        if device_reason:
+            response["deviceReason"] = device_reason
     if targets:
         response["targetsCount"] = len(targets)
         response["targetsUsed"] = targets

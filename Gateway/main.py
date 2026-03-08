@@ -1119,7 +1119,7 @@ class GatewayApp:
         backend = str(payload.get("backend", "") or "").strip() or None
         model = str(payload.get("model", "") or "").strip() or None
         device = str(payload.get("device", "") or "").strip() or None
-        reason = str(payload.get("reason", "") or payload.get("error", "") or "").strip() or None
+        reason = str(payload.get("reason", "") or payload.get("error", "") or payload.get("warning", "") or "").strip() or None
         tracking_state = str(payload.get("trackingState", "") or payload.get("state", "") or "").strip().lower() or None
         root_detected = payload.get("rootDetected")
         if not isinstance(root_detected, bool):
@@ -3386,9 +3386,11 @@ def _resolve_provider_truth_state(
         "missing",
         "disabled",
         "not_ready",
+        "not_started",
         "path_not_found",
         "unresolved",
         "unavailable",
+        "stub_no_inference",
         "http_",
         "endpoint_",
         "timeout",
@@ -3434,6 +3436,8 @@ def _normalize_provider_failure_reason(raw: str | None) -> str:
         return "endpoint_404" if code == "404" else f"http_{code}"
     if "timeout" in lowered:
         return "timeout"
+    if "stub_no_inference" in lowered:
+        return "stub_no_inference"
     if "missing_dependency" in lowered:
         return lowered
     if "not_installed" in lowered:
@@ -3583,6 +3587,8 @@ def _normalize_provider_row(
     state = str(runtime.get("state") or source_row.get("state") or "").strip().lower() or None
     last_outcome = str(runtime.get("lastOutcome") or "").strip().lower() or None
     consecutive_failures = int(runtime.get("consecutiveFailures", 0) or 0)
+    if enabled and last_success_ts is None and reason in {None, "ready", "enabled"}:
+        reason = "not_started"
     root_detected = runtime.get("rootDetected")
     if not isinstance(root_detected, bool):
         root_detected = source_row.get("rootDetected")

@@ -7,6 +7,13 @@
 - Overlay 资产热修继续收紧：Quest 按不可变 `assetId` 缓存纹理，同一失败 asset 不再重复拉取；当 provider unavailable 或纹理无效时，不再绘制 DET/SEG/DEPTH 空层。
 - Quest 交互不扩 IA，只做 UX 热修：passthrough 不可用时稳定回退到背景；Hand Menu 明确支持 hands/controllers/auto 模式；Smoke Panel 拖拽释放后保持 yaw-only 朝向用户。
 
+## v5.08.3
+- 将 `Gateway/services/sam3_seg_service/app.py` 里的 `sam3` stub 分支替换为真实推理，同时继续复用现有 `/seg` 返回格式；服务现在返回真实 `segments`、`inferMs`、`device` 与明确失败原因，不再停留在 `sam3_mode_stub_no_inference`。
+- 将 `Gateway/services/da3_depth_service/app.py` 里的 `da3` stub 分支替换为真实推理，同时继续复用现有 `/depth` 返回格式；服务现在返回真实 depth grid、`inferMs`、`device` 与可观测的加载状态。
+- 给两个服务都补了 lazy singleton + startup eager-load，避免每次请求重复加载大模型，也降低首帧把模型加载时间算进 Gateway 超时的概率。
+- SEG / DEPTH 一旦真实推理成功，Gateway 会把 `/api/providers`、`/api/capabilities`、`/api/ui/state`、Desktop Console、Quest provider summary 中的 truth 从 `unavailable(not_started)` 更新为 `real`。
+- 保持 contracts 与 overlay 资产机制不变：真实 SAM3 仍通过 `seg.mask.v1` 资产进入 whole-FOV overlay，真实 DA3 仍通过 `depth.map.v1` 资产进入现有 depth overlay 链路。
+
 ## v5.08.1
 - Provider truth 热修：Quest Panel、Desktop Console、`/api/providers`、`/api/capabilities`、`/api/ui/state` 不再因为 provider “启用中”就把 DET / SLAM 等标成 `real`；最近 `503`、`404`、timeout、disabled、缺路径等情况现在统一显示 `unavailable`，并带明确 `reason`。
 - Overlay 资产链路热修：Quest 把 overlay asset 视为不可变 blob，仅在 `assetId` 变化时下载；下载成功后本地缓存纹理并保持 last-frame hold；同一失败 `assetId` 不再周期性重复 GET。
