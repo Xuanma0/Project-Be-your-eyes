@@ -4,6 +4,13 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v5.09.1
+- Added optional `BYES_PYTHON_EXE_CUDA128` launcher support for Blackwell-class SEG/DEPTH bring-up: the Quest realstack flow now probes CUDA in a separate cu128 Python environment before service launch and keeps the existing CPU baseline as the fallback.
+- Tightened GPU truth so `device=cuda` is only surfaced after a real warmup infer succeeds; failed warmups now fall back to `cpu` immediately and preserve an explicit `deviceReason`, `torchVersion`, `cudaRuntime`, and detected capability token.
+- Aligned live provider truth with downstream runtime evidence instead of HTTP-wrapper metadata: `/api/providers`, `/api/capabilities`, `/api/ui/state`, Desktop Console, and Quest panel now prefer the real `sam3` / `da3` backend-model-device tuple when those services respond.
+- Improved whole-FOV overlay usability by biasing default visibility toward depth, keeping stale-hold semantics, clearing `no_segments` overlays honestly, and surfacing `latestOverlayKind`, freshness, age, and device/deviceReason through the same Gateway truth path.
+- Preserved all existing contracts and menu IA: this patch only hardens Blackwell bring-up and makes the existing SEG/DEPTH overlay loop more legible.
+
 ## v5.09
 - Promoted real `SEG/DEPTH` from single-shot bring-up into a sustained overlay loop: Gateway now tracks only the latest pending frame per overlay kind, drops stale `seg/depth` results before asset emission, and keeps Desktop/Quest on the newest successful overlay instead of accumulating old work.
 - Added probe-only GPU bring-up truth to `sam3` and `da3`: each service now attempts a CUDA warmup inference first, only reports `device=cuda` after a successful warmup, and otherwise falls back to CPU with an explicit `deviceReason` instead of pretending GPU is active.

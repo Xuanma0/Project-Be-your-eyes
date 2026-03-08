@@ -15,9 +15,9 @@ namespace BYES.Quest
         [SerializeField] private bool showTargetOverlay = true;
         [SerializeField] private bool fullFovOverlayLayer = true;
         [SerializeField] private bool freezeOverlay = false;
-        [SerializeField] private float detAlpha = 0.45f;
-        [SerializeField] private float segAlpha = 0.35f;
-        [SerializeField] private float depthAlpha = 0.30f;
+        [SerializeField] private float detAlpha = 0.38f;
+        [SerializeField] private float segAlpha = 0.20f;
+        [SerializeField] private float depthAlpha = 0.62f;
         [SerializeField] private float hudDistance = 0.9f;
         [SerializeField] private float hudScale = 0.0018f;
         [SerializeField] private float fullFovCoverage = 1.0f;
@@ -199,9 +199,9 @@ namespace BYES.Quest
             showDepthOverlay = true;
             showTargetOverlay = true;
             freezeOverlay = false;
-            detAlpha = 0.45f;
-            segAlpha = 0.35f;
-            depthAlpha = 0.30f;
+            detAlpha = 0.38f;
+            segAlpha = 0.20f;
+            depthAlpha = 0.62f;
             ApplyVisualState();
         }
 
@@ -231,13 +231,13 @@ namespace BYES.Quest
 
             var depthGo = CreateUiObject("DepthOverlay", root.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(960f, 540f), Vector2.zero);
             _depthImage = depthGo.AddComponent<RawImage>();
-            _depthImage.color = new Color(1f, 1f, 1f, depthAlpha);
+            _depthImage.color = new Color(0.78f, 0.96f, 1f, depthAlpha);
             _depthImage.raycastTarget = false;
             _depthImage.enabled = false;
 
             var segGo = CreateUiObject("SegOverlay", root.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(960f, 540f), Vector2.zero);
             _segImage = segGo.AddComponent<RawImage>();
-            _segImage.color = new Color(1f, 0.2f, 0.2f, segAlpha);
+            _segImage.color = new Color(1f, 0.52f, 0.18f, segAlpha);
             _segImage.raycastTarget = false;
             _segImage.enabled = false;
 

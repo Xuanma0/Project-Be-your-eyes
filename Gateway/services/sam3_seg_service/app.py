@@ -300,6 +300,37 @@ def _resolve_runtime_device(requested: str | None) -> tuple[str, str | None, str
         return "cpu", f"cuda_probe_failed:{exc.__class__.__name__}", None
 
 
+def _torch_runtime_info() -> dict[str, Any]:
+    import torch
+
+    info: dict[str, Any] = {
+        "torchVersion": getattr(torch, "__version__", None),
+        "cudaRuntime": getattr(getattr(torch, "version", None), "cuda", None),
+        "cudaAvailable": False,
+        "deviceName": None,
+        "deviceCapability": None,
+        "deviceCapabilityToken": None,
+        "archList": [],
+        "cudaRuntimeLine": None,
+    }
+    try:
+        cuda_available = bool(torch.cuda.is_available())
+        info["cudaAvailable"] = cuda_available
+        info["archList"] = [str(item).strip() for item in torch.cuda.get_arch_list() if str(item).strip()]
+        if cuda_available:
+            info["deviceName"] = str(torch.cuda.get_device_name(0) or "").strip() or None
+            capability = torch.cuda.get_device_capability(0)
+            capability_token = f"sm_{int(capability[0])}{int(capability[1])}"
+            info["deviceCapability"] = [int(capability[0]), int(capability[1])]
+            info["deviceCapabilityToken"] = capability_token
+    except Exception as exc:
+        info["cudaProbeError"] = f"{exc.__class__.__name__}:{exc}"
+    cuda_runtime = str(info.get("cudaRuntime") or "").strip() or "none"
+    capability_token = str(info.get("deviceCapabilityToken") or "unknown").strip() or "unknown"
+    info["cudaRuntimeLine"] = f"torch={info.get('torchVersion') or 'unknown'} cuda={cuda_runtime} capability={capability_token}"
+    return info
+
+
 def _build_warmup_image(size: int):
     from PIL import Image, ImageDraw
 
@@ -402,6 +433,7 @@ def _build_sam3_runtime(
     candidate_device: str,
     device_reason: str | None,
     device_name: str | None,
+    runtime_info: dict[str, Any],
 ) -> dict[str, Any]:
     import torch
     import sam3.model_builder as model_builder
@@ -431,7 +463,13 @@ def _build_sam3_runtime(
         "loadMs": int(max(0.0, (time.perf_counter() - started) * 1000.0)),
         "warmupMs": warmup_ms,
         "loadedAtMs": int(time.time() * 1000),
-        "torchVersion": getattr(torch, "__version__", None),
+        "torchVersion": runtime_info.get("torchVersion") or getattr(torch, "__version__", None),
+        "cudaRuntime": runtime_info.get("cudaRuntime"),
+        "cudaRuntimeLine": runtime_info.get("cudaRuntimeLine"),
+        "deviceCapability": runtime_info.get("deviceCapability"),
+        "deviceCapabilityToken": runtime_info.get("deviceCapabilityToken"),
+        "archList": runtime_info.get("archList") or [],
+        "cudaAvailable": runtime_info.get("cudaAvailable"),
     }
 
 
@@ -451,6 +489,7 @@ def _ensure_sam3_runtime(state: dict[str, Any]) -> dict[str, Any]:
 
         import torch
 
+        runtime_info = _torch_runtime_info()
         selected_device, resolved_reason, device_name = _resolve_runtime_device(state.get("device"))
         final_runtime: dict[str, Any] | None = None
         fallback_reason = resolved_reason
@@ -460,8 +499,9 @@ def _ensure_sam3_runtime(state: dict[str, Any]) -> dict[str, Any]:
                 final_runtime = _build_sam3_runtime(
                     state,
                     candidate_device="cuda",
-                    device_reason="cuda_warmup_ok",
+                    device_reason="ok",
                     device_name=device_name,
+                    runtime_info=runtime_info,
                 )
             except Exception as exc:
                 fallback_reason = f"cuda_warmup_failed:{exc.__class__.__name__}"
@@ -476,12 +516,20 @@ def _ensure_sam3_runtime(state: dict[str, Any]) -> dict[str, Any]:
                 candidate_device="cpu",
                 device_reason=fallback_reason,
                 device_name=device_name,
+                runtime_info=runtime_info,
             )
 
         state["runtime"] = final_runtime
         state["actualDevice"] = final_runtime.get("device")
         state["deviceReason"] = final_runtime.get("deviceReason")
         state["deviceName"] = final_runtime.get("deviceName")
+        state["torchVersion"] = final_runtime.get("torchVersion")
+        state["cudaRuntime"] = final_runtime.get("cudaRuntime")
+        state["cudaRuntimeLine"] = final_runtime.get("cudaRuntimeLine")
+        state["deviceCapability"] = final_runtime.get("deviceCapability")
+        state["deviceCapabilityToken"] = final_runtime.get("deviceCapabilityToken")
+        state["archList"] = final_runtime.get("archList") or []
+        state["cudaAvailable"] = final_runtime.get("cudaAvailable")
         state["sam3Ready"] = True
         state["sam3LoadError"] = None
         return final_runtime
@@ -623,6 +671,13 @@ def _load_state() -> dict[str, Any]:
         "actualDevice": None,
         "deviceReason": None,
         "deviceName": None,
+        "torchVersion": None,
+        "cudaRuntime": None,
+        "cudaRuntimeLine": None,
+        "deviceCapability": None,
+        "deviceCapabilityToken": None,
+        "archList": [],
+        "cudaAvailable": None,
         "fixtureDir": None,
         "fixturePath": None,
         "expectedRunId": expected_run_id,
@@ -683,6 +738,13 @@ def healthz() -> dict[str, Any]:
         "actualDevice": state.get("actualDevice"),
         "deviceReason": state.get("deviceReason"),
         "deviceName": state.get("deviceName"),
+        "torchVersion": state.get("torchVersion"),
+        "cudaRuntime": state.get("cudaRuntime"),
+        "cudaRuntimeLine": state.get("cudaRuntimeLine"),
+        "deviceCapability": state.get("deviceCapability"),
+        "deviceCapabilityToken": state.get("deviceCapabilityToken"),
+        "archList": state.get("archList") or [],
+        "cudaAvailable": state.get("cudaAvailable"),
         "ckptPath": state.get("ckptPath"),
         "fixtureDir": state.get("fixtureDir"),
         "fixturePath": state.get("fixturePath"),
@@ -786,6 +848,9 @@ def segment(request: SegRequest, raw_request: Request) -> dict[str, Any]:
     if mode == "sam3":
         response["device"] = str(state.get("actualDevice") or state.get("device") or "cpu")
         response["inferMs"] = int(locals().get("infer_ms", 0) or 0)
+        warmup_ms = (state.get("runtime") or {}).get("warmupMs") if isinstance(state.get("runtime"), dict) else None
+        if warmup_ms is not None:
+            response["warmupMs"] = int(warmup_ms)
         device_reason = str(state.get("deviceReason") or "").strip()
         if device_reason:
             response["deviceReason"] = device_reason

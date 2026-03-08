@@ -1764,6 +1764,9 @@ class GatewayApp:
                     },
                     latency_ms=max(0, _now_ms() - depth_started_ms),
                 )
+            depth_runtime_payload = depth_result.payload if isinstance(depth_result.payload, dict) else {}
+            depth_backend_effective = str(depth_runtime_payload.get("backend") or depth_backend_name or "").strip() or depth_backend_name
+            depth_model_effective = str(depth_runtime_payload.get("model") or depth_model_id or "").strip() or depth_model_id
             await emit_depth_events(
                 depth_result,
                 frame_seq=event_frame_seq,
@@ -1772,8 +1775,8 @@ class GatewayApp:
                 sink=self._emit_inference_event,
                 run_id=run_id,
                 component=component,
-                backend=depth_backend_name,
-                model=depth_model_id,
+                backend=depth_backend_effective,
+                model=depth_model_effective,
                 endpoint=depth_endpoint,
             )
             depth_overlay_payload = depth_result.payload if isinstance(depth_result.payload, dict) else {}
@@ -1886,6 +1889,9 @@ class GatewayApp:
                     },
                     latency_ms=max(0, _now_ms() - seg_started_ms),
                 )
+            seg_runtime_payload = seg_result.payload if isinstance(seg_result.payload, dict) else {}
+            seg_backend_effective = str(seg_runtime_payload.get("backend") or seg_backend_name or "").strip() or seg_backend_name
+            seg_model_effective = str(seg_runtime_payload.get("model") or seg_model_id or "").strip() or seg_model_id
             await emit_seg_events(
                 seg_result,
                 frame_seq=event_frame_seq,
@@ -1894,8 +1900,8 @@ class GatewayApp:
                 sink=self._emit_inference_event,
                 run_id=run_id,
                 component=component,
-                backend=seg_backend_name,
-                model=seg_model_id,
+                backend=seg_backend_effective,
+                model=seg_model_effective,
                 endpoint=seg_endpoint,
             )
             seg_overlay_payload = seg_result.payload if isinstance(seg_result.payload, dict) else {}
@@ -4162,6 +4168,7 @@ async def api_ui_state(limit: int = 60) -> dict[str, Any]:
     providers = capabilities.get("available_providers", {})
     overlay_assets: dict[str, dict[str, Any]] = {}
     latest_overlay_asset_id: str | None = None
+    latest_overlay_kind: str | None = None
     latest_overlay_available = False
     latest_overlay_reason = "asset_not_emitted"
     latest_overlay_ts_ms = -1
@@ -4212,11 +4219,39 @@ async def api_ui_state(limit: int = 60) -> dict[str, Any]:
         compare_ts_ms = ts_ms or -1
         if compare_ts_ms >= latest_overlay_ts_ms:
             latest_overlay_ts_ms = compare_ts_ms
+            latest_overlay_kind = kind
             latest_overlay_asset_id = asset_id
             latest_overlay_available = overlay_available
             latest_overlay_reason = overlay_reason
             latest_overlay_freshness = freshness
             latest_overlay_age_ms = overlay_age_ms
+    for kind in ("seg", "depth"):
+        if kind in overlay_assets:
+            continue
+        provider_row = providers.get(kind, {}) if isinstance(providers, dict) else {}
+        provider_truth_state = str(provider_row.get("truthState") or provider_row.get("truthLabel") or "unavailable").strip().lower() or "unavailable"
+        provider_reason = str(provider_row.get("reason") or "").strip() or "asset_not_emitted"
+        ts_ms = _to_nonnegative_int_or_none(provider_row.get("lastSuccessTsMs"))
+        freshness, overlay_age_ms = _overlay_freshness_label(
+            overlay_available=False,
+            overlay_reason=provider_reason,
+            asset_id=None,
+            ts_ms=ts_ms,
+        )
+        overlay_assets[kind] = {
+            "assetId": None,
+            "frameSeq": None,
+            "overlayAvailable": False,
+            "overlayReason": provider_reason,
+            "freshness": freshness,
+            "ageMs": overlay_age_ms,
+            "lastInferMs": _to_nonnegative_int_or_none(provider_row.get("lastInferMs")),
+            "device": str(provider_row.get("device") or "").strip() or None,
+            "deviceReason": str(provider_row.get("deviceReason") or "").strip() or None,
+            "truthState": provider_truth_state,
+            "assetMeta": None,
+            "expiresTsMs": None,
+        }
     if latest_overlay_ts_ms < 0:
         latest_overlay_reason = _infer_overlay_reason(providers)
         latest_overlay_freshness = "unavailable"
@@ -4234,6 +4269,7 @@ async def api_ui_state(limit: int = 60) -> dict[str, Any]:
             "voice": truth.get("voice") or {},
             "passthrough": truth.get("passthrough") or _normalize_passthrough_truth(gateway._ui_passthrough_state),  # noqa: SLF001
             "overlayKindsAvailable": overlay_kinds_available,
+            "latestOverlayKind": latest_overlay_kind,
             "latestOverlayAssetId": latest_overlay_asset_id,
             "overlayAvailable": latest_overlay_available,
             "overlayReason": latest_overlay_reason,
@@ -4261,6 +4297,7 @@ async def api_ui_state(limit: int = 60) -> dict[str, Any]:
             "frameMeta": frame_meta,
             "overlayAssets": overlay_assets,
             "overlayKindsAvailable": overlay_kinds_available,
+            "latestOverlayKind": latest_overlay_kind,
             "latestOverlayAssetId": latest_overlay_asset_id,
             "overlayAvailable": latest_overlay_available,
             "overlayReason": latest_overlay_reason,
@@ -4430,6 +4467,7 @@ def _build_desktop_console_html() -> str:
       ].join(' ');
       const overlayFreshness = formatMaybe(truth.overlayFreshness || latest.overlayFreshness);
       const overlayAgeMs = formatMaybe(truth.overlayAgeMs ?? latest.overlayAgeMs);
+      const overlayKind = formatMaybe(truth.latestOverlayKind || latest.latestOverlayKind);
       const recordLabel = recording.active ? 'active' : 'idle';
       const recordState = recording.active ? 'real' : 'unavailable';
 
@@ -4448,7 +4486,7 @@ def _build_desktop_console_html() -> str:
         `<div class="runtime-line small">reason=${htmlEscape(formatMaybe(passthrough.reason))} ts=${htmlEscape(formatMaybe(passthrough.lastChangedTsMs))}</div>`,
         `<div class="runtime-line"><strong>pySLAM</strong> ${badgeHtml(pyslam.truthState, pyslam.truthLabel)} <span class="small">backend=${htmlEscape(formatMaybe(pyslam.backend || pyslamEvidence.backend))} state=${htmlEscape(formatMaybe(pyslam.state || pyslamEvidence.state))} fps=${htmlEscape(formatMaybe(pyslam.fps ?? pyslamEvidence.fps))} latency=${htmlEscape(formatMaybe(pyslam.lastInferMs ?? pyslamEvidence.last_infer_ms))} root=${htmlEscape(String((pyslam.rootDetected ?? pyslamEvidence.root_detected) === true))}</span></div>`,
         `<div class="runtime-line"><strong>Overlays</strong> ${badgeHtml(overlayState, overlayState)} ${htmlEscape(overlays)}</div>`,
-        `<div class="runtime-line small">latest=${htmlEscape(formatMaybe(truth.latestOverlayAssetId || latest.latestOverlayAssetId))} available=${htmlEscape(String(truth.overlayAvailable === true || latest.overlayAvailable === true))} reason=${htmlEscape(formatMaybe(truth.overlayReason || latest.overlayReason))} freshness=${htmlEscape(overlayFreshness)} age=${htmlEscape(overlayAgeMs)}</div>`,
+        `<div class="runtime-line small">kind=${htmlEscape(overlayKind)} latest=${htmlEscape(formatMaybe(truth.latestOverlayAssetId || latest.latestOverlayAssetId))} available=${htmlEscape(String(truth.overlayAvailable === true || latest.overlayAvailable === true))} reason=${htmlEscape(formatMaybe(truth.overlayReason || latest.overlayReason))} freshness=${htmlEscape(overlayFreshness)} age=${htmlEscape(overlayAgeMs)}</div>`,
         `<div class="runtime-line small">previewAssets=${htmlEscape(overlayPreviewIds)}</div>`,
         `<div class="runtime-line"><strong>Recording</strong> ${badgeHtml(recordState, recordLabel)} <span class="small">${htmlEscape(formatMaybe(recording.lastRunPackage || recording.recordingPath))}</span></div>`,
         `<div class="runtime-line"><strong>Target Session</strong> ${target ? htmlEscape(formatMaybe(target.sessionId)) + ' <span class="small">tracker=' + htmlEscape(formatMaybe(target.tracker)) + '</span>' : '-'}</div>`,

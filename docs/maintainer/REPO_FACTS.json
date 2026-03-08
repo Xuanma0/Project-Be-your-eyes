@@ -1,7 +1,7 @@
 {
   "snapshotLabel": "maintainer-canonical",
   "canonical": true,
-  "updatedAt": "2026-03-08",
+  "updatedAt": "2026-03-09",
   "sourceFiles": [
     "docs/maintainer/ARCHITECTURE_REVIEW_v5.04.md",
     "docs/maintainer/WORKFLOW_HANDOFF_v5.04.md",
@@ -12,11 +12,11 @@
     "docs/maintainer/archive/WORKFLOW_HANDOFF_v5.04.md",
     "docs/maintainer/archive/REPO_FACTS_v5.04.json"
   ],
-  "capturedAt": "2026-03-08",
+  "capturedAt": "2026-03-09",
   "branch": "feature/unity-skeleton",
   "head": "run_git_rev_parse_HEAD",
-  "version": "v5.09",
-  "versionLabelNote": "Canonical facts reflect repository state during the v5.09 Real Overlay Loop & GPU Bring-up patch focused on probing CUDA with warmup-and-fallback truth, keeping SEG/DEPTH in the existing asset pipeline, exposing device/deviceReason through provider truth, and enforcing latest-frame-wins plus last-frame-hold across Desktop Console and Quest HUD.",
+  "version": "v5.09.1",
+  "versionLabelNote": "Canonical facts reflect repository state during the v5.09.1 Blackwell CUDA bring-up and overlay usability patch focused on optional cu128 probing without breaking the CPU baseline, surfacing final device/deviceReason from live SEG/DEPTH runtime, and making the default whole-FOV overlay easier to see while preserving latest-frame-wins plus last-frame-hold.",
   "unity": {
     "editorVersion": "6000.3.10f1",
     "primaryBuildScene": "Assets/Scenes/Quest3SmokeScene.unity",

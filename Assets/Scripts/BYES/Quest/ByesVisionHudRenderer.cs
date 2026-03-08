@@ -22,9 +22,9 @@ namespace BYES.Quest
         private bool _showDet = true;
         private bool _showSeg = true;
         private bool _showDepth = true;
-        private float _detAlpha = 0.45f;
-        private float _segAlpha = 0.35f;
-        private float _depthAlpha = 0.30f;
+        private float _detAlpha = 0.38f;
+        private float _segAlpha = 0.20f;
+        private float _depthAlpha = 0.62f;
         private bool _freezeOverlay;
         private bool _bound;
         private int _overlayUpdates;
@@ -694,11 +694,11 @@ namespace BYES.Quest
             }
             if (_segImage != null)
             {
-                _segImage.color = new Color(1f, 0.25f, 0.25f, _segAlpha);
+                _segImage.color = new Color(1f, 0.52f, 0.18f, _segAlpha);
             }
             if (_depthImage != null)
             {
-                _depthImage.color = new Color(1f, 1f, 1f, _depthAlpha);
+                _depthImage.color = new Color(0.78f, 0.96f, 1f, _depthAlpha);
             }
             RefreshLayerVisibility("det");
             RefreshLayerVisibility("seg");

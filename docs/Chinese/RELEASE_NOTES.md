@@ -1,5 +1,12 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v5.09.1
+- 为 Blackwell 机器的 `SEG/DEPTH` bring-up 增加可选 `BYES_PYTHON_EXE_CUDA128` 路径：Quest realstack 启动时会先在独立 cu128 Python 环境里探测 CUDA，再决定是否把服务切到该环境，同时保留现有 CPU real baseline 作为回退。
+- GPU truth 继续收紧：只有真实 warmup infer 成功后才会显示 `device=cuda`；warmup 失败时会立即回退到 `cpu`，并明确暴露 `deviceReason`、`torchVersion`、`cudaRuntime`、device capability token。
+- `/api/providers`、`/api/capabilities`、`/api/ui/state`、Desktop Console、Quest Panel 现在优先使用下游 `sam3` / `da3` 真实 runtime evidence，而不是只显示外层 HTTP wrapper 的 backend/model。
+- Whole-FOV overlay 默认观感进一步收敛：默认优先让 depth 更容易看清，同时保留 stale-hold 语义；当 `seg` 返回 `no_segments` 时会诚实显示原因，而不是看起来像 overlay 管线坏掉。
+- 保持 contracts 与菜单 IA 不变：这次 patch 只做 Blackwell CUDA bring-up 稳定化和现有 SEG/DEPTH overlay 可用性热修。
+
 ## v5.09
 - 将真实 `SEG/DEPTH` 从“单次可跑”推进到“持续 overlay loop 可用”：Gateway 现在对每种 overlay kind 只保留最新 pending frame，过期 `seg/depth` 结果会在发 asset 前被丢弃，Desktop 与 Quest 始终跟随最近一次成功 overlay，而不是积压旧帧。
 - 给 `sam3` 与 `da3` 增加试探式 GPU bring-up 真相：服务启动后先做 CUDA warmup infer，只有 warmup 成功才把 `device` 标成 `cuda`；否则立即回退到 `cpu`，并明确写出 `deviceReason`，不再伪装成 GPU 已启用。

@@ -5,7 +5,7 @@ if not defined BYES_PREFLIGHT_ONLY set "BYES_PREFLIGHT_ONLY=0"
 set "PREFLIGHT_ONLY_FLAG="
 if /I "%~1"=="--preflight-only" set "PREFLIGHT_ONLY_FLAG=1"
 
-set "SCRIPT_NAME=quest3_usb_realstack_v5_08_2"
+set "SCRIPT_NAME=quest3_usb_realstack_v5_09_1"
 set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..\..") do set "REPO_ROOT=%%~fI"
 set "GATEWAY_PORT=18000"
@@ -17,6 +17,18 @@ set "DA3_PORT=19281"
 call :capture_user_env BYES_PROVIDER_DET
 call :capture_user_env BYES_PROVIDER_SEG
 call :capture_user_env BYES_PROVIDER_DEPTH
+call :capture_user_env BYES_PYTHON_EXE
+call :capture_user_env BYES_PYTHON_EXE_CUDA128
+call :capture_user_env PYTHONPATH
+call :capture_user_env PADDLE_PDX_MODEL_SOURCE
+call :capture_user_env PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK
+call :capture_user_env BYES_OCR_BACKEND
+call :capture_user_env BYES_DET_BACKEND
+call :capture_user_env BYES_DEPTH_BACKEND
+call :capture_user_env BYES_RISK_BACKEND
+call :capture_user_env BYES_SEG_BACKEND
+call :capture_user_env BYES_SLAM_BACKEND
+call :capture_user_env BYES_ENABLE_ASR
 call :capture_user_env BYES_SERVICE_OCR_PROVIDER
 call :capture_user_env BYES_SERVICE_DET_PROVIDER
 call :capture_user_env BYES_SERVICE_DET_MODEL
@@ -38,11 +50,21 @@ call :capture_user_env BYES_YOLO26_WEIGHTS
 call :capture_user_env BYES_ENABLE_PYSLAM_REALTIME
 call :capture_user_env BYES_PYSLAM_ROOT
 call :capture_user_env BYES_ASR_BACKEND
+call :capture_user_env BYES_ASR_MODEL
+call :capture_user_env BYES_ASR_DEVICE
+call :capture_user_env BYES_ASR_COMPUTE_TYPE
+call :capture_user_env BYES_SAM3_MODE
+call :capture_user_env BYES_DA3_MODE
 call :capture_user_env BYES_SLAM_HTTP_URL
 
 call :load_env_file "%REPO_ROOT%\.env.example" 0
 call :load_env_file "%REPO_ROOT%\.env" 1
+call :load_env_file "%REPO_ROOT%\.env.local" 1
+call :load_env_file "%REPO_ROOT%\.env.user" 1
 call :normalize_empty_like_value BYES_MODE_PROFILE_JSON
+call :normalize_empty_like_value BYES_GATEWAY_API_KEY
+call :normalize_empty_like_value BYES_GATEWAY_ALLOWED_HOSTS
+call :normalize_empty_like_value BYES_GATEWAY_ALLOWED_ORIGINS
 call :normalize_empty_like_value BYES_SERVICE_OCR_PROVIDER
 call :normalize_empty_like_value BYES_SERVICE_DET_PROVIDER
 call :normalize_empty_like_value BYES_SERVICE_DET_MODEL
@@ -60,9 +82,38 @@ call :normalize_empty_like_value BYES_DA3_MODEL_PATH
 call :normalize_empty_like_value BYES_DA3_WEIGHTS
 call :normalize_empty_like_value BYES_YOLO26_WEIGHTS
 call :normalize_empty_like_value BYES_PYSLAM_ROOT
+call :normalize_empty_like_value BYES_PYTHON_EXE
+call :normalize_empty_like_value BYES_PYTHON_EXE_CUDA128
+call :normalize_empty_like_value BYES_ASR_MODEL
 call :normalize_empty_like_value BYES_PROVIDER_DET
 call :normalize_empty_like_value BYES_PROVIDER_SEG
 call :normalize_empty_like_value BYES_PROVIDER_DEPTH
+call :resolve_python_bin
+if errorlevel 1 goto :abort
+call :resolve_cuda_python_bin
+if errorlevel 1 goto :abort
+call :write_cuda_probe_script
+echo [%SCRIPT_NAME%] python=%PYTHON_BIN%
+if defined CUDA128_PYTHON_BIN echo [%SCRIPT_NAME%] python_cuda128=%CUDA128_PYTHON_BIN%
+
+set "SEG_SERVICE_PYTHON_BIN=%PYTHON_BIN%"
+set "DEPTH_SERVICE_PYTHON_BIN=%PYTHON_BIN%"
+set "SEG_PROBE_DEVICE=cpu"
+set "SEG_PROBE_DEVICEREASON=baseline_cpu"
+set "SEG_PROBE_WARMUPMS=-"
+set "SEG_PROBE_TORCHVERSION=-"
+set "SEG_PROBE_CUDARUNTIME=-"
+set "SEG_PROBE_CUDARUNTIMELINE=-"
+set "SEG_PROBE_DEVICECAPABILITY=-"
+set "SEG_PROBE_DEVICENAME=-"
+set "DEPTH_PROBE_DEVICE=cpu"
+set "DEPTH_PROBE_DEVICEREASON=baseline_cpu"
+set "DEPTH_PROBE_WARMUPMS=-"
+set "DEPTH_PROBE_TORCHVERSION=-"
+set "DEPTH_PROBE_CUDARUNTIME=-"
+set "DEPTH_PROBE_CUDARUNTIMELINE=-"
+set "DEPTH_PROBE_DEVICECAPABILITY=-"
+set "DEPTH_PROBE_DEVICENAME=-"
 
 rem ---- v5.08.2 defaults (can be overridden via shell env/.env/.env.example) ----
 call :set_if_missing BYES_INFERENCE_EMIT_WS_V1 1
@@ -162,14 +213,20 @@ set "HAS_PADDLEOCR=0"
 set "HAS_ULTRALYTICS=0"
 set "HAS_ONNXRT=0"
 set "HAS_FASTER_WHISPER=0"
-python -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('paddleocr') else 1)" >nul 2>&1
+set "HAS_SAM3_PKG=0"
+set "HAS_DA3_PKG=0"
+"%PYTHON_BIN%" -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('paddleocr') else 1)" >nul 2>&1
 if !ERRORLEVEL! EQU 0 set "HAS_PADDLEOCR=1"
-python -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('ultralytics') else 1)" >nul 2>&1
+"%PYTHON_BIN%" -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('ultralytics') else 1)" >nul 2>&1
 if !ERRORLEVEL! EQU 0 set "HAS_ULTRALYTICS=1"
-python -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('onnxruntime') else 1)" >nul 2>&1
+"%PYTHON_BIN%" -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('onnxruntime') else 1)" >nul 2>&1
 if !ERRORLEVEL! EQU 0 set "HAS_ONNXRT=1"
-python -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('faster_whisper') else 1)" >nul 2>&1
+"%PYTHON_BIN%" -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('faster_whisper') else 1)" >nul 2>&1
 if !ERRORLEVEL! EQU 0 set "HAS_FASTER_WHISPER=1"
+"%PYTHON_BIN%" -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('sam3') else 1)" >nul 2>&1
+if !ERRORLEVEL! EQU 0 set "HAS_SAM3_PKG=1"
+"%PYTHON_BIN%" -c "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec('depth_anything_3') else 1)" >nul 2>&1
+if !ERRORLEVEL! EQU 0 set "HAS_DA3_PKG=1"
 
 if not defined BYES_SERVICE_OCR_PROVIDER (
   if "!HAS_PADDLEOCR!"=="1" (
@@ -186,11 +243,59 @@ if not defined BYES_ASR_BACKEND (
   )
 )
 
+if not defined USER_DEFINED_BYES_OCR_BACKEND (
+  if /I "%BYES_SERVICE_OCR_PROVIDER%"=="mock" (
+    set "BYES_OCR_BACKEND=mock"
+  ) else (
+    set "BYES_OCR_BACKEND=http"
+  )
+)
+if not defined USER_DEFINED_BYES_DET_BACKEND (
+  if /I "%BYES_SERVICE_DET_PROVIDER%"=="mock" (
+    set "BYES_DET_BACKEND=mock"
+  ) else (
+    set "BYES_DET_BACKEND=http"
+  )
+)
+if not defined USER_DEFINED_BYES_SEG_BACKEND (
+  if /I "%BYES_SERVICE_SEG_PROVIDER%"=="mock" (
+    set "BYES_SEG_BACKEND=mock"
+  ) else (
+    set "BYES_SEG_BACKEND=http"
+  )
+)
+if not defined USER_DEFINED_BYES_DEPTH_BACKEND (
+  if /I "%BYES_SERVICE_DEPTH_PROVIDER%"=="mock" (
+    set "BYES_DEPTH_BACKEND=mock"
+  ) else if /I "%BYES_SERVICE_DEPTH_PROVIDER%"=="none" (
+    set "BYES_DEPTH_BACKEND=mock"
+  ) else (
+    set "BYES_DEPTH_BACKEND=http"
+  )
+)
+if not defined USER_DEFINED_BYES_SLAM_BACKEND (
+  if /I "%BYES_ENABLE_PYSLAM_REALTIME%"=="1" (
+    set "BYES_SLAM_BACKEND=http"
+  ) else (
+    set "BYES_SLAM_BACKEND=mock"
+  )
+)
+
 call :classify_ocr
 call :classify_det
 call :classify_seg
 call :classify_depth
 call :classify_pyslam_runtime
+call :classify_asr
+
+if defined CUDA128_PYTHON_BIN if /I "!STATUS_SEG!"=="READY_REAL" (
+  call :probe_service_runtime seg "%CUDA128_PYTHON_BIN%" SEG_PROBE
+  if /I "!SEG_PROBE_DEVICE!"=="cuda" set "SEG_SERVICE_PYTHON_BIN=%CUDA128_PYTHON_BIN%"
+)
+if defined CUDA128_PYTHON_BIN if /I "!STATUS_DEPTH!"=="READY_REAL" (
+  call :probe_service_runtime depth "%CUDA128_PYTHON_BIN%" DEPTH_PROBE
+  if /I "!DEPTH_PROBE_DEVICE!"=="cuda" set "DEPTH_SERVICE_PYTHON_BIN=%CUDA128_PYTHON_BIN%"
+)
 
 echo [%SCRIPT_NAME%] preflight summary:
 echo   OCR: !STATUS_OCR! (!DETAIL_OCR!)
@@ -198,7 +303,10 @@ echo   DET: !STATUS_DET! (!DETAIL_DET!)
 echo   SEG: !STATUS_SEG! (!DETAIL_SEG!)
 echo   DEPTH: !STATUS_DEPTH! (!DETAIL_DEPTH!)
 echo   pySLAM: !STATUS_PYSLAM! (!DETAIL_PYSLAM!)
+echo   ASR: !STATUS_ASR! (!DETAIL_ASR!)
 echo   PCA: READY_RUNTIME_HINT (physical Quest 3/3S + permission + non-Link/non-Simulator required)
+if /I "!STATUS_SEG!"=="READY_REAL" echo   SEG CUDA probe: device=!SEG_PROBE_DEVICE! reason=!SEG_PROBE_DEVICEREASON! warmupMs=!SEG_PROBE_WARMUPMS! torch=!SEG_PROBE_TORCHVERSION! cuda=!SEG_PROBE_CUDARUNTIME! cap=!SEG_PROBE_DEVICECAPABILITY! python=!SEG_SERVICE_PYTHON_BIN!
+if /I "!STATUS_DEPTH!"=="READY_REAL" echo   DEPTH CUDA probe: device=!DEPTH_PROBE_DEVICE! reason=!DEPTH_PROBE_DEVICEREASON! warmupMs=!DEPTH_PROBE_WARMUPMS! torch=!DEPTH_PROBE_TORCHVERSION! cuda=!DEPTH_PROBE_CUDARUNTIME! cap=!DEPTH_PROBE_DEVICECAPABILITY! python=!DEPTH_SERVICE_PYTHON_BIN!
 
 if /I "!BYES_PREFLIGHT_ONLY!"=="1" set "PREFLIGHT_ONLY_FLAG=1"
 if /I "!PREFLIGHT_ONLY_FLAG!"=="1" (
@@ -249,22 +357,22 @@ call :ensure_port_free %INFERENCE_PORT%
 if errorlevel 1 goto :abort
 
 if /I "!STATUS_PYSLAM!"=="READY_REAL" (
-  set "BYES_ENABLE_PYSLAM_REALTIME=1"
+  if not defined BYES_ENABLE_PYSLAM_REALTIME set "BYES_ENABLE_PYSLAM_REALTIME=1"
   set "BYES_SLAM_HTTP_URL=http://127.0.0.1:%PYSLAM_PORT%/slam/step"
 ) else if not defined BYES_ENABLE_PYSLAM_REALTIME (
   set "BYES_ENABLE_PYSLAM_REALTIME=0"
 )
 
-if /I "!STATUS_PYSLAM!"=="READY_REAL" call :start_optional_service "%PYSLAM_PORT%" "BYES-pySLAM-v5.08.2" "services.pyslam_service.app:app"
-if /I "!STATUS_SEG!"=="READY_REAL" call :start_optional_service "%SAM3_PORT%" "BYES-SAM3-v5.08.2" "services.sam3_seg_service.app:app"
-if /I "!STATUS_DEPTH!"=="READY_REAL" if /I "%BYES_SERVICE_DEPTH_PROVIDER%"=="da3" call :start_optional_service "%DA3_PORT%" "BYES-DA3-v5.08.2" "services.da3_depth_service.app:app"
+if /I "!STATUS_PYSLAM!"=="READY_REAL" if /I "%BYES_ENABLE_PYSLAM_REALTIME%"=="1" call :start_optional_service "%PYSLAM_PORT%" "BYES-pySLAM-v5.09.1" "services.pyslam_service.app:app" "%PYTHON_BIN%"
+if /I "!STATUS_SEG!"=="READY_REAL" call :start_optional_service "%SAM3_PORT%" "BYES-SAM3-v5.09.1" "services.sam3_seg_service.app:app" "%SEG_SERVICE_PYTHON_BIN%"
+if /I "!STATUS_DEPTH!"=="READY_REAL" if /I "%BYES_SERVICE_DEPTH_PROVIDER%"=="da3" call :start_optional_service "%DA3_PORT%" "BYES-DA3-v5.09.1" "services.da3_depth_service.app:app" "%DEPTH_SERVICE_PYTHON_BIN%"
 
 echo [%SCRIPT_NAME%] opening desktop console at http://127.0.0.1:%GATEWAY_PORT%/ui
 start "" "http://127.0.0.1:%GATEWAY_PORT%/ui"
 
 echo [%SCRIPT_NAME%] Starting gateway + inference in this window. Press Ctrl+C to stop.
 cd /d "%REPO_ROOT%\Gateway"
-python scripts/dev_up.py --with-inference --host 127.0.0.1 --gateway-port %GATEWAY_PORT% --inference-port %INFERENCE_PORT% --no-reload
+"%PYTHON_BIN%" scripts/dev_up.py --with-inference --host 127.0.0.1 --gateway-port %GATEWAY_PORT% --inference-port %INFERENCE_PORT% --no-reload
 set "RC=%ERRORLEVEL%"
 echo [%SCRIPT_NAME%] stack exited with code %RC%
 exit /b %RC%
@@ -288,6 +396,105 @@ exit /b 0
 
 :set_if_missing
 if not defined %~1 set "%~1=%~2"
+exit /b 0
+
+:resolve_python_bin
+set "PYTHON_BIN=python"
+if not defined BYES_PYTHON_EXE exit /b 0
+if not exist "%BYES_PYTHON_EXE%" (
+  echo [%SCRIPT_NAME%] BYES_PYTHON_EXE not found: "%BYES_PYTHON_EXE%"
+  set "RC=2"
+  exit /b 1
+)
+set "PYTHON_BIN=%BYES_PYTHON_EXE%"
+exit /b 0
+
+:resolve_cuda_python_bin
+set "CUDA128_PYTHON_BIN="
+if not defined BYES_PYTHON_EXE_CUDA128 exit /b 0
+if not exist "%BYES_PYTHON_EXE_CUDA128%" (
+  echo [%SCRIPT_NAME%] BYES_PYTHON_EXE_CUDA128 not found: "%BYES_PYTHON_EXE_CUDA128%"
+  exit /b 0
+)
+set "CUDA128_PYTHON_BIN=%BYES_PYTHON_EXE_CUDA128%"
+exit /b 0
+
+:write_cuda_probe_script
+set "CUDA_PROBE_SCRIPT=%TEMP%\byes_cuda_probe_v5091.py"
+> "%CUDA_PROBE_SCRIPT%" echo import sys
+>> "%CUDA_PROBE_SCRIPT%" echo import os
+>> "%CUDA_PROBE_SCRIPT%" echo sys.path.insert^(0, os.getcwd^(^)^)
+>> "%CUDA_PROBE_SCRIPT%" echo.
+>> "%CUDA_PROBE_SCRIPT%" echo def emit(key, value):
+>> "%CUDA_PROBE_SCRIPT%" echo     print(f"{key}={value if value is not None else ''}")
+>> "%CUDA_PROBE_SCRIPT%" echo.
+>> "%CUDA_PROBE_SCRIPT%" echo def main():
+>> "%CUDA_PROBE_SCRIPT%" echo     kind = ^(sys.argv[1] if sys.argv[1:] else ''^).strip^(^).lower^(^)
+>> "%CUDA_PROBE_SCRIPT%" echo     try:
+>> "%CUDA_PROBE_SCRIPT%" echo         if kind == 'seg':
+>> "%CUDA_PROBE_SCRIPT%" echo             from services.sam3_seg_service.app import _load_state, _ensure_sam3_runtime
+>> "%CUDA_PROBE_SCRIPT%" echo             state = _load_state^(^)
+>> "%CUDA_PROBE_SCRIPT%" echo             runtime = _ensure_sam3_runtime^(state^)
+>> "%CUDA_PROBE_SCRIPT%" echo         elif kind == 'depth':
+>> "%CUDA_PROBE_SCRIPT%" echo             from services.da3_depth_service.app import _load_state, _ensure_da3_runtime
+>> "%CUDA_PROBE_SCRIPT%" echo             state = _load_state^(^)
+>> "%CUDA_PROBE_SCRIPT%" echo             runtime = _ensure_da3_runtime^(state^)
+>> "%CUDA_PROBE_SCRIPT%" echo         else:
+>> "%CUDA_PROBE_SCRIPT%" echo             raise RuntimeError^(f'unknown_kind:{kind}'^)
+>> "%CUDA_PROBE_SCRIPT%" echo         emit^('device', state.get^('actualDevice'^) or state.get^('device'^) or 'cpu'^)
+>> "%CUDA_PROBE_SCRIPT%" echo         emit^('deviceReason', state.get^('deviceReason'^) or ''^)
+>> "%CUDA_PROBE_SCRIPT%" echo         emit^('warmupMs', ^(runtime or {}^).get^('warmupMs'^)^)
+>> "%CUDA_PROBE_SCRIPT%" echo         emit^('torchVersion', state.get^('torchVersion'^) or ^(runtime or {}^).get^('torchVersion'^)^)
+>> "%CUDA_PROBE_SCRIPT%" echo         emit^('cudaRuntime', state.get^('cudaRuntime'^) or ^(runtime or {}^).get^('cudaRuntime'^)^)
+>> "%CUDA_PROBE_SCRIPT%" echo         emit^('cudaRuntimeLine', state.get^('cudaRuntimeLine'^) or ^(runtime or {}^).get^('cudaRuntimeLine'^)^)
+>> "%CUDA_PROBE_SCRIPT%" echo         emit^('deviceCapability', state.get^('deviceCapabilityToken'^) or ^(runtime or {}^).get^('deviceCapabilityToken'^)^)
+>> "%CUDA_PROBE_SCRIPT%" echo         emit^('deviceName', state.get^('deviceName'^) or ^(runtime or {}^).get^('deviceName'^)^)
+>> "%CUDA_PROBE_SCRIPT%" echo     except Exception as exc:
+>> "%CUDA_PROBE_SCRIPT%" echo         emit^('device', 'cpu'^)
+>> "%CUDA_PROBE_SCRIPT%" echo         emit^('deviceReason', f'probe_failed:{exc.__class__.__name__}:{exc}'^)
+>> "%CUDA_PROBE_SCRIPT%" echo         emit^('warmupMs', -1^)
+>> "%CUDA_PROBE_SCRIPT%" echo         emit^('torchVersion', ''^)
+>> "%CUDA_PROBE_SCRIPT%" echo         emit^('cudaRuntime', ''^)
+>> "%CUDA_PROBE_SCRIPT%" echo         emit^('cudaRuntimeLine', ''^)
+>> "%CUDA_PROBE_SCRIPT%" echo         emit^('deviceCapability', ''^)
+>> "%CUDA_PROBE_SCRIPT%" echo         emit^('deviceName', ''^)
+>> "%CUDA_PROBE_SCRIPT%" echo.
+>> "%CUDA_PROBE_SCRIPT%" echo if __name__ == '__main__':
+>> "%CUDA_PROBE_SCRIPT%" echo     main^(^)
+exit /b 0
+
+:probe_service_runtime
+set "%~3_DEVICE=cpu"
+set "%~3_DEVICEREASON=probe_not_run"
+set "%~3_WARMUPMS=-1"
+set "%~3_TORCHVERSION="
+set "%~3_CUDARUNTIME="
+set "%~3_CUDARUNTIMELINE="
+set "%~3_DEVICECAPABILITY="
+set "%~3_DEVICENAME="
+set "CUDA_PROBE_OUT=%TEMP%\byes_cuda_probe_%~1.out"
+pushd "%REPO_ROOT%\Gateway" >nul
+"%~2" "%CUDA_PROBE_SCRIPT%" %~1 > "%CUDA_PROBE_OUT%" 2>nul
+for /f "usebackq tokens=1* delims==" %%A in ("%CUDA_PROBE_OUT%") do (
+  if /I "%%A"=="device" set "%~3_DEVICE=%%B"
+  if /I "%%A"=="deviceReason" set "%~3_DEVICEREASON=%%B"
+  if /I "%%A"=="warmupMs" set "%~3_WARMUPMS=%%B"
+  if /I "%%A"=="torchVersion" set "%~3_TORCHVERSION=%%B"
+  if /I "%%A"=="cudaRuntime" set "%~3_CUDARUNTIME=%%B"
+  if /I "%%A"=="cudaRuntimeLine" set "%~3_CUDARUNTIMELINE=%%B"
+  if /I "%%A"=="deviceCapability" set "%~3_DEVICECAPABILITY=%%B"
+  if /I "%%A"=="deviceName" set "%~3_DEVICENAME=%%B"
+)
+popd >nul
+del /q "%CUDA_PROBE_OUT%" >nul 2>&1
+if not defined %~3_DEVICE set "%~3_DEVICE=cpu"
+if not defined %~3_DEVICEREASON set "%~3_DEVICEREASON=probe_no_output"
+if not defined %~3_WARMUPMS set "%~3_WARMUPMS=-1"
+if not defined %~3_TORCHVERSION set "%~3_TORCHVERSION="
+if not defined %~3_CUDARUNTIME set "%~3_CUDARUNTIME="
+if not defined %~3_CUDARUNTIMELINE set "%~3_CUDARUNTIMELINE="
+if not defined %~3_DEVICECAPABILITY set "%~3_DEVICECAPABILITY="
+if not defined %~3_DEVICENAME set "%~3_DEVICENAME="
 exit /b 0
 
 :normalize_model_aliases
@@ -386,6 +593,11 @@ if /I "!SEG_PROVIDER!"=="mock" (
   exit /b 0
 )
 if /I "!SEG_PROVIDER!"=="sam3" (
+  if "!HAS_SAM3_PKG!" NEQ "1" (
+    set "STATUS_SEG=UNAVAILABLE_RUNTIME"
+    set "DETAIL_SEG=missing_dependency:sam3_package"
+    exit /b 0
+  )
   if not defined BYES_SAM3_CKPT_PATH (
     set "STATUS_SEG=UNAVAILABLE_MISSING_PATH"
     set "DETAIL_SEG=sam3_ckpt empty"
@@ -417,6 +629,11 @@ if /I "!DEPTH_PROVIDER!"=="none" (
   exit /b 0
 )
 if /I "!DEPTH_PROVIDER!"=="da3" (
+  if "!HAS_DA3_PKG!" NEQ "1" (
+    set "STATUS_DEPTH=UNAVAILABLE_RUNTIME"
+    set "DETAIL_DEPTH=missing_dependency:depth_anything_3"
+    exit /b 0
+  )
   if not defined BYES_DA3_MODEL_PATH (
     set "STATUS_DEPTH=UNAVAILABLE_MISSING_PATH"
     set "DETAIL_DEPTH=depth_model empty"
@@ -476,8 +693,45 @@ if not exist "%BYES_PYSLAM_ROOT%" (
   set "DETAIL_PYSLAM=root_not_found:%BYES_PYSLAM_ROOT%"
   exit /b 0
 )
+if not exist "%BYES_PYSLAM_ROOT%\.git" (
+  set "STATUS_PYSLAM=UNAVAILABLE_RUNTIME"
+  set "DETAIL_PYSLAM=root_not_repo:%BYES_PYSLAM_ROOT%"
+  exit /b 0
+)
+call :check_pyslam_submodules "%BYES_PYSLAM_ROOT%"
+if "!PYSLAM_SUBMODULES_OK!" NEQ "1" (
+  set "STATUS_PYSLAM=UNAVAILABLE_RUNTIME"
+  set "DETAIL_PYSLAM=!PYSLAM_SUBMODULE_DETAIL!"
+  exit /b 0
+)
 set "STATUS_PYSLAM=READY_REAL"
 set "DETAIL_PYSLAM=root=%BYES_PYSLAM_ROOT%"
+exit /b 0
+
+:classify_asr
+set "ASR_BACKEND_NORMALIZED=%BYES_ASR_BACKEND%"
+if /I "!ASR_BACKEND_NORMALIZED!"=="mock" (
+  set "STATUS_ASR=READY_MOCK"
+  if not defined BYES_ASR_MODEL (
+    set "DETAIL_ASR=backend=mock model=mock-asr-v1"
+  ) else (
+    set "DETAIL_ASR=backend=mock model=%BYES_ASR_MODEL%"
+  )
+  exit /b 0
+)
+if /I "!ASR_BACKEND_NORMALIZED!"=="faster_whisper" (
+  if "!HAS_FASTER_WHISPER!" NEQ "1" (
+    set "STATUS_ASR=UNAVAILABLE_RUNTIME"
+    set "DETAIL_ASR=missing_dependency:faster_whisper"
+    exit /b 0
+  )
+  if not defined BYES_ASR_MODEL set "BYES_ASR_MODEL=small"
+  set "STATUS_ASR=READY_REAL"
+  set "DETAIL_ASR=backend=faster_whisper model=%BYES_ASR_MODEL%"
+  exit /b 0
+)
+set "STATUS_ASR=UNAVAILABLE_RUNTIME"
+set "DETAIL_ASR=unsupported_backend:%BYES_ASR_BACKEND%"
 exit /b 0
 
 :load_env_file
@@ -527,17 +781,42 @@ if "!%~1!"=="=" set "%~1="
 if "!%~1!"=="\"\"" set "%~1="
 exit /b 0
 
+:check_pyslam_submodules
+set "PYSLAM_SUBMODULES_OK=1"
+set "PYSLAM_SUBMODULE_DETAIL=submodules_ok"
+for /f "delims=" %%S in ('git -C "%~1" submodule status 2^>nul') do (
+  set "SUBMODULE_LINE=%%S"
+  if defined SUBMODULE_LINE (
+    set "SUBMODULE_PREFIX=!SUBMODULE_LINE:~0,1!"
+    if "!SUBMODULE_PREFIX!"=="-" (
+      set "PYSLAM_SUBMODULES_OK=0"
+      set "PYSLAM_SUBMODULE_DETAIL=incomplete_submodules"
+    )
+    if "!SUBMODULE_PREFIX!"=="+" (
+      set "PYSLAM_SUBMODULES_OK=0"
+      set "PYSLAM_SUBMODULE_DETAIL=incomplete_submodules"
+    )
+    if "!SUBMODULE_PREFIX!"=="U" (
+      set "PYSLAM_SUBMODULES_OK=0"
+      set "PYSLAM_SUBMODULE_DETAIL=incomplete_submodules"
+    )
+  )
+)
+exit /b 0
+
 :start_optional_service
 set "PORT_TO_CHECK=%~1"
 set "WINDOW_TITLE=%~2"
 set "UVICORN_MODULE=%~3"
+set "SERVICE_PYTHON_BIN=%~4"
+if not defined SERVICE_PYTHON_BIN set "SERVICE_PYTHON_BIN=%PYTHON_BIN%"
 set "PORT_PID="
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%PORT_TO_CHECK% .*LISTENING"') do (
   if not defined PORT_PID set "PORT_PID=%%P"
 )
 if not defined PORT_PID (
   echo [%SCRIPT_NAME%] starting optional service %UVICORN_MODULE% on %PORT_TO_CHECK%...
-  start "%WINDOW_TITLE%" cmd /c "cd /d \"%REPO_ROOT%\Gateway\" ^&^& python -m uvicorn %UVICORN_MODULE% --host 127.0.0.1 --port %PORT_TO_CHECK%"
+  start "%WINDOW_TITLE%" cmd /c "cd /d \"%REPO_ROOT%\Gateway\" ^&^& \"%SERVICE_PYTHON_BIN%\" -m uvicorn %UVICORN_MODULE% --host 127.0.0.1 --port %PORT_TO_CHECK%"
   timeout /t 1 >nul
 ) else (
   echo [%SCRIPT_NAME%] service %UVICORN_MODULE% already listening on %PORT_TO_CHECK%, PID=%PORT_PID%.
