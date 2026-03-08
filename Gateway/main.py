@@ -1016,6 +1016,7 @@ class GatewayApp:
         backend: str | None,
         model: str | None,
         device: str | None,
+        device_reason: str | None = None,
         infer_ms: int | None,
         ts_ms: int,
         reason: str | None = None,
@@ -1075,6 +1076,7 @@ class GatewayApp:
                 "backend": backend_text,
                 "model": str(model or row.get("model") or "").strip() or None,
                 "device": str(device or row.get("device") or "").strip() or None,
+                "deviceReason": str(device_reason or row.get("deviceReason") or "").strip() or None,
                 "inferMs": int(infer_ms) if infer_ms is not None else row.get("inferMs"),
                 "fps": fps,
                 "lastTsMs": ts_value,
@@ -1119,6 +1121,7 @@ class GatewayApp:
         backend = str(payload.get("backend", "") or "").strip() or None
         model = str(payload.get("model", "") or "").strip() or None
         device = str(payload.get("device", "") or "").strip() or None
+        device_reason = str(payload.get("deviceReason", "") or payload.get("device_reason", "") or "").strip() or None
         reason = str(payload.get("reason", "") or payload.get("error", "") or payload.get("warning", "") or "").strip() or None
         tracking_state = str(payload.get("trackingState", "") or payload.get("state", "") or "").strip().lower() or None
         root_detected = payload.get("rootDetected")
@@ -1140,7 +1143,7 @@ class GatewayApp:
             provider = "det"
         elif name.startswith("depth.") and name != "depth.map.v1":
             provider = "depth"
-        elif name.startswith("seg.mask") or name.startswith("seg.masks"):
+        elif name == "seg.segment" or name.startswith("seg.mask") or name.startswith("seg.masks"):
             provider = "seg"
         elif name.startswith("slam.pose"):
             provider = "slam"
@@ -1167,6 +1170,7 @@ class GatewayApp:
                     backend = str(provider_payload.get("backend", "") or "").strip() or backend
                     model = str(provider_payload.get("model", "") or "").strip() or model
                     device = str(provider_payload.get("device", "") or "").strip() or device
+                    device_reason = str(provider_payload.get("deviceReason", "") or provider_payload.get("device_reason", "") or "").strip() or device_reason
                     reason = str(provider_payload.get("reason", "") or "").strip() or reason
                     infer_ms = _to_nonnegative_int_or_none(provider_payload.get("latencyMs")) or infer_ms
                     provider_is_mock = provider_payload.get("isMock")
@@ -1176,6 +1180,7 @@ class GatewayApp:
                             backend=backend,
                             model=model,
                             device=device,
+                            device_reason=device_reason,
                             infer_ms=infer_ms,
                             ts_ms=event_ts,
                             reason=reason,
@@ -1194,6 +1199,7 @@ class GatewayApp:
                 backend = str(provider_meta.get("backend", "") or "").strip() or backend
                 model = str(provider_meta.get("model", "") or "").strip() or model
                 device = str(provider_meta.get("device", "") or "").strip() or device
+                device_reason = str(provider_meta.get("deviceReason", "") or provider_meta.get("device_reason", "") or "").strip() or device_reason
             infer_ms = _to_nonnegative_int_or_none(payload.get("inferMs")) or infer_ms
             event_ts = _to_nonnegative_int_or_none(payload.get("tsMs")) or event_ts
         elif name.startswith("slam.trajectory"):
@@ -1210,6 +1216,7 @@ class GatewayApp:
             backend=backend,
             model=model,
             device=device,
+            device_reason=device_reason,
             infer_ms=infer_ms,
             ts_ms=event_ts,
             reason=reason,
@@ -1224,6 +1231,7 @@ class GatewayApp:
                 backend=backend,
                 model=model,
                 device=device,
+                device_reason=device_reason,
                 infer_ms=infer_ms,
                 ts_ms=event_ts,
                 reason=reason,
@@ -3562,6 +3570,7 @@ def _normalize_provider_row(
     backend = str(runtime.get("backend") or source_row.get("backend") or "").strip() or None
     model = str(runtime.get("model") or source_row.get("model") or "").strip() or None
     device = str(runtime.get("device") or source_row.get("device") or "").strip() or None
+    device_reason = str(runtime.get("deviceReason") or source_row.get("deviceReason") or "").strip() or None
     reason = str(runtime.get("reason") or source_row.get("reason") or "").strip() or None
     reason = _normalize_provider_failure_reason(reason) if reason else None
     enabled = bool(source_row.get("enabled"))
@@ -3615,6 +3624,7 @@ def _normalize_provider_row(
         "backend": backend,
         "model": model,
         "device": device,
+        "device_reason": device_reason,
         "is_mock": bool(is_mock_value),
         "reason": reason,
         "last_success_ts": last_success_ts,
@@ -3634,6 +3644,7 @@ def _normalize_provider_row(
             "backend": backend,
             "model": model,
             "device": device,
+            "deviceReason": device_reason,
             "reason": reason,
             "isMock": bool(is_mock_value),
             "lastTsMs": _to_nonnegative_int_or_none(runtime.get("lastTsMs")),
@@ -3655,6 +3666,7 @@ def _normalize_provider_row(
             "backend": backend,
             "model": model,
             "device": device,
+            "deviceReason": device_reason,
             "reason": reason,
             "enabled": enabled,
             "isMock": bool(is_mock_value),
@@ -4153,6 +4165,8 @@ async def api_ui_state(limit: int = 60) -> dict[str, Any]:
     latest_overlay_available = False
     latest_overlay_reason = "asset_not_emitted"
     latest_overlay_ts_ms = -1
+    latest_overlay_freshness = "unavailable"
+    latest_overlay_age_ms: int | None = None
     for key, raw_row in overlay_assets_raw.items():
         kind = str(key or "").strip().lower()
         if not kind:
@@ -4170,26 +4184,42 @@ async def api_ui_state(limit: int = 60) -> dict[str, Any]:
             overlay_reason = provider_reason
         else:
             overlay_reason = "asset_expired" if asset_id else "asset_not_emitted"
+        ts_ms = _to_nonnegative_int_or_none(row.get("tsMs"))
+        freshness, overlay_age_ms = _overlay_freshness_label(
+            overlay_available=overlay_available,
+            overlay_reason=overlay_reason,
+            asset_id=asset_id,
+            ts_ms=ts_ms,
+        )
         normalized_row = dict(row)
         normalized_row.update(
             {
                 "assetId": asset_id,
+                "frameSeq": _to_nonnegative_int_or_none(row.get("frameSeq")),
                 "overlayAvailable": overlay_available,
                 "overlayReason": overlay_reason,
+                "freshness": freshness,
+                "ageMs": overlay_age_ms,
+                "lastInferMs": _to_nonnegative_int_or_none(row.get("inferMs")),
+                "device": str(row.get("device") or provider_row.get("device") or "").strip() or None,
+                "deviceReason": str(row.get("deviceReason") or provider_row.get("deviceReason") or "").strip() or None,
+                "truthState": provider_truth_state,
                 "assetMeta": asset_meta,
                 "expiresTsMs": asset_meta.get("expiresTsMs") if isinstance(asset_meta, dict) else None,
-                "ageMs": asset_meta.get("ageMs") if isinstance(asset_meta, dict) else None,
             }
         )
         overlay_assets[kind] = normalized_row
-        ts_ms = _to_nonnegative_int_or_none(normalized_row.get("tsMs")) or -1
-        if ts_ms >= latest_overlay_ts_ms:
-            latest_overlay_ts_ms = ts_ms
+        compare_ts_ms = ts_ms or -1
+        if compare_ts_ms >= latest_overlay_ts_ms:
+            latest_overlay_ts_ms = compare_ts_ms
             latest_overlay_asset_id = asset_id
             latest_overlay_available = overlay_available
             latest_overlay_reason = overlay_reason
+            latest_overlay_freshness = freshness
+            latest_overlay_age_ms = overlay_age_ms
     if latest_overlay_ts_ms < 0:
         latest_overlay_reason = _infer_overlay_reason(providers)
+        latest_overlay_freshness = "unavailable"
     overlay_kinds_available = sorted(kind for kind, row in overlay_assets.items() if bool(row.get("overlayAvailable")))
     truth = dict(capabilities.get("truth") or {})
     truth.update(
@@ -4207,6 +4237,8 @@ async def api_ui_state(limit: int = 60) -> dict[str, Any]:
             "latestOverlayAssetId": latest_overlay_asset_id,
             "overlayAvailable": latest_overlay_available,
             "overlayReason": latest_overlay_reason,
+            "overlayFreshness": latest_overlay_freshness,
+            "overlayAgeMs": latest_overlay_age_ms,
             "currentMode": mode_state.get("mode"),
             "recording": recording_state,
             "targetSession": target_payload,
@@ -4232,6 +4264,8 @@ async def api_ui_state(limit: int = 60) -> dict[str, Any]:
             "latestOverlayAssetId": latest_overlay_asset_id,
             "overlayAvailable": latest_overlay_available,
             "overlayReason": latest_overlay_reason,
+            "overlayFreshness": latest_overlay_freshness,
+            "overlayAgeMs": latest_overlay_age_ms,
             "eventCount": len(latest_events),
             "lastEvent": latest_events[-1] if latest_events else None,
             "eventsTail": latest_events[-20:],
@@ -4394,6 +4428,8 @@ def _build_desktop_console_html() -> str:
         `seg=${formatMaybe((overlayAssets.seg || {}).assetId)}`,
         `depth=${formatMaybe((overlayAssets.depth || {}).assetId)}`
       ].join(' ');
+      const overlayFreshness = formatMaybe(truth.overlayFreshness || latest.overlayFreshness);
+      const overlayAgeMs = formatMaybe(truth.overlayAgeMs ?? latest.overlayAgeMs);
       const recordLabel = recording.active ? 'active' : 'idle';
       const recordState = recording.active ? 'real' : 'unavailable';
 
@@ -4412,7 +4448,7 @@ def _build_desktop_console_html() -> str:
         `<div class="runtime-line small">reason=${htmlEscape(formatMaybe(passthrough.reason))} ts=${htmlEscape(formatMaybe(passthrough.lastChangedTsMs))}</div>`,
         `<div class="runtime-line"><strong>pySLAM</strong> ${badgeHtml(pyslam.truthState, pyslam.truthLabel)} <span class="small">backend=${htmlEscape(formatMaybe(pyslam.backend || pyslamEvidence.backend))} state=${htmlEscape(formatMaybe(pyslam.state || pyslamEvidence.state))} fps=${htmlEscape(formatMaybe(pyslam.fps ?? pyslamEvidence.fps))} latency=${htmlEscape(formatMaybe(pyslam.lastInferMs ?? pyslamEvidence.last_infer_ms))} root=${htmlEscape(String((pyslam.rootDetected ?? pyslamEvidence.root_detected) === true))}</span></div>`,
         `<div class="runtime-line"><strong>Overlays</strong> ${badgeHtml(overlayState, overlayState)} ${htmlEscape(overlays)}</div>`,
-        `<div class="runtime-line small">latest=${htmlEscape(formatMaybe(truth.latestOverlayAssetId || latest.latestOverlayAssetId))} available=${htmlEscape(String(truth.overlayAvailable === true || latest.overlayAvailable === true))} reason=${htmlEscape(formatMaybe(truth.overlayReason || latest.overlayReason))}</div>`,
+        `<div class="runtime-line small">latest=${htmlEscape(formatMaybe(truth.latestOverlayAssetId || latest.latestOverlayAssetId))} available=${htmlEscape(String(truth.overlayAvailable === true || latest.overlayAvailable === true))} reason=${htmlEscape(formatMaybe(truth.overlayReason || latest.overlayReason))} freshness=${htmlEscape(overlayFreshness)} age=${htmlEscape(overlayAgeMs)}</div>`,
         `<div class="runtime-line small">previewAssets=${htmlEscape(overlayPreviewIds)}</div>`,
         `<div class="runtime-line"><strong>Recording</strong> ${badgeHtml(recordState, recordLabel)} <span class="small">${htmlEscape(formatMaybe(recording.lastRunPackage || recording.recordingPath))}</span></div>`,
         `<div class="runtime-line"><strong>Target Session</strong> ${target ? htmlEscape(formatMaybe(target.sessionId)) + ' <span class="small">tracker=' + htmlEscape(formatMaybe(target.tracker)) + '</span>' : '-'}</div>`,
@@ -4430,6 +4466,7 @@ def _build_desktop_console_html() -> str:
         const backend = formatMaybe(evidence.backend || row.backend);
         const model = formatMaybe(evidence.model || row.model);
         const device = formatMaybe(evidence.device || row.device);
+        const deviceReason = formatMaybe(evidence.device_reason || row.deviceReason);
         const reason = formatMaybe(evidence.reason || row.reason);
         const isMock = (evidence.is_mock === true || row.isMock === true) ? 'true' : 'false';
         const muted = row.muted === true ? 'true' : 'false';
@@ -4443,7 +4480,7 @@ def _build_desktop_console_html() -> str:
             <div class="provider-name">${htmlEscape(key)}</div>
             <div class="provider-meta">
               <div>${badgeHtml(state, state)} <span class="small">backend=${htmlEscape(backend)} model=${htmlEscape(model)} device=${htmlEscape(device)}</span></div>
-              <div class="small">is_mock=${htmlEscape(isMock)}${key === 'tts' ? ' muted=' + htmlEscape(muted) : ''} reason=${htmlEscape(reason)} last_success_ts=${htmlEscape(String(lastSuccess))} last_infer_ms=${htmlEscape(String(lastInfer))} fps=${htmlEscape(String(fps))}${key === 'pyslamRealtime' ? ' state=' + htmlEscape(runtimeState) + ' root_detected=' + htmlEscape(rootDetected) : ''}</div>
+              <div class="small">is_mock=${htmlEscape(isMock)}${key === 'tts' ? ' muted=' + htmlEscape(muted) : ''} reason=${htmlEscape(reason)} device_reason=${htmlEscape(deviceReason)} last_success_ts=${htmlEscape(String(lastSuccess))} last_infer_ms=${htmlEscape(String(lastInfer))} fps=${htmlEscape(String(fps))}${key === 'pyslamRealtime' ? ' state=' + htmlEscape(runtimeState) + ' root_detected=' + htmlEscape(rootDetected) : ''}</div>
             </div>
           </div>`;
       }).join('');
@@ -4505,13 +4542,18 @@ def _build_desktop_console_html() -> str:
       const assetId = row.assetId || null;
       const available = row.overlayAvailable === true;
       const reason = formatMaybe(row.overlayReason);
+      const freshness = formatMaybe(row.freshness);
+      const ageMs = formatMaybe(row.ageMs);
+      const device = formatMaybe(row.device);
+      const deviceReason = formatMaybe(row.deviceReason);
+      const inferMs = formatMaybe(row.lastInferMs);
       if(available && assetId){
         setImg(imgId, assetId);
-        setMeta(metaId, `asset=${formatMaybe(assetId)} reason=${reason}`);
+        setMeta(metaId, `asset=${formatMaybe(assetId)} freshness=${freshness} age=${ageMs} inferMs=${inferMs} device=${device} deviceReason=${deviceReason} reason=${reason}`);
         return;
       }
       setImg(imgId, null);
-      setMeta(metaId, `unavailable reason=${reason}`);
+      setMeta(metaId, `unavailable freshness=${freshness} age=${ageMs} device=${device} deviceReason=${deviceReason} reason=${reason}`);
     }
     async function postJson(url, body){
       const r = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
@@ -7670,6 +7712,39 @@ def _encode_det_overlay_to_png(payload: dict[str, Any]) -> tuple[bytes, int, int
     return (out.getvalue(), image_w, image_h)
 
 
+def _overlay_fresh_threshold_ms() -> int:
+    raw = str(os.getenv("BYES_OVERLAY_FRESH_MS", "2500")).strip() or "2500"
+    try:
+        return max(250, int(raw))
+    except Exception:
+        return 2500
+
+
+def _overlay_frame_is_stale(gateway: GatewayApp, kind: str, frame_seq: int) -> bool:
+    safe_kind = str(kind or "").strip().lower()
+    safe_frame_seq = int(max(1, int(frame_seq)))
+    latest_frame_meta = gateway._latest_frame_meta if isinstance(gateway._latest_frame_meta, dict) else {}  # noqa: SLF001
+    latest_ingested_seq = _to_nonnegative_int_or_none(latest_frame_meta.get("frameSeq")) or 0
+    if latest_ingested_seq > safe_frame_seq:
+        return True
+    latest_overlay = gateway._latest_overlay_assets.get(safe_kind) if isinstance(gateway._latest_overlay_assets, dict) else None  # noqa: SLF001
+    latest_overlay_seq = _to_nonnegative_int_or_none((latest_overlay or {}).get("frameSeq")) or 0
+    return latest_overlay_seq > safe_frame_seq
+
+
+def _overlay_freshness_label(*, overlay_available: bool, overlay_reason: str | None, asset_id: str | None, ts_ms: int | None) -> tuple[str, int | None]:
+    ts_value = _to_nonnegative_int_or_none(ts_ms)
+    age_ms = max(0, _now_ms() - ts_value) if ts_value is not None else None
+    reason_text = str(overlay_reason or "").strip().lower()
+    if overlay_available:
+        if age_ms is None or age_ms <= _overlay_fresh_threshold_ms():
+            return "fresh", age_ms
+        return "stale_hold", age_ms
+    if asset_id and (reason_text.startswith("stale_hold:") or reason_text in {"asset_expired", "asset_missing", "asset_not_found"}):
+        return "stale_hold", age_ms
+    return "unavailable", age_ms
+
+
 async def _emit_vis_overlay_v1_event(
     *,
     gateway: GatewayApp,
@@ -7682,11 +7757,14 @@ async def _emit_vis_overlay_v1_event(
     height: int,
 ) -> None:
     kind_token = str(kind or "").strip().lower() or "unknown"
+    if _overlay_frame_is_stale(gateway, kind_token, frame_seq):
+        return
     provider_meta = {
         "backend": payload.get("backend"),
         "model": payload.get("model"),
         "endpoint": payload.get("endpoint"),
         "device": payload.get("device"),
+        "deviceReason": payload.get("deviceReason") or payload.get("device_reason"),
         "isMock": payload.get("isMock"),
     }
     infer_ms = _to_nonnegative_int_or_none(payload.get("latencyMs"))
@@ -7696,6 +7774,7 @@ async def _emit_vis_overlay_v1_event(
         "schemaVersion": "byes.vis.overlay.v1",
         "kind": kind_token,
         "assetId": str(asset.asset_id),
+        "frameSeq": int(max(1, int(frame_seq))),
         "w": int(max(1, int(width))),
         "h": int(max(1, int(height))),
         "providerMeta": provider_meta,
@@ -7704,9 +7783,12 @@ async def _emit_vis_overlay_v1_event(
     }
     gateway._latest_overlay_assets[kind_token] = {  # noqa: SLF001
         "assetId": str(asset.asset_id),
+        "frameSeq": int(max(1, int(frame_seq))),
         "w": int(max(1, int(width))),
         "h": int(max(1, int(height))),
         "inferMs": infer_ms,
+        "device": payload.get("device"),
+        "deviceReason": payload.get("deviceReason") or payload.get("device_reason"),
         "providerMeta": provider_meta,
         "tsMs": _now_ms(),
     }
@@ -7890,6 +7972,8 @@ async def _emit_seg_mask_v1_event(
     component: str,
     payload: dict[str, Any],
 ) -> None:
+    if _overlay_frame_is_stale(gateway, "seg", frame_seq):
+        return
     segments = payload.get("segments")
     if not isinstance(segments, list):
         return
@@ -7961,6 +8045,8 @@ async def _emit_depth_map_v1_event(
     component: str,
     payload: dict[str, Any],
 ) -> None:
+    if _overlay_frame_is_stale(gateway, "depth", frame_seq):
+        return
     grid = payload.get("grid")
     if not isinstance(grid, dict):
         return

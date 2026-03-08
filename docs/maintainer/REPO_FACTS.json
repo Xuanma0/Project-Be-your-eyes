@@ -15,8 +15,8 @@
   "capturedAt": "2026-03-08",
   "branch": "feature/unity-skeleton",
   "head": "run_git_rev_parse_HEAD",
-  "version": "v5.08.4",
-  "versionLabelNote": "Canonical facts reflect repository state during the v5.08.4 Real SEG/DEPTH Activation patch focused on replacing SAM3 and DA3 service stubs with real inference, aligning provider truth to real runtime evidence, and feeding real seg/depth overlay assets through the existing Desktop Console and Quest HUD pipeline.",
+  "version": "v5.09",
+  "versionLabelNote": "Canonical facts reflect repository state during the v5.09 Real Overlay Loop & GPU Bring-up patch focused on probing CUDA with warmup-and-fallback truth, keeping SEG/DEPTH in the existing asset pipeline, exposing device/deviceReason through provider truth, and enforcing latest-frame-wins plus last-frame-hold across Desktop Console and Quest HUD.",
   "unity": {
     "editorVersion": "6000.3.10f1",
     "primaryBuildScene": "Assets/Scenes/Quest3SmokeScene.unity",

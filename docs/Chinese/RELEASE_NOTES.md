@@ -1,5 +1,12 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v5.09
+- 将真实 `SEG/DEPTH` 从“单次可跑”推进到“持续 overlay loop 可用”：Gateway 现在对每种 overlay kind 只保留最新 pending frame，过期 `seg/depth` 结果会在发 asset 前被丢弃，Desktop 与 Quest 始终跟随最近一次成功 overlay，而不是积压旧帧。
+- 给 `sam3` 与 `da3` 增加试探式 GPU bring-up 真相：服务启动后先做 CUDA warmup infer，只有 warmup 成功才把 `device` 标成 `cuda`；否则立即回退到 `cpu`，并明确写出 `deviceReason`，不再伪装成 GPU 已启用。
+- 将 `deviceReason`、overlay freshness、overlay age、latest overlay asset id 接入 `/api/providers`、`/api/capabilities`、`/api/ui/state`、Desktop Console 与 Quest Panel，使 PC 与 Quest 两端看到的是同一份 `SEG/DEPTH` runtime truth。
+- 收紧 whole-FOV overlay 事件链路：Gateway 与 Quest 两端都会拒绝过期 overlay frame；Quest 仍保持 last-frame-hold，但只保留最近一次成功 asset，不会再把旧 pending frame 覆盖到较新的 overlay 上。
+- 保持 contracts 与 provider 语义不变：真实 `sam3` 继续通过现有 `seg.mask.v1` 资产链路发出，真实 `da3` 继续通过 `depth.map.v1` 资产链路发出，不新增协议。
+
 ## v5.08.2
 - `v5.08.2` realstack 启动脚本改为 fail closed：YOLO26、SAM3、DA3、pySLAM 的启动前状态会先打印为 `READY_REAL`、`READY_MOCK`、`UNAVAILABLE_MISSING_PATH`、`UNAVAILABLE_RUNTIME` 四类之一，缺路径不再伪装成“已准备好”。
 - 修复 Quest realstack 对 `.env.example` / `.env` 空值的解析，避免空模型路径把 `BYES_MODE_PROFILE_JSON`、provider alias、pySLAM root 等变量污染成错误值。

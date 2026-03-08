@@ -4,6 +4,13 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v5.09
+- Promoted real `SEG/DEPTH` from single-shot bring-up into a sustained overlay loop: Gateway now tracks only the latest pending frame per overlay kind, drops stale `seg/depth` results before asset emission, and keeps Desktop/Quest on the newest successful overlay instead of accumulating old work.
+- Added probe-only GPU bring-up truth to `sam3` and `da3`: each service now attempts a CUDA warmup inference first, only reports `device=cuda` after a successful warmup, and otherwise falls back to CPU with an explicit `deviceReason` instead of pretending GPU is active.
+- Threaded `deviceReason`, overlay freshness, overlay age, and latest overlay asset ids through `/api/providers`, `/api/capabilities`, `/api/ui/state`, Desktop Console, and Quest panel summaries so the same `SEG/DEPTH` runtime truth is visible on both PC and Quest surfaces.
+- Hardened overlay event emission for whole-FOV HUD consumption: stale overlay frames are rejected at Gateway and Quest sides, while Quest continues last-frame-hold only for the most recent successful asset and never re-applies an older pending frame over a newer one.
+- Kept contracts and provider semantics stable: `sam3` still emits `seg.mask.v1` assets and `da3` still emits `depth.map.v1` assets through the existing Gateway asset pipeline without introducing a new protocol.
+
 ## v5.08.2
 - Hardened the `v5.08.2` realstack launcher to fail closed: YOLO26, SAM3, DA3, and pySLAM readiness now print as `READY_REAL`, `READY_MOCK`, `UNAVAILABLE_MISSING_PATH`, or `UNAVAILABLE_RUNTIME` before launch, and missing model paths no longer masquerade as ready providers.
 - Fixed empty-value parsing from `.env.example` / `.env` in the Quest realstack launcher so blank model-path settings no longer corrupt runtime env vars such as `BYES_MODE_PROFILE_JSON`, provider aliases, or pySLAM root detection.

@@ -31,6 +31,10 @@ namespace BYES.Quest
         private float _fpsTickStart;
         private readonly Dictionary<string, string> _pendingOverlayAssets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _appliedOverlayAssets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, long> _pendingOverlayFrameSeq = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, long> _appliedOverlayFrameSeq = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, long> _latestOverlayFrameSeq = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, long> _pendingOverlayTsMs = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Texture> _overlayTextureCache = new Dictionary<string, Texture>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _failedOverlayAssets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, bool> _overlayAvailability = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
@@ -182,6 +186,8 @@ namespace BYES.Quest
             {
                 return;
             }
+            var eventFrameSeq = ReadFrameSeq(evt, payload);
+            var eventTsMs = ReadEventTsMs(evt, payload);
 
             if (_freezeOverlay && (
                     string.Equals(name, "vis.overlay.v1", StringComparison.OrdinalIgnoreCase)
@@ -197,7 +203,7 @@ namespace BYES.Quest
             switch (name)
             {
                 case "vis.overlay.v1":
-                    HandleOverlayEvent(payload);
+                    HandleOverlayEvent(payload, eventFrameSeq, eventTsMs);
                     break;
                 case "seg.mask.v1":
                     if (_showSeg)
@@ -205,9 +211,9 @@ namespace BYES.Quest
                         var segAssetId = NormalizeAssetId(payload.Value<string>("assetId"));
                         if (!string.IsNullOrWhiteSpace(segAssetId))
                         {
-                            RequestOverlayAsset(segAssetId, applyMode: "seg");
+                            RequestOverlayAsset(segAssetId, applyMode: "seg", frameSeq: eventFrameSeq, eventTsMs: eventTsMs);
                         }
-                        LastSegTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                        UpdateOverlayTimestamp("seg", eventTsMs);
                     }
                     break;
                 case "depth.map.v1":
@@ -216,14 +222,14 @@ namespace BYES.Quest
                         var depthAssetId = NormalizeAssetId(payload.Value<string>("assetId"));
                         if (!string.IsNullOrWhiteSpace(depthAssetId))
                         {
-                            RequestOverlayAsset(depthAssetId, applyMode: "depth");
+                            RequestOverlayAsset(depthAssetId, applyMode: "depth", frameSeq: eventFrameSeq, eventTsMs: eventTsMs);
                         }
-                        LastDepthTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                        UpdateOverlayTimestamp("depth", eventTsMs);
                     }
                     break;
                 case "det.objects.v1":
                 case "det.objects":
-                    LastDetTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    UpdateOverlayTimestamp("det", eventTsMs);
                     if (_showDet)
                     {
                         UpdateDetOverlay(payload);
@@ -238,7 +244,7 @@ namespace BYES.Quest
             }
         }
 
-        private void HandleOverlayEvent(JObject payload)
+        private void HandleOverlayEvent(JObject payload, long frameSeq, long eventTsMs)
         {
             if (payload == null)
             {
@@ -256,9 +262,9 @@ namespace BYES.Quest
             {
                 if (_showDet)
                 {
-                    RequestOverlayAsset(assetId, applyMode: "det");
+                    RequestOverlayAsset(assetId, applyMode: "det", frameSeq: frameSeq, eventTsMs: eventTsMs);
                 }
-                LastDetTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                UpdateOverlayTimestamp("det", eventTsMs);
                 return;
             }
 
@@ -266,9 +272,9 @@ namespace BYES.Quest
             {
                 if (_showSeg)
                 {
-                    RequestOverlayAsset(assetId, applyMode: "seg");
+                    RequestOverlayAsset(assetId, applyMode: "seg", frameSeq: frameSeq, eventTsMs: eventTsMs);
                 }
-                LastSegTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                UpdateOverlayTimestamp("seg", eventTsMs);
                 return;
             }
 
@@ -276,9 +282,9 @@ namespace BYES.Quest
             {
                 if (_showDepth)
                 {
-                    RequestOverlayAsset(assetId, applyMode: "depth");
+                    RequestOverlayAsset(assetId, applyMode: "depth", frameSeq: frameSeq, eventTsMs: eventTsMs);
                 }
-                LastDepthTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                UpdateOverlayTimestamp("depth", eventTsMs);
                 return;
             }
 
@@ -286,18 +292,18 @@ namespace BYES.Quest
             {
                 if (_showDet)
                 {
-                    RequestOverlayAsset(assetId, applyMode: "det");
+                    RequestOverlayAsset(assetId, applyMode: "det", frameSeq: frameSeq, eventTsMs: eventTsMs);
                 }
                 if (_showSeg)
                 {
-                    RequestOverlayAsset(assetId, applyMode: "seg");
+                    RequestOverlayAsset(assetId, applyMode: "seg", frameSeq: frameSeq, eventTsMs: eventTsMs);
                 }
-                LastDetTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                LastSegTsMs = LastDetTsMs;
+                UpdateOverlayTimestamp("det", eventTsMs);
+                UpdateOverlayTimestamp("seg", eventTsMs);
             }
         }
 
-        private void RequestOverlayAsset(string assetId, string applyMode)
+        private void RequestOverlayAsset(string assetId, string applyMode, long frameSeq, long eventTsMs)
         {
             var normalizedAssetId = NormalizeAssetId(assetId);
             var normalizedMode = NormalizeApplyMode(applyMode);
@@ -305,13 +311,23 @@ namespace BYES.Quest
             {
                 return;
             }
+            if (IsStaleOverlayFrame(normalizedMode, frameSeq))
+            {
+                return;
+            }
+            RememberOverlayFrameSeq(normalizedMode, frameSeq);
 
             if (_overlayTextureCache.TryGetValue(normalizedAssetId, out var cachedTexture) && cachedTexture != null)
             {
                 ApplyOverlayTexture(normalizedMode, cachedTexture);
                 _appliedOverlayAssets[normalizedMode] = normalizedAssetId;
+                if (frameSeq > 0)
+                {
+                    _appliedOverlayFrameSeq[normalizedMode] = frameSeq;
+                }
                 _overlayAvailability[normalizedMode] = true;
                 _overlayReasons[normalizedMode] = "ok";
+                UpdateOverlayTimestamp(normalizedMode, eventTsMs);
                 _overlayUpdates += 1;
                 return;
             }
@@ -333,6 +349,8 @@ namespace BYES.Quest
             }
 
             _pendingOverlayAssets[normalizedMode] = normalizedAssetId;
+            _pendingOverlayFrameSeq[normalizedMode] = frameSeq;
+            _pendingOverlayTsMs[normalizedMode] = eventTsMs;
             if (_overlayFetchInFlight.Contains(normalizedMode))
             {
                 return;
@@ -358,6 +376,10 @@ namespace BYES.Quest
                     }
 
                     _pendingOverlayAssets.Remove(applyMode);
+                    _pendingOverlayFrameSeq.TryGetValue(applyMode, out var pendingFrameSeq);
+                    _pendingOverlayFrameSeq.Remove(applyMode);
+                    _pendingOverlayTsMs.TryGetValue(applyMode, out var pendingTsMs);
+                    _pendingOverlayTsMs.Remove(applyMode);
                     Texture texture = null;
                     var bytes = 0;
                     var elapsedMs = 0f;
@@ -373,6 +395,10 @@ namespace BYES.Quest
                     if (_pendingOverlayAssets.TryGetValue(applyMode, out var newerAssetId)
                         && !string.IsNullOrWhiteSpace(newerAssetId)
                         && !string.Equals(newerAssetId, assetId, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+                    if (IsStaleOverlayFrame(applyMode, pendingFrameSeq))
                     {
                         continue;
                     }
@@ -395,8 +421,13 @@ namespace BYES.Quest
                     _failedOverlayAssets.Remove(assetId);
                     ApplyOverlayTexture(applyMode, texture);
                     _appliedOverlayAssets[applyMode] = assetId;
+                    if (pendingFrameSeq > 0)
+                    {
+                        _appliedOverlayFrameSeq[applyMode] = pendingFrameSeq;
+                    }
                     _overlayAvailability[applyMode] = true;
                     _overlayReasons[applyMode] = "ok";
+                    UpdateOverlayTimestamp(applyMode, pendingTsMs);
                     _overlayUpdates += 1;
                 }
             }
@@ -722,6 +753,93 @@ namespace BYES.Quest
             }
 
             return normalized.Trim();
+        }
+
+        private static long ReadFrameSeq(JObject evt, JObject payload)
+        {
+            var parsed = ReadLong(payload?["frameSeq"]);
+            if (parsed > 0)
+            {
+                return parsed;
+            }
+            parsed = ReadLong(evt?["frameSeq"]);
+            return parsed > 0 ? parsed : -1;
+        }
+
+        private static long ReadEventTsMs(JObject evt, JObject payload)
+        {
+            var parsed = ReadLong(payload?["tsMs"]);
+            if (parsed > 0)
+            {
+                return parsed;
+            }
+            parsed = ReadLong(evt?["tsMs"]);
+            if (parsed > 0)
+            {
+                return parsed;
+            }
+            return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        }
+
+        private static long ReadLong(JToken token)
+        {
+            if (token == null)
+            {
+                return -1;
+            }
+            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+            {
+                return token.Value<long>();
+            }
+            return long.TryParse(token.ToString(), out var parsed) ? parsed : -1;
+        }
+
+        private bool IsStaleOverlayFrame(string applyMode, long frameSeq)
+        {
+            if (frameSeq <= 0)
+            {
+                return false;
+            }
+            if (_latestOverlayFrameSeq.TryGetValue(applyMode, out var latestFrameSeq) && frameSeq < latestFrameSeq)
+            {
+                return true;
+            }
+            if (_appliedOverlayFrameSeq.TryGetValue(applyMode, out var appliedFrameSeq) && frameSeq < appliedFrameSeq)
+            {
+                return true;
+            }
+            return false;
+        }
+
+        private void RememberOverlayFrameSeq(string applyMode, long frameSeq)
+        {
+            if (frameSeq <= 0)
+            {
+                return;
+            }
+            if (_latestOverlayFrameSeq.TryGetValue(applyMode, out var latestFrameSeq) && latestFrameSeq >= frameSeq)
+            {
+                return;
+            }
+            _latestOverlayFrameSeq[applyMode] = frameSeq;
+        }
+
+        private void UpdateOverlayTimestamp(string applyMode, long tsMs)
+        {
+            var normalizedMode = NormalizeApplyMode(applyMode);
+            var safeTsMs = tsMs > 0 ? tsMs : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            switch (normalizedMode)
+            {
+                case "det":
+                    LastDetTsMs = safeTsMs;
+                    break;
+                case "seg":
+                    LastSegTsMs = safeTsMs;
+                    break;
+                case "depth":
+                    LastDepthTsMs = safeTsMs;
+                    break;
+            }
         }
     }
 }

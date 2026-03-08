@@ -300,6 +300,32 @@ def _resolve_runtime_device(requested: str | None) -> tuple[str, str | None, str
         return "cpu", f"cuda_probe_failed:{exc.__class__.__name__}", None
 
 
+def _build_warmup_image(size: int):
+    from PIL import Image, ImageDraw
+
+    safe_size = max(64, min(256, int(size)))
+    image = Image.new("RGB", (safe_size, safe_size), color=(36, 36, 36))
+    draw = ImageDraw.Draw(image)
+    inset = max(8, safe_size // 8)
+    draw.rectangle(
+        (inset, inset, safe_size - inset, safe_size - inset),
+        outline=(240, 240, 240),
+        fill=(96, 96, 96),
+        width=max(2, safe_size // 32),
+    )
+    return image
+
+
+def _warmup_sam3_processor(processor: Any) -> int:
+    warmup_started = time.perf_counter()
+    warmup_image = _build_warmup_image(_env_int("BYES_SAM3_WARMUP_IMAGE_SIZE", 160))
+    warmup_prompt = str(os.getenv("BYES_SAM3_WARMUP_PROMPT", "object")).strip() or "object"
+    state_payload = processor.set_image(warmup_image)
+    processor.reset_all_prompts(state_payload)
+    processor.set_text_prompt(warmup_prompt, state=state_payload)
+    return int(max(0.0, (time.perf_counter() - warmup_started) * 1000.0))
+
+
 def _patch_sam3_for_cpu() -> None:
     global _SAM3_CPU_PATCHED
     if _SAM3_CPU_PATCHED:
@@ -370,6 +396,45 @@ def _patch_sam3_for_cpu() -> None:
     _SAM3_CPU_PATCHED = True
 
 
+def _build_sam3_runtime(
+    state: dict[str, Any],
+    *,
+    candidate_device: str,
+    device_reason: str | None,
+    device_name: str | None,
+) -> dict[str, Any]:
+    import torch
+    import sam3.model_builder as model_builder
+    from sam3.model.sam3_image_processor import Sam3Processor
+
+    if candidate_device == "cpu":
+        _patch_sam3_for_cpu()
+
+    started = time.perf_counter()
+    model = model_builder.build_sam3_image_model(
+        device=candidate_device,
+        checkpoint_path=state.get("ckptPath"),
+        load_from_HF=False,
+    )
+    processor = Sam3Processor(
+        model,
+        resolution=max(128, _env_int("BYES_SAM3_RESOLUTION", 1008)),
+        device=candidate_device,
+        confidence_threshold=max(0.0, min(1.0, _env_float("BYES_SAM3_CONF_THRESH", 0.5))),
+    )
+    warmup_ms = _warmup_sam3_processor(processor)
+    return {
+        "processor": processor,
+        "device": candidate_device,
+        "deviceReason": device_reason,
+        "deviceName": device_name,
+        "loadMs": int(max(0.0, (time.perf_counter() - started) * 1000.0)),
+        "warmupMs": warmup_ms,
+        "loadedAtMs": int(time.time() * 1000),
+        "torchVersion": getattr(torch, "__version__", None),
+    }
+
+
 def _ensure_sam3_runtime(state: dict[str, Any]) -> dict[str, Any]:
     runtime = state.get("runtime")
     if isinstance(runtime, dict) and runtime.get("processor") is not None:
@@ -385,41 +450,41 @@ def _ensure_sam3_runtime(state: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError(load_error)
 
         import torch
-        import sam3.model_builder as model_builder
-        from sam3.model.sam3_image_processor import Sam3Processor
 
-        selected_device, device_reason, device_name = _resolve_runtime_device(state.get("device"))
-        if selected_device == "cpu":
-            _patch_sam3_for_cpu()
+        selected_device, resolved_reason, device_name = _resolve_runtime_device(state.get("device"))
+        final_runtime: dict[str, Any] | None = None
+        fallback_reason = resolved_reason
 
-        started = time.perf_counter()
-        model = model_builder.build_sam3_image_model(
-            device=selected_device,
-            checkpoint_path=state.get("ckptPath"),
-            load_from_HF=False,
-        )
-        processor = Sam3Processor(
-            model,
-            resolution=max(128, _env_int("BYES_SAM3_RESOLUTION", 1008)),
-            device=selected_device,
-            confidence_threshold=max(0.0, min(1.0, _env_float("BYES_SAM3_CONF_THRESH", 0.5))),
-        )
-        runtime = {
-            "processor": processor,
-            "device": selected_device,
-            "deviceReason": device_reason,
-            "deviceName": device_name,
-            "loadMs": int(max(0.0, (time.perf_counter() - started) * 1000.0)),
-            "loadedAtMs": int(time.time() * 1000),
-            "torchVersion": getattr(torch, "__version__", None),
-        }
-        state["runtime"] = runtime
-        state["actualDevice"] = selected_device
-        state["deviceReason"] = device_reason
-        state["deviceName"] = device_name
+        if selected_device == "cuda":
+            try:
+                final_runtime = _build_sam3_runtime(
+                    state,
+                    candidate_device="cuda",
+                    device_reason="cuda_warmup_ok",
+                    device_name=device_name,
+                )
+            except Exception as exc:
+                fallback_reason = f"cuda_warmup_failed:{exc.__class__.__name__}"
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+        if final_runtime is None:
+            final_runtime = _build_sam3_runtime(
+                state,
+                candidate_device="cpu",
+                device_reason=fallback_reason,
+                device_name=device_name,
+            )
+
+        state["runtime"] = final_runtime
+        state["actualDevice"] = final_runtime.get("device")
+        state["deviceReason"] = final_runtime.get("deviceReason")
+        state["deviceName"] = final_runtime.get("deviceName")
         state["sam3Ready"] = True
         state["sam3LoadError"] = None
-        return runtime
+        return final_runtime
 
 
 def _candidate_prompts(targets: list[str], prompt: dict[str, Any] | None) -> list[str]:
@@ -544,7 +609,7 @@ def _load_state() -> dict[str, Any]:
     timeout_ms = max(1, int(str(os.getenv("BYES_SAM3_TIMEOUT_MS", "2000")).strip() or "2000"))
     model_id = _now_model_id()
     ckpt_path = str(os.getenv("BYES_SAM3_CKPT_PATH", "")).strip() or None
-    device = str(os.getenv("BYES_SAM3_DEVICE", "cpu")).strip() or "cpu"
+    device = str(os.getenv("BYES_SAM3_DEVICE", "auto")).strip() or "auto"
 
     state: dict[str, Any] = {
         "mode": mode,
@@ -625,6 +690,7 @@ def healthz() -> dict[str, Any]:
         "warningsCount": int(state.get("warningsCount", 0) or 0),
         "modelLoaded": bool(isinstance(state.get("runtime"), dict) and state["runtime"].get("processor") is not None),
         "loadMs": (state.get("runtime") or {}).get("loadMs") if isinstance(state.get("runtime"), dict) else None,
+        "warmupMs": (state.get("runtime") or {}).get("warmupMs") if isinstance(state.get("runtime"), dict) else None,
     }
 
 

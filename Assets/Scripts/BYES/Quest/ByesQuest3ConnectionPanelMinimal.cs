@@ -103,6 +103,10 @@ namespace BYES.Quest
         private bool _overlayAvailable;
         private string _overlayReason = "asset_not_emitted";
         private string _latestOverlayAssetId = "-";
+        private string _latestOverlayFreshness = "unavailable";
+        private long _latestOverlayAgeMs = -1;
+        private string _segTruthSummary = "seg[-]";
+        private string _depthTruthSummary = "depth[-]";
         private string _pyslamTruthState = "unavailable";
         private string _pyslamBackend = "-";
         private string _pyslamState = "-";
@@ -3044,6 +3048,18 @@ namespace BYES.Quest
             {
                 _latestOverlayAssetId = "-";
             }
+            _latestOverlayFreshness = (truth?.Value<string>("overlayFreshness")
+                                       ?? stateObj["latest"]?.Value<string>("overlayFreshness")
+                                       ?? string.Empty).Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(_latestOverlayFreshness))
+            {
+                _latestOverlayFreshness = _overlayAvailable ? "fresh" : "unavailable";
+            }
+            _latestOverlayAgeMs = ReadNonNegativeLong(truth?["overlayAgeMs"]);
+            if (_latestOverlayAgeMs < 0)
+            {
+                _latestOverlayAgeMs = ReadNonNegativeLong(stateObj["latest"]?["overlayAgeMs"]);
+            }
 
             var frameTruth = truth?["frameSource"] as JObject;
             _frameTruthSource = NormalizeFrameSourceTruthToken(frameTruth?.Value<string>("frameSource"));
@@ -3157,6 +3173,8 @@ namespace BYES.Quest
                 _targetTracker = (targetSession.Value<string>("tracker") ?? _targetTracker).Trim();
             }
 
+            UpdateOverlayProviderSummary("seg", providers?["seg"] as JObject, stateObj["latest"]?["overlayAssets"]?["seg"] as JObject);
+            UpdateOverlayProviderSummary("depth", providers?["depth"] as JObject, stateObj["latest"]?["overlayAssets"]?["depth"] as JObject);
             ApplyOverlayTruthToHud(
                 providers,
                 stateObj["latest"]?["overlayAssets"] as JObject);
@@ -3220,6 +3238,51 @@ namespace BYES.Quest
             }
 
             return null;
+        }
+
+        private void UpdateOverlayProviderSummary(string overlayKind, JObject providerRow, JObject overlayRow)
+        {
+            var kind = string.IsNullOrWhiteSpace(overlayKind) ? "-" : overlayKind.Trim().ToLowerInvariant();
+            var truthState = NormalizeTruthStateToken(providerRow?.Value<string>("truthState") ?? providerRow?.Value<string>("truthLabel"));
+            var backend = (providerRow?.Value<string>("backend") ?? "-").Trim();
+            if (string.IsNullOrWhiteSpace(backend))
+            {
+                backend = "-";
+            }
+            var device = (providerRow?.Value<string>("device") ?? "-").Trim();
+            if (string.IsNullOrWhiteSpace(device))
+            {
+                device = "-";
+            }
+            var deviceReason = (providerRow?.Value<string>("deviceReason") ?? "-").Trim();
+            if (string.IsNullOrWhiteSpace(deviceReason))
+            {
+                deviceReason = "-";
+            }
+            var inferMs = ReadNonNegativeLong(providerRow?["lastInferMs"]);
+            var overlayAgeMs = ReadNonNegativeLong(overlayRow?["ageMs"]);
+            var overlayFreshness = (overlayRow?.Value<string>("freshness") ?? string.Empty).Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(overlayFreshness))
+            {
+                overlayFreshness = overlayRow?.Value<bool?>("overlayAvailable") == true ? "fresh" : "unavailable";
+            }
+            var assetId = (overlayRow?.Value<string>("assetId") ?? "-").Trim();
+            if (string.IsNullOrWhiteSpace(assetId))
+            {
+                assetId = "-";
+            }
+            var overlayReason = (overlayRow?.Value<string>("overlayReason") ?? providerRow?.Value<string>("reason") ?? "unknown").Trim().ToLowerInvariant();
+            var inferText = inferMs >= 0 ? $"{inferMs}ms" : "-";
+            var ageText = overlayAgeMs >= 0 ? $"{overlayAgeMs}ms" : "-";
+            var summary = $"{kind}[{truthState}:{backend}] dev={device}/{deviceReason} infer={inferText} asset={assetId} fresh={overlayFreshness} age={ageText} reason={overlayReason}";
+            if (kind == "seg")
+            {
+                _segTruthSummary = summary;
+            }
+            else if (kind == "depth")
+            {
+                _depthTruthSummary = summary;
+            }
         }
 
         private void ApplyOverlayTruthToHud(JObject providers, JObject overlayAssets)
@@ -3463,7 +3526,9 @@ namespace BYES.Quest
                 captureText += $" | {_providerSummary}";
             }
             captureText += $" | overlays={GetOverlayKindsText()}";
-            captureText += $" | overlayAvail={(_overlayAvailable ? "yes" : "no")} asset={_latestOverlayAssetId} reason={_overlayReason}";
+            captureText += $" | overlayAvail={(_overlayAvailable ? "yes" : "no")} asset={_latestOverlayAssetId} fresh={_latestOverlayFreshness} age={(_latestOverlayAgeMs >= 0 ? _latestOverlayAgeMs + "ms" : "-")} reason={_overlayReason}";
+            captureText += $" | {_segTruthSummary}";
+            captureText += $" | {_depthTruthSummary}";
             captureText += $" | {GetPySlamSummaryText()}";
             _lastUploadText.Set(uploadText);
             _lastE2eText.Set(e2eText);
@@ -3506,7 +3571,7 @@ namespace BYES.Quest
                     $"depthAge={(_visionHud.LastDepthAgeMs >= 0 ? _visionHud.LastDepthAgeMs + "ms" : "-")} " +
                     $"detAge={(_visionHud.LastDetAgeMs >= 0 ? _visionHud.LastDetAgeMs + "ms" : "-")} " +
                     $"mode={(_visionHud.FullFovOverlayLayer ? "whole_fov_hold" : "panel_hold")} freeze={(_visionHud.FreezeOverlay ? "on" : "off")} overlays={GetOverlayKindsText()} " +
-                    $"overlayAvail={(_overlayAvailable ? "yes" : "no")} reason={_overlayReason} det={_visionHud.LastDetOverlayReason} seg={_visionHud.LastSegOverlayReason} depth={_visionHud.LastDepthOverlayReason}");
+                    $"overlayAvail={(_overlayAvailable ? "yes" : "no")} freshness={_latestOverlayFreshness} age={(_latestOverlayAgeMs >= 0 ? _latestOverlayAgeMs + "ms" : "-")} reason={_overlayReason} det={_visionHud.LastDetOverlayReason} seg={_visionHud.LastSegOverlayReason} depth={_visionHud.LastDepthOverlayReason}");
             }
             else
             {
@@ -3530,7 +3595,7 @@ namespace BYES.Quest
             if (_rawVisible)
             {
                 var providerAge = _providerTsMs > 0 ? $"{Math.Max(0, nowMs - _providerTsMs)}ms" : "-";
-                var hint = $"trackSession={_targetSessionId} | recordPath={GetRecordingPathText()} | passthrough={GetPassthroughStatus()} | guideAudio={(_guidanceAudioEnabled ? "on" : "off")} | guideHaptics={(_guidanceHapticsEnabled ? "on" : "off")} | capture={GetFrameSourceText()}[{GetFrameSourceTruthState()}]({captureAge}) reason={GetFrameSourceTruthReason()} | overlays={GetOverlayKindsText()} asset={_latestOverlayAssetId} avail={(_overlayAvailable ? "yes" : "no")} overlayReason={_overlayReason} hudMode={(_visionHud != null && _visionHud.FullFovOverlayLayer ? "whole_fov_hold" : "panel_hold")} freeze={(_visionHud != null && _visionHud.FreezeOverlay ? "on" : "off")} | {GetPySlamSummaryText()} | asr={_lastAsrText}({asrAge})[{_asrTruthState}:{_asrBackend}] | tts={_lastTtsText}({ttsAge})[{_ttsTruthState}:{_ttsBackend}] muted={(_ttsMuted ? "yes" : "no")} | voiceAction={_lastVoiceAction} | autoVoice={(_autoVoiceCommandEnabled ? "on" : "off")} | providers=[{_providerSummary}] age={providerAge}";
+                var hint = $"trackSession={_targetSessionId} | recordPath={GetRecordingPathText()} | passthrough={GetPassthroughStatus()} | guideAudio={(_guidanceAudioEnabled ? "on" : "off")} | guideHaptics={(_guidanceHapticsEnabled ? "on" : "off")} | capture={GetFrameSourceText()}[{GetFrameSourceTruthState()}]({captureAge}) reason={GetFrameSourceTruthReason()} | overlays={GetOverlayKindsText()} asset={_latestOverlayAssetId} avail={(_overlayAvailable ? "yes" : "no")} fresh={_latestOverlayFreshness} age={(_latestOverlayAgeMs >= 0 ? _latestOverlayAgeMs + "ms" : "-")} overlayReason={_overlayReason} hudMode={(_visionHud != null && _visionHud.FullFovOverlayLayer ? "whole_fov_hold" : "panel_hold")} freeze={(_visionHud != null && _visionHud.FreezeOverlay ? "on" : "off")} | {_segTruthSummary} | {_depthTruthSummary} | {GetPySlamSummaryText()} | asr={_lastAsrText}({asrAge})[{_asrTruthState}:{_asrBackend}] | tts={_lastTtsText}({ttsAge})[{_ttsTruthState}:{_ttsBackend}] muted={(_ttsMuted ? "yes" : "no")} | voiceAction={_lastVoiceAction} | autoVoice={(_autoVoiceCommandEnabled ? "on" : "off")} | providers=[{_providerSummary}] age={providerAge}";
                 if (probeCount10s >= 8 && !liveEnabled)
                 {
                     hint = "MainThread Spike suspect: probe polling | " + hint;

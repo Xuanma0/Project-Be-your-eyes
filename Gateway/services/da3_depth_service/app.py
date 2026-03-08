@@ -227,6 +227,54 @@ def _resolve_model_dir(model_path_text: str | None) -> Path | None:
     return None
 
 
+def _build_warmup_image(size: int = 96):
+    from PIL import Image
+
+    safe_size = max(32, int(size))
+    return Image.new("RGB", (safe_size, safe_size), color=(96, 112, 128))
+
+
+def _warmup_da3_model(model: Any) -> int:
+    started = time.perf_counter()
+    warmup_image = _build_warmup_image()
+    model.inference(
+        [warmup_image],
+        process_res=max(128, _env_int("BYES_DA3_WARMUP_PROCESS_RES", 128)),
+        ref_view_strategy="saddle_balanced",
+    )
+    return int(max(0.0, (time.perf_counter() - started) * 1000.0))
+
+
+def _build_da3_runtime(
+    state: dict[str, Any],
+    *,
+    candidate_device: str,
+    device_reason: str | None,
+    device_name: str | None,
+) -> dict[str, Any]:
+    from depth_anything_3.api import DepthAnything3
+
+    model_dir = _resolve_model_dir(state.get("modelPath"))
+    if model_dir is None:
+        raise RuntimeError("invalid_model_dir")
+
+    started = time.perf_counter()
+    model = DepthAnything3.from_pretrained(str(model_dir))
+    model = model.to(device=candidate_device)
+    model.eval()
+    warmup_ms = _warmup_da3_model(model)
+    return {
+        "model": model,
+        "device": candidate_device,
+        "deviceReason": device_reason,
+        "deviceName": device_name,
+        "modelDir": str(model_dir),
+        "loadMs": int(max(0.0, (time.perf_counter() - started) * 1000.0)),
+        "warmupMs": warmup_ms,
+        "loadedAtMs": int(time.time() * 1000),
+    }
+
+
 def _ensure_da3_runtime(state: dict[str, Any]) -> dict[str, Any]:
     runtime = state.get("runtime")
     if isinstance(runtime, dict) and runtime.get("model") is not None:
@@ -241,33 +289,42 @@ def _ensure_da3_runtime(state: dict[str, Any]) -> dict[str, Any]:
         if load_error:
             raise RuntimeError(load_error)
 
-        from depth_anything_3.api import DepthAnything3
+        import torch
 
         selected_device, device_reason, device_name = _resolve_runtime_device(state.get("device"))
-        model_dir = _resolve_model_dir(state.get("modelPath"))
-        if model_dir is None:
-            raise RuntimeError("invalid_model_dir")
+        final_runtime: dict[str, Any] | None = None
+        fallback_reason = device_reason
 
-        started = time.perf_counter()
-        model = DepthAnything3.from_pretrained(str(model_dir))
-        model = model.to(device=selected_device)
-        model.eval()
-        runtime = {
-            "model": model,
-            "device": selected_device,
-            "deviceReason": device_reason,
-            "deviceName": device_name,
-            "modelDir": str(model_dir),
-            "loadMs": int(max(0.0, (time.perf_counter() - started) * 1000.0)),
-            "loadedAtMs": int(time.time() * 1000),
-        }
-        state["runtime"] = runtime
-        state["actualDevice"] = selected_device
-        state["deviceReason"] = device_reason
-        state["deviceName"] = device_name
+        if selected_device == "cuda":
+            try:
+                final_runtime = _build_da3_runtime(
+                    state,
+                    candidate_device="cuda",
+                    device_reason="cuda_warmup_ok",
+                    device_name=device_name,
+                )
+            except Exception as exc:
+                fallback_reason = f"cuda_warmup_failed:{exc.__class__.__name__}"
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+        if final_runtime is None:
+            final_runtime = _build_da3_runtime(
+                state,
+                candidate_device="cpu",
+                device_reason=fallback_reason,
+                device_name=device_name,
+            )
+
+        state["runtime"] = final_runtime
+        state["actualDevice"] = final_runtime.get("device")
+        state["deviceReason"] = final_runtime.get("deviceReason")
+        state["deviceName"] = final_runtime.get("deviceName")
         state["da3Ready"] = True
         state["da3LoadError"] = None
-        return runtime
+        return final_runtime
 
 
 def _depth_to_grid(depth_map: Any, *, grid_w: int, grid_h: int) -> dict[str, Any]:
@@ -302,7 +359,7 @@ def _load_state() -> dict[str, Any]:
     timeout_ms = max(1, int(str(os.getenv("BYES_DA3_TIMEOUT_MS", "2000")).strip() or "2000"))
     model_id = _model_id()
     model_path_text = str(os.getenv("BYES_DA3_MODEL_PATH", "")).strip() or None
-    device = str(os.getenv("BYES_DA3_DEVICE", "cpu")).strip() or "cpu"
+    device = str(os.getenv("BYES_DA3_DEVICE", "auto")).strip() or "auto"
 
     state: dict[str, Any] = {
         "mode": mode,
@@ -386,6 +443,7 @@ def healthz() -> dict[str, Any]:
         "warningsCount": int(state.get("warningsCount", 0) or 0),
         "modelLoaded": bool(isinstance(state.get("runtime"), dict) and state["runtime"].get("model") is not None),
         "loadMs": (state.get("runtime") or {}).get("loadMs") if isinstance(state.get("runtime"), dict) else None,
+        "warmupMs": (state.get("runtime") or {}).get("warmupMs") if isinstance(state.get("runtime"), dict) else None,
     }
 
 
