@@ -17,6 +17,12 @@ Name catalog highlights (tool events):
 - `frame.input`
 - `frame.ack`
 - `frame.user_e2e`
+- `assist.trigger`
+- `det.objects.v1`
+- `vis.overlay.v1`
+- `seg.mask.v1`
+- `depth.map.v1`
+- `asr.transcript.v1`
 
 `v4.82` highlight:
 - `depth.estimate` payload can include optional `meta.refViewStrategy/provider/poseUsed`.

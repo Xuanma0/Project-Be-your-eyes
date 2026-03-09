@@ -50,6 +50,12 @@ namespace BYES.Core
             _ = ByesOverlayAckThrottler.EnsureExists();
             _ = ByesOverlayRenderer.EnsureExists();
             _ = ByesConfirmPanel.EnsureExists();
+            GatewayRuntimeContext.DeviceIdProvider = () => ByesFrameTelemetry.DeviceId;
+            GatewayRuntimeContext.ApiModeProvider = () => ByesModeManager.ToApiMode(ByesModeManager.Instance.GetMode());
+            GatewayRuntimeContext.FrameSentToTelemetrySink = (runId, frameSeq, captureTsMs) =>
+            {
+                ByesFrameTelemetry.OnFrameSentToGateway(runId, frameSeq, captureTsMs);
+            };
 
             var gatewayClient = FindFirstObjectByType<GatewayClient>();
             var planClient = FindFirstObjectByType<PlanClient>();

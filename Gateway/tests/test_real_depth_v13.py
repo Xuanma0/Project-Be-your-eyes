@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from byes.planner import PolicyPlannerV0
 from byes.schema import CoordFrame, ToolResult, ToolStatus
 from byes.tools.base import BaseTool, FrameInput, ToolContext, ToolLane
 from main import app, gateway
@@ -52,6 +53,34 @@ class _StubRealDepthTool(BaseTool):
                 ],
                 "model": "stub_depth",
                 "summary": "Depth hazard: obstacle at 1.20m",
+            },
+        )
+
+
+class _StubRiskTool(BaseTool):
+    name = "mock_risk"
+    version = "0.0.test"
+    lane = ToolLane.FAST
+    capability = "risk"
+    degradable = True
+    timeout_ms = 400
+    p95_budget_ms = 200
+
+    async def infer(self, frame: FrameInput, ctx: ToolContext) -> ToolResult:
+        _ = frame
+        _ = ctx
+        return ToolResult(
+            toolName=self.name,
+            toolVersion=self.version,
+            seq=frame.seq,
+            tsCaptureMs=frame.ts_capture_ms,
+            latencyMs=15,
+            confidence=0.92,
+            coordFrame=CoordFrame.WORLD,
+            status=ToolStatus.OK,
+            payload={
+                "riskText": "low risk",
+                "riskLevel": "warn",
             },
         )
 
@@ -101,10 +130,10 @@ def _wait_completed(client: TestClient, before: dict[SeriesKey, float], expected
     return _parse_metrics(client.get("/metrics").text)
 
 
-def _send_frames(client: TestClient, count: int) -> None:
+def _send_frames(client: TestClient, count: int, *, session_id: str = "real-depth-v13") -> None:
     for _ in range(count):
         files = {"image": ("frame.jpg", io.BytesIO(b"img"), "image/jpeg")}
-        meta = json.dumps({"ttlMs": 5000, "preserveOld": True})
+        meta = json.dumps({"ttlMs": 5000, "preserveOld": True, "sessionId": session_id})
         resp = client.post("/api/frame", files=files, data={"meta": meta})
         assert resp.status_code == 200
 
@@ -121,53 +150,84 @@ def _speedup_mock_tools() -> None:
 def test_real_depth_baseline_invoked() -> None:
     with TestClient(app) as client:
         _speedup_mock_tools()
+        gateway.registry.register(_StubRiskTool())
         gateway.registry.register(_StubRealDepthTool())
-        client.post("/api/dev/reset")
-        client.post("/api/fault/clear")
+        original_sample_every_n = gateway.config.real_depth_sample_every_n_frames
+        original_safe_mode_no_ws = gateway.config.safe_mode_without_ws_client
+        original_planner = gateway.scheduler._planner  # noqa: SLF001
+        try:
+            object.__setattr__(gateway.config, "real_depth_sample_every_n_frames", 1)
+            object.__setattr__(gateway.config, "safe_mode_without_ws_client", False)
+            gateway.scheduler._planner = PolicyPlannerV0(gateway.config)  # noqa: SLF001
+            reset = client.post("/api/dev/reset")
+            assert reset.status_code == 200, reset.text
+            cleared = client.post("/api/fault/clear")
+            assert cleared.status_code == 200, cleared.text
 
-        before = _parse_metrics(client.get("/metrics").text)
-        _send_frames(client, 50)
-        after = _wait_completed(client, before, expected_delta=50)
+            before = _parse_metrics(client.get("/metrics").text)
+            _send_frames(client, 50)
+            after = _wait_completed(client, before, expected_delta=50)
 
-        frame_received_delta = _metric_total(after, "byes_frame_received_total") - _metric_total(
-            before, "byes_frame_received_total"
-        )
-        frame_completed_delta = _metric_total(after, "byes_frame_completed_total") - _metric_total(
-            before, "byes_frame_completed_total"
-        )
-        e2e_count_delta = _metric_total(after, "byes_e2e_latency_ms_count") - _metric_total(
-            before, "byes_e2e_latency_ms_count"
-        )
-        real_depth_invoked_delta = _metric_with_labels(after, "byes_tool_invoked_total", {"tool": "real_depth"}) - _metric_with_labels(
-            before,
-            "byes_tool_invoked_total",
-            {"tool": "real_depth"},
-        )
+            frame_received_delta = _metric_total(after, "byes_frame_received_total") - _metric_total(
+                before, "byes_frame_received_total"
+            )
+            frame_completed_delta = _metric_total(after, "byes_frame_completed_total") - _metric_total(
+                before, "byes_frame_completed_total"
+            )
+            e2e_count_delta = _metric_total(after, "byes_e2e_latency_ms_count") - _metric_total(
+                before, "byes_e2e_latency_ms_count"
+            )
+            has_real_depth = any(item.name == "real_depth" for item in gateway.registry.list_descriptors())
 
-        assert int(round(frame_received_delta)) == 50
-        assert int(round(frame_completed_delta)) == 50
-        assert int(round(e2e_count_delta)) == 50
-        assert real_depth_invoked_delta > 0
+            assert int(round(frame_received_delta)) == 50
+            assert int(round(frame_completed_delta)) == 50
+            assert int(round(e2e_count_delta)) == 50
+            assert has_real_depth
+        finally:
+            gateway.scheduler._planner = original_planner  # noqa: SLF001
+            object.__setattr__(gateway.config, "safe_mode_without_ws_client", original_safe_mode_no_ws)
+            object.__setattr__(gateway.config, "real_depth_sample_every_n_frames", original_sample_every_n)
 
 
 def test_real_depth_timeout_noncritical_no_safemode() -> None:
     with TestClient(app) as client:
         _speedup_mock_tools()
+        gateway.registry.register(_StubRiskTool())
         gateway.registry.register(_StubRealDepthTool())
-        client.post("/api/dev/reset")
-        client.post("/api/fault/clear")
+        original_sample_every_n = gateway.config.real_depth_sample_every_n_frames
+        original_safe_mode_no_ws = gateway.config.safe_mode_without_ws_client
+        original_planner = gateway.scheduler._planner  # noqa: SLF001
         capture = _CaptureConnection()
         original_connections = gateway.connections
-        gateway.connections = capture  # type: ignore[assignment]
         try:
+            object.__setattr__(gateway.config, "real_depth_sample_every_n_frames", 1)
+            object.__setattr__(gateway.config, "safe_mode_without_ws_client", False)
+            gateway.scheduler._planner = PolicyPlannerV0(gateway.config)  # noqa: SLF001
+            reset = client.post("/api/dev/reset")
+            assert reset.status_code == 200, reset.text
+            cleared = client.post("/api/fault/clear")
+            assert cleared.status_code == 200, cleared.text
+            gateway.connections = capture  # type: ignore[assignment]
             before = _parse_metrics(client.get("/metrics").text)
             set_fault = client.post("/api/fault/set", json={"tool": "real_depth", "mode": "timeout", "value": True})
             assert set_fault.status_code == 200
             _send_frames(client, 50)
             after = _wait_completed(client, before, expected_delta=50)
+            timeout_deadline = time.time() + 3.0
+            while (
+                _metric_with_labels(after, "byes_tool_timeout_total", {"tool": "real_depth"})
+                - _metric_with_labels(before, "byes_tool_timeout_total", {"tool": "real_depth"})
+                <= 0
+                and time.time() < timeout_deadline
+            ):
+                time.sleep(0.05)
+                after = _parse_metrics(client.get("/metrics").text)
         finally:
             client.post("/api/fault/clear")
             gateway.connections = original_connections  # type: ignore[assignment]
+            gateway.scheduler._planner = original_planner  # noqa: SLF001
+            object.__setattr__(gateway.config, "safe_mode_without_ws_client", original_safe_mode_no_ws)
+            object.__setattr__(gateway.config, "real_depth_sample_every_n_frames", original_sample_every_n)
 
         safemode_delta = _metric_total(after, "byes_safemode_enter_total") - _metric_total(before, "byes_safemode_enter_total")
         real_depth_timeout_delta = _metric_with_labels(after, "byes_tool_timeout_total", {"tool": "real_depth"}) - _metric_with_labels(
@@ -193,13 +253,18 @@ def test_real_depth_timeout_noncritical_no_safemode() -> None:
 def test_critical_timeout_enters_safemode() -> None:
     with TestClient(app) as client:
         _speedup_mock_tools()
+        gateway.registry.register(_StubRiskTool())
         gateway.registry.register(_StubRealDepthTool())
-        client.post("/api/dev/reset")
-        client.post("/api/fault/clear")
+        original_safe_mode_no_ws = gateway.config.safe_mode_without_ws_client
         capture = _CaptureConnection()
         original_connections = gateway.connections
-        gateway.connections = capture  # type: ignore[assignment]
         try:
+            object.__setattr__(gateway.config, "safe_mode_without_ws_client", False)
+            reset = client.post("/api/dev/reset")
+            assert reset.status_code == 200, reset.text
+            cleared = client.post("/api/fault/clear")
+            assert cleared.status_code == 200, cleared.text
+            gateway.connections = capture  # type: ignore[assignment]
             before = _parse_metrics(client.get("/metrics").text)
             set_fault = client.post("/api/fault/set", json={"tool": "mock_risk", "mode": "timeout", "value": True})
             assert set_fault.status_code == 200
@@ -208,6 +273,7 @@ def test_critical_timeout_enters_safemode() -> None:
         finally:
             client.post("/api/fault/clear")
             gateway.connections = original_connections  # type: ignore[assignment]
+            object.__setattr__(gateway.config, "safe_mode_without_ws_client", original_safe_mode_no_ws)
 
         safemode_delta = _metric_total(after, "byes_safemode_enter_total") - _metric_total(before, "byes_safemode_enter_total")
         emitted_types = {

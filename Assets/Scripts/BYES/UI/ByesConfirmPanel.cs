@@ -6,6 +6,9 @@ using BeYourEyes.Adapters.Networking;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.XR;
+#if ENABLE_INPUT_SYSTEM
+using InputSystemKeyboard = UnityEngine.InputSystem.Keyboard;
+#endif
 
 namespace BYES.UI
 {
@@ -97,12 +100,12 @@ namespace BYES.UI
                 return;
             }
 
-            if (Input.GetKeyDown(KeyCode.Y))
+            if (WasKeyboardConfirmPressed(yesKey: true))
             {
                 SubmitDecision(true, "keyboard_yes");
                 return;
             }
-            if (Input.GetKeyDown(KeyCode.N))
+            if (WasKeyboardConfirmPressed(yesKey: false))
             {
                 SubmitDecision(false, "keyboard_no");
                 return;
@@ -279,7 +282,7 @@ namespace BYES.UI
             var primaryPressedNow = false;
             var secondaryPressedNow = false;
 
-            using (var devices = ListPool<InputDevice>.Get())
+            using (var devices = ListPool<UnityEngine.XR.InputDevice>.Get())
             {
                 var allDevices = devices.List;
                 InputDevices.GetDevices(allDevices);
@@ -291,11 +294,11 @@ namespace BYES.UI
                         continue;
                     }
                     anyDevice = true;
-                    if (device.TryGetFeatureValue(CommonUsages.primaryButton, out var primary) && primary)
+                    if (device.TryGetFeatureValue(UnityEngine.XR.CommonUsages.primaryButton, out var primary) && primary)
                     {
                         primaryPressedNow = true;
                     }
-                    if (device.TryGetFeatureValue(CommonUsages.secondaryButton, out var secondary) && secondary)
+                    if (device.TryGetFeatureValue(UnityEngine.XR.CommonUsages.secondaryButton, out var secondary) && secondary)
                     {
                         secondaryPressedNow = true;
                     }
@@ -314,6 +317,22 @@ namespace BYES.UI
             _prevPrimaryPressed = primaryPressedNow;
             _prevSecondaryPressed = secondaryPressedNow;
             return acceptPressed || rejectPressed;
+        }
+
+        private static bool WasKeyboardConfirmPressed(bool yesKey)
+        {
+#if ENABLE_INPUT_SYSTEM
+            var kb = InputSystemKeyboard.current;
+            if (kb != null)
+            {
+                return yesKey ? kb.yKey.wasPressedThisFrame : kb.nKey.wasPressedThisFrame;
+            }
+#endif
+#if ENABLE_LEGACY_INPUT_MANAGER
+            return yesKey ? Input.GetKeyDown(KeyCode.Y) : Input.GetKeyDown(KeyCode.N);
+#else
+            return false;
+#endif
         }
 
         private void UpdatePanelPose(bool forceSnap)

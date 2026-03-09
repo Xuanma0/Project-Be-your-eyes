@@ -36,6 +36,7 @@ namespace UnityEngine.XR.Templates.MR
         bool m_AllGoalsFinished;
         int m_SurfacesTapped;
         int m_CurrentGoalIndex = 0;
+        bool m_LoggedMissingGoalPanel;
 
         [Serializable]
         class Step
@@ -188,6 +189,18 @@ namespace UnityEngine.XR.Templates.MR
 
         void ProcessGoals()
         {
+            if (m_GoalPanelLazyFollow == null)
+            {
+                if (!m_LoggedMissingGoalPanel)
+                {
+                    m_LoggedMissingGoalPanel = true;
+                    Debug.LogWarning("[GoalManager] Missing m_GoalPanelLazyFollow reference. Disabling onboarding goal loop for this instance.", this);
+                }
+
+                m_AllGoalsFinished = true;
+                return;
+            }
+
             if (!m_CurrentGoal.Completed)
             {
                 switch (m_CurrentGoal.CurrentGoal)

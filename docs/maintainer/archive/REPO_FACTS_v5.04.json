@@ -1,0 +1,340 @@
+{
+  "snapshotLabel": "v5.04-maintainer-review",
+  "capturedAt": "2026-03-07",
+  "branch": "feature/unity-skeleton",
+  "head": "86ba11fba56d52cfc6c1f4c54520dbd99cdc0fac",
+  "version": "v5.05",
+  "versionLabelNote": "Maintainer files keep v5.04 naming by request, but repo VERSION is v5.05.",
+  "unity": {
+    "editorVersion": "6000.3.10f1",
+    "primaryBuildScene": "Assets/Scenes/Quest3SmokeScene.unity",
+    "enabledBuildScenes": [
+      "Assets/Scenes/Quest3SmokeScene.unity"
+    ]
+  },
+  "scenes": [
+    {
+      "path": "Assets/Scenes/Quest3SmokeScene.unity",
+      "enabledInBuild": true,
+      "role": "Current Quest smoke/runtime scene"
+    },
+    {
+      "path": "Assets/Scenes/SampleScene.unity",
+      "enabledInBuild": false,
+      "role": "Legacy desktop/sample scene"
+    },
+    {
+      "path": "Assets/Scenes/DemoScene.unity",
+      "enabledInBuild": false,
+      "role": "Legacy demo scene"
+    }
+  ],
+  "key_prefabs": [
+    {
+      "name": "BYES_HandMenu",
+      "path": "Assets/Prefabs/BYES/Quest/BYES_HandMenu.prefab",
+      "role": "Preferred Quest hand menu"
+    },
+    {
+      "name": "BYES_WristMenu",
+      "path": "Assets/Prefabs/BYES/Quest/BYES_WristMenu.prefab",
+      "role": "Legacy wrist menu"
+    }
+  ],
+  "key_scripts": [
+    {
+      "path": "Assets/Scripts/BYES/Quest/ByesQuest3ConnectionPanelMinimal.cs",
+      "role": "Quest smoke panel, runtime subsystem assembly, action entry"
+    },
+    {
+      "path": "Assets/Scripts/BYES/Quest/ByesHandMenuController.cs",
+      "role": "Current palm-up hand menu"
+    },
+    {
+      "path": "Assets/Scripts/BYES/Quest/ByesWristMenuController.cs",
+      "role": "Legacy wrist menu controller"
+    },
+    {
+      "path": "Assets/Scripts/BYES/Quest/ByesVisionHudController.cs",
+      "role": "Quest HUD overlay renderer"
+    },
+    {
+      "path": "Assets/Scripts/BYES/Quest/ByesPassthroughController.cs",
+      "role": "Quest passthrough bridge"
+    },
+    {
+      "path": "Assets/Scripts/BYES/Quest/ByesVoiceCommandRouter.cs",
+      "role": "Transcript-to-command router"
+    },
+    {
+      "path": "Assets/Scripts/BYES/Quest/ByesPcaFrameSource.cs",
+      "role": "PCA-named frame source placeholder using AR CPU image fallback"
+    },
+    {
+      "path": "Assets/BeYourEyes/Unity/Interaction/ScanController.cs",
+      "role": "Quest scan/live capture-upload controller"
+    },
+    {
+      "path": "Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs",
+      "role": "Quest HTTP/WS client and provider evidence consumer"
+    },
+    {
+      "path": "Gateway/main.py",
+      "role": "Gateway monolith: routes, runtime state, events, console, recording"
+    },
+    {
+      "path": "Gateway/services/inference_service/app.py",
+      "role": "Provider selection and inference endpoints"
+    }
+  ],
+  "api_endpoints": [
+    {
+      "method": "POST",
+      "path": "/api/frame",
+      "purpose": "Frame ingest and inference scheduling"
+    },
+    {
+      "method": "POST",
+      "path": "/api/frame/ack",
+      "purpose": "Quest feedback and runtime evidence ack"
+    },
+    {
+      "method": "POST",
+      "path": "/api/assist",
+      "purpose": "Frame-cache assist, find, ROI, target tracking"
+    },
+    {
+      "method": "POST",
+      "path": "/api/record/start",
+      "purpose": "Start Quest recording run package"
+    },
+    {
+      "method": "POST",
+      "path": "/api/record/stop",
+      "purpose": "Stop Quest recording and finalize manifest"
+    },
+    {
+      "method": "GET",
+      "path": "/ws/events",
+      "purpose": "Realtime event stream"
+    },
+    {
+      "method": "GET",
+      "path": "/api/assets/{asset_id}",
+      "purpose": "Overlay/frame asset download"
+    },
+    {
+      "method": "GET",
+      "path": "/api/assets/{asset_id}/meta",
+      "purpose": "Asset metadata lookup"
+    },
+    {
+      "method": "POST",
+      "path": "/api/asr",
+      "purpose": "ASR transcript ingest and event emission"
+    },
+    {
+      "method": "GET",
+      "path": "/api/version",
+      "purpose": "Build/version diagnostics"
+    },
+    {
+      "method": "POST",
+      "path": "/api/mode",
+      "purpose": "Mode switch"
+    },
+    {
+      "method": "GET",
+      "path": "/api/mode",
+      "purpose": "Read current mode"
+    },
+    {
+      "method": "POST",
+      "path": "/api/ping",
+      "purpose": "Reachability probe"
+    },
+    {
+      "method": "GET",
+      "path": "/api/capabilities",
+      "purpose": "Capabilities and provider runtime evidence"
+    },
+    {
+      "method": "GET",
+      "path": "/api/providers",
+      "purpose": "Provider state and overrides"
+    },
+    {
+      "method": "POST",
+      "path": "/api/providers/overrides",
+      "purpose": "Runtime provider override control"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ui/state",
+      "purpose": "Desktop console state snapshot"
+    },
+    {
+      "method": "GET",
+      "path": "/ui",
+      "purpose": "Embedded desktop console"
+    }
+  ],
+  "event_types": [
+    "frame.input",
+    "frame.ack",
+    "frame.e2e",
+    "frame.user_e2e",
+    "assist.trigger",
+    "ocr.read",
+    "risk.hazards",
+    "det.objects",
+    "det.objects.v1",
+    "seg.mask.v1",
+    "depth.map.v1",
+    "vis.overlay.v1",
+    "asr.transcript.v1",
+    "target.session",
+    "target.update",
+    "slam.pose.v1",
+    "slam.trajectory.v1",
+    "ui.mode_change",
+    "mode.profile"
+  ],
+  "capabilities": {
+    "ocr": {
+      "questVisibleOutput": true,
+      "realProviderAvailable": true,
+      "repoDefaultBackend": "mock",
+      "realstackDefaultBackend": "http->paddleocr if dependency available",
+      "status": "experimental"
+    },
+    "det": {
+      "questVisibleOutput": true,
+      "realProviderAvailable": true,
+      "repoDefaultBackend": "mock",
+      "realstackDefaultBackend": "http->yolo26",
+      "status": "experimental_but_real"
+    },
+    "seg": {
+      "questVisibleOutput": true,
+      "realProviderAvailable": true,
+      "repoDefaultBackend": "mock",
+      "realstackDefaultBackend": "http->sam3",
+      "status": "experimental_but_real"
+    },
+    "depth": {
+      "questVisibleOutput": true,
+      "realProviderAvailable": true,
+      "repoDefaultBackend": "mock_or_none",
+      "realstackDefaultBackend": "http->da3",
+      "status": "experimental_but_real"
+    },
+    "risk": {
+      "questVisibleOutput": "partial",
+      "realProviderAvailable": true,
+      "repoDefaultBackend": "reference_or_mock",
+      "realstackDefaultBackend": "http",
+      "status": "stable_logic_weak_ux"
+    },
+    "target_track": {
+      "questVisibleOutput": "partial",
+      "realProviderAvailable": true,
+      "repoDefaultBackend": "enabled_feature",
+      "status": "experimental"
+    },
+    "roi": {
+      "questVisibleOutput": "partial",
+      "realProviderAvailable": false,
+      "repoDefaultBackend": "enabled_feature",
+      "status": "incomplete"
+    },
+    "slam": {
+      "questVisibleOutput": "mostly_status_only",
+      "realProviderAvailable": "optional",
+      "repoDefaultBackend": "mock",
+      "realstackDefaultBackend": "http_if_enabled",
+      "status": "experimental"
+    },
+    "passthrough": {
+      "questVisibleOutput": true,
+      "realProviderAvailable": true,
+      "repoDefaultBackend": "quest_local",
+      "status": "experimental_but_real"
+    },
+    "tts": {
+      "questVisibleOutput": true,
+      "realProviderAvailable": true,
+      "repoDefaultBackend": "quest_local_android_tts",
+      "status": "stable"
+    },
+    "asr": {
+      "questVisibleOutput": "partial",
+      "realProviderAvailable": "optional",
+      "repoDefaultBackend": "disabled_or_mock",
+      "realstackDefaultBackend": "mock_or_faster_whisper_auto",
+      "status": "experimental"
+    },
+    "recording": {
+      "questVisibleOutput": true,
+      "realProviderAvailable": true,
+      "repoDefaultBackend": "enabled",
+      "status": "stable"
+    },
+    "desktop_console": {
+      "questVisibleOutput": false,
+      "realProviderAvailable": true,
+      "repoDefaultBackend": "enabled",
+      "status": "experimental_but_useful"
+    },
+    "pca_frame_source": {
+      "questVisibleOutput": false,
+      "realProviderAvailable": false,
+      "repoDefaultBackend": "placeholder",
+      "status": "incomplete"
+    },
+    "overlay": {
+      "questVisibleOutput": true,
+      "realProviderAvailable": true,
+      "repoDefaultBackend": "enabled_if_events_and_assets_available",
+      "status": "experimental_but_real"
+    }
+  },
+  "real_providers": {
+    "ocr": ["paddleocr", "tesseract", "http"],
+    "det": ["ultralytics", "yolo26", "http"],
+    "seg": ["sam3", "http"],
+    "depth": ["onnx", "da3", "http"],
+    "slam": ["http", "offline_pyslam_runner"],
+    "asr": ["faster_whisper"],
+    "tts": ["quest_android_tts"]
+  },
+  "build_outputs": {
+    "questApkDir": "Builds/Quest3",
+    "latestQuestApk": "Builds/Quest3/BYES_Quest3Smoke_v5.05.apk",
+    "latestQuestSymbols": "Builds/Quest3/BYES_Quest3Smoke_v5.05-2.2.1-v1-IL2CPP.symbols.zip",
+    "unityBuildLog": "Builds/logs/unity_build_quest3_android.log",
+    "unityBuildSummary": "Builds/logs/unity_build_quest3_android.summary.txt",
+    "runPackagesRoot": "Gateway/artifacts/run_packages",
+    "questRecordingsRoot": "Gateway/artifacts/run_packages/quest_recordings"
+  },
+  "runbook_paths": [
+    "docs/maintainer/ARCHITECTURE_REVIEW_v5.04.md",
+    "docs/maintainer/WORKFLOW_HANDOFF_v5.04.md",
+    "docs/maintainer/RUNBOOK_QUEST3.md",
+    "docs/maintainer/RUNBOOK_LOCAL.md",
+    "docs/maintainer/API_INVENTORY.md",
+    "docs/maintainer/CONFIG_MATRIX.md",
+    "README.md",
+    "tools/quest3/quest3_usb_realstack_v5_05.cmd",
+    "tools/unity/README_BUILD_ANDROID.md"
+  ],
+  "known_blockers": [
+    "True Meta PCA capture is not integrated; current pca source is AR CPU image fallback.",
+    "Legacy WS vs events_v1 still depends on BYES_INFERENCE_EMIT_WS_V1.",
+    "Quest UI is overloaded: hand menu, smoke panel, and legacy wrist menu overlap.",
+    "Gateway/main.py is monolithic and also serves embedded desktop HTML.",
+    "Requested DET backend yoloe26 is not evidenced in the current repo; only ultralytics and yolo26 were found.",
+    "Realtime pySLAM path is optional and not proven as a stable default; offline run-package pySLAM tooling is more concrete.",
+    "README and older maintainer docs contain version/build-scene drift relative to current branch reality."
+  ]
+}

@@ -3,9 +3,23 @@ from __future__ import annotations
 import os
 
 from byes.config import GatewayConfig
-from byes.inference.backends.base import OCRBackend, RiskBackend, SegBackend, DepthBackend, SlamBackend
-from byes.inference.backends.http import HttpOCRBackend, HttpRiskBackend, HttpSegBackend, HttpDepthBackend, HttpSlamBackend
-from byes.inference.backends.mock import MockOCRBackend, MockRiskBackend, MockSegBackend, MockDepthBackend, MockSlamBackend
+from byes.inference.backends.base import OCRBackend, RiskBackend, SegBackend, DetBackend, DepthBackend, SlamBackend
+from byes.inference.backends.http import (
+    HttpOCRBackend,
+    HttpRiskBackend,
+    HttpSegBackend,
+    HttpDetBackend,
+    HttpDepthBackend,
+    HttpSlamBackend,
+)
+from byes.inference.backends.mock import (
+    MockOCRBackend,
+    MockRiskBackend,
+    MockSegBackend,
+    MockDetBackend,
+    MockDepthBackend,
+    MockSlamBackend,
+)
 
 
 def _backend_name(value: str) -> str:
@@ -45,6 +59,16 @@ def get_seg_backend(config: GatewayConfig) -> SegBackend:
         timeout_ms = int(os.getenv("BYES_SEG_HTTP_TIMEOUT_MS", str(config.inference_seg_timeout_ms)) or config.inference_seg_timeout_ms)
         return HttpSegBackend(url=url, timeout_ms=timeout_ms, model_id=model_id)
     return MockSegBackend(model_id=model_id or "mock-seg")
+
+
+def get_det_backend(config: GatewayConfig) -> DetBackend:
+    name = _backend_name(os.getenv("BYES_DET_BACKEND", config.inference_det_backend))
+    model_id = str(os.getenv("BYES_DET_MODEL_ID", config.inference_det_model_id)).strip() or None
+    if name == "http":
+        url = os.getenv("BYES_DET_HTTP_URL", config.inference_det_http_url)
+        timeout_ms = int(os.getenv("BYES_DET_HTTP_TIMEOUT_MS", str(config.inference_det_timeout_ms)) or config.inference_det_timeout_ms)
+        return HttpDetBackend(url=url, timeout_ms=timeout_ms, model_id=model_id)
+    return MockDetBackend(model_id=model_id or "mock-det")
 
 
 def get_depth_backend(config: GatewayConfig) -> DepthBackend:

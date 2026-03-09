@@ -93,6 +93,18 @@ namespace BYES.Core
             PostModeChange(normalizedSource);
         }
 
+        public void SetModeLocal(ByesMode mode)
+        {
+            if (currentMode == mode)
+            {
+                return;
+            }
+
+            currentMode = mode;
+            var state = ByesSystemState.Instance;
+            state?.SetMode(mode);
+        }
+
         private GatewayClient ResolveGatewayClient()
         {
             if (_gatewayClient != null)
@@ -141,4 +153,3 @@ namespace BYES.Core
         }
     }
 }
-

@@ -34,9 +34,29 @@ namespace BYES.Telemetry
             EnsureInstance().RecordFrameSent(runId, frameSeq, captureTsMs);
         }
 
-        public static void AckFeedback(string runId, long frameSeq, string kind, bool accepted, long feedbackTsMs)
+        public static void AckFeedback(
+            string runId,
+            long frameSeq,
+            string kind,
+            bool accepted,
+            long feedbackTsMs,
+            string providerBackend = null,
+            string providerModel = null,
+            string providerDevice = null,
+            string providerReason = null,
+            bool? providerIsMock = null)
         {
-            EnsureInstance().SendFeedbackAck(runId, frameSeq, kind, accepted, feedbackTsMs);
+            EnsureInstance().SendFeedbackAck(
+                runId,
+                frameSeq,
+                kind,
+                accepted,
+                feedbackTsMs,
+                providerBackend,
+                providerModel,
+                providerDevice,
+                providerReason,
+                providerIsMock);
         }
 
         public static bool TryGetLatestFrameContext(out string runId, out int frameSeq)
@@ -134,7 +154,17 @@ namespace BYES.Telemetry
             _lastFrameSeq = Mathf.Max(1, (int)Math.Max(1, frameSeq));
         }
 
-        private void SendFeedbackAck(string runId, long frameSeq, string kind, bool accepted, long feedbackTsMs)
+        private void SendFeedbackAck(
+            string runId,
+            long frameSeq,
+            string kind,
+            bool accepted,
+            long feedbackTsMs,
+            string providerBackend,
+            string providerModel,
+            string providerDevice,
+            string providerReason,
+            bool? providerIsMock)
         {
             var normalizedRunId = string.IsNullOrWhiteSpace(runId) ? _lastRunId : runId.Trim();
             if (string.IsNullOrWhiteSpace(normalizedRunId))
@@ -161,6 +191,11 @@ namespace BYES.Telemetry
                 feedbackTsMs = feedbackMs,
                 kind = NormalizeAckKind(kind),
                 accepted = accepted,
+                providerBackend = string.IsNullOrWhiteSpace(providerBackend) ? null : providerBackend.Trim(),
+                providerModel = string.IsNullOrWhiteSpace(providerModel) ? null : providerModel.Trim(),
+                providerDevice = string.IsNullOrWhiteSpace(providerDevice) ? null : providerDevice.Trim(),
+                providerReason = string.IsNullOrWhiteSpace(providerReason) ? null : providerReason.Trim(),
+                providerIsMock = providerIsMock,
             };
 
             var endpoint = $"{gatewayClient.BaseUrl.TrimEnd('/')}/api/frame/ack";
@@ -212,6 +247,11 @@ namespace BYES.Telemetry
             public long feedbackTsMs;
             public string kind = "any";
             public bool accepted = true;
+            public string providerBackend;
+            public string providerModel;
+            public string providerDevice;
+            public string providerReason;
+            public bool? providerIsMock;
         }
     }
 }

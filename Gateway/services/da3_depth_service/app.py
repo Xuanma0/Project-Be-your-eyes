@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +27,7 @@ class DepthRequest(BaseModel):
 
 
 app = FastAPI(title=APP_TITLE)
+_DA3_RUNTIME_LOCK = threading.Lock()
 
 
 def _repo_root() -> Path:
@@ -157,6 +161,19 @@ def _decode_image_b64(value: str | None) -> bytes:
     return base64.b64decode(text, validate=False)
 
 
+def _decode_image(value: str | None):
+    from PIL import Image
+
+    payload = _decode_image_b64(value)
+    if not payload:
+        raise ValueError("missing_image_b64")
+    try:
+        with Image.open(io.BytesIO(payload)) as image:
+            return image.convert("RGB")
+    except Exception as exc:
+        raise ValueError("invalid_image_b64") from exc
+
+
 def _stub_da3_grid(frame_seq: int | None) -> dict[str, Any]:
     seq = int(frame_seq or 1)
     gw = 4
@@ -166,6 +183,224 @@ def _stub_da3_grid(frame_seq: int | None) -> dict[str, Any]:
     return {"format": "grid_u16_mm_v1", "size": [gw, gh], "unit": "mm", "values": values}
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = str(os.getenv(name, "")).strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except Exception:
+        return default
+
+
+def _resolve_runtime_device(requested: str | None) -> tuple[str, str | None, str | None]:
+    import torch
+
+    requested_text = str(requested or "").strip().lower() or "auto"
+    if requested_text not in {"auto", "cpu", "cuda", "gpu"}:
+        requested_text = "auto"
+    if requested_text == "cpu":
+        return "cpu", "forced_cpu", None
+    try:
+        if not torch.cuda.is_available():
+            return "cpu", "cuda_unavailable", None
+        device_name = str(torch.cuda.get_device_name(0) or "").strip() or None
+        capability = torch.cuda.get_device_capability(0)
+        capability_token = f"sm_{int(capability[0])}{int(capability[1])}"
+        arch_list = {str(item).strip().lower() for item in torch.cuda.get_arch_list() if str(item).strip()}
+        if arch_list and capability_token.lower() not in arch_list:
+            return "cpu", f"cuda_arch_unsupported:{capability_token}", device_name
+        return "cuda", "cuda_ok", device_name
+    except Exception as exc:
+        return "cpu", f"cuda_probe_failed:{exc.__class__.__name__}", None
+
+
+def _torch_runtime_info() -> dict[str, Any]:
+    import torch
+
+    info: dict[str, Any] = {
+        "torchVersion": getattr(torch, "__version__", None),
+        "cudaRuntime": getattr(getattr(torch, "version", None), "cuda", None),
+        "cudaAvailable": False,
+        "deviceName": None,
+        "deviceCapability": None,
+        "deviceCapabilityToken": None,
+        "archList": [],
+        "cudaRuntimeLine": None,
+    }
+    try:
+        cuda_available = bool(torch.cuda.is_available())
+        info["cudaAvailable"] = cuda_available
+        info["archList"] = [str(item).strip() for item in torch.cuda.get_arch_list() if str(item).strip()]
+        if cuda_available:
+            info["deviceName"] = str(torch.cuda.get_device_name(0) or "").strip() or None
+            capability = torch.cuda.get_device_capability(0)
+            capability_token = f"sm_{int(capability[0])}{int(capability[1])}"
+            info["deviceCapability"] = [int(capability[0]), int(capability[1])]
+            info["deviceCapabilityToken"] = capability_token
+    except Exception as exc:
+        info["cudaProbeError"] = f"{exc.__class__.__name__}:{exc}"
+    cuda_runtime = str(info.get("cudaRuntime") or "").strip() or "none"
+    capability_token = str(info.get("deviceCapabilityToken") or "unknown").strip() or "unknown"
+    info["cudaRuntimeLine"] = f"torch={info.get('torchVersion') or 'unknown'} cuda={cuda_runtime} capability={capability_token}"
+    return info
+
+
+def _resolve_model_dir(model_path_text: str | None) -> Path | None:
+    text = str(model_path_text or "").strip()
+    if not text:
+        return None
+    model_path = Path(text)
+    if model_path.is_dir():
+        return model_path
+    if model_path.is_file():
+        return model_path.parent
+    return None
+
+
+def _build_warmup_image(size: int = 96):
+    from PIL import Image
+
+    safe_size = max(32, int(size))
+    return Image.new("RGB", (safe_size, safe_size), color=(96, 112, 128))
+
+
+def _warmup_da3_model(model: Any) -> int:
+    started = time.perf_counter()
+    warmup_image = _build_warmup_image()
+    model.inference(
+        [warmup_image],
+        process_res=max(128, _env_int("BYES_DA3_WARMUP_PROCESS_RES", 128)),
+        ref_view_strategy="saddle_balanced",
+    )
+    return int(max(0.0, (time.perf_counter() - started) * 1000.0))
+
+
+def _build_da3_runtime(
+    state: dict[str, Any],
+    *,
+    candidate_device: str,
+    device_reason: str | None,
+    device_name: str | None,
+    runtime_info: dict[str, Any],
+) -> dict[str, Any]:
+    from depth_anything_3.api import DepthAnything3
+
+    model_dir = _resolve_model_dir(state.get("modelPath"))
+    if model_dir is None:
+        raise RuntimeError("invalid_model_dir")
+
+    started = time.perf_counter()
+    model = DepthAnything3.from_pretrained(str(model_dir))
+    model = model.to(device=candidate_device)
+    model.eval()
+    warmup_ms = _warmup_da3_model(model)
+    return {
+        "model": model,
+        "device": candidate_device,
+        "deviceReason": device_reason,
+        "deviceName": device_name,
+        "modelDir": str(model_dir),
+        "loadMs": int(max(0.0, (time.perf_counter() - started) * 1000.0)),
+        "warmupMs": warmup_ms,
+        "loadedAtMs": int(time.time() * 1000),
+        "torchVersion": runtime_info.get("torchVersion"),
+        "cudaRuntime": runtime_info.get("cudaRuntime"),
+        "cudaRuntimeLine": runtime_info.get("cudaRuntimeLine"),
+        "deviceCapability": runtime_info.get("deviceCapability"),
+        "deviceCapabilityToken": runtime_info.get("deviceCapabilityToken"),
+        "archList": runtime_info.get("archList") or [],
+        "cudaAvailable": runtime_info.get("cudaAvailable"),
+    }
+
+
+def _ensure_da3_runtime(state: dict[str, Any]) -> dict[str, Any]:
+    runtime = state.get("runtime")
+    if isinstance(runtime, dict) and runtime.get("model") is not None:
+        return runtime
+
+    with _DA3_RUNTIME_LOCK:
+        runtime = state.get("runtime")
+        if isinstance(runtime, dict) and runtime.get("model") is not None:
+            return runtime
+
+        load_error = str(state.get("da3LoadError") or "").strip()
+        if load_error:
+            raise RuntimeError(load_error)
+
+        import torch
+
+        runtime_info = _torch_runtime_info()
+        selected_device, device_reason, device_name = _resolve_runtime_device(state.get("device"))
+        final_runtime: dict[str, Any] | None = None
+        fallback_reason = device_reason
+
+        if selected_device == "cuda":
+            try:
+                final_runtime = _build_da3_runtime(
+                    state,
+                    candidate_device="cuda",
+                    device_reason="ok",
+                    device_name=device_name,
+                    runtime_info=runtime_info,
+                )
+            except Exception as exc:
+                fallback_reason = f"cuda_warmup_failed:{exc.__class__.__name__}"
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+        if final_runtime is None:
+            final_runtime = _build_da3_runtime(
+                state,
+                candidate_device="cpu",
+                device_reason=fallback_reason,
+                device_name=device_name,
+                runtime_info=runtime_info,
+            )
+
+        state["runtime"] = final_runtime
+        state["actualDevice"] = final_runtime.get("device")
+        state["deviceReason"] = final_runtime.get("deviceReason")
+        state["deviceName"] = final_runtime.get("deviceName")
+        state["torchVersion"] = final_runtime.get("torchVersion")
+        state["cudaRuntime"] = final_runtime.get("cudaRuntime")
+        state["cudaRuntimeLine"] = final_runtime.get("cudaRuntimeLine")
+        state["deviceCapability"] = final_runtime.get("deviceCapability")
+        state["deviceCapabilityToken"] = final_runtime.get("deviceCapabilityToken")
+        state["archList"] = final_runtime.get("archList") or []
+        state["cudaAvailable"] = final_runtime.get("cudaAvailable")
+        state["da3Ready"] = True
+        state["da3LoadError"] = None
+        return final_runtime
+
+
+def _depth_to_grid(depth_map: Any, *, grid_w: int, grid_h: int) -> dict[str, Any]:
+    import numpy as np
+    import torch
+    import torch.nn.functional as F
+
+    depth_array = np.asarray(depth_map, dtype=np.float32)
+    if depth_array.ndim != 2:
+        raise ValueError("invalid_depth_shape")
+    depth_array = np.nan_to_num(depth_array, nan=0.0, posinf=65.535, neginf=0.0)
+    tensor = torch.from_numpy(depth_array).unsqueeze(0).unsqueeze(0)
+    resized = F.interpolate(
+        tensor,
+        size=(max(1, int(grid_h)), max(1, int(grid_w))),
+        mode="bilinear",
+        align_corners=False,
+    )[0, 0].cpu().numpy()
+    values_mm = np.clip(np.rint(resized * 1000.0), 0, 65535).astype(np.uint16)
+    return {
+        "format": "grid_u16_mm_v1",
+        "size": [int(grid_w), int(grid_h)],
+        "unit": "mm",
+        "values": [int(item) for item in values_mm.reshape(-1).tolist()],
+    }
+
+
 def _load_state() -> dict[str, Any]:
     mode = _normalize_mode(os.getenv("BYES_DA3_MODE", "fixture"))
     expected_run_id = str(os.getenv("BYES_DA3_RUN_ID", "fixture-da3-depth")).strip() or "fixture-da3-depth"
@@ -173,7 +408,7 @@ def _load_state() -> dict[str, Any]:
     timeout_ms = max(1, int(str(os.getenv("BYES_DA3_TIMEOUT_MS", "2000")).strip() or "2000"))
     model_id = _model_id()
     model_path_text = str(os.getenv("BYES_DA3_MODEL_PATH", "")).strip() or None
-    device = str(os.getenv("BYES_DA3_DEVICE", "cpu")).strip() or "cpu"
+    device = str(os.getenv("BYES_DA3_DEVICE", "auto")).strip() or "auto"
 
     state: dict[str, Any] = {
         "mode": mode,
@@ -184,11 +419,22 @@ def _load_state() -> dict[str, Any]:
         "modelPath": model_path_text,
         "da3Ready": False,
         "da3LoadError": None,
+        "actualDevice": None,
+        "deviceReason": None,
+        "deviceName": None,
+        "torchVersion": None,
+        "cudaRuntime": None,
+        "cudaRuntimeLine": None,
+        "deviceCapability": None,
+        "deviceCapabilityToken": None,
+        "archList": [],
+        "cudaAvailable": None,
         "fixtureDir": None,
         "fixturePath": None,
         "expectedRunId": expected_run_id,
         "mapping": {},
         "warningsCount": 0,
+        "runtime": None,
     }
 
     if mode == "fixture":
@@ -216,7 +462,14 @@ def _load_state() -> dict[str, Any]:
 
 @app.on_event("startup")
 def _startup() -> None:
-    app.state.da3_state = _load_state()
+    state = _load_state()
+    app.state.da3_state = state
+    eager_load = str(os.getenv("BYES_DA3_EAGER_LOAD", "1")).strip().lower() not in {"0", "false", "no", "off"}
+    if eager_load and str(state.get("mode") or "") == "da3" and not state.get("da3LoadError"):
+        try:
+            _ensure_da3_runtime(state)
+        except Exception as exc:
+            state["da3LoadError"] = f"runtime_load_failed:{exc.__class__.__name__}:{exc}"
 
 
 @app.get("/healthz")
@@ -232,6 +485,16 @@ def healthz() -> dict[str, Any]:
         "model": state.get("modelId"),
         "mode": state.get("mode"),
         "device": state.get("device"),
+        "actualDevice": state.get("actualDevice"),
+        "deviceReason": state.get("deviceReason"),
+        "deviceName": state.get("deviceName"),
+        "torchVersion": state.get("torchVersion"),
+        "cudaRuntime": state.get("cudaRuntime"),
+        "cudaRuntimeLine": state.get("cudaRuntimeLine"),
+        "deviceCapability": state.get("deviceCapability"),
+        "deviceCapabilityToken": state.get("deviceCapabilityToken"),
+        "archList": state.get("archList") or [],
+        "cudaAvailable": state.get("cudaAvailable"),
         "timeoutMs": int(state.get("timeoutMs", 0) or 0),
         "da3Ready": bool(state.get("da3Ready")),
         "da3LoadError": state.get("da3LoadError"),
@@ -241,6 +504,9 @@ def healthz() -> dict[str, Any]:
         "fixturePath": state.get("fixturePath"),
         "runIds": sorted(str(k) for k in mapping.keys()),
         "warningsCount": int(state.get("warningsCount", 0) or 0),
+        "modelLoaded": bool(isinstance(state.get("runtime"), dict) and state["runtime"].get("model") is not None),
+        "loadMs": (state.get("runtime") or {}).get("loadMs") if isinstance(state.get("runtime"), dict) else None,
+        "warmupMs": (state.get("runtime") or {}).get("warmupMs") if isinstance(state.get("runtime"), dict) else None,
     }
 
 
@@ -257,18 +523,33 @@ def depth_estimate(request: DepthRequest, raw_request: Request) -> dict[str, Any
         if load_error:
             raise HTTPException(status_code=500, detail=f"da3_not_ready:{load_error}")
         try:
-            _decode_image_b64(request.image_b64)
-        except Exception:
-            warnings_count += 1
-            warning = "invalid_image_b64_fallback_stub"
-        frame_payload = {
-            "grid": _stub_da3_grid(request.frameSeq),
-            "imageWidth": 16,
-            "imageHeight": 16,
-        }
-        warnings_count += 1
-        if warning is None:
-            warning = "da3_mode_stub_no_inference"
+            image = _decode_image(request.image_b64)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            runtime = _ensure_da3_runtime(state)
+        except Exception as exc:
+            state["da3LoadError"] = f"runtime_load_failed:{exc.__class__.__name__}"
+            raise HTTPException(status_code=500, detail=f"da3_not_ready:{exc}") from exc
+        infer_started = time.perf_counter()
+        process_res = max(128, _env_int("BYES_DA3_PROCESS_RES", 224))
+        grid_w = max(8, _env_int("BYES_DA3_GRID_W", 64))
+        grid_h = max(8, _env_int("BYES_DA3_GRID_H", 36))
+        try:
+            prediction = runtime["model"].inference(
+                [image],
+                process_res=process_res,
+                ref_view_strategy=str(request.refViewStrategy or "").strip() or "saddle_balanced",
+            )
+            depth = prediction.depth[0]
+            frame_payload = {
+                "grid": _depth_to_grid(depth, grid_w=grid_w, grid_h=grid_h),
+                "imageWidth": int(image.width),
+                "imageHeight": int(image.height),
+                "inferMs": int(max(0.0, (time.perf_counter() - infer_started) * 1000.0)),
+            }
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"da3_infer_failed:{exc.__class__.__name__}:{exc}") from exc
     else:
         mapping = state.get("mapping")
         mapping = mapping if isinstance(mapping, dict) else {}
@@ -307,6 +588,18 @@ def depth_estimate(request: DepthRequest, raw_request: Request) -> dict[str, Any
     meta: dict[str, Any] = {
         "provider": BACKEND,
     }
+    if mode == "da3":
+        response["device"] = str(state.get("actualDevice") or state.get("device") or "cpu")
+        response["inferMs"] = int((frame_payload or {}).get("inferMs", 0) or 0)
+        warmup_ms = (state.get("runtime") or {}).get("warmupMs") if isinstance(state.get("runtime"), dict) else None
+        if warmup_ms is not None:
+            response["warmupMs"] = int(warmup_ms)
+        device_reason = str(state.get("deviceReason") or "").strip()
+        if device_reason:
+            response["deviceReason"] = device_reason
+        model_dir = str(((state.get("runtime") or {}).get("modelDir")) or "").strip()
+        if model_dir:
+            meta["modelDir"] = model_dir
     ref_view_strategy = str(request.refViewStrategy or "").strip()
     if ref_view_strategy:
         meta["refViewStrategy"] = ref_view_strategy

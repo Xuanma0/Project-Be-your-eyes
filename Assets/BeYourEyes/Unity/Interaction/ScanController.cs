@@ -1,33 +1,128 @@
 using System;
 using System.Collections;
-using System.Reflection;
+using System.Collections.Generic;
 using BeYourEyes.Adapters;
 using BeYourEyes.Adapters.Networking;
 using BeYourEyes.Core.Events;
 using BeYourEyes.Core.Scheduling;
 using BeYourEyes.Unity.Capture;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 namespace BeYourEyes.Unity.Interaction
 {
     public sealed class ScanController : MonoBehaviour
     {
+        public readonly struct UploadMetrics
+        {
+            public UploadMetrics(double uploadMs, double e2eMs, bool ok, string error)
+            {
+                UploadMs = uploadMs;
+                E2eMs = e2eMs;
+                Ok = ok;
+                Error = string.IsNullOrWhiteSpace(error) ? string.Empty : error.Trim();
+            }
+
+            public double UploadMs { get; }
+            public double E2eMs { get; }
+            public bool Ok { get; }
+            public string Error { get; }
+        }
+
         private const float NoGatewayPromptThrottleSec = 5f;
-        private static readonly Type KeyboardType = Type.GetType("UnityEngine.InputSystem.Keyboard, Unity.InputSystem");
-        private static readonly PropertyInfo KeyboardCurrentProperty = KeyboardType?.GetProperty("current", BindingFlags.Public | BindingFlags.Static);
-        private static readonly PropertyInfo KeyboardSKeyProperty = KeyboardType?.GetProperty("sKey", BindingFlags.Public | BindingFlags.Instance);
-        private static readonly Type ButtonControlType = Type.GetType("UnityEngine.InputSystem.Controls.ButtonControl, Unity.InputSystem");
-        private static readonly PropertyInfo ButtonWasPressedThisFrameProperty = ButtonControlType?.GetProperty("wasPressedThisFrame", BindingFlags.Public | BindingFlags.Instance);
+        private const string FrameSourcePcaReal = "pca_real";
+        private const string FrameSourceArCpuImageFallback = "ar_cpuimage_fallback";
+        private const string FrameSourceRenderTextureFallback = "rendertexture_fallback";
+        private const string FrameSourceUnavailable = "unavailable";
 
         public KeyCode scanKey = KeyCode.S;
+        public KeyCode liveToggleKey = KeyCode.L;
         public float minIntervalSec = 1.0f;
+        [Header("Live Loop")]
+        [SerializeField] private bool liveEnabledDefault = false;
+        [SerializeField] private float liveFps = 2.0f;
+        [SerializeField] private int liveMaxInflight = 1;
+        [SerializeField] private float liveMinIntervalOverrideSec = 0f;
+        [SerializeField] private bool liveDropIfBusy = true;
+        [Header("XR Input (optional)")]
+        [SerializeField] private bool enableXrButtons = true;
+        [SerializeField] private InputActionReference rightLiveToggleAction;
+        [SerializeField] private InputActionReference rightPrimaryButtonAction;
+        [SerializeField] private InputActionReference rightTriggerButtonAction;
+        [Header("Frame Source")]
+        [SerializeField] private MonoBehaviour frameSourceBehaviour;
 
         private ScreenFrameGrabber frameGrabber;
+        private IByesFrameSource activeFrameSource;
         private GatewayFrameUploader uploader;
         private GatewayWsClient wsClient;
-        private float lastScanAt = -1000f;
+        private GatewayClient gatewayClient;
+        private InputAction fallbackPrimaryButtonAction;
+        private InputAction fallbackTriggerButtonAction;
         private float lastNoGatewayPromptAt = -1000f;
-        private bool isScanning;
+        private double lastManualScanAtSec = -1000d;
+        private double lastLiveTickAtSec = -1000d;
+        private long lastAckOrEventTsMs = -1;
+        private bool captureInProgress;
+        private bool liveEnabled;
+        private string lastScanState = "idle";
+        private string lastScanError = string.Empty;
+        private string lastEventType = "-";
+        private int inflight;
+        private long pendingE2eStartTsMs = -1;
+        private long lastSendTsMs = -1;
+        private double lastUploadCostMs = -1d;
+        private double lastE2eMs = -1d;
+        private int framesSentCount;
+        private int uploadsOkCount;
+        private int uploadsFailedCount;
+        private int dropBusyCount;
+        private int eventsReceivedCount;
+        private string lastFrameSourceStatus = "-";
+        private string lastFrameSourceTruth = FrameSourceUnavailable;
+        private string lastFrameSourceReason = "uninitialized";
+        private long lastCaptureSuccessTsMs = -1;
+        private string[] pendingForcedTargets;
+        private JObject pendingDetPrompt;
+
+        public bool LiveEnabled => liveEnabled;
+        public bool IsLiveEnabled => liveEnabled;
+        public float LiveFps => Mathf.Max(0f, liveFps);
+        public int InflightCount => Mathf.Max(0, inflight);
+        public int LiveMaxInflight => Mathf.Max(1, liveMaxInflight);
+        public double LastUploadCostMs => lastUploadCostMs;
+        public double LastE2eMs => lastE2eMs;
+        public long LastSendTsMs => lastSendTsMs;
+        public long LastAckOrEventTsMs => lastAckOrEventTsMs;
+        public int FramesSentCount => Mathf.Max(0, framesSentCount);
+        public int UploadsOkCount => Mathf.Max(0, uploadsOkCount);
+        public int UploadsFailedCount => Mathf.Max(0, uploadsFailedCount);
+        public int DropBusyCount => Mathf.Max(0, dropBusyCount);
+        public int EventsReceivedCount => Mathf.Max(0, eventsReceivedCount);
+        public string LastScanState => string.IsNullOrWhiteSpace(lastScanState) ? "idle" : lastScanState;
+        public string LastScanError => string.IsNullOrWhiteSpace(lastScanError) ? string.Empty : lastScanError;
+        public string LastEventType => string.IsNullOrWhiteSpace(lastEventType) ? "-" : lastEventType;
+        public bool CaptureSupportsAsyncReadback => ResolveFrameSource()?.SupportsAsyncGpuReadback ?? false;
+        public bool CaptureAsyncReadbackEnabled => ResolveFrameSource()?.AsyncGpuReadbackEnabled ?? false;
+        public int CaptureTargetHz => ResolveFrameSource()?.CaptureTargetHz ?? Mathf.Max(1, Mathf.RoundToInt(liveFps));
+        public int CaptureActiveReadbacks => ResolveFrameSource()?.ActiveReadbackRequests ?? 0;
+        public string CaptureSource
+        {
+            get
+            {
+                var source = ResolveFrameSource();
+                var name = NormalizeFrameSourceToken(source?.SourceName);
+                return string.IsNullOrWhiteSpace(name) ? "unknown" : name;
+            }
+        }
+        public int CaptureFrameWidth => ResolveFrameSource()?.LastFrameWidth ?? 0;
+        public int CaptureFrameHeight => ResolveFrameSource()?.LastFrameHeight ?? 0;
+        public string LastFrameSourceStatus => string.IsNullOrWhiteSpace(lastFrameSourceStatus) ? "-" : lastFrameSourceStatus;
+        public string CaptureSourceTruth => NormalizeFrameSourceToken(lastFrameSourceTruth);
+        public string CaptureSourceReason => string.IsNullOrWhiteSpace(lastFrameSourceReason) ? "-" : lastFrameSourceReason;
+        public long LastCaptureSuccessTsMs => lastCaptureSuccessTsMs;
+        public event Action<UploadMetrics> OnUploadFinished;
 
         private void Awake()
         {
@@ -38,21 +133,170 @@ namespace BeYourEyes.Unity.Interaction
                 frameGrabber = gameObject.AddComponent<ScreenFrameGrabber>();
             }
 
+            activeFrameSource = ResolveFrameSource();
+            if (activeFrameSource != null)
+            {
+                liveFps = Mathf.Max(0.1f, activeFrameSource.CaptureTargetHz);
+                liveMaxInflight = Mathf.Max(1, activeFrameSource.CaptureMaxInflight);
+            }
+
             uploader = GetComponent<GatewayFrameUploader>();
             if (uploader == null)
             {
                 uploader = gameObject.AddComponent<GatewayFrameUploader>();
             }
+
+            gatewayClient = FindFirstObjectByType<GatewayClient>();
+            liveEnabled = liveEnabledDefault;
         }
 
-        private void Update()
+        private void OnEnable()
         {
-            if (!WasScanPressedThisFrame())
+            EnsureXrFallbackActions();
+            rightLiveToggleAction?.action?.Enable();
+            rightPrimaryButtonAction?.action?.Enable();
+            rightTriggerButtonAction?.action?.Enable();
+            fallbackPrimaryButtonAction?.Enable();
+            fallbackTriggerButtonAction?.Enable();
+            BindGatewayEventStream();
+        }
+
+        private void OnDisable()
+        {
+            if (gatewayClient != null)
+            {
+                gatewayClient.OnGatewayEvent -= HandleGatewayEvent;
+            }
+
+            rightLiveToggleAction?.action?.Disable();
+            rightPrimaryButtonAction?.action?.Disable();
+            rightTriggerButtonAction?.action?.Disable();
+            fallbackPrimaryButtonAction?.Disable();
+            fallbackTriggerButtonAction?.Disable();
+        }
+
+        private void EnsureXrFallbackActions()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (!enableXrButtons)
             {
                 return;
             }
 
-            if (Time.unscaledTime - lastScanAt < minIntervalSec || isScanning)
+            if (fallbackPrimaryButtonAction == null)
+            {
+                fallbackPrimaryButtonAction = new InputAction(
+                    name: "BYES_RightPrimaryButton",
+                    type: InputActionType.Button,
+                    binding: "<XRController>{RightHand}/primaryButton");
+            }
+
+            if (fallbackTriggerButtonAction == null)
+            {
+                fallbackTriggerButtonAction = new InputAction(
+                    name: "BYES_RightTriggerButton",
+                    type: InputActionType.Button,
+                    binding: "<XRController>{RightHand}/triggerPressed");
+            }
+#endif
+        }
+
+        private void Update()
+        {
+            if (WasLiveTogglePressedThisFrame())
+            {
+                ToggleLive();
+            }
+
+            if (WasManualScanPressedThisFrame())
+            {
+                TrySendFrame(isLiveTick: false);
+            }
+
+            if (liveEnabled)
+            {
+                TrySendFrame(isLiveTick: true);
+            }
+        }
+
+        private void BindGatewayEventStream()
+        {
+            if (gatewayClient == null)
+            {
+                gatewayClient = FindFirstObjectByType<GatewayClient>();
+            }
+
+            if (gatewayClient != null)
+            {
+                gatewayClient.OnGatewayEvent -= HandleGatewayEvent;
+                gatewayClient.OnGatewayEvent += HandleGatewayEvent;
+            }
+        }
+
+        private void HandleGatewayEvent(JObject evt)
+        {
+            if (evt == null)
+            {
+                return;
+            }
+
+            var type = (evt.Value<string>("type") ?? string.Empty).Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(type))
+            {
+                var name = (evt.Value<string>("name") ?? string.Empty).Trim().ToLowerInvariant();
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    type = name;
+                }
+                else
+                {
+                    var category = (evt.Value<string>("category") ?? string.Empty).Trim().ToLowerInvariant();
+                    type = string.IsNullOrWhiteSpace(category) ? "event" : category;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(type))
+            {
+                lastEventType = type;
+            }
+
+            if (!IsScanRelevantEvent(type))
+            {
+                return;
+            }
+
+            eventsReceivedCount++;
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            lastAckOrEventTsMs = nowMs;
+            if (pendingE2eStartTsMs <= 0)
+            {
+                return;
+            }
+
+            lastE2eMs = Math.Max(0d, nowMs - pendingE2eStartTsMs);
+            pendingE2eStartTsMs = -1;
+            EmitUploadMetrics(ok: true, error: string.Empty);
+        }
+
+        private bool IsGatewayConnected()
+        {
+            var wsConnected = wsClient != null && string.Equals(wsClient.ConnectionState, "Connected", StringComparison.Ordinal);
+            if (wsConnected)
+            {
+                return true;
+            }
+
+            if (gatewayClient == null)
+            {
+                gatewayClient = FindFirstObjectByType<GatewayClient>();
+            }
+
+            return gatewayClient != null && gatewayClient.IsConnected;
+        }
+
+        private void TrySendFrame(bool isLiveTick, bool ignoreInterval = false)
+        {
+            if (captureInProgress)
             {
                 return;
             }
@@ -68,31 +312,194 @@ namespace BeYourEyes.Unity.Interaction
                 return;
             }
 
-            lastScanAt = Time.unscaledTime;
+            var nowSec = Time.unscaledTimeAsDouble;
+            if (!ignoreInterval && !isLiveTick && nowSec - lastManualScanAtSec < minIntervalSec)
+            {
+                return;
+            }
+
+            if (!ignoreInterval && isLiveTick && nowSec - lastLiveTickAtSec < ResolveLiveIntervalSec())
+            {
+                return;
+            }
+
+            var maxInflight = Mathf.Max(1, liveMaxInflight);
+            if (inflight >= maxInflight)
+            {
+                if (liveDropIfBusy || isLiveTick)
+                {
+                    dropBusyCount++;
+                    return;
+                }
+            }
+
+            if (!isLiveTick)
+            {
+                lastManualScanAtSec = nowSec;
+            }
+            else
+            {
+                lastLiveTickAtSec = nowSec;
+            }
+
             StartCoroutine(ScanOnce());
         }
 
-        private bool IsGatewayConnected()
+        private double ResolveLiveIntervalSec()
         {
-            return wsClient != null && string.Equals(wsClient.ConnectionState, "Connected", StringComparison.Ordinal);
+            if (!liveEnabled)
+            {
+                return double.MaxValue;
+            }
+
+            if (liveMinIntervalOverrideSec > 0f)
+            {
+                return Math.Max(0.05d, liveMinIntervalOverrideSec);
+            }
+
+            if (liveFps <= 0f)
+            {
+                return double.MaxValue;
+            }
+
+            return Math.Max(0.05d, 1d / liveFps);
         }
 
         private IEnumerator ScanOnce()
         {
-            isScanning = true;
+            var forcedTargets = pendingForcedTargets;
+            pendingForcedTargets = null;
+            var detPrompt = pendingDetPrompt;
+            pendingDetPrompt = null;
+            captureInProgress = true;
+            inflight++;
+            framesSentCount++;
+            lastScanState = "sending";
+            lastScanError = string.Empty;
+            var sendTsMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            lastSendTsMs = sendTsMs;
             byte[] jpg = null;
+            var uploadOk = false;
+            var uploadCostMs = 0L;
+            var uploadError = string.Empty;
 
-            yield return frameGrabber.CaptureJpg(bytes => jpg = bytes);
-
-            if (jpg == null || jpg.Length == 0)
+            try
             {
-                Debug.LogWarning("[Scan] frame capture failed");
-                isScanning = false;
-                yield break;
-            }
+                var source = ResolveFrameSource();
+                if (source == null)
+                {
+                    Debug.LogWarning("[Scan] frame source missing");
+                    lastFrameSourceTruth = FrameSourceUnavailable;
+                    lastFrameSourceReason = "missing_frame_source";
+                    lastFrameSourceStatus = "unavailable:missing_frame_source";
+                    lastScanState = "failed";
+                    lastScanError = "frame source missing";
+                    uploadsFailedCount++;
+                    EmitUploadMetrics(ok: false, error: lastScanError);
+                    yield break;
+                }
 
-            yield return uploader.UploadFrame(jpg);
-            isScanning = false;
+                yield return source.CaptureJpg(bytes => jpg = bytes);
+                var captureMeta = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+                source.FillMeta(captureMeta);
+                var normalizedFrameSource = NormalizeFrameSourceToken(source.SourceName, captureMeta);
+                captureMeta["frameSource"] = normalizedFrameSource;
+                lastFrameSourceTruth = normalizedFrameSource;
+                if (!captureMeta.ContainsKey("frameSourceMode"))
+                {
+                    captureMeta["frameSourceMode"] = normalizedFrameSource;
+                }
+                if (!captureMeta.ContainsKey("frameSourceKind"))
+                {
+                    captureMeta["frameSourceKind"] = ResolveFrameSourceKind(normalizedFrameSource);
+                }
+                if (!captureMeta.ContainsKey("frameSourceLabel"))
+                {
+                    captureMeta["frameSourceLabel"] = normalizedFrameSource;
+                }
+                if (captureMeta.TryGetValue("frameSourceReason", out var sourceReasonObj))
+                {
+                    lastFrameSourceReason = string.IsNullOrWhiteSpace(sourceReasonObj?.ToString())
+                        ? "unknown"
+                        : sourceReasonObj.ToString();
+                }
+                else
+                {
+                    lastFrameSourceReason = ResolveDefaultFrameSourceReason(normalizedFrameSource);
+                    captureMeta["frameSourceReason"] = lastFrameSourceReason;
+                }
+                if (captureMeta.TryGetValue("frameSourceStatus", out var sourceStatusObj))
+                {
+                    lastFrameSourceStatus = sourceStatusObj != null ? sourceStatusObj.ToString() : "-";
+                }
+                else if (captureMeta.TryGetValue("pcaStatus", out var pcaStatusObj))
+                {
+                    lastFrameSourceStatus = pcaStatusObj != null ? pcaStatusObj.ToString() : "-";
+                }
+                else
+                {
+                    lastFrameSourceStatus = string.IsNullOrWhiteSpace(source.SourceName) ? "-" : $"{source.SourceName}:ok";
+                }
+
+                captureInProgress = false;
+                if (jpg == null || jpg.Length == 0)
+                {
+                    Debug.LogWarning("[Scan] frame capture failed");
+                    lastScanState = "failed";
+                    lastScanError = string.IsNullOrWhiteSpace(lastFrameSourceReason)
+                        ? "capture failed"
+                        : $"capture failed ({lastFrameSourceReason})";
+                    uploadsFailedCount++;
+                    EmitUploadMetrics(ok: false, error: lastScanError);
+                    yield break;
+                }
+
+                if (gatewayClient == null)
+                {
+                    gatewayClient = FindFirstObjectByType<GatewayClient>();
+                }
+
+                if (gatewayClient != null)
+                {
+                    uploader.baseUrl = gatewayClient.BaseUrl;
+                    uploader.SetApiKey(gatewayClient.ApiKey);
+                }
+                var metaJson = BuildUploadMetaJson(sendTsMs, forcedTargets, detPrompt, captureMeta);
+
+                yield return uploader.UploadFrame(
+                    jpg,
+                    metaJson,
+                    onCompleted: (ok, elapsedMs) =>
+                    {
+                        uploadOk = ok;
+                        uploadCostMs = elapsedMs;
+                    });
+                lastUploadCostMs = uploadCostMs;
+
+                if (uploadOk)
+                {
+                    uploadsOkCount++;
+                    pendingE2eStartTsMs = sendTsMs;
+                    lastCaptureSuccessTsMs = sendTsMs;
+                    lastScanState = "uploaded";
+                    lastScanError = string.Empty;
+                    EmitUploadMetrics(ok: true, error: string.Empty);
+                }
+                else
+                {
+                    uploadsFailedCount++;
+                    pendingE2eStartTsMs = -1;
+                    uploadError = "upload failed";
+                    lastScanState = "failed";
+                    lastScanError = uploadError;
+                    EmitUploadMetrics(ok: false, error: uploadError);
+                }
+            }
+            finally
+            {
+                captureInProgress = false;
+                inflight = Mathf.Max(0, inflight - 1);
+            }
         }
 
         private void NotifyGatewayUnavailable()
@@ -114,32 +521,371 @@ namespace BeYourEyes.Unity.Interaction
                 "system"));
         }
 
-        private bool WasScanPressedThisFrame()
+        private void ToggleLive()
         {
-            if (scanKey != KeyCode.S)
+            liveEnabled = !liveEnabled;
+            pendingE2eStartTsMs = -1;
+            var status = liveEnabled ? "ON" : "OFF";
+            Debug.Log($"[Scan] live loop {status} (fps={liveFps:0.##}, maxInflight={Mathf.Max(1, liveMaxInflight)})");
+            lastScanState = liveEnabled ? "live" : "idle";
+        }
+
+        public void SetLiveEnabled(bool enabled)
+        {
+            if (liveEnabled == enabled)
             {
-                return false;
+                return;
             }
 
-            if (KeyboardCurrentProperty == null || KeyboardSKeyProperty == null || ButtonWasPressedThisFrameProperty == null)
+            liveEnabled = enabled;
+            pendingE2eStartTsMs = -1;
+            var status = liveEnabled ? "ON" : "OFF";
+            Debug.Log($"[Scan] live loop {status} (fps={liveFps:0.##}, maxInflight={Mathf.Max(1, liveMaxInflight)})");
+            lastScanState = liveEnabled ? "live" : "idle";
+        }
+
+        public void ToggleLiveFromUi()
+        {
+            SetLiveEnabled(!liveEnabled);
+        }
+
+        public void ScanOnceFromUi()
+        {
+            TrySendFrame(isLiveTick: false);
+        }
+
+        public void ReadTextOnceFromUi()
+        {
+            pendingForcedTargets = new[] {"ocr"};
+            TrySendFrame(isLiveTick: false, ignoreInterval: true);
+        }
+
+        public void DetectObjectsOnceFromUi()
+        {
+            pendingForcedTargets = new[] {"det"};
+            pendingDetPrompt = null;
+            TrySendFrame(isLiveTick: false, ignoreInterval: true);
+        }
+
+        public void DepthRiskOnceFromUi()
+        {
+            pendingForcedTargets = new[] {"depth", "risk"};
+            pendingDetPrompt = null;
+            TrySendFrame(isLiveTick: false, ignoreInterval: true);
+        }
+
+        public void ScanOnceWithTargetsFromUi(string[] targets)
+        {
+            if (targets == null || targets.Length == 0)
             {
-                return false;
+                pendingForcedTargets = null;
+            }
+            else
+            {
+                pendingForcedTargets = targets;
+            }
+            pendingDetPrompt = null;
+            TrySendFrame(isLiveTick: false, ignoreInterval: true);
+        }
+
+        public void FindConceptOnceFromUi(string promptText)
+        {
+            pendingForcedTargets = new[] {"det"};
+            var normalized = string.IsNullOrWhiteSpace(promptText) ? string.Empty : promptText.Trim();
+            pendingDetPrompt = new JObject
+            {
+                ["text"] = normalized,
+                ["openVocab"] = true,
+                ["task"] = "find",
+            };
+            TrySendFrame(isLiveTick: false, ignoreInterval: true);
+        }
+
+        private bool WasLiveTogglePressedThisFrame()
+        {
+            if (!enableXrButtons)
+            {
+                return WasKeyboardKeyPressedThisFrame(liveToggleKey);
             }
 
-            var keyboard = KeyboardCurrentProperty.GetValue(null);
-            if (keyboard == null)
+            var xrPressed =
+                (rightLiveToggleAction != null && rightLiveToggleAction.action != null && rightLiveToggleAction.action.WasPressedThisFrame())
+                || (rightPrimaryButtonAction != null && rightPrimaryButtonAction.action != null && rightPrimaryButtonAction.action.WasPressedThisFrame())
+                || (fallbackPrimaryButtonAction != null && fallbackPrimaryButtonAction.WasPressedThisFrame());
+            if (xrPressed)
             {
-                return false;
+                return true;
             }
 
-            var sKey = KeyboardSKeyProperty.GetValue(keyboard);
-            if (sKey == null)
+            return WasKeyboardKeyPressedThisFrame(liveToggleKey);
+        }
+
+        private bool WasManualScanPressedThisFrame()
+        {
+            if (enableXrButtons)
             {
-                return false;
+                var triggerPressed =
+                    (rightTriggerButtonAction != null && rightTriggerButtonAction.action != null && rightTriggerButtonAction.action.WasPressedThisFrame())
+                    || (fallbackTriggerButtonAction != null && fallbackTriggerButtonAction.WasPressedThisFrame());
+                if (triggerPressed)
+                {
+                    return true;
+                }
             }
 
-            var pressed = ButtonWasPressedThisFrameProperty.GetValue(sKey);
-            return pressed is bool pressedBool && pressedBool;
+            return WasKeyboardKeyPressedThisFrame(scanKey);
+        }
+
+        private bool WasKeyboardKeyPressedThisFrame(KeyCode keyCode)
+        {
+#if ENABLE_INPUT_SYSTEM
+            var keyboard = Keyboard.current;
+            if (keyboard != null)
+            {
+                if (keyCode == KeyCode.S)
+                {
+                    return keyboard.sKey.wasPressedThisFrame;
+                }
+
+                if (keyCode == KeyCode.L)
+                {
+                    return keyboard.lKey.wasPressedThisFrame;
+                }
+
+                if (keyCode == KeyCode.BackQuote)
+                {
+                    return keyboard.backquoteKey.wasPressedThisFrame;
+                }
+            }
+#endif
+#if ENABLE_LEGACY_INPUT_MANAGER
+            return Input.GetKeyDown(keyCode);
+#else
+            return false;
+#endif
+        }
+
+        private static bool IsScanRelevantEvent(string eventType)
+        {
+            switch (eventType)
+            {
+                case "risk":
+                case "risk.fused":
+                case "ocr":
+                case "ocr.read":
+                case "seg":
+                case "depth":
+                case "depth.estimate":
+                case "slam_pose":
+                case "det":
+                case "det.objects":
+                case "action_plan":
+                case "prompt":
+                case "frame.input":
+                case "frame.ack":
+                case "debug":
+                case "event":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private IByesFrameSource ResolveFrameSource()
+        {
+            if (activeFrameSource != null)
+            {
+                if (activeFrameSource.IsAvailable || activeFrameSource == frameGrabber)
+                {
+                    return activeFrameSource;
+                }
+            }
+
+            if (frameSourceBehaviour is IByesFrameSource explicitSource)
+            {
+                activeFrameSource = explicitSource;
+                if (activeFrameSource.IsAvailable)
+                {
+                    return activeFrameSource;
+                }
+            }
+
+            IByesFrameSource fallback = null;
+            var components = GetComponents<MonoBehaviour>();
+            for (var i = 0; i < components.Length; i += 1)
+            {
+                if (components[i] is not IByesFrameSource candidate)
+                {
+                    continue;
+                }
+
+                fallback ??= candidate;
+                var sourceName = candidate.SourceName ?? string.Empty;
+                if (candidate.IsAvailable && !IsRenderTextureFallbackSource(sourceName))
+                {
+                    activeFrameSource = candidate;
+                    return activeFrameSource;
+                }
+            }
+
+            if (fallback != null)
+            {
+                activeFrameSource = fallback;
+                return activeFrameSource;
+            }
+
+            activeFrameSource = frameGrabber;
+            return activeFrameSource;
+        }
+
+        private static bool IsRenderTextureFallbackSource(string sourceName)
+        {
+            var token = string.IsNullOrWhiteSpace(sourceName) ? string.Empty : sourceName.Trim().ToLowerInvariant();
+            return token.Contains("rendertexture");
+        }
+
+        private static string NormalizeFrameSourceToken(string sourceName, IDictionary<string, object> captureMeta = null)
+        {
+            var token = string.IsNullOrWhiteSpace(sourceName) ? string.Empty : sourceName.Trim().ToLowerInvariant();
+            var pcaAvailable = captureMeta != null
+                               && captureMeta.TryGetValue("pcaAvailable", out var pcaAvailableObj)
+                               && pcaAvailableObj is bool pcaAvailableBool
+                               && pcaAvailableBool;
+            var truthKind = captureMeta != null && captureMeta.TryGetValue("frameSourceKind", out var kindObj)
+                ? (kindObj?.ToString() ?? string.Empty).Trim().ToLowerInvariant()
+                : string.Empty;
+            if (captureMeta != null)
+            {
+                if (captureMeta.TryGetValue("frameSourceMode", out var modeObj))
+                {
+                    var mode = string.IsNullOrWhiteSpace(modeObj?.ToString()) ? string.Empty : modeObj.ToString().Trim().ToLowerInvariant();
+                    if (!string.IsNullOrWhiteSpace(mode) && mode != "unavailable")
+                    {
+                        token = mode;
+                    }
+                }
+            }
+
+            if (token == "pca")
+            {
+                return pcaAvailable || string.Equals(truthKind, "real", StringComparison.Ordinal)
+                    ? FrameSourcePcaReal
+                    : FrameSourceArCpuImageFallback;
+            }
+
+            if (token == "rendertexture")
+            {
+                return FrameSourceRenderTextureFallback;
+            }
+
+            if (token != FrameSourcePcaReal
+                && token != FrameSourceArCpuImageFallback
+                && token != FrameSourceRenderTextureFallback
+                && token != FrameSourceUnavailable)
+            {
+                return FrameSourceUnavailable;
+            }
+
+            return string.IsNullOrWhiteSpace(token) ? FrameSourceUnavailable : token;
+        }
+
+        private static string ResolveFrameSourceKind(string frameSource)
+        {
+            var token = string.IsNullOrWhiteSpace(frameSource) ? string.Empty : frameSource.Trim().ToLowerInvariant();
+            if (token == FrameSourcePcaReal)
+            {
+                return "real";
+            }
+
+            if (token.EndsWith("_fallback", StringComparison.Ordinal))
+            {
+                return "fallback";
+            }
+
+            if (token is "" or "unknown" or "unavailable")
+            {
+                return "unavailable";
+            }
+
+            return "unavailable";
+        }
+
+        private static string ResolveDefaultFrameSourceReason(string frameSource)
+        {
+            var token = NormalizeFrameSourceToken(frameSource);
+            return token switch
+            {
+                FrameSourcePcaReal => "meta_pca_integrated",
+                FrameSourceArCpuImageFallback => "using_ar_cpuimage",
+                FrameSourceRenderTextureFallback => "screen_grabber_fallback",
+                _ => "unavailable",
+            };
+        }
+
+        private void EmitUploadMetrics(bool ok, string error)
+        {
+            OnUploadFinished?.Invoke(new UploadMetrics(
+                uploadMs: lastUploadCostMs,
+                e2eMs: lastE2eMs,
+                ok: ok,
+                error: error
+            ));
+        }
+
+        private string BuildUploadMetaJson(long captureTsMs, string[] forcedTargets, JObject detPrompt, IDictionary<string, object> captureMeta)
+        {
+            var mode = GatewayRuntimeContext.ResolveApiMode();
+            var runId = gatewayClient != null ? (gatewayClient.SessionId ?? string.Empty).Trim() : string.Empty;
+            if (string.IsNullOrWhiteSpace(runId))
+            {
+                runId = "quest3-smoke";
+            }
+
+            var payload = new JObject
+            {
+                ["runId"] = runId,
+                ["deviceId"] = GatewayRuntimeContext.DeviceId,
+                ["deviceTimeBase"] = GatewayRuntimeContext.DeviceTimeBase,
+                ["captureTsMs"] = captureTsMs,
+                ["mode"] = string.IsNullOrWhiteSpace(mode) ? "walk" : mode.Trim(),
+            };
+
+            if (forcedTargets != null && forcedTargets.Length > 0)
+            {
+                var arr = new JArray();
+                for (var i = 0; i < forcedTargets.Length; i += 1)
+                {
+                    var token = string.IsNullOrWhiteSpace(forcedTargets[i]) ? string.Empty : forcedTargets[i].Trim().ToLowerInvariant();
+                    if (token == "ocr" || token == "risk" || token == "det" || token == "seg" || token == "depth" || token == "slam")
+                    {
+                        arr.Add(token);
+                    }
+                }
+
+                if (arr.Count > 0)
+                {
+                    payload["targets"] = arr;
+                }
+            }
+
+            if (detPrompt != null)
+            {
+                payload["prompt"] = detPrompt;
+            }
+
+            if (captureMeta != null && captureMeta.Count > 0)
+            {
+                try
+                {
+                    payload["capture"] = JObject.FromObject(captureMeta);
+                }
+                catch
+                {
+                    // Keep upload metadata best-effort and avoid scan failure on serialization mismatch.
+                }
+            }
+
+            return payload.ToString(Newtonsoft.Json.Formatting.None);
         }
     }
 }

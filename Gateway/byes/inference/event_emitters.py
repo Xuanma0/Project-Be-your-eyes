@@ -6,7 +6,7 @@ import math
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse, urlunparse
 
-from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult, SlamResult
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DetResult, DepthResult, SlamResult
 
 SCHEMA_VERSION = "byes.event.v1"
 
@@ -174,6 +174,47 @@ async def emit_seg_events(
             component=component,
             category="tool",
             name="seg.segment",
+            phase=phase,
+            status=normalized_status,
+            latency_ms=latency_ms,
+            payload=payload,
+            run_id=run_id,
+        ),
+    )
+
+
+async def emit_det_events(
+    result: DetResult,
+    *,
+    frame_seq: int | None,
+    ts_ms: int,
+    sink: EventSink,
+    run_id: str | None = None,
+    component: str = "gateway",
+    started_ts_ms: int | None = None,
+    backend: str | None = None,
+    model: str | None = None,
+    endpoint: str | None = None,
+) -> None:
+    payload = _sanitize_payload(result.payload)
+    payload = _with_inference_metadata(payload, backend=backend, model=model, endpoint=endpoint)
+    objects = [dict(item) for item in result.objects if isinstance(item, dict)]
+    payload["objects"] = objects
+    payload["objectsCount"] = int(payload.get("objectsCount", len(objects)) or len(objects))
+    payload.setdefault("schemaVersion", "byes.det.v1")
+    if result.error and "reason" not in payload:
+        payload["reason"] = result.error
+    normalized_status = _normalize_status(result.status, result.error)
+    phase = _phase_for_status(normalized_status)
+    latency_ms = _resolve_latency_ms(result.latency_ms, started_ts_ms, ts_ms)
+    await _emit(
+        sink,
+        _base_event(
+            ts_ms=ts_ms,
+            frame_seq=frame_seq,
+            component=component,
+            category="tool",
+            name="det.objects",
             phase=phase,
             status=normalized_status,
             latency_ms=latency_ms,

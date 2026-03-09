@@ -7,14 +7,15 @@ import random
 import time
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from PIL import Image
 from pydantic import BaseModel
 
-from services.inference_service.providers.base import OCRProvider, RiskProvider, SegProvider, DepthProvider, SlamProvider
+from services.inference_service.providers.base import OCRProvider, RiskProvider, SegProvider, DetProvider, DepthProvider, SlamProvider
 from services.inference_service.providers import (
     create_ocr_provider,
     create_seg_provider,
+    create_det_provider,
     create_depth_provider,
     create_slam_provider,
 )
@@ -48,8 +49,37 @@ _OCR_PROVIDER: OCRProvider | None = None
 _RISK_PROVIDER: RiskProvider | None = None
 _DEPTH_PROVIDER: RiskDepthProvider | None = None
 _SEG_PROVIDER: SegProvider | None = None
+_DET_PROVIDER: DetProvider | None = None
 _TOOL_DEPTH_PROVIDER: DepthProvider | None = None
 _SLAM_PROVIDER: SlamProvider | None = None
+_OCR_PROVIDER_KEY: str | None = None
+_RISK_PROVIDER_KEY: str | None = None
+_DEPTH_PROVIDER_KEY: str | None = None
+_SEG_PROVIDER_KEY: str | None = None
+_DET_PROVIDER_KEY: str | None = None
+_TOOL_DEPTH_PROVIDER_KEY: str | None = None
+_SLAM_PROVIDER_KEY: str | None = None
+_PROVIDER_OVERRIDES: dict[str, str | None] = {
+    "ocr": None,
+    "risk": None,
+    "depth": None,
+    "seg": None,
+    "det": None,
+    "slam": None,
+}
+
+
+class ServiceProviderOverrideItem(BaseModel):
+    backend: str | None = None
+
+
+class ServiceProvidersOverrideRequest(BaseModel):
+    ocr: ServiceProviderOverrideItem | None = None
+    risk: ServiceProviderOverrideItem | None = None
+    depth: ServiceProviderOverrideItem | None = None
+    seg: ServiceProviderOverrideItem | None = None
+    det: ServiceProviderOverrideItem | None = None
+    slam: ServiceProviderOverrideItem | None = None
 
 
 def _decode_image_b64(value: str) -> bytes:
@@ -74,20 +104,45 @@ def _decode_pil_image(value: str) -> Image.Image:
         raise HTTPException(status_code=400, detail=f"invalid_image:{exc.__class__.__name__}") from exc
 
 
+def _normalize_provider_name(raw: str | None) -> str | None:
+    token = str(raw or "").strip().lower()
+    return token or None
+
+
+def _effective_provider_name(target: str, env_key: str, default: str) -> str:
+    override = _normalize_provider_name(_PROVIDER_OVERRIDES.get(target))
+    if override:
+        return override
+    return str(os.getenv(env_key, default)).strip().lower()
+
+
+def _set_provider_override(target: str, backend: str | None) -> str | None:
+    normalized = _normalize_provider_name(backend)
+    _PROVIDER_OVERRIDES[target] = normalized
+    return normalized
+
+
 def _select_ocr_provider() -> OCRProvider:
-    name = str(os.getenv("BYES_SERVICE_OCR_PROVIDER", "mock")).strip().lower()
+    name = _effective_provider_name("ocr", "BYES_SERVICE_OCR_PROVIDER", "mock")
     return create_ocr_provider(name=name)
 
 
 def _select_risk_provider() -> RiskProvider:
-    name = str(os.getenv("BYES_SERVICE_RISK_PROVIDER", "reference")).strip().lower()
+    name = _effective_provider_name("risk", "BYES_SERVICE_RISK_PROVIDER", "reference")
     if name == "heuristic":
         return HeuristicRiskProvider(depth_provider=get_depth_provider())
     return ReferenceRiskProvider()
 
 
 def _select_depth_provider() -> RiskDepthProvider:
-    name = str(os.getenv("BYES_SERVICE_DEPTH_PROVIDER", "none")).strip().lower()
+    name = _effective_provider_name("depth", "BYES_SERVICE_DEPTH_PROVIDER", "none")
+    if name == "da3":
+        # DA3 often runs as a dedicated service for /depth; for risk-side local heuristics,
+        # try ONNX depth if configured, otherwise keep service boot-safe.
+        try:
+            return OnnxDepthProvider()
+        except Exception:
+            return NoneDepthProvider()
     if name == "synth":
         return SynthDepthProvider()
     if name == "onnx":
@@ -102,58 +157,95 @@ def _select_depth_provider() -> RiskDepthProvider:
 
 
 def _select_seg_provider() -> SegProvider:
-    name = str(os.getenv("BYES_SERVICE_SEG_PROVIDER", "mock")).strip().lower()
+    name = _effective_provider_name("seg", "BYES_SERVICE_SEG_PROVIDER", "mock")
     return create_seg_provider(name=name)
 
 
+def _select_det_provider() -> DetProvider:
+    name = _effective_provider_name("det", "BYES_SERVICE_DET_PROVIDER", "mock")
+    return create_det_provider(name=name)
+
+
 def _select_tool_depth_provider() -> DepthProvider:
-    name = str(os.getenv("BYES_SERVICE_DEPTH_PROVIDER", "mock")).strip().lower()
-    if name not in {"mock", "http"}:
+    name = _effective_provider_name("depth", "BYES_SERVICE_DEPTH_PROVIDER", "mock")
+    if name not in {"mock", "http", "da3", "onnx", "none"}:
         name = str(os.getenv("BYES_SERVICE_DEPTH_TOOL_PROVIDER", "mock")).strip().lower()
     return create_depth_provider(name=name or "mock")
 
 
 def _select_slam_provider() -> SlamProvider:
-    name = str(os.getenv("BYES_SERVICE_SLAM_PROVIDER", "mock")).strip().lower()
+    name = _effective_provider_name("slam", "BYES_SERVICE_SLAM_PROVIDER", "mock")
     return create_slam_provider(name=name)
 
 
 def get_ocr_provider() -> OCRProvider:
-    global _OCR_PROVIDER  # noqa: PLW0603
-    if _OCR_PROVIDER is None:
+    global _OCR_PROVIDER, _OCR_PROVIDER_KEY  # noqa: PLW0603
+    key = _effective_provider_name("ocr", "BYES_SERVICE_OCR_PROVIDER", "mock")
+    if _OCR_PROVIDER is not None and _OCR_PROVIDER_KEY is None:
+        return _OCR_PROVIDER
+    if _OCR_PROVIDER is None or _OCR_PROVIDER_KEY != key:
         _OCR_PROVIDER = _select_ocr_provider()
+        _OCR_PROVIDER_KEY = key
         print(f"[inference_service] selected OCR provider={_OCR_PROVIDER.name} model={_OCR_PROVIDER.model}")
     return _OCR_PROVIDER
 
 
 def get_risk_provider() -> RiskProvider:
-    global _RISK_PROVIDER  # noqa: PLW0603
-    if _RISK_PROVIDER is None:
+    global _RISK_PROVIDER, _RISK_PROVIDER_KEY  # noqa: PLW0603
+    key = _effective_provider_name("risk", "BYES_SERVICE_RISK_PROVIDER", "reference")
+    if _RISK_PROVIDER is not None and _RISK_PROVIDER_KEY is None:
+        return _RISK_PROVIDER
+    if _RISK_PROVIDER is None or _RISK_PROVIDER_KEY != key:
         _RISK_PROVIDER = _select_risk_provider()
+        _RISK_PROVIDER_KEY = key
         print(f"[inference_service] selected RISK provider={_RISK_PROVIDER.name} model={_RISK_PROVIDER.model}")
     return _RISK_PROVIDER
 
 
 def get_depth_provider() -> RiskDepthProvider:
-    global _DEPTH_PROVIDER  # noqa: PLW0603
-    if _DEPTH_PROVIDER is None:
+    global _DEPTH_PROVIDER, _DEPTH_PROVIDER_KEY  # noqa: PLW0603
+    key = _effective_provider_name("depth", "BYES_SERVICE_DEPTH_PROVIDER", "none")
+    if _DEPTH_PROVIDER is not None and _DEPTH_PROVIDER_KEY is None:
+        return _DEPTH_PROVIDER
+    if _DEPTH_PROVIDER is None or _DEPTH_PROVIDER_KEY != key:
         _DEPTH_PROVIDER = _select_depth_provider()
+        _DEPTH_PROVIDER_KEY = key
         print(f"[inference_service] selected DEPTH provider={_DEPTH_PROVIDER.name} model={_DEPTH_PROVIDER.model}")
     return _DEPTH_PROVIDER
 
 
 def get_seg_provider() -> SegProvider:
-    global _SEG_PROVIDER  # noqa: PLW0603
-    if _SEG_PROVIDER is None:
+    global _SEG_PROVIDER, _SEG_PROVIDER_KEY  # noqa: PLW0603
+    key = _effective_provider_name("seg", "BYES_SERVICE_SEG_PROVIDER", "mock")
+    if _SEG_PROVIDER is not None and _SEG_PROVIDER_KEY is None:
+        return _SEG_PROVIDER
+    if _SEG_PROVIDER is None or _SEG_PROVIDER_KEY != key:
         _SEG_PROVIDER = _select_seg_provider()
+        _SEG_PROVIDER_KEY = key
         print(f"[inference_service] selected SEG provider={_SEG_PROVIDER.name} model={_SEG_PROVIDER.model}")
     return _SEG_PROVIDER
 
 
+def get_det_provider() -> DetProvider:
+    global _DET_PROVIDER, _DET_PROVIDER_KEY  # noqa: PLW0603
+    key = _effective_provider_name("det", "BYES_SERVICE_DET_PROVIDER", "mock")
+    if _DET_PROVIDER is not None and _DET_PROVIDER_KEY is None:
+        return _DET_PROVIDER
+    if _DET_PROVIDER is None or _DET_PROVIDER_KEY != key:
+        _DET_PROVIDER = _select_det_provider()
+        _DET_PROVIDER_KEY = key
+        print(f"[inference_service] selected DET provider={_DET_PROVIDER.name} model={_DET_PROVIDER.model}")
+    return _DET_PROVIDER
+
+
 def get_tool_depth_provider() -> DepthProvider:
-    global _TOOL_DEPTH_PROVIDER  # noqa: PLW0603
-    if _TOOL_DEPTH_PROVIDER is None:
+    global _TOOL_DEPTH_PROVIDER, _TOOL_DEPTH_PROVIDER_KEY  # noqa: PLW0603
+    key = _effective_provider_name("depth", "BYES_SERVICE_DEPTH_PROVIDER", "none")
+    if _TOOL_DEPTH_PROVIDER is not None and _TOOL_DEPTH_PROVIDER_KEY is None:
+        return _TOOL_DEPTH_PROVIDER
+    if _TOOL_DEPTH_PROVIDER is None or _TOOL_DEPTH_PROVIDER_KEY != key:
         _TOOL_DEPTH_PROVIDER = _select_tool_depth_provider()
+        _TOOL_DEPTH_PROVIDER_KEY = key
         print(
             f"[inference_service] selected DEPTH_TOOL provider={_TOOL_DEPTH_PROVIDER.name} model={_TOOL_DEPTH_PROVIDER.model}"
         )
@@ -161,9 +253,13 @@ def get_tool_depth_provider() -> DepthProvider:
 
 
 def get_slam_provider() -> SlamProvider:
-    global _SLAM_PROVIDER  # noqa: PLW0603
-    if _SLAM_PROVIDER is None:
+    global _SLAM_PROVIDER, _SLAM_PROVIDER_KEY  # noqa: PLW0603
+    key = _effective_provider_name("slam", "BYES_SERVICE_SLAM_PROVIDER", "mock")
+    if _SLAM_PROVIDER is not None and _SLAM_PROVIDER_KEY is None:
+        return _SLAM_PROVIDER
+    if _SLAM_PROVIDER is None or _SLAM_PROVIDER_KEY != key:
         _SLAM_PROVIDER = _select_slam_provider()
+        _SLAM_PROVIDER_KEY = key
         print(f"[inference_service] selected SLAM provider={_SLAM_PROVIDER.name} model={_SLAM_PROVIDER.model}")
     return _SLAM_PROVIDER
 
@@ -175,6 +271,7 @@ def _startup_provider() -> None:
     get_ocr_provider()
     get_risk_provider()
     get_seg_provider()
+    get_det_provider()
     get_slam_provider()
 
 
@@ -184,6 +281,7 @@ def healthz() -> dict[str, Any]:
     risk_provider = get_risk_provider()
     depth_provider = get_depth_provider()
     seg_provider = get_seg_provider()
+    det_provider = get_det_provider()
     depth_tool_provider = get_tool_depth_provider()
     slam_provider = get_slam_provider()
     return {
@@ -196,11 +294,95 @@ def healthz() -> dict[str, Any]:
         "depthModel": depth_provider.model,
         "segProvider": seg_provider.name,
         "segModel": seg_provider.model,
+        "detProvider": det_provider.name,
+        "detModel": det_provider.model,
         "depthToolProvider": depth_tool_provider.name,
         "depthToolModel": depth_tool_provider.model,
         "slamProvider": slam_provider.name,
         "slamModel": slam_provider.model,
     }
+
+
+def _providers_snapshot() -> dict[str, Any]:
+    ocr_provider = get_ocr_provider()
+    risk_provider = get_risk_provider()
+    depth_provider = get_depth_provider()
+    seg_provider = get_seg_provider()
+    det_provider = get_det_provider()
+    depth_tool_provider = get_tool_depth_provider()
+    slam_provider = get_slam_provider()
+    return {
+        "providers": {
+            "ocr": {"backend": ocr_provider.name, "model": ocr_provider.model},
+            "risk": {"backend": risk_provider.name, "model": risk_provider.model},
+            "depth": {"backend": depth_provider.name, "model": depth_provider.model},
+            "depthTool": {"backend": depth_tool_provider.name, "model": depth_tool_provider.model},
+            "seg": {"backend": seg_provider.name, "model": seg_provider.model},
+            "det": {"backend": det_provider.name, "model": det_provider.model},
+            "slam": {"backend": slam_provider.name, "model": slam_provider.model},
+        },
+        "overrides": dict(_PROVIDER_OVERRIDES),
+        "tsMs": _now_ms(),
+    }
+
+
+def _is_loopback_service_endpoint(endpoint: str | None, request: Request, expected_path: str) -> bool:
+    endpoint_text = str(endpoint or "").strip()
+    if not endpoint_text:
+        return False
+    try:
+        from urllib.parse import urlparse
+    except Exception:
+        return False
+    parsed = urlparse(endpoint_text)
+    if not parsed.scheme or not parsed.netloc:
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    req_host = (request.url.hostname or "").strip().lower()
+    if host not in {"127.0.0.1", "localhost", req_host}:
+        return False
+    endpoint_port = parsed.port
+    req_port = request.url.port
+    if endpoint_port is None or req_port is None or int(endpoint_port) != int(req_port):
+        return False
+    path = str(parsed.path or "").strip().lower()
+    return path == str(expected_path or "").strip().lower()
+
+
+@app.get("/providers")
+def providers_state() -> dict[str, Any]:
+    return {"ok": True, **_providers_snapshot()}
+
+
+@app.post("/providers/overrides")
+def providers_overrides(request: ServiceProvidersOverrideRequest) -> dict[str, Any]:
+    updated: dict[str, Any] = {}
+
+    def _apply(key: str, item: ServiceProviderOverrideItem | None) -> None:
+        if item is None:
+            return
+        backend = _set_provider_override(key, item.backend)
+        updated[key] = {"backend": backend}
+
+    _apply("ocr", request.ocr)
+    _apply("risk", request.risk)
+    _apply("depth", request.depth)
+    _apply("seg", request.seg)
+    _apply("det", request.det)
+    _apply("slam", request.slam)
+
+    # Force lazy rebind on next call.
+    global _OCR_PROVIDER, _RISK_PROVIDER, _DEPTH_PROVIDER, _SEG_PROVIDER, _DET_PROVIDER, _TOOL_DEPTH_PROVIDER, _SLAM_PROVIDER  # noqa: PLW0603
+    _OCR_PROVIDER = None
+    _RISK_PROVIDER = None
+    _DEPTH_PROVIDER = None
+    _SEG_PROVIDER = None
+    _DET_PROVIDER = None
+    _TOOL_DEPTH_PROVIDER = None
+    _SLAM_PROVIDER = None
+
+    snapshot = _providers_snapshot()
+    return {"ok": True, "updated": updated, **snapshot}
 
 
 @app.post("/ocr")
@@ -272,6 +454,76 @@ def infer_ocr(request: InferenceRequest) -> dict[str, Any]:
     if warnings_count > 0:
         response["warningsCount"] = int(warnings_count)
     return response
+
+
+@app.post("/det")
+def infer_det(request: InferenceRequest) -> dict[str, Any]:
+    started = _now_ms()
+    image = _decode_pil_image(request.image_b64)
+    provider = get_det_provider()
+    targets = [str(item).strip() for item in (request.targets or []) if str(item).strip()]
+    prompt = dict(request.prompt) if isinstance(request.prompt, dict) else None
+    try:
+        try:
+            result = provider.infer(image, request.frameSeq, request.runId, targets=targets or None, prompt=prompt)
+        except TypeError:
+            result = provider.infer(image, request.frameSeq)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        # Treat unexpected provider failures as temporary unavailability instead of hard 500.
+        raise HTTPException(status_code=503, detail=f"det_infer_failed:{exc.__class__.__name__}") from exc
+
+    model = str(result.get("model", provider.model)).strip() or provider.model
+    latency_ms = max(0, _now_ms() - started)
+    backend = str(result.get("backend", provider.name)).strip().lower() or provider.name
+    endpoint = result.get("endpoint", getattr(provider, "endpoint", None))
+    endpoint_text = str(endpoint).strip() if endpoint is not None else ""
+    try:
+        objects, warnings_count = _normalize_det_objects(result.get("objects"))
+        top_k = _to_nonnegative_int(result.get("topK")) or 5
+        response: dict[str, Any] = {
+            "schemaVersion": "byes.det.v1",
+            "runId": request.runId,
+            "frameSeq": request.frameSeq,
+            "objects": objects,
+            "objectsCount": len(objects),
+            "topK": max(1, top_k),
+            "latencyMs": latency_ms,
+            "model": model,
+            "backend": backend,
+            "endpoint": endpoint_text or None,
+        }
+        if "openVocab" in result:
+            response["openVocab"] = bool(result.get("openVocab"))
+        prompt_used = result.get("promptUsed")
+        if isinstance(prompt_used, list):
+            response["promptUsed"] = [str(item).strip() for item in prompt_used if str(item).strip()]
+        image_width = _to_positive_int(result.get("imageWidth"))
+        image_height = _to_positive_int(result.get("imageHeight"))
+        if image_width is not None:
+            response["imageWidth"] = image_width
+        if image_height is not None:
+            response["imageHeight"] = image_height
+        if warnings_count > 0:
+            response["warningsCount"] = warnings_count
+        return response
+    except Exception as exc:  # noqa: BLE001
+        # Keep /det stable in pilot mode even when provider outputs malformed payloads.
+        return {
+            "schemaVersion": "byes.det.v1",
+            "runId": request.runId,
+            "frameSeq": request.frameSeq,
+            "objects": [],
+            "objectsCount": 0,
+            "topK": 5,
+            "latencyMs": latency_ms,
+            "model": model,
+            "backend": backend,
+            "endpoint": endpoint_text or None,
+            "warningsCount": 1,
+            "warnings": [f"det_postprocess_failed:{exc.__class__.__name__}"],
+        }
 
 
 @app.post("/risk")
@@ -346,10 +598,19 @@ def infer_risk(request: InferenceRequest) -> dict[str, Any]:
 
 
 @app.post("/seg")
-def infer_seg(request: InferenceRequest) -> dict[str, Any]:
+def infer_seg(request: InferenceRequest, http_request: Request) -> dict[str, Any]:
     started = _now_ms()
     image = _decode_pil_image(request.image_b64)
     provider = get_seg_provider()
+    if _is_loopback_service_endpoint(getattr(provider, "endpoint", None), http_request, "/seg"):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "seg_provider_loopback_endpoint;"
+                " set BYES_SERVICE_SEG_ENDPOINT to external sam3 service "
+                "(for example http://127.0.0.1:19271/seg) or use mock provider"
+            ),
+        )
     targets = [str(item).strip() for item in (request.targets or []) if str(item).strip()]
     prompt = dict(request.prompt) if isinstance(request.prompt, dict) else None
     tracking = bool(request.tracking) if isinstance(request.tracking, bool) else None
@@ -452,10 +713,19 @@ def infer_seg(request: InferenceRequest) -> dict[str, Any]:
 
 
 @app.post("/depth")
-def infer_depth(request: InferenceRequest) -> dict[str, Any]:
+def infer_depth(request: InferenceRequest, http_request: Request) -> dict[str, Any]:
     started = _now_ms()
     image = _decode_pil_image(request.image_b64)
     provider = get_tool_depth_provider()
+    if _is_loopback_service_endpoint(getattr(provider, "endpoint", None), http_request, "/depth"):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "depth_provider_loopback_endpoint;"
+                " set BYES_SERVICE_DEPTH_ENDPOINT to external da3 service "
+                "(for example http://127.0.0.1:19281/depth) or use mock/onnx provider"
+            ),
+        )
     targets = [str(item).strip() for item in (request.targets or []) if str(item).strip()]
     try:
         try:
@@ -717,6 +987,103 @@ def _normalize_ocr_lines(
                 out["bbox"] = [x0, y0, x1, y1]
         normalized.append(out)
     return normalized, warnings_count
+
+
+def _normalize_det_objects(raw_objects: Any) -> tuple[list[dict[str, Any]], int]:
+    warnings_count = 0
+    objects: list[dict[str, Any]] = []
+    if not isinstance(raw_objects, list):
+        return objects, 1
+    for row in raw_objects:
+        if not isinstance(row, dict):
+            warnings_count += 1
+            continue
+        label = str(row.get("label", "")).strip() or "unknown"
+        conf = _to_float(row.get("conf"))
+        if conf is None:
+            warnings_count += 1
+            conf = 0.0
+        conf = max(0.0, min(1.0, conf))
+        box_raw = row.get("box_xyxy")
+        box_norm_raw = row.get("box_norm")
+        if not (isinstance(box_raw, list) and len(box_raw) == 4):
+            warnings_count += 1
+            box_raw = [0.0, 0.0, 1.0, 1.0]
+        try:
+            box = [float(v) for v in box_raw]
+        except Exception:
+            warnings_count += 1
+            box = [0.0, 0.0, 1.0, 1.0]
+        normalized: dict[str, Any] = {"label": label, "conf": conf, "box_xyxy": box}
+        if isinstance(box_norm_raw, list) and len(box_norm_raw) == 4:
+            try:
+                normalized["box_norm"] = [max(0.0, min(1.0, float(v))) for v in box_norm_raw]
+            except Exception:
+                warnings_count += 1
+        mask = _normalize_det_mask(row.get("mask"))
+        if isinstance(mask, dict):
+            normalized["mask"] = mask
+        elif row.get("mask") is not None:
+            warnings_count += 1
+        objects.append(normalized)
+    objects.sort(key=lambda item: float(item.get("conf", 0.0)), reverse=True)
+    return objects, warnings_count
+
+
+def _normalize_det_mask(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    fmt = str(raw.get("format", "")).strip()
+    if fmt != "polygon_v1":
+        return None
+    points_raw = raw.get("points")
+    if not isinstance(points_raw, list):
+        return None
+    points: list[list[float]] = []
+    for item in points_raw:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            return None
+        try:
+            x = float(item[0])
+            y = float(item[1])
+        except Exception:
+            return None
+        points.append([x, y])
+    if len(points) < 3:
+        return None
+    out: dict[str, Any] = {"format": "polygon_v1", "points": points}
+    points_norm_raw = raw.get("pointsNorm")
+    if isinstance(points_norm_raw, list):
+        points_norm: list[list[float]] = []
+        for item in points_norm_raw:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            try:
+                nx = max(0.0, min(1.0, float(item[0])))
+                ny = max(0.0, min(1.0, float(item[1])))
+            except Exception:
+                continue
+            points_norm.append([nx, ny])
+        if points_norm:
+            out["pointsNorm"] = points_norm
+    return out
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _to_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except Exception:
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
 
 
 def _to_nonnegative_int(value: Any) -> int:

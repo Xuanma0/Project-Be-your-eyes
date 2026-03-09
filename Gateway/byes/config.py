@@ -190,6 +190,20 @@ class GatewayConfig:
     mock_ocr_confidence: float
     mock_ocr_text: str
     mock_tool_timeout_ms: int
+    gateway_profile: str = "local"
+    gateway_dev_endpoints_enabled: bool = True
+    gateway_runpackage_upload_enabled: bool = True
+    gateway_allow_local_runpackage_path: bool = True
+    gateway_max_frame_bytes: int = 0
+    gateway_max_runpackage_zip_bytes: int = 0
+    gateway_max_json_bytes: int = 0
+    gateway_rate_limit_enabled: bool = False
+    gateway_rate_limit_rps: float = 10.0
+    gateway_rate_limit_burst: int = 20
+    gateway_rate_limit_key_mode: str = "ip"
+    mode_profile_json: str = ""
+    emit_mode_profile_debug: bool = False
+    emit_net_debug: bool = False
     frame_tracker_retention_ms: int = 120000
     frame_tracker_max_entries: int = 20000
     enable_real_det: bool = False
@@ -274,6 +288,7 @@ class GatewayConfig:
     critical_from_crosscheck_kinds_csv: str = "vision_without_depth,depth_without_vision,transparent_obstacle,dropoff"
     inference_enable_ocr: bool = False
     inference_enable_risk: bool = True
+    inference_enable_det: bool = False
     inference_enable_seg: bool = False
     inference_enable_depth: bool = False
     inference_enable_slam: bool = False
@@ -281,11 +296,13 @@ class GatewayConfig:
     inference_enable_costmap_fused: bool = False
     inference_ocr_backend: str = "mock"
     inference_risk_backend: str = "mock"
+    inference_det_backend: str = "mock"
     inference_seg_backend: str = "mock"
     inference_depth_backend: str = "mock"
     inference_slam_backend: str = "mock"
     inference_ocr_http_url: str = "http://127.0.0.1:9001/ocr"
     inference_risk_http_url: str = "http://127.0.0.1:9002/risk"
+    inference_det_http_url: str = "http://127.0.0.1:9006/det"
     inference_seg_http_url: str = "http://127.0.0.1:9003/seg"
     inference_depth_http_url: str = "http://127.0.0.1:9004/depth"
     inference_slam_http_url: str = "http://127.0.0.1:9005/slam/pose"
@@ -299,11 +316,13 @@ class GatewayConfig:
     inference_seg_prompt_budget_mode: str = "targets_text_boxes_points"
     inference_ocr_timeout_ms: int = 1500
     inference_risk_timeout_ms: int = 1200
+    inference_det_timeout_ms: int = 1200
     inference_seg_timeout_ms: int = 1200
     inference_depth_timeout_ms: int = 1200
     inference_slam_timeout_ms: int = 1200
     inference_ocr_model_id: str = "mock-ocr"
     inference_risk_model_id: str = "mock-risk"
+    inference_det_model_id: str = "mock-det"
     inference_seg_model_id: str = "mock-seg"
     inference_depth_model_id: str = "mock-depth"
     inference_slam_model_id: str = "mock-slam"
@@ -341,6 +360,22 @@ class GatewayConfig:
 def load_config() -> GatewayConfig:
     slow_q_maxsize = _env_int("BYES_SLOW_Q_MAXSIZE", 64)
     return GatewayConfig(
+        gateway_profile=(str(os.getenv("BYES_GATEWAY_PROFILE", "local")).strip().lower() or "local"),
+        gateway_dev_endpoints_enabled=_env_bool("BYES_GATEWAY_DEV_ENDPOINTS_ENABLED", True),
+        gateway_runpackage_upload_enabled=_env_bool("BYES_GATEWAY_RUNPACKAGE_UPLOAD_ENABLED", True),
+        gateway_allow_local_runpackage_path=_env_bool("BYES_GATEWAY_ALLOW_LOCAL_RUNPACKAGE_PATH", True),
+        gateway_max_frame_bytes=max(0, _env_int("BYES_GATEWAY_MAX_FRAME_BYTES", 0)),
+        gateway_max_runpackage_zip_bytes=max(0, _env_int("BYES_GATEWAY_MAX_RUNPACKAGE_ZIP_BYTES", 0)),
+        gateway_max_json_bytes=max(0, _env_int("BYES_GATEWAY_MAX_JSON_BYTES", 0)),
+        gateway_rate_limit_enabled=_env_bool("BYES_GATEWAY_RATE_LIMIT_ENABLED", False),
+        gateway_rate_limit_rps=max(0.1, _env_float("BYES_GATEWAY_RATE_LIMIT_RPS", 10.0)),
+        gateway_rate_limit_burst=max(1, _env_int("BYES_GATEWAY_RATE_LIMIT_BURST", 20)),
+        gateway_rate_limit_key_mode=(
+            str(os.getenv("BYES_GATEWAY_RATE_LIMIT_KEY_MODE", "ip")).strip().lower() or "ip"
+        ),
+        mode_profile_json=str(os.getenv("BYES_MODE_PROFILE_JSON", "") or ""),
+        emit_mode_profile_debug=_env_bool("BYES_EMIT_MODE_PROFILE_DEBUG", False),
+        emit_net_debug=_env_bool("BYES_EMIT_NET_DEBUG", False),
         send_envelope=_env_bool("GATEWAY_SEND_ENVELOPE", False),
         default_ttl_ms=_env_int("BYES_DEFAULT_TTL_MS", 3000),
         risk_priority=_env_int("BYES_RISK_PRIORITY", 100),
@@ -461,6 +496,7 @@ def load_config() -> GatewayConfig:
         ),
         inference_enable_ocr=_env_bool("BYES_ENABLE_OCR", False),
         inference_enable_risk=_env_bool("BYES_ENABLE_RISK", True),
+        inference_enable_det=_env_bool("BYES_ENABLE_DET", False),
         inference_enable_seg=_env_bool("BYES_ENABLE_SEG", False),
         inference_enable_depth=_env_bool("BYES_ENABLE_DEPTH", False),
         inference_enable_slam=_env_bool("BYES_ENABLE_SLAM", False),
@@ -468,6 +504,7 @@ def load_config() -> GatewayConfig:
         inference_enable_costmap_fused=_env_bool("BYES_ENABLE_COSTMAP_FUSED", False),
         inference_ocr_backend=os.getenv("BYES_OCR_BACKEND", os.getenv("BYES_SERVICE_OCR_PROVIDER", "mock")),
         inference_risk_backend=os.getenv("BYES_RISK_BACKEND", "mock"),
+        inference_det_backend=os.getenv("BYES_DET_BACKEND", os.getenv("BYES_SERVICE_DET_PROVIDER", "mock")),
         inference_seg_backend=os.getenv("BYES_SEG_BACKEND", "mock"),
         inference_depth_backend=os.getenv("BYES_DEPTH_BACKEND", "mock"),
         inference_slam_backend=os.getenv("BYES_SLAM_BACKEND", "mock"),
@@ -476,6 +513,10 @@ def load_config() -> GatewayConfig:
             os.getenv("BYES_SERVICE_OCR_ENDPOINT", "http://127.0.0.1:9001/ocr"),
         ),
         inference_risk_http_url=os.getenv("BYES_RISK_HTTP_URL", "http://127.0.0.1:9002/risk"),
+        inference_det_http_url=os.getenv(
+            "BYES_DET_HTTP_URL",
+            os.getenv("BYES_SERVICE_DET_ENDPOINT", "http://127.0.0.1:9006/det"),
+        ),
         inference_seg_http_url=os.getenv("BYES_SEG_HTTP_URL", "http://127.0.0.1:9003/seg"),
         inference_depth_http_url=os.getenv("BYES_DEPTH_HTTP_URL", "http://127.0.0.1:9004/depth"),
         inference_slam_http_url=os.getenv("BYES_SLAM_HTTP_URL", "http://127.0.0.1:9005/slam/pose"),
@@ -495,6 +536,7 @@ def load_config() -> GatewayConfig:
             _env_int("BYES_SERVICE_OCR_TIMEOUT_MS", 1500),
         ),
         inference_risk_timeout_ms=_env_int("BYES_RISK_HTTP_TIMEOUT_MS", 1200),
+        inference_det_timeout_ms=_env_int("BYES_DET_HTTP_TIMEOUT_MS", 1200),
         inference_seg_timeout_ms=_env_int("BYES_SEG_HTTP_TIMEOUT_MS", 1200),
         inference_depth_timeout_ms=_env_int("BYES_DEPTH_HTTP_TIMEOUT_MS", 1200),
         inference_slam_timeout_ms=_env_int(
@@ -503,6 +545,7 @@ def load_config() -> GatewayConfig:
         ),
         inference_ocr_model_id=os.getenv("BYES_OCR_MODEL_ID", os.getenv("BYES_SERVICE_OCR_MODEL_ID", "mock-ocr")),
         inference_risk_model_id=os.getenv("BYES_RISK_MODEL_ID", "mock-risk"),
+        inference_det_model_id=os.getenv("BYES_DET_MODEL_ID", os.getenv("BYES_SERVICE_DET_MODEL_ID", "mock-det")),
         inference_seg_model_id=os.getenv("BYES_SEG_MODEL_ID", "mock-seg"),
         inference_depth_model_id=os.getenv("BYES_DEPTH_MODEL_ID", "mock-depth"),
         inference_slam_model_id=os.getenv("BYES_SLAM_MODEL_ID", os.getenv("BYES_SERVICE_SLAM_MODEL_ID", "mock-slam")),

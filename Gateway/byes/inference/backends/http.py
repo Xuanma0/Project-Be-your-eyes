@@ -8,7 +8,7 @@ from urllib.parse import urlparse, urlunparse
 
 import httpx
 
-from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult, SlamResult
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DetResult, DepthResult, SlamResult
 
 
 def _now_ms() -> int:
@@ -268,6 +268,97 @@ class HttpSegBackend:
                 status="error",
                 error=exc.__class__.__name__,
                 payload={"error": exc.__class__.__name__, "segmentsCount": 0},
+            )
+
+    def _update_model_id(self, payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        value = payload.get("model")
+        if value is None:
+            return
+        text = str(value).strip()
+        if text:
+            self.model_id = text
+
+
+class HttpDetBackend:
+    name = "http"
+
+    def __init__(self, url: str, timeout_ms: int = 1200, model_id: str | None = None) -> None:
+        self.url = str(url).strip()
+        self.timeout_ms = max(1, int(timeout_ms))
+        self.model_id = str(model_id or "").strip() or None
+        self.endpoint = _sanitize_endpoint(self.url)
+
+    async def infer(
+        self,
+        image_bytes: bytes,
+        frame_seq: int | None,
+        ts_ms: int,
+        run_id: str | None = None,
+        targets: list[str] | None = None,
+        prompt: dict[str, Any] | None = None,
+    ) -> DetResult:
+        started = _now_ms()
+        request_payload: dict[str, Any] = {
+            "frameSeq": frame_seq,
+            "tsMs": ts_ms,
+            "image_b64": base64.b64encode(image_bytes).decode("ascii"),
+        }
+        run_id_text = str(run_id or "").strip()
+        if run_id_text:
+            request_payload["runId"] = run_id_text
+        targets_normalized = [str(item).strip() for item in (targets or []) if str(item).strip()]
+        if targets_normalized:
+            request_payload["targets"] = targets_normalized
+        if isinstance(prompt, dict):
+            request_payload["prompt"] = prompt
+        try:
+            timeout_s = max(0.05, self.timeout_ms / 1000.0)
+            async with httpx.AsyncClient(timeout=timeout_s) as client:
+                response = await client.post(self.url, json=request_payload)
+            latency = max(0, _now_ms() - started)
+            if response.status_code >= 400:
+                return DetResult(
+                    objects=[],
+                    latency_ms=latency,
+                    status="timeout" if response.status_code == 408 else "error",
+                    error=f"http_{response.status_code}",
+                    payload={"error": f"http_{response.status_code}", "objectsCount": 0},
+                )
+            payload = response.json()
+            self._update_model_id(payload)
+            normalized_payload = _normalize_payload(payload)
+            objects: list[dict[str, Any]] = []
+            if isinstance(payload, dict) and isinstance(payload.get("objects"), list):
+                for item in payload["objects"]:
+                    if isinstance(item, dict):
+                        objects.append(dict(item))
+            normalized_payload["objects"] = objects
+            normalized_payload["objectsCount"] = len(objects)
+            return DetResult(
+                objects=objects,
+                latency_ms=latency,
+                status="ok",
+                payload=normalized_payload,
+            )
+        except httpx.TimeoutException as exc:
+            latency = max(0, _now_ms() - started)
+            return DetResult(
+                objects=[],
+                latency_ms=latency,
+                status="timeout",
+                error=exc.__class__.__name__,
+                payload={"error": exc.__class__.__name__, "objectsCount": 0},
+            )
+        except Exception as exc:  # noqa: BLE001
+            latency = max(0, _now_ms() - started)
+            return DetResult(
+                objects=[],
+                latency_ms=latency,
+                status="error",
+                error=exc.__class__.__name__,
+                payload={"error": exc.__class__.__name__, "objectsCount": 0},
             )
 
     def _update_model_id(self, payload: Any) -> None:

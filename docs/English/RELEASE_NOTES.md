@@ -2,7 +2,218 @@ Current development version is defined by `VERSION`; this file records historica
 
 # Release Notes (v4.x)
 
-This changelog summarizes the delivered capabilities from `v4.38` to `v4.82` for reviewers and maintainers.
+This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
+
+## v5.09.2
+- Stabilized overlay truth semantics around the `SEG=no_segments` case: Quest and Desktop keep `seg.truthState=real` while surfacing `overlayAvailable=false` and `overlayReason=no_segments` instead of treating the frame as an overlay-pipeline failure.
+- Narrowed Quest self-test semantics to match runtime truth without broadening any other failure path: only `seg=real + overlayAvailable=false + overlayReason=no_segments` is downgraded to a readable skip note, while `depth` still requires a real observed overlay to pass.
+- Preserved the existing `v5.09.1` latest-frame-wins and stale-hold behavior so the depth layer remains the minimum visible whole-FOV success path even when segmentation produces no mask on a frame.
+- Kept contracts, provider interfaces, menu IA, and all non-overlay subsystems unchanged; this patch is only about making overlay status legible and non-misleading.
+
+## v5.09.1
+- Added optional `BYES_PYTHON_EXE_CUDA128` launcher support for Blackwell-class SEG/DEPTH bring-up: the Quest realstack flow now probes CUDA in a separate cu128 Python environment before service launch and keeps the existing CPU baseline as the fallback.
+- Tightened GPU truth so `device=cuda` is only surfaced after a real warmup infer succeeds; failed warmups now fall back to `cpu` immediately and preserve an explicit `deviceReason`, `torchVersion`, `cudaRuntime`, and detected capability token.
+- Aligned live provider truth with downstream runtime evidence instead of HTTP-wrapper metadata: `/api/providers`, `/api/capabilities`, `/api/ui/state`, Desktop Console, and Quest panel now prefer the real `sam3` / `da3` backend-model-device tuple when those services respond.
+- Improved whole-FOV overlay usability by biasing default visibility toward depth, keeping stale-hold semantics, clearing `no_segments` overlays honestly, and surfacing `latestOverlayKind`, freshness, age, and device/deviceReason through the same Gateway truth path.
+- Preserved all existing contracts and menu IA: this patch only hardens Blackwell bring-up and makes the existing SEG/DEPTH overlay loop more legible.
+
+## v5.09
+- Promoted real `SEG/DEPTH` from single-shot bring-up into a sustained overlay loop: Gateway now tracks only the latest pending frame per overlay kind, drops stale `seg/depth` results before asset emission, and keeps Desktop/Quest on the newest successful overlay instead of accumulating old work.
+- Added probe-only GPU bring-up truth to `sam3` and `da3`: each service now attempts a CUDA warmup inference first, only reports `device=cuda` after a successful warmup, and otherwise falls back to CPU with an explicit `deviceReason` instead of pretending GPU is active.
+- Threaded `deviceReason`, overlay freshness, overlay age, and latest overlay asset ids through `/api/providers`, `/api/capabilities`, `/api/ui/state`, Desktop Console, and Quest panel summaries so the same `SEG/DEPTH` runtime truth is visible on both PC and Quest surfaces.
+- Hardened overlay event emission for whole-FOV HUD consumption: stale overlay frames are rejected at Gateway and Quest sides, while Quest continues last-frame-hold only for the most recent successful asset and never re-applies an older pending frame over a newer one.
+- Kept contracts and provider semantics stable: `sam3` still emits `seg.mask.v1` assets and `da3` still emits `depth.map.v1` assets through the existing Gateway asset pipeline without introducing a new protocol.
+
+## v5.08.2
+- Hardened the `v5.08.2` realstack launcher to fail closed: YOLO26, SAM3, DA3, and pySLAM readiness now print as `READY_REAL`, `READY_MOCK`, `UNAVAILABLE_MISSING_PATH`, or `UNAVAILABLE_RUNTIME` before launch, and missing model paths no longer masquerade as ready providers.
+- Fixed empty-value parsing from `.env.example` / `.env` in the Quest realstack launcher so blank model-path settings no longer corrupt runtime env vars such as `BYES_MODE_PROFILE_JSON`, provider aliases, or pySLAM root detection.
+- Kept provider truth aligned with bring-up reality by feeding normalized `503`, `404`, timeout, missing-path, and disabled reasons into `/api/providers`, `/api/capabilities`, `/api/ui/state`, Quest Panel, and Desktop Console from the same Gateway normalization path.
+- Tightened overlay asset lifecycle and whole-FOV rendering hotfixes: Quest caches overlay textures by immutable `assetId`, stops re-fetching the same failed id, and suppresses DET/SEG/DEPTH layers when provider truth is unavailable or no valid texture exists.
+- Polished Quest UX without expanding IA: passthrough unavailable states now recover to a stable background, controller-vs-hand input mode is explicit in Hand Menu, and Smoke Panel drag stays yaw-aligned toward the HMD.
+
+## v5.08.3
+- Replaced the `sam3` segmentation-service stub with real inference in `Gateway/services/sam3_seg_service/app.py`, keeping the existing `/seg` response shape while emitting real `segments`, `inferMs`, `device`, and failure reasons instead of `sam3_mode_stub_no_inference`.
+- Replaced the `da3` depth-service stub with real inference in `Gateway/services/da3_depth_service/app.py`, keeping the existing `/depth` response shape while emitting real depth grids, `inferMs`, `device`, and load-time health metadata.
+- Added lazy singleton model loading plus startup eager-load for both services so local real bring-up can warm large checkpoints once per process instead of paying model-load cost on every request.
+- Kept provider truth aligned with service reality: once `/seg` and `/depth` succeed, Gateway now promotes `SEG` and `DEPTH` to `real` in `/api/providers`, `/api/capabilities`, `/api/ui/state`, Desktop Console, and Quest-facing provider summaries.
+- Preserved current contracts and overlay transport: real SAM3 masks still flow through `seg.mask.v1` assets and real DA3 depth still flows through `depth.map.v1` assets without introducing a new protocol.
+
+## v5.08.4
+- Narrow activation patch for real `SEG` and `DEPTH`: retained the new `sam3` and `da3` runtime paths and revalidated them against the existing Gateway frame, provider-truth, and overlay-asset pipeline without expanding UI or contracts.
+- Confirmed direct service bring-up stays real on this machine: `/seg` returns `200` with real masks and `/depth` returns `200` with real depth grids, each reporting `backend`, `model`, `device`, `inferMs`, and count metadata.
+- Confirmed main-chain truth alignment: after `/api/frame`, `seg.truthState` and `depth.truthState` resolve to `real`, and `/api/ui/state.latest.overlayAssets` carries both `seg` and `depth` asset ids for Desktop Console and Quest HUD consumers.
+
+## v5.08.1
+- Hardened provider truth normalization so Quest Panel, Desktop Console, `/api/providers`, `/api/capabilities`, and `/api/ui/state` no longer report `real` when DET, SLAM, or other providers are enabled but currently failing; recent `503`, `404`, timeout, disabled, and missing-path conditions now resolve to `unavailable` with a visible reason.
+- Stabilized Quest overlay asset lifecycle by treating overlay assets as immutable blobs: Quest only downloads when `assetId` changes, caches successful textures locally, preserves last-frame hold after success, and suppresses repeated GETs for the same failed asset id.
+- Removed blank overlay layers from the whole-FOV HUD by disabling DET, SEG, and DEPTH renderers when no valid texture exists, preventing the white or red fallback-looking backgrounds that previously occluded passthrough and panel content.
+- Compressed the Hand Menu interaction surface into smaller in-page sections, labeled sliders, and stronger system-gesture conflict isolation so the palm-up menu is shorter, less overlapping, and less likely to fight Meta system gestures.
+- Added explicit passthrough truth reporting and fallback disable behavior so Quest and Desktop surfaces now show `Passthrough: unavailable|fallback|real` with reasons instead of leaving users in an ambiguous half-enabled visual state.
+
+## v5.08
+- Added proof-gated PCA truth across Quest panel, Desktop Console, `/api/capabilities`, `/api/providers`, and `/api/ui/state`; `pca_real` now requires supported Quest 3 or 3S hardware, non-Link runtime, camera permission, provider availability, and provider readiness at the same time.
+- Hardened whole-FOV overlay rendering on Quest by keeping DET, SEG, and DEPTH in a last-frame-hold path with latest-frame-wins asset fetch behavior instead of stacking overlay downloads or chasing per-frame inference.
+- Promoted Desktop Console into an operator UI on top of existing APIs by adding `Scan Once`, `Live Start/Stop`, `Read Text`, `Find Door`, and `Record Start/Stop` controls plus frame-source truth, provider truth, latest capture success, and overlay previews.
+- Added explicit pySLAM realtime visibility to Quest and Desktop surfaces with `backend`, `state`, `fps`, `latency`, and `root detected` evidence while keeping pySLAM optional and outside default CI success criteria.
+- Extended Quest self-test to validate capture truth, whole-FOV overlay truth, and Desktop alignment without touching contracts or inference-provider semantics.
+
+## v5.07
+- Added strict frame-source truth normalization across Quest panel, Desktop Console, `/api/capabilities`, `/api/providers`, and `/api/ui/state`; capture can now surface only `pca_real`, `ar_cpuimage_fallback`, `rendertexture_fallback`, or `unavailable`.
+- Added Quest-visible voice truth evidence: mic permission state, last transcript, last spoken text, TTS muted state, and backend truth now appear on the Quest panel, hand-menu voice page, and Desktop Console.
+- Extended Gateway ASR/TTS runtime evidence so `/api/providers`, `/api/ui/state`, and the Desktop Console expose `backend`, `model`, `device`, `is_mock`, `reason`, `last_success_ts`, `last_infer_ms`, transcript history, spoken history, and muted status.
+- Hardened true-capture and true-voice smoke validation by adding capture-truth alignment checks to Quest self-test while keeping contracts, inference providers, recording, replay, and regression semantics unchanged.
+- Preserved the v5.06 interaction boundary: no new primary Quest entry was added, pySLAM remains optional, and true-capture/true-voice evidence is layered into existing Hand Menu + Smoke Panel surfaces.
+
+## v5.06
+- Unified Quest interaction around `BYES_HandMenu` as the sole primary entry; legacy wrist menu is disabled by default and Smoke Panel is pushed back to status-summary and fallback controls.
+- Normalized frame-source truth across Quest panel, Desktop Console, `/api/capabilities`, `/api/providers`, and `/api/ui/state`; fallback capture now reports `ar_cpuimage_fallback` or `rendertexture_fallback` instead of implying real PCA.
+- Hardened Desktop Console runtime truth view with normalized provider evidence (`backend`, `model`, `device`, `is_mock`, `reason`, `last_success_ts`, `last_infer_ms`), current mode, recording state, target session, overlay kinds, and latest frame summary.
+- Kept smoke mainline compatibility by preserving contracts and provider logic while adding truth-mapping and one-version compatibility fields where needed.
+- Neutralized maintainer memory layout: repository memory now lives under `docs/maintainer/`, while version-specific execution briefs are treated as external working documents instead of tracked repo artifacts.
+
+## v5.05
+- Added Quest real-frame source abstraction (`IByesFrameSource`) and PCA-ready capture path scaffolding (`ByesPcaFrameSource`) with render-texture fallback, plus frame-source metadata in `/api/frame` uploads.
+- Added Desktop Console runtime UI (`GET /ui`, `GET /api/ui/state`) to expose real/mock evidence, provider status, latest frame/overlay previews, and one-click actions (assist/mode/record/ping).
+- Extended Gateway overlay bus so DET/SEG/DEPTH generate `vis.overlay.v1` companion events and latest overlay asset tracking for Quest HUD + desktop preview.
+- Extended Quest smoke panel observability: provider summary (`real/mock/off`), capture source/resolution, and capability refresh integrated into low-overhead probe loop.
+- Added one-command launcher `tools/quest3/quest3_usb_realstack_v5_05.cmd` (USB reverse + gateway/inference + optional pySLAM bridge + desktop console open).
+
+## v5.04
+- Added Quest vision-HUD pipeline for real-time overlays: `det.objects.v1` boxes + labels/track id, `seg.mask.v1` assets, and `depth.map.v1` assets (binary payloads served via `/api/assets/{asset_id}`).
+- Added Gateway asset endpoints and cache metadata endpoint: `GET /api/assets/{asset_id}` and `GET /api/assets/{asset_id}/meta` for HUD texture transport without base64 inflation in WS events.
+- Added optional ASR ingress endpoint `POST /api/asr` with mock default backend and optional faster-whisper backend, plus `asr.transcript.v1` event emission.
+- Extended Quest recording manager to persist referenced visual assets into run package `assets/` and keep replay/report pipeline compatibility.
+- Added Quest v5.04 one-click USB launcher `tools/quest3/quest3_usb_realstack_v5_04.cmd` (gateway + inference + optional pySLAM bridge detection) and updated runbook evidence checklist.
+- Refactored Quest wrist menu IA to `Home / Vision / Guidance / Voice / Dev`, with pin-to-home favorites, voice test controls, and explicit panel move/resize gating.
+- Added passthrough extended controls (`on/off`, `opacity`, `color/gray` when supported), plus v5.04 self-test extensions for HUD assets, TTS/ASR checks, and optional pySLAM realtime status.
+
+## v5.03
+- Added target-tracking assist flow on top of frame cache: `POST /api/assist` now supports `target_start / target_step / target_stop` with device-scoped session TTL and emits `target.session` / `target.update` events.
+- Added optional Quest guidance output stack (text + spatial audio + haptics toggles) and wired target updates into panel telemetry (`Last TARGET` + age).
+- Added optional passthrough controller bridge (`ByesPassthroughController`) and menu-controlled toggle path with runtime status feedback.
+- Added optional pySLAM runner script `Gateway/scripts/pyslam_run_package.py` and lightweight optional `services/pyslam_service` bridge scaffold.
+- Added v5.03 one-click USB launcher `tools/quest3/quest3_usb_realstack_v5_03.cmd` for adb reverse + gateway/inference startup with find/assist/record defaults.
+
+## v5.02
+- Added promptable `Find` path on top of real DET stack: Gateway now supports `find` via DET prompt overrides and Quest hand menu exposes one-tap find presets (`door`, `exit sign`, `stairs`, `elevator`, `restroom`, `person`).
+- Added Gateway frame-cache assist endpoint `POST /api/assist` so OCR/DET/FIND/RISK/DEPTH actions can run against the latest cached frame (no mandatory re-upload from Quest when cache is fresh).
+- Added Gateway recording endpoints `POST /api/record/start` and `POST /api/record/stop`; recording writes Quest run-package artifacts (`frames`, `frames_meta.jsonl`, `events/events_v1.jsonl`, `manifest.json`) under `runs/quest_recordings/`.
+- Quest panel now surfaces `Last FIND` and `Guidance` with age, and adds FIND/autospeak/guidance controls with speech dedupe/cooldown protection.
+- Added one-command USB launcher `tools/quest3/quest3_usb_realstack_v5_02.cmd` for adb reverse + gateway + inference real-stack profile and dependency diagnostics.
+
+## v5.01
+- Added real OCR provider path in `inference_service` via PaddleOCR (`BYES_SERVICE_OCR_PROVIDER=paddleocr`) with normalized `ocr.read` payloads and dependency-missing 503 diagnostics.
+- Added real DET provider path in `inference_service` via Ultralytics YOLO (`BYES_SERVICE_DET_PROVIDER=ultralytics`) and normalized `det.objects` events.
+- Extended `/api/frame` inference orchestration with forced target metadata (`meta.targets`) and added Gateway capabilities endpoint `GET /api/capabilities` for runtime panel/self-test diagnostics.
+- Added depth-based fused risk event emission (`risk.fused`) from depth grid payload as a lightweight hazard fallback.
+- Quest output usability upgrades: panel now shows `Last OCR/DET/RISK + Age(ms)`, supports `Read Text Once`/`Detect Once`, and autospeak toggles with cooldown+dedupe guard.
+- Added USB real-stack launcher `tools/quest3/quest3_usb_realstack_v5_01.cmd` for one-command `adb reverse + gateway+inference` startup and dependency hints.
+
+## v5.00
+- Switched Quest entry interaction from custom wrist buttons to an official palm-up hand menu flow (XRI `HandMenu` + `MetaSystemGestureDetector`) with multi-page navigation.
+- Added grouped menu pages (`Connection / Actions / Mode / Panels / Settings / Debug`) with mode roundtrip controls, panel management, debug copy/export, and passthrough toggle.
+- Added safe gesture shortcut model with conflict isolation: shortcuts run only when menu is hidden, no grab/UI conflict is active, and system gesture is not active.
+- Added explicit smoke panel move/resize mode gate (default OFF), lock-to-head toggle, and reset pose/scale operations to avoid accidental panel drag while pinching UI.
+- Added runtime guide disabler to suppress MR Template coaching/guide menu objects in `Quest3SmokeScene` by default.
+- Updated scene installer to wire `BYES_HandMenuRoot`, `ByesMrTemplateGuideDisabler`, and enforce `Quest3SmokeScene` as the only build scene by default.
+
+## v4.99
+- Quest3 smoke UX upgraded to a wrist/palm menu flow: grouped actions (`Actions / Panels / Debug`) and no dependency on bottom button controls for Quest operation.
+- Added XR Hands gesture shortcuts on right hand: thumb+index pinch (`Scan Once`), thumb+middle (`Live Toggle`), thumb+ring (`Cycle Mode`) with cooldown/hysteresis and safe no-op fallback when hand subsystem is unavailable.
+- Smoke panel now supports runtime move/adjust operations (grab shell, pin/unpin, distance/scale, snap-to-default) wired to Quest menu actions.
+- Quest smoke installer now auto-injects wrist menu + gesture components and disables coaching/tutorial UI by default in `Quest3SmokeScene`.
+- Added editor auto-open helper for Quest smoke scene (`BYES/Quest3/Auto Open Quest3SmokeScene`) and updated Quest runbook for the new no-controller workflow.
+
+## v4.98
+- Quest3 hitch mitigation: capture path now supports async GPU readback with Android-friendly defaults and sync fallback when unsupported/failing.
+- Added Quest runtime hitch telemetry (`Hitch30s`, `WorstDt`, `AvgDt`, `GC delta`) and surfaced capture runtime state (`CaptureHz`, inflight, async on/off) in the floating panel.
+- Quest panel mode controls now actively switch mode (`Walk/Read/Inspect`) via `POST /api/mode` and verify with `GET /api/mode`.
+- Reduced periodic runtime churn in smoke UX: reachability polling throttled to low frequency plus explicit `Refresh` button for manual checks.
+
+## v4.97
+- Quest3 smoke loop now includes one-tap frame upload and live toggle in the minimal world-space panel (`Scan Once` / `Live Start-Stop`), with panel-side status for HTTP, WS, last upload cost, coarse E2E, and last event type.
+- Quest3 self-test runner was aligned to the practical smoke chain: `ping -> version -> mode -> scan once + ws event` with explicit PASS/FAIL reasons shown in-panel.
+- Quest3 smoke installer now auto-populates `BYES_FrameRig` in `Quest3SmokeScene` and wires `GatewayClient + ScreenFrameGrabber + FrameCapture + GatewayFrameUploader + ScanController` using Quest-friendly defaults.
+- USB smoke launcher now enables WS v1/net debug emission for smoke verification (`BYES_INFERENCE_EMIT_WS_V1=1`, `BYES_EMIT_NET_DEBUG=1`) so Quest can reliably observe WS feedback after scans.
+
+## v4.96.1
+- Quest3 UI clickability fix: prevent runtime mode overlay from intercepting interactions (Android suppress + non-blocking overlay graphics/raycast settings).
+- Enforced world-space Quest connection panel raycast path: bind camera, raise sorting order, prefer `TrackedDeviceGraphicRaycaster`, and keep panel root interactable.
+- Added runtime XR UI wiring guard (`ByesXrUiWiringGuard`) to normalize EventSystem modules (`XRUIInputModule`) and enable UI interaction on `XRRayInteractor` instances.
+- Updated Quest3 smoke scene installer to auto-place `BYES_XrUiWiringGuard` under `BYES_SmokeRig`.
+
+## v4.96
+- Added Quest 3 smoke scene auto-installer that ensures `BYES_SmokeRig/BYES_ConnectionPanel` exists in `Quest3SmokeScene`.
+- Added runtime head-locked world-space panel behavior (`ByesHeadLockedPanel`) to keep panel stable in front of the user.
+- Added a prefab-free minimal connection panel (`ByesQuest3ConnectionPanelMinimal`) with Ping / Version / Mode probes and periodic HTTP reachability checks.
+- Added batch entrypoint `BYES.Editor.ByesQuest3SmokeSceneInstaller.InstallFromBatch` for no-click scene installation.
+- Updated Quest runbook with troubleshooting when users only see MODE text but no connection panel.
+
+## v4.95
+- Added Quest3 Android batch build entrypoint `BYES.Editor.ByesBuildQuest3.BuildQuest3SmokeApk` and output pipeline to `Builds/Quest3/`.
+- Added one-command local Android build runner `tools/unity/build_quest3_android.cmd` and companion build guide `tools/unity/README_BUILD_ANDROID.md`.
+- Added Unity build log root-cause parser `tools/unity/parse_unity_build_log.py` that extracts earliest true errors with context.
+- Added USB-first Quest3 gateway launcher `tools/quest3/quest3_usb_local_gateway.cmd` (adb reverse + local gateway on port 18000).
+- Updated Quest3 runbook with USB recommended path, WinError 10013 mitigation, and smoke checklist.
+
+## v4.94
+- Quest3 zero-controller smoke loop: added startup self-test runner (`ping`, `version`, `mode`, short live-loop metrics) with PASS/FAIL summary in runtime panel.
+- Input System migration hardening: removed unguarded legacy `Input.GetKey*` calls from BYES runtime scripts and kept legacy API behind `#if ENABLE_LEGACY_INPUT_MANAGER`.
+- Suppressed XR hand-tracking spam in `Quest3SmokeScene` by auto-disabling `XRInputModalityManager` when no running `XRHandSubsystem` exists.
+- Added Windows one-command smoke launcher `tools/quest3/quest3_smoke.ps1` (USB/LAN) for Gateway boot + optional adb reverse setup.
+- Added CI guard `tools/check_unity_legacy_input.py` and workflow step to prevent legacy-input regressions.
+
+## v4.93
+- Fixed Unity compile break by removing `BYES` namespace dependencies from `Assets/BeYourEyes/**` (networking/capture layer).
+- Added layering-safe runtime bridge (`GatewayRuntimeContext`) and BYES-side registration in runtime bootstrap.
+- Added repo guard `tools/check_unity_layering.py` and CI step to prevent re-introducing `BYES` references in `Assets/BeYourEyes/**`.
+- Quest3 smoke path remains supported (connection panel ping/version/mode + live loop) with build unblocked.
+
+## v4.92
+- Added Quest 3 live loop controls in Unity scan path:
+  - live on/off toggle, target FPS, max in-flight backpressure, busy-drop behavior
+  - default capture bandwidth controls for Quest (`maxWidth/maxHeight/jpegQuality`)
+- Added Gateway diagnostics endpoint `GET /api/version` returning version/git-sha/uptime/profile.
+- Added runtime panel telemetry updates for Quest smoke validation:
+  - HTTP/WS status, ping RTT, last upload cost, coarse event E2E, live loop status
+  - manual `Get Version` probe in panel.
+- Added Gateway tests for `/api/version`, and synced maintainer docs/runbooks/config matrix.
+
+## v4.91
+- Added Quest 3 smoke-loop enablement pieces:
+  - runtime connection panel for host/port/api-key config + reconnect
+  - XR controller scan trigger support (right-hand primary/trigger) while keeping desktop `S` fallback
+  - dedicated `Quest3SmokeScene` entry in Build Settings and runtime passthrough setup helper
+- Added Gateway runtime introspection endpoints:
+  - `GET /api/mode` (reads mode from mode-state store)
+  - `POST /api/ping` (lightweight RTT helper)
+- Added/updated tests for the new endpoints, including API-key guard behavior.
+- Updated runbooks and config matrix for Quest LAN setup and new endpoint/env coverage.
+
+## v4.90
+- Added mode-synced active-perception profile support in Gateway:
+  - new runtime mode state store (`Gateway/byes/mode_state.py`)
+  - optional mode profile env (`BYES_MODE_PROFILE_JSON`) for per-target keyframe stride
+  - optional debug event switch (`BYES_EMIT_MODE_PROFILE_DEBUG`) for per-frame fired/skipped targets
+- Wired `/api/mode` into Gateway runtime mode state so mode changes affect subsequent frame inference scheduling (with one-shot force-run on mode-change frame).
+- Added unit tests for mode profile parsing/fallback, mode-state store behavior (TTL/LRU/changed-flag), and scheduler stride decisions.
+- Updated maintainer docs/runbook/config matrix to document mode sync and profile verification steps.
+
+## v4.89
+- Added a profile-driven Gateway hardening layer (`BYES_GATEWAY_PROFILE=local|hardened`) with hardened defaults for rate-limit, request-size limits, and dev surface restrictions.
+- Added Gateway resource guardrails:
+  - in-process rate limit middleware (`BYES_GATEWAY_RATE_LIMIT_*`)
+  - request body size middleware (`BYES_GATEWAY_MAX_*_BYTES`)
+  - dev endpoint/run-package upload/local-path guards (`BYES_GATEWAY_*_ENABLED`)
+- Added CI guards for Unity `.meta` completeness and docs relative-link validation:
+  - `tools/check_unity_meta.py`
+  - `tools/check_docs_links.py`
+- Added corresponding tests for middleware and endpoint toggles in `Gateway/tests/`.
+
+## v4.88
+- Added `Gateway/scripts/dev_up.py` for one-command local orchestration (Gateway + optional inference/planner/reference services).
+- Added optional Gateway API key guard for HTTP + WebSocket (`BYES_GATEWAY_API_KEY`) and optional host/origin allowlists.
+- Added API key compatibility in Unity clients and `Gateway/scripts/replay_run_package.py` (`X-BYES-API-Key` + WS `api_key` query).
 
 ## v4.38
 - Planner evaluation metrics, ablation sweep (`provider/prompt/budget`), leaderboard/report integration, regression gate.

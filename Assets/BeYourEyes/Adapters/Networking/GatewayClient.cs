@@ -10,7 +10,6 @@ using NativeWebSocket;
 using UnityEngine;
 using UnityEngine.Networking;
 using BeYourEyes.Presenters.DebugHUD;
-using BYES.Telemetry;
 
 namespace BeYourEyes.Adapters.Networking
 {
@@ -24,9 +23,15 @@ namespace BeYourEyes.Adapters.Networking
 
     public sealed class GatewayClient : MonoBehaviour
     {
+        public const string FrameSourcePcaReal = "pca_real";
+        public const string FrameSourceArCpuImageFallback = "ar_cpuimage_fallback";
+        public const string FrameSourceRenderTextureFallback = "rendertexture_fallback";
+        public const string FrameSourceUnavailable = "unavailable";
+
         [Header("Gateway")]
         [SerializeField] private string baseUrl = "http://127.0.0.1:8000";
         [SerializeField] private string wsUrl = "ws://127.0.0.1:8000/ws/events";
+        [SerializeField] private string apiKey = "";
         [SerializeField] private string sessionId = "default";
         [SerializeField] private bool connectOnEnable = true;
         [SerializeField] private bool autoReconnect = true;
@@ -111,7 +116,8 @@ namespace BeYourEyes.Adapters.Networking
         public event Action<string> OnReplayBlockedNetworkAction;
 
         public string BaseUrl => NormalizeBaseUrl(baseUrl);
-        public string WsUrl => string.IsNullOrWhiteSpace(wsUrl) ? "ws://127.0.0.1:8000/ws/events" : wsUrl.Trim();
+        public string WsUrl => BuildWsUrlWithApiKey(string.IsNullOrWhiteSpace(wsUrl) ? "ws://127.0.0.1:8000/ws/events" : wsUrl.Trim());
+        public string ApiKey => ResolveApiKey();
         public string SessionId => string.IsNullOrWhiteSpace(sessionId) ? "default" : sessionId.Trim();
         public bool IsFrameBusy => frameRequestInFlight;
         public bool IsConnected => webSocket != null && webSocket.State == WebSocketState.Open;
@@ -153,6 +159,30 @@ namespace BeYourEyes.Adapters.Networking
         public long ActionPlanGateBlockedCount => localActionPlanGate != null ? localActionPlanGate.BlockedCount : 0;
         public long ActionPlanGatePatchedCount => localActionPlanGate != null ? localActionPlanGate.PatchedCount : 0;
         public string ActionPlanGateLastReason => localActionPlanGate != null ? localActionPlanGate.LastReason : "n/a";
+
+        public static string NormalizeRuntimeTruthStateToken(string value)
+        {
+            var token = string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToLowerInvariant();
+            return token switch
+            {
+                "real" => "real",
+                "mock" => "mock",
+                "fallback" => "fallback",
+                _ => "unavailable",
+            };
+        }
+
+        public static string NormalizeFrameSourceTruthToken(string value)
+        {
+            var token = string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToLowerInvariant();
+            return token switch
+            {
+                FrameSourcePcaReal => FrameSourcePcaReal,
+                FrameSourceArCpuImageFallback => FrameSourceArCpuImageFallback,
+                FrameSourceRenderTextureFallback => FrameSourceRenderTextureFallback,
+                _ => FrameSourceUnavailable,
+            };
+        }
 
         private void OnEnable()
         {
@@ -211,6 +241,36 @@ namespace BeYourEyes.Adapters.Networking
             {
                 ConnectWebSocket();
             }
+        }
+
+        public void SetApiKey(string value, bool reconnect = true)
+        {
+            apiKey = string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+            if (reconnect)
+            {
+                ConnectWebSocket();
+            }
+        }
+
+        public void ConfigureProbeRuntime(
+            bool enableHealth,
+            float healthIntervalSec,
+            bool enableReadiness,
+            float readinessIntervalSec,
+            bool restartLoop = true)
+        {
+            enableHealthProbe = enableHealth;
+            healthProbeIntervalSec = Mathf.Max(0.5f, healthIntervalSec);
+            enableExternalReadinessProbe = enableReadiness;
+            readinessProbeIntervalSec = Mathf.Max(0.5f, readinessIntervalSec);
+
+            if (!restartLoop || replayMode)
+            {
+                return;
+            }
+
+            StopHealthProbeLoop();
+            StartHealthProbeLoop();
         }
 
         public async void ConnectWebSocket()
@@ -535,9 +595,9 @@ namespace BeYourEyes.Adapters.Networking
             {
                 var runIdForTelemetry = SessionId;
                 var frameSeqForTelemetry = seq > 0 ? seq : -1;
-                var captureTsForTelemetry = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                var deviceIdForTelemetry = ByesFrameTelemetry.DeviceId;
-                var deviceTimeBaseForTelemetry = ByesFrameTelemetry.DeviceTimeBase;
+                var captureTsForTelemetry = GatewayRuntimeContext.NowUnixMs();
+                var deviceIdForTelemetry = GatewayRuntimeContext.DeviceId;
+                var deviceTimeBaseForTelemetry = GatewayRuntimeContext.DeviceTimeBase;
                 if (!string.IsNullOrWhiteSpace(metaJson))
                 {
                     try
@@ -596,11 +656,12 @@ namespace BeYourEyes.Adapters.Networking
 
                 using (var req = UnityWebRequest.Post(BuildApiUrl("/api/frame"), form))
                 {
+                    ApplyApiKeyHeader(req);
                     yield return req.SendWebRequest();
                     if (req.result == UnityWebRequest.Result.Success)
                     {
                         frameOkCount++;
-                        ByesFrameTelemetry.OnFrameSentToGateway(
+                        GatewayRuntimeContext.NotifyFrameSentToTelemetry(
                             runIdForTelemetry,
                             frameSeqForTelemetry > 0 ? frameSeqForTelemetry : 1,
                             captureTsForTelemetry
@@ -634,6 +695,7 @@ namespace BeYourEyes.Adapters.Networking
                 req.uploadHandler = new UploadHandlerRaw(bodyBytes);
                 req.downloadHandler = new DownloadHandlerBuffer();
                 req.SetRequestHeader("Content-Type", "application/json");
+                ApplyApiKeyHeader(req);
                 yield return req.SendWebRequest();
 
                 var success = req.result == UnityWebRequest.Result.Success;
@@ -651,6 +713,7 @@ namespace BeYourEyes.Adapters.Networking
             using (var req = UnityWebRequest.Get(url))
             {
                 req.downloadHandler = new DownloadHandlerBuffer();
+                ApplyApiKeyHeader(req);
                 yield return req.SendWebRequest();
 
                 if (req.result != UnityWebRequest.Result.Success)
@@ -854,6 +917,45 @@ namespace BeYourEyes.Adapters.Networking
         private string BuildApiUrl(string path)
         {
             return $"{BaseUrl.TrimEnd('/')}{path}";
+        }
+
+        private string ResolveApiKey()
+        {
+            return string.IsNullOrWhiteSpace(apiKey) ? string.Empty : apiKey.Trim();
+        }
+
+        private string BuildWsUrlWithApiKey(string rawUrl)
+        {
+            var normalized = string.IsNullOrWhiteSpace(rawUrl) ? "ws://127.0.0.1:8000/ws/events" : rawUrl.Trim();
+            var resolvedApiKey = ResolveApiKey();
+            if (string.IsNullOrWhiteSpace(resolvedApiKey))
+            {
+                return normalized;
+            }
+
+            if (normalized.IndexOf("api_key=", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return normalized;
+            }
+
+            var separator = normalized.Contains("?") ? "&" : "?";
+            return $"{normalized}{separator}api_key={UnityWebRequest.EscapeURL(resolvedApiKey)}";
+        }
+
+        private void ApplyApiKeyHeader(UnityWebRequest req)
+        {
+            if (req == null)
+            {
+                return;
+            }
+
+            var resolvedApiKey = ResolveApiKey();
+            if (string.IsNullOrWhiteSpace(resolvedApiKey))
+            {
+                return;
+            }
+
+            req.SetRequestHeader("X-BYES-API-Key", resolvedApiKey);
         }
 
         public bool TryAcceptUiEvent(JObject evt, string defaultType, out long receivedAtMs, out int ttlMs, out string rejectReason, bool isReplay = false)
@@ -1065,6 +1167,7 @@ namespace BeYourEyes.Adapters.Networking
             using (var req = UnityWebRequest.Get(BuildApiUrl("/api/health")))
             {
                 req.downloadHandler = new DownloadHandlerBuffer();
+                ApplyApiKeyHeader(req);
                 yield return req.SendWebRequest();
                 var finishedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 lastHealthRttMs = (int)Mathf.Clamp((float)(finishedAtMs - startedAtMs), 0f, 60000f);
@@ -1122,6 +1225,7 @@ namespace BeYourEyes.Adapters.Networking
             using (var req = UnityWebRequest.Get(BuildApiUrl("/api/external_readiness")))
             {
                 req.downloadHandler = new DownloadHandlerBuffer();
+                ApplyApiKeyHeader(req);
                 yield return req.SendWebRequest();
                 var finishedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 

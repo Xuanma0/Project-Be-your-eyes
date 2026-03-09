@@ -5,6 +5,7 @@ import contextlib
 import csv
 import hashlib
 import html
+import importlib.util
 import io
 import json
 import os
@@ -19,21 +20,31 @@ from typing import Any, Literal
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, ValidationError, model_validator
 
 from byes.config import GatewayConfig, load_config
 from byes.confirm_manager import ConfirmManager
 from byes.degradation import DegradationManager, DegradationState
 from byes.action_gate import ActionPlanGate
+from byes.asset_cache import AssetCache
+from byes.asr import AsrBackend, asr_capabilities
 from byes.faults import FaultManager
+from byes.frame_cache import FrameCache
 from byes.frame_tracker import FrameTracker
 from byes.fusion import FusionEngine
 from byes.governor import SloGovernor
 from byes.intent import IntentManager
-from byes.inference.event_emitters import emit_ocr_events, emit_risk_events, emit_seg_events, emit_depth_events, emit_slam_pose_events
-from byes.inference.registry import get_ocr_backend, get_risk_backend, get_seg_backend, get_depth_backend, get_slam_backend
-from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DepthResult, SlamResult
+from byes.inference.event_emitters import (
+    emit_ocr_events,
+    emit_risk_events,
+    emit_seg_events,
+    emit_det_events,
+    emit_depth_events,
+    emit_slam_pose_events,
+)
+from byes.inference.registry import get_ocr_backend, get_risk_backend, get_seg_backend, get_det_backend, get_depth_backend, get_slam_backend
+from byes.inference.backends.base import OCRResult, RiskResult, SegResult, DetResult, DepthResult, SlamResult
 from byes.inference.prompt_budget import normalize_prompt, pack_prompt
 from byes.inference.seg_context import DEFAULT_SEG_CONTEXT_BUDGET, build_seg_context_from_events
 from byes.inference.slam_context import DEFAULT_SLAM_CONTEXT_BUDGET, build_slam_context_pack
@@ -63,11 +74,13 @@ from byes.preprocess import FramePreprocessor
 from byes.preempt_window import PreemptWindow
 from byes.runtime_stats import RuntimeStats
 from byes.safety import SafetyKernel
-from byes.scheduler import Scheduler
+from byes.scheduler import Scheduler, should_run_mode_target
+from byes.mode_state import ModeStateStore, parse_mode_profile_json, normalize_mode_value as normalize_mode_token
 from byes.schema import CoordFrame, EventEnvelope, EventType, FrameMeta, HealthStatus, ToolStatus
 from byes.tool_registry import ToolRegistry
 from byes.tools import MockOcrTool, MockRiskTool, RealDepthTool, RealDetTool, RealOcrTool, RealVlmTool
 from byes.tools.base import FrameInput, ToolLane
+from byes.version_info import get_build_info
 from byes.world_state import WorldState
 from byes.pov.store import PovStore
 from byes.pov_context import build_context_pack, finalize_context_pack_text, render_context_text
@@ -76,6 +89,14 @@ from byes.plan_pipeline import extract_risk_summary, generate_action_plan, load_
 from byes.plan_executor import execute_plan as execute_action_plan
 from byes.schemas.pov_ir_schema import validate_pov_ir
 from byes.model_manifest import build_model_manifest
+from byes.middleware.rate_limit import RateLimitConfig, RateLimitMiddleware
+from byes.middleware.request_size_limit import RequestSizeLimitMiddleware, RequestSizeLimits
+from byes.recording import RecordingManager
+from byes.target_tracking import (
+    TargetTrackingStore,
+    build_target_session_payload,
+    build_target_update_payload,
+)
 from scripts.report_run import generate_report_outputs, load_run_package, safe_extract_zip
 
 
@@ -245,6 +266,44 @@ def _runtime_contract_defaults() -> dict[str, Any]:
             "checkScript": "python Gateway/scripts/verify_models.py --json",
         },
     }
+
+
+def _default_mode_profile_json(config: GatewayConfig) -> str:
+    walk_ocr_stride = max(1, int(max(config.throttled_ocr_every_n_frames, 4)))
+    walk_det_stride = max(1, int(max(config.throttled_det_every_n_frames, 3)))
+    walk_depth_stride = max(1, int(max(config.throttled_depth_every_n_frames, 2)))
+    payload = {
+        "default": {
+            "risk": {"every_n_frames": 1},
+            "ocr": {"every_n_frames": walk_ocr_stride},
+            "det": {"every_n_frames": walk_det_stride},
+            "depth": {"every_n_frames": walk_depth_stride},
+            "seg": {"every_n_frames": 4},
+            "slam": {"every_n_frames": 2},
+        },
+        "walk": {
+            "risk": {"every_n_frames": 1},
+            "ocr": {"every_n_frames": walk_ocr_stride},
+            "det": {"every_n_frames": walk_det_stride},
+            "depth": {"every_n_frames": walk_depth_stride},
+            "slam": {"every_n_frames": 2},
+        },
+        "read_text": {
+            "risk": {"every_n_frames": 2},
+            "ocr": {"every_n_frames": 1},
+            "det": {"every_n_frames": max(2, walk_det_stride)},
+            "depth": {"every_n_frames": max(2, walk_depth_stride)},
+            "slam": {"every_n_frames": 4},
+        },
+        "inspect": {
+            "risk": {"every_n_frames": 1},
+            "ocr": {"every_n_frames": max(2, walk_ocr_stride)},
+            "det": {"every_n_frames": 1},
+            "depth": {"every_n_frames": max(2, walk_depth_stride)},
+            "slam": {"every_n_frames": 2},
+        },
+    }
+    return json.dumps(payload, ensure_ascii=False)
 
 
 class MockEvent(BaseModel):
@@ -419,6 +478,13 @@ class FrameAckRequest(BaseModel):
     feedbackTsMs: int
     kind: Literal["tts", "ar", "overlay", "haptic", "other", "any"] = "any"
     accepted: bool = True
+    providerBackend: str | None = None
+    providerModel: str | None = None
+    providerDevice: str | None = None
+    providerReason: str | None = None
+    providerIsMock: bool | None = None
+    spokenText: str | None = None
+    muted: bool | None = None
     runPackage: str | None = None
 
     @model_validator(mode="after")
@@ -435,8 +501,8 @@ class FrameAckRequest(BaseModel):
 class ModeChangeRequest(BaseModel):
     runId: str
     frameSeq: int
-    mode: Literal["walk", "read_text", "inspect"]
-    source: Literal["hotkey", "xr", "system"] = "system"
+    mode: str
+    source: str = "system"
     tsMs: int | None = None
     deviceId: str | None = None
     runPackage: str | None = None
@@ -449,7 +515,85 @@ class ModeChangeRequest(BaseModel):
             raise ValueError("frameSeq must be >= 1")
         if self.tsMs is not None and int(self.tsMs) < 0:
             raise ValueError("tsMs must be >= 0")
+        normalized_mode = normalize_mode_token(self.mode)
+        if normalized_mode is None:
+            raise ValueError("mode must be one of: walk, read, read_text, inspect")
+        self.mode = normalized_mode
+        source = str(self.source or "system").strip().lower() or "system"
+        if source == "unity":
+            source = "xr"
+        if source not in {"hotkey", "xr", "system"}:
+            source = "system"
+        self.source = source
         return self
+
+
+class PingRequest(BaseModel):
+    deviceId: str | None = None
+    seq: int = 0
+    clientSendTsMs: int | None = None
+
+    @model_validator(mode="after")
+    def _validate_ping(self) -> "PingRequest":
+        if int(self.seq) < 0:
+            raise ValueError("seq must be >= 0")
+        if self.clientSendTsMs is not None and int(self.clientSendTsMs) < 0:
+            raise ValueError("clientSendTsMs must be >= 0")
+        return self
+
+
+class AssistRequest(BaseModel):
+    deviceId: str | None = None
+    action: Literal[
+        "ocr",
+        "det",
+        "find",
+        "risk",
+        "depth",
+        "seg",
+        "slam",
+        "target_start",
+        "target_step",
+        "target_stop",
+    ] | None = None
+    targets: list[str] | None = None
+    prompt: str | dict[str, Any] | None = None
+    roi: dict[str, Any] | None = None
+    maxAgeMs: int | None = 1500
+    runId: str | None = None
+    mode: str | None = None
+    sessionId: str | None = None
+    tracker: Literal["botsort", "bytetrack"] | None = None
+    seg: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _validate_assist(self) -> "AssistRequest":
+        has_targets = isinstance(self.targets, list) and len(self.targets) > 0
+        has_action = not str(self.action or "").strip() == ""
+        if not has_targets and not has_action:
+            raise ValueError("action or targets is required")
+        if self.maxAgeMs is not None and int(self.maxAgeMs) < 0:
+            raise ValueError("maxAgeMs must be >= 0")
+        return self
+
+
+class RecordStartRequest(BaseModel):
+    deviceId: str | None = None
+    note: str | None = None
+    maxSec: int | None = 120
+    maxFrames: int | None = 0
+
+    @model_validator(mode="after")
+    def _validate_record_start(self) -> "RecordStartRequest":
+        if self.maxSec is not None and int(self.maxSec) < 0:
+            raise ValueError("maxSec must be >= 0")
+        if self.maxFrames is not None and int(self.maxFrames) < 0:
+            raise ValueError("maxFrames must be >= 0")
+        return self
+
+
+class RecordStopRequest(BaseModel):
+    deviceId: str | None = None
 
 
 class ConfirmResponseRequest(BaseModel):
@@ -513,6 +657,8 @@ class GatewayApp:
     def __init__(self, app: FastAPI) -> None:
         self.app = app
         self.config: GatewayConfig = load_config()
+        self.mode_state = ModeStateStore(default_mode="walk")
+        self.mode_profile = parse_mode_profile_json(self.config.mode_profile_json)
         self.metrics = GatewayMetrics()
         self.observability = Observability("be-your-eyes-gateway")
         self.registry = ToolRegistry()
@@ -557,6 +703,7 @@ class GatewayApp:
         self.ocr_backend = get_ocr_backend(self.config)
         self.risk_backend = get_risk_backend(self.config)
         self.seg_backend = get_seg_backend(self.config)
+        self.det_backend = get_det_backend(self.config)
         self.depth_backend = get_depth_backend(self.config)
         self.slam_backend = get_slam_backend(self.config)
         self.costmap_fuser = CostmapFuser()
@@ -586,6 +733,37 @@ class GatewayApp:
         self._last_meta_warn_ms: dict[str, int] = {"meta_missing": -1, "meta_parse_error": -1}
         self._enabled_tools = self._parse_csv_tools(self.config.enabled_tools_csv)
         self._external_readiness: dict[str, dict[str, Any]] = {}
+        self._runtime_target_enabled_overrides: dict[str, bool | None] = {
+            "ocr": None,
+            "risk": None,
+            "det": None,
+            "depth": None,
+            "seg": None,
+            "slam": None,
+            "asr": None,
+            "pyslamRealtime": None,
+        }
+        self._provider_backend_overrides: dict[str, str | None] = {
+            "ocr": None,
+            "det": None,
+            "seg": None,
+            "depth": None,
+            "slam": None,
+            "asr": None,
+            "pyslamRealtime": None,
+        }
+        self._providers_override_updated_ts_ms = -1
+        self._provider_runtime_evidence: dict[str, dict[str, Any]] = {
+            "ocr": {},
+            "risk": {},
+            "det": {},
+            "depth": {},
+            "seg": {},
+            "slam": {},
+            "asr": {},
+            "tts": {},
+            "pyslamRealtime": {},
+        }
         self._forced_crosscheck_kind = "none"
         self._forced_crosscheck_expires_ms = -1
         self._forced_performance_mode = "NORMAL"
@@ -594,6 +772,82 @@ class GatewayApp:
         self.run_packages_root = Path(__file__).resolve().parent / "artifacts" / "run_packages"
         self.run_packages_index_path = self.run_packages_root / "index.json"
         self._run_packages_lock = asyncio.Lock()
+        assist_cache_ttl_ms = max(200, int(os.getenv("BYES_ASSIST_CACHE_TTL_MS", "2000") or "2000"))
+        assist_cache_max_entries = max(1, int(os.getenv("BYES_ASSIST_CACHE_MAX_ENTRIES", "16") or "16"))
+        self.frame_cache = FrameCache(ttl_ms=assist_cache_ttl_ms, max_entries=assist_cache_max_entries)
+        asset_cache_ttl_ms = max(30000, int(os.getenv("BYES_ASSET_CACHE_TTL_MS", "30000") or "30000"))
+        asset_cache_max_entries = max(1, int(os.getenv("BYES_ASSET_CACHE_MAX_ENTRIES", "256") or "256"))
+        asset_cache_max_bytes = max(1024, int(os.getenv("BYES_ASSET_CACHE_MAX_BYTES", str(32 * 1024 * 1024)) or str(32 * 1024 * 1024)))
+        self.asset_cache = AssetCache(
+            ttl_ms=asset_cache_ttl_ms,
+            max_entries=asset_cache_max_entries,
+            max_total_bytes=asset_cache_max_bytes,
+        )
+        target_ttl_ms = max(1000, int(os.getenv("BYES_TARGET_TRACKING_TTL_MS", "30000") or "30000"))
+        target_max_entries = max(1, int(os.getenv("BYES_TARGET_TRACKING_MAX_ENTRIES", "128") or "128"))
+        self.target_tracking = TargetTrackingStore(ttl_ms=target_ttl_ms, max_entries=target_max_entries)
+        self.recording = RecordingManager(
+            run_packages_root=self.run_packages_root,
+            asset_resolver=self.resolve_recording_asset,
+        )
+        self.asr_backend = AsrBackend()
+        self._emit_slam_trajectory_v1 = str(os.getenv("BYES_EMIT_SLAM_TRAJECTORY_V1", "1")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self._slam_traj_emit_interval_ms = max(
+            200,
+            int(os.getenv("BYES_SLAM_TRAJECTORY_EMIT_INTERVAL_MS", "1000") or "1000"),
+        )
+        self._slam_traj_max_points = max(
+            4,
+            int(os.getenv("BYES_SLAM_TRAJECTORY_MAX_POINTS", "60") or "60"),
+        )
+        self._slam_traj_points: dict[str, list[dict[str, Any]]] = {}
+        self._slam_traj_last_emit_ms: dict[str, int] = {}
+        self._latest_frame_asset_id: str | None = None
+        self._latest_frame_meta: dict[str, Any] = {}
+        self._latest_overlay_assets: dict[str, dict[str, Any]] = {}
+        self._ui_recording_state: dict[str, Any] = {
+            "active": False,
+            "deviceId": None,
+            "runId": None,
+            "recordingPath": None,
+            "manifestPath": None,
+            "startedTsMs": None,
+            "endedTsMs": None,
+        }
+        self._ui_voice_state: dict[str, Any] = {
+            "lastTranscript": None,
+            "lastTranscriptTsMs": None,
+            "lastTranscriptBackend": None,
+            "lastTranscriptModel": None,
+            "lastTranscriptDevice": None,
+            "lastTranscriptLatencyMs": None,
+            "lastSpoken": None,
+            "lastSpokenTsMs": None,
+            "ttsMuted": False,
+        }
+        self._ui_capture_state: dict[str, Any] = {
+            "lastSuccessTsMs": None,
+            "frameSource": "unavailable",
+            "truthState": "unavailable",
+            "status": None,
+            "reason": None,
+            "assetId": None,
+        }
+        self._ui_passthrough_state: dict[str, Any] = {
+            "truthState": "unavailable",
+            "truthLabel": "unavailable",
+            "backend": "quest_passthrough",
+            "model": None,
+            "device": "quest",
+            "enabled": False,
+            "reason": "unknown",
+            "lastChangedTsMs": None,
+        }
         self.pov_store = PovStore()
 
     async def startup(self) -> None:
@@ -601,12 +855,67 @@ class GatewayApp:
         self.ocr_backend = get_ocr_backend(self.config)
         self.risk_backend = get_risk_backend(self.config)
         self.seg_backend = get_seg_backend(self.config)
+        self.det_backend = get_det_backend(self.config)
         self.depth_backend = get_depth_backend(self.config)
         self.slam_backend = get_slam_backend(self.config)
         self._inference_events.clear()
+        self.frame_cache.reset()
+        self.asset_cache.reset()
+        self.target_tracking.reset()
+        self.recording.reset()
+        self._slam_traj_points.clear()
+        self._slam_traj_last_emit_ms.clear()
+        self._latest_frame_asset_id = None
+        self._latest_frame_meta = {}
+        self._latest_overlay_assets = {}
+        self._ui_recording_state = {
+            "active": False,
+            "deviceId": None,
+            "runId": None,
+            "recordingPath": None,
+            "manifestPath": None,
+            "startedTsMs": None,
+            "endedTsMs": None,
+        }
+        self._ui_voice_state = {
+            "lastTranscript": None,
+            "lastTranscriptTsMs": None,
+            "lastTranscriptBackend": None,
+            "lastTranscriptModel": None,
+            "lastTranscriptDevice": None,
+            "lastTranscriptLatencyMs": None,
+            "lastSpoken": None,
+            "lastSpokenTsMs": None,
+            "ttsMuted": False,
+        }
+        self._ui_capture_state = {
+            "lastSuccessTsMs": None,
+            "frameSource": "unavailable",
+            "truthState": "unavailable",
+            "status": None,
+            "reason": None,
+            "assetId": None,
+        }
+        self._ui_passthrough_state = {
+            "truthState": "unavailable",
+            "truthLabel": "unavailable",
+            "backend": "quest_passthrough",
+            "model": None,
+            "device": "quest",
+            "enabled": False,
+            "reason": "unknown",
+            "lastChangedTsMs": None,
+        }
         self.costmap_fuser.reset()
         self.dynamic_mask_cache.reset()
         self._external_readiness = {}
+        for key in list(self._runtime_target_enabled_overrides):
+            self._runtime_target_enabled_overrides[key] = None
+        for key in list(self._provider_backend_overrides):
+            self._provider_backend_overrides[key] = None
+        self._providers_override_updated_ts_ms = -1
+        for key in list(self._provider_runtime_evidence):
+            self._provider_runtime_evidence[key] = {}
         self.registry.clear()
         startup_unavailable_tools: list[str] = []
         if self._tool_enabled("mock_risk"):
@@ -641,6 +950,296 @@ class GatewayApp:
         await self.scheduler.start()
         self.degradation.set_ws_client_count(0)
         self._degrade_watchdog_task = asyncio.create_task(self._degradation_watchdog_loop())
+
+    def resolve_recording_asset(self, asset_id: str) -> tuple[bytes, str] | None:
+        cached = self.asset_cache.get(asset_id)
+        if cached is None:
+            return None
+        return (bytes(cached.data), str(cached.content_type or "application/octet-stream"))
+
+    def _configured_target_enabled(self, target: str) -> bool:
+        token = str(target or "").strip().lower()
+        if token == "ocr":
+            return bool(self.config.inference_enable_ocr)
+        if token == "risk":
+            return bool(self.config.inference_enable_risk)
+        if token == "det":
+            return bool(self.config.inference_enable_det)
+        if token == "depth":
+            return bool(self.config.inference_enable_depth)
+        if token == "seg":
+            return bool(self.config.inference_enable_seg)
+        if token == "slam":
+            return bool(self.config.inference_enable_slam)
+        return False
+
+    def _target_enabled(self, target: str) -> bool:
+        token = str(target or "").strip().lower()
+        override = self._runtime_target_enabled_overrides.get(token)
+        if override is None:
+            return self._configured_target_enabled(token)
+        return bool(override)
+
+    def _provider_backend_effective(self, target: str, backend: str | None) -> str | None:
+        token = str(target or "").strip()
+        override = self._provider_backend_overrides.get(token)
+        override_text = str(override or "").strip()
+        if override_text:
+            return override_text
+        backend_text = str(backend or "").strip()
+        return backend_text or None
+
+    def _effective_asr_enabled(self) -> bool:
+        override = self._runtime_target_enabled_overrides.get("asr")
+        if override is not None:
+            return bool(override)
+        return str(os.getenv("BYES_ENABLE_ASR", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _effective_pyslam_enabled(self) -> bool:
+        override = self._runtime_target_enabled_overrides.get("pyslamRealtime")
+        if override is not None:
+            return bool(override)
+        return str(os.getenv("BYES_ENABLE_PYSLAM_REALTIME", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _effective_asr_backend(self) -> str:
+        backend = self._provider_backend_effective(
+            "asr",
+            str(os.getenv("BYES_ASR_BACKEND", "mock")).strip().lower() or "mock",
+        )
+        token = str(backend or "").strip().lower()
+        return token or "mock"
+
+    def _record_provider_runtime(
+        self,
+        provider: str,
+        *,
+        backend: str | None,
+        model: str | None,
+        device: str | None,
+        device_reason: str | None = None,
+        infer_ms: int | None,
+        ts_ms: int,
+        reason: str | None = None,
+        is_mock: bool | None = None,
+        fps_override: float | None = None,
+        state: str | None = None,
+        root_detected: bool | None = None,
+        outcome: str | None = None,
+    ) -> None:
+        key = str(provider or "").strip()
+        if not key:
+            return
+        now_ms = _now_ms()
+        ts_value = int(ts_ms if int(ts_ms or 0) > 0 else now_ms)
+        row = dict(self._provider_runtime_evidence.get(key, {}))
+        prev_ts = int(row.get("lastTsMs", -1) or -1)
+        fps = None
+        if prev_ts > 0 and ts_value > prev_ts:
+            dt_ms = ts_value - prev_ts
+            fps = round(1000.0 / float(dt_ms), 3) if dt_ms > 0 else None
+        if fps is None:
+            try:
+                fps = float(row.get("fps")) if row.get("fps") is not None else None
+            except Exception:
+                fps = None
+        if fps_override is not None:
+            try:
+                fps = round(float(fps_override), 3)
+            except Exception:
+                pass
+
+        backend_text = str(backend or row.get("backend") or "").strip() or None
+        if is_mock is None:
+            lowered = str(backend_text or "").lower()
+            is_mock = lowered.startswith("mock") or ("reference" in lowered) or lowered in {"none", ""}
+        state_text = str(state or row.get("state") or "").strip().lower() or None
+        outcome_text = str(outcome or "").strip().lower()
+        if outcome_text not in {"ok", "error", "timeout"}:
+            outcome_text = None
+        reason_text = str(reason or "").strip() or None
+        if outcome_text == "ok" and reason_text is None:
+            reason_text = "ok"
+        elif reason_text is None:
+            reason_text = str(row.get("reason") or "").strip() or None
+
+        previous_failures = int(row.get("consecutiveFailures", 0) or 0)
+        consecutive_failures = previous_failures
+        if outcome_text == "ok":
+            consecutive_failures = 0
+            row["lastSuccessTsMs"] = ts_value
+        elif outcome_text in {"error", "timeout"}:
+            consecutive_failures = previous_failures + 1
+            row["lastErrorTsMs"] = ts_value
+
+        row.update(
+            {
+                "backend": backend_text,
+                "model": str(model or row.get("model") or "").strip() or None,
+                "device": str(device or row.get("device") or "").strip() or None,
+                "deviceReason": str(device_reason or row.get("deviceReason") or "").strip() or None,
+                "inferMs": int(infer_ms) if infer_ms is not None else row.get("inferMs"),
+                "fps": fps,
+                "lastTsMs": ts_value,
+                "ageMs": max(0, now_ms - ts_value),
+                "isMock": bool(is_mock),
+                "reason": reason_text,
+                "state": state_text,
+                "lastOutcome": outcome_text or row.get("lastOutcome"),
+                "lastOutcomeTsMs": ts_value if outcome_text is not None else row.get("lastOutcomeTsMs"),
+                "consecutiveFailures": consecutive_failures,
+            }
+        )
+        if isinstance(root_detected, bool):
+            row["rootDetected"] = root_detected
+        self._provider_runtime_evidence[key] = row
+
+    def _provider_runtime_snapshot(self) -> dict[str, dict[str, Any]]:
+        now_ms = _now_ms()
+        out: dict[str, dict[str, Any]] = {}
+        for key, row in self._provider_runtime_evidence.items():
+            if not isinstance(row, dict):
+                out[key] = {}
+                continue
+            copied = dict(row)
+            ts_value = int(copied.get("lastTsMs", -1) or -1)
+            copied["ageMs"] = max(0, now_ms - ts_value) if ts_value > 0 else None
+            out[key] = copied
+        return out
+
+    def _update_runtime_evidence_from_event(self, event: dict[str, Any]) -> None:
+        if not isinstance(event, dict):
+            return
+        name = str(event.get("name", "") or "").strip().lower()
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        event_ts = _to_nonnegative_int_or_none(event.get("tsMs")) or _now_ms()
+        latency_ms = _to_nonnegative_int_or_none(event.get("latencyMs"))
+        payload_latency = _to_nonnegative_int_or_none(payload.get("latencyMs"))
+        infer_ms = payload_latency if payload_latency is not None else latency_ms
+        event_status = str(event.get("status", "") or "").strip().lower()
+        backend = str(payload.get("backend", "") or "").strip() or None
+        model = str(payload.get("model", "") or "").strip() or None
+        device = str(payload.get("device", "") or "").strip() or None
+        device_reason = str(payload.get("deviceReason", "") or payload.get("device_reason", "") or "").strip() or None
+        reason = str(payload.get("reason", "") or payload.get("error", "") or payload.get("warning", "") or "").strip() or None
+        tracking_state = str(payload.get("trackingState", "") or payload.get("state", "") or "").strip().lower() or None
+        root_detected = payload.get("rootDetected")
+        if not isinstance(root_detected, bool):
+            root_detected = payload.get("root_detected")
+        fps_override = payload.get("fps")
+        if fps_override is not None:
+            try:
+                fps_override = float(fps_override)
+            except Exception:
+                fps_override = None
+
+        provider: str | None = None
+        if name.startswith("ocr.read"):
+            provider = "ocr"
+        elif name.startswith("risk.") or name == "risk":
+            provider = "risk"
+        elif name.startswith("det.objects"):
+            provider = "det"
+        elif name.startswith("depth.") and name != "depth.map.v1":
+            provider = "depth"
+        elif name == "seg.segment" or name.startswith("seg.mask") or name.startswith("seg.masks"):
+            provider = "seg"
+        elif name.startswith("slam.pose"):
+            provider = "slam"
+        elif name.startswith("asr.transcript"):
+            provider = "asr"
+            transcript_text = str(payload.get("text", "") or "").strip() or None
+            if transcript_text:
+                self._ui_voice_state.update(
+                    {
+                        "lastTranscript": transcript_text,
+                        "lastTranscriptTsMs": event_ts,
+                        "lastTranscriptBackend": backend,
+                        "lastTranscriptModel": model,
+                        "lastTranscriptDevice": device,
+                        "lastTranscriptLatencyMs": infer_ms,
+                    }
+                )
+        elif name == "frame.ack":
+            kind = str(payload.get("kind", "") or "").strip().lower()
+            if kind == "tts":
+                provider = "tts"
+                provider_payload = payload.get("provider")
+                if isinstance(provider_payload, dict):
+                    backend = str(provider_payload.get("backend", "") or "").strip() or backend
+                    model = str(provider_payload.get("model", "") or "").strip() or model
+                    device = str(provider_payload.get("device", "") or "").strip() or device
+                    device_reason = str(provider_payload.get("deviceReason", "") or provider_payload.get("device_reason", "") or "").strip() or device_reason
+                    reason = str(provider_payload.get("reason", "") or "").strip() or reason
+                    infer_ms = _to_nonnegative_int_or_none(provider_payload.get("latencyMs")) or infer_ms
+                    provider_is_mock = provider_payload.get("isMock")
+                    if isinstance(provider_is_mock, bool):
+                        self._record_provider_runtime(
+                            "tts",
+                            backend=backend,
+                            model=model,
+                            device=device,
+                            device_reason=device_reason,
+                            infer_ms=infer_ms,
+                            ts_ms=event_ts,
+                            reason=reason,
+                            is_mock=provider_is_mock,
+                            outcome="ok" if bool(payload.get("accepted", True)) else "error",
+                        )
+                        return
+                backend = backend or "client_ack"
+                model = model or "quest-tts"
+                reason = reason or "frame_ack"
+        elif name.startswith("vis.overlay.v1"):
+            kind = str(payload.get("kind", "") or "").strip().lower()
+            provider = {"det": "det", "seg": "seg", "depth": "depth", "slam": "slam"}.get(kind)
+            provider_meta = payload.get("providerMeta")
+            if isinstance(provider_meta, dict):
+                backend = str(provider_meta.get("backend", "") or "").strip() or backend
+                model = str(provider_meta.get("model", "") or "").strip() or model
+                device = str(provider_meta.get("device", "") or "").strip() or device
+                device_reason = str(provider_meta.get("deviceReason", "") or provider_meta.get("device_reason", "") or "").strip() or device_reason
+            infer_ms = _to_nonnegative_int_or_none(payload.get("inferMs")) or infer_ms
+            event_ts = _to_nonnegative_int_or_none(payload.get("tsMs")) or event_ts
+        elif name.startswith("slam.trajectory"):
+            provider = "pyslamRealtime"
+            backend = backend or "pyslam_http"
+        elif name.startswith("slam.debug"):
+            provider = "pyslamRealtime"
+            backend = backend or "pyslam_http"
+
+        if provider is None:
+            return
+        self._record_provider_runtime(
+            provider,
+            backend=backend,
+            model=model,
+            device=device,
+            device_reason=device_reason,
+            infer_ms=infer_ms,
+            ts_ms=event_ts,
+            reason=reason,
+            fps_override=fps_override,
+            state=tracking_state,
+            root_detected=root_detected if isinstance(root_detected, bool) else None,
+            outcome=event_status,
+        )
+        if provider == "slam" and str(backend or "").strip().lower().startswith("pyslam"):
+            self._record_provider_runtime(
+                "pyslamRealtime",
+                backend=backend,
+                model=model,
+                device=device,
+                device_reason=device_reason,
+                infer_ms=infer_ms,
+                ts_ms=event_ts,
+                reason=reason,
+                fps_override=fps_override,
+                state=tracking_state,
+                root_detected=root_detected if isinstance(root_detected, bool) else None,
+                outcome=event_status,
+            )
 
     def _to_run_packages_relative(self, path: Path) -> str:
         root = self.run_packages_root.resolve()
@@ -734,14 +1333,83 @@ class GatewayApp:
         self._inference_events.clear()
         return snapshot
 
+    def snapshot_inference_events(self, *, limit: int = 64) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(512, int(limit)))
+        if len(self._inference_events) <= safe_limit:
+            return list(self._inference_events)
+        return list(self._inference_events[-safe_limit:])
+
     async def _emit_inference_event(self, event: dict[str, Any]) -> None:
         if not isinstance(event, dict):
             return
-        self._inference_events.append(dict(event))
+        event_copy = dict(event)
+        self._update_runtime_evidence_from_event(event_copy)
+        self._inference_events.append(event_copy)
         if len(self._inference_events) > self._inference_events_limit:
             self._inference_events = self._inference_events[-self._inference_events_limit :]
+        self.recording.on_event(event_copy)
         if self.config.inference_emit_ws_events_v1:
-            await self.connections.broadcast_json(event)
+            await self.connections.broadcast_json(event_copy)
+
+    async def _maybe_emit_slam_trajectory_v1(
+        self,
+        *,
+        run_id: str,
+        frame_seq: int,
+        device_id: str | None,
+        tracking_state: str | None,
+        pose: dict[str, Any] | None,
+    ) -> None:
+        if not self._emit_slam_trajectory_v1:
+            return
+        if not isinstance(pose, dict):
+            return
+        t = pose.get("t")
+        q = pose.get("q")
+        if not (isinstance(t, list) and len(t) >= 3 and isinstance(q, list) and len(q) >= 4):
+            return
+        try:
+            tx = float(t[0])
+            ty = float(t[1])
+            tz = float(t[2])
+            qx = float(q[0])
+            qy = float(q[1])
+            qz = float(q[2])
+            qw = float(q[3])
+        except Exception:
+            return
+        key = str(device_id or "default").strip() or "default"
+        now_ms = _now_ms()
+        points = self._slam_traj_points.setdefault(key, [])
+        points.append(
+            {
+                "tsMs": int(now_ms),
+                "t": [tx, ty, tz],
+                "q": [qx, qy, qz, qw],
+                "trackingState": str(tracking_state or "").strip().lower() or None,
+            }
+        )
+        if len(points) > self._slam_traj_max_points:
+            del points[0 : len(points) - self._slam_traj_max_points]
+        last_emit_ms = int(self._slam_traj_last_emit_ms.get(key, -1))
+        if last_emit_ms > 0 and (now_ms - last_emit_ms) < self._slam_traj_emit_interval_ms:
+            return
+        self._slam_traj_last_emit_ms[key] = now_ms
+        payload = {
+            "schemaVersion": "byes.slam.trajectory.v1",
+            "deviceId": key,
+            "trackingState": str(tracking_state or "").strip().lower() or None,
+            "points": list(points),
+        }
+        await self._emit_inference_event(
+            _build_byes_event(
+                run_id=run_id,
+                frame_seq=frame_seq,
+                category="tool",
+                name="slam.trajectory.v1",
+                payload=payload,
+            )
+        )
 
     @staticmethod
     def _extract_run_id(meta: dict[str, Any]) -> str | None:
@@ -753,6 +1421,37 @@ class GatewayApp:
             if text:
                 return text
         return None
+
+    @staticmethod
+    def _resolve_device_id(meta: dict[str, Any]) -> str | None:
+        direct = str(meta.get("deviceId", "") or "").strip()
+        if direct:
+            return direct
+        frame_meta = meta.get("frameMeta")
+        if isinstance(frame_meta, dict):
+            nested = str(frame_meta.get("deviceId", "") or "").strip()
+            if nested:
+                return nested
+        return None
+
+    def _resolve_mode_for_frame(self, meta: dict[str, Any]) -> tuple[str | None, str, bool]:
+        run_id = self._extract_run_id(meta) or "unknown-run"
+        device_id = self._resolve_device_id(meta)
+        incoming_mode = normalize_mode_token(meta.get("mode"))
+        if incoming_mode is None:
+            frame_meta = meta.get("frameMeta")
+            if isinstance(frame_meta, dict):
+                incoming_mode = normalize_mode_token(frame_meta.get("mode"))
+        if incoming_mode is not None:
+            self.mode_state.set_mode(
+                device_id=device_id,
+                run_id=run_id,
+                mode=incoming_mode,
+                source="frame",
+            )
+        resolved_mode = incoming_mode or self.mode_state.get_mode(device_id=device_id, run_id=run_id)
+        changed = self.mode_state.consume_changed_flag(device_id=device_id, run_id=run_id)
+        return device_id, resolved_mode, bool(changed)
 
     @staticmethod
     def _resolve_event_frame_seq(seq: int, meta: dict[str, Any]) -> int:
@@ -863,6 +1562,9 @@ class GatewayApp:
         run_id = self._extract_run_id(meta)
         component = str(self.config.inference_event_component or "gateway")
         event_frame_seq = self._resolve_event_frame_seq(seq, meta)
+        device_id = self._resolve_device_id(meta)
+        mode = normalize_mode_token(meta.get("mode")) or self.mode_state.get_mode(device_id=device_id, run_id=run_id)
+        mode_changed = bool(meta.get("_modeChanged", False))
         depth_payload_for_costmap: dict[str, Any] | None = None
         seg_payload_for_costmap: dict[str, Any] | None = None
         slam_payload_for_costmap: dict[str, Any] | None = None
@@ -870,7 +1572,26 @@ class GatewayApp:
         depth_model_for_costmap = None
         depth_endpoint_for_costmap = None
         costmap_fused_payload: dict[str, Any] | None = None
-        if self.config.inference_enable_ocr:
+        fired_targets: list[str] = []
+        skipped_targets: list[str] = []
+        force_heavy_once = mode_changed
+        forced_targets = _resolve_forced_targets(meta)
+        det_targets_override, det_prompt_override = _resolve_det_overrides(meta)
+
+        ocr_enabled = self._target_enabled("ocr")
+        run_ocr = bool(ocr_enabled) and should_run_mode_target(
+            frame_seq=event_frame_seq,
+            mode=mode,
+            target="ocr",
+            profile=self.mode_profile,
+            force_on_mode_change=force_heavy_once,
+        )
+        if "ocr" in forced_targets and bool(ocr_enabled):
+            run_ocr = True
+        if bool(ocr_enabled) and not run_ocr:
+            skipped_targets.append("ocr")
+        if run_ocr:
+            fired_targets.append("ocr")
             ocr_started_ms = _now_ms()
             try:
                 ocr_result = await self.ocr_backend.infer(
@@ -882,7 +1603,15 @@ class GatewayApp:
                     prompt=None,
                 )
             except Exception as exc:  # noqa: BLE001
-                ocr_result = OCRResult(status="error", error=exc.__class__.__name__, payload={"reason": exc.__class__.__name__})
+                ocr_reason = _normalize_provider_failure_reason(str(exc))
+                ocr_result = OCRResult(
+                    status="error",
+                    error=exc.__class__.__name__,
+                    payload={
+                        "reason": ocr_reason,
+                        "error": exc.__class__.__name__,
+                    },
+                )
             await emit_ocr_events(
                 ocr_result,
                 frame_seq=event_frame_seq,
@@ -896,15 +1625,32 @@ class GatewayApp:
                 endpoint=getattr(self.ocr_backend, "endpoint", None),
             )
 
-        if self.config.inference_enable_risk:
+        risk_enabled = self._target_enabled("risk")
+        run_risk = bool(risk_enabled) and should_run_mode_target(
+            frame_seq=event_frame_seq,
+            mode=mode,
+            target="risk",
+            profile=self.mode_profile,
+            force_on_mode_change=False,
+        )
+        if "risk" in forced_targets and bool(risk_enabled):
+            run_risk = True
+        if bool(risk_enabled) and not run_risk:
+            skipped_targets.append("risk")
+        if run_risk:
+            fired_targets.append("risk")
             risk_started_ms = _now_ms()
             try:
                 risk_result = await self.risk_backend.infer(frame_bytes, seq, ts_ms)
             except Exception as exc:  # noqa: BLE001
+                risk_reason = _normalize_provider_failure_reason(str(exc))
                 risk_result = RiskResult(
                     status="error",
                     error=exc.__class__.__name__,
-                    payload={"reason": exc.__class__.__name__},
+                    payload={
+                        "reason": risk_reason,
+                        "error": exc.__class__.__name__,
+                    },
                     latency_ms=max(0, _now_ms() - risk_started_ms),
                 )
             await emit_risk_events(
@@ -920,7 +1666,77 @@ class GatewayApp:
                 endpoint=getattr(self.risk_backend, "endpoint", None),
             )
 
-        if self.config.inference_enable_depth:
+        det_enabled = self._target_enabled("det")
+        run_det = bool(det_enabled) and should_run_mode_target(
+            frame_seq=event_frame_seq,
+            mode=mode,
+            target="det",
+            profile=self.mode_profile,
+            force_on_mode_change=force_heavy_once,
+        )
+        if "det" in forced_targets and bool(det_enabled):
+            run_det = True
+        if bool(det_enabled) and not run_det:
+            skipped_targets.append("det")
+        if run_det:
+            fired_targets.append("det")
+            det_started_ms = _now_ms()
+            try:
+                det_result = await self.det_backend.infer(
+                    frame_bytes,
+                    seq,
+                    ts_ms,
+                    run_id=run_id,
+                    targets=det_targets_override,
+                    prompt=det_prompt_override,
+                )
+            except Exception as exc:  # noqa: BLE001
+                det_reason = _normalize_provider_failure_reason(str(exc))
+                det_result = DetResult(
+                    status="error",
+                    error=exc.__class__.__name__,
+                    payload={
+                        "reason": det_reason,
+                        "error": exc.__class__.__name__,
+                        "objectsCount": 0,
+                    },
+                    latency_ms=max(0, _now_ms() - det_started_ms),
+                )
+            await emit_det_events(
+                det_result,
+                frame_seq=event_frame_seq,
+                ts_ms=_now_ms(),
+                started_ts_ms=det_started_ms,
+                sink=self._emit_inference_event,
+                run_id=run_id,
+                component=component,
+                backend=getattr(self.det_backend, "name", None),
+                model=getattr(self.det_backend, "model_id", None),
+                endpoint=getattr(self.det_backend, "endpoint", None),
+            )
+            det_overlay_payload = det_result.payload if isinstance(det_result.payload, dict) else {}
+            await _emit_det_objects_v1_event(
+                gateway=self,
+                run_id=run_id,
+                frame_seq=event_frame_seq,
+                component=component,
+                payload=det_overlay_payload,
+            )
+
+        depth_enabled = self._target_enabled("depth")
+        run_depth = bool(depth_enabled) and should_run_mode_target(
+            frame_seq=event_frame_seq,
+            mode=mode,
+            target="depth",
+            profile=self.mode_profile,
+            force_on_mode_change=force_heavy_once,
+        )
+        if "depth" in forced_targets and bool(depth_enabled):
+            run_depth = True
+        if bool(depth_enabled) and not run_depth:
+            skipped_targets.append("depth")
+        if run_depth:
+            fired_targets.append("depth")
             depth_started_ms = _now_ms()
             depth_backend_name = getattr(self.depth_backend, "name", None)
             depth_model_id = getattr(self.depth_backend, "model_id", None)
@@ -936,16 +1752,21 @@ class GatewayApp:
                     pose=None,
                 )
             except Exception as exc:  # noqa: BLE001
+                depth_reason = _normalize_provider_failure_reason(str(exc))
                 depth_result = DepthResult(
                     status="error",
                     error=exc.__class__.__name__,
                     payload={
-                        "reason": exc.__class__.__name__,
+                        "reason": depth_reason,
+                        "error": exc.__class__.__name__,
                         "gridCount": 0,
                         "valuesCount": 0,
                     },
                     latency_ms=max(0, _now_ms() - depth_started_ms),
                 )
+            depth_runtime_payload = depth_result.payload if isinstance(depth_result.payload, dict) else {}
+            depth_backend_effective = str(depth_runtime_payload.get("backend") or depth_backend_name or "").strip() or depth_backend_name
+            depth_model_effective = str(depth_runtime_payload.get("model") or depth_model_id or "").strip() or depth_model_id
             await emit_depth_events(
                 depth_result,
                 frame_seq=event_frame_seq,
@@ -954,9 +1775,17 @@ class GatewayApp:
                 sink=self._emit_inference_event,
                 run_id=run_id,
                 component=component,
-                backend=depth_backend_name,
-                model=depth_model_id,
+                backend=depth_backend_effective,
+                model=depth_model_effective,
                 endpoint=depth_endpoint,
+            )
+            depth_overlay_payload = depth_result.payload if isinstance(depth_result.payload, dict) else {}
+            await _emit_depth_map_v1_event(
+                gateway=self,
+                run_id=run_id,
+                frame_seq=event_frame_seq,
+                component=component,
+                payload=depth_overlay_payload,
             )
             depth_payload_for_costmap = depth_result.payload if isinstance(depth_result.payload, dict) else {}
             if isinstance(depth_result.grid, dict):
@@ -965,53 +1794,38 @@ class GatewayApp:
             depth_backend_for_costmap = depth_backend_name
             depth_model_for_costmap = depth_model_id
             depth_endpoint_for_costmap = depth_endpoint
-
-        if self.config.inference_enable_slam:
-            slam_started_ms = _now_ms()
-            slam_backend_name = getattr(self.slam_backend, "name", None)
-            slam_model_id = getattr(self.slam_backend, "model_id", None)
-            slam_endpoint = getattr(self.slam_backend, "endpoint", None)
-            try:
-                slam_result = await self.slam_backend.infer(
-                    frame_bytes,
-                    seq,
-                    ts_ms,
-                    run_id=run_id,
-                    targets=None,
-                    prompt=None,
+            fused_risk_payload = _build_depth_fused_risk_payload(depth_payload_for_costmap)
+            if fused_risk_payload is not None:
+                await self._emit_inference_event(
+                    {
+                        "schemaVersion": "byes.event.v1",
+                        "tsMs": _now_ms(),
+                        "runId": run_id,
+                        "frameSeq": event_frame_seq,
+                        "component": component,
+                        "category": "tool",
+                        "name": "risk.fused",
+                        "phase": "result",
+                        "status": "ok",
+                        "latencyMs": 0,
+                        "payload": fused_risk_payload,
+                    }
                 )
-            except Exception as exc:  # noqa: BLE001
-                slam_result = SlamResult(
-                    status="error",
-                    error=exc.__class__.__name__,
-                    payload={"reason": exc.__class__.__name__},
-                    latency_ms=max(0, _now_ms() - slam_started_ms),
-                )
-            await emit_slam_pose_events(
-                slam_result,
-                frame_seq=event_frame_seq,
-                ts_ms=_now_ms(),
-                started_ts_ms=slam_started_ms,
-                sink=self._emit_inference_event,
-                run_id=run_id,
-                component=component,
-                backend=slam_backend_name,
-                model=slam_model_id,
-                endpoint=slam_endpoint,
-            )
-            slam_payload_for_costmap = slam_result.payload if isinstance(slam_result.payload, dict) else {}
-            if isinstance(slam_result.pose, dict):
-                slam_payload_for_costmap = dict(slam_payload_for_costmap)
-                pose_obj = slam_payload_for_costmap.get("pose")
-                pose_obj = pose_obj if isinstance(pose_obj, dict) else {}
-                if "t" not in pose_obj and isinstance(slam_result.pose.get("t"), list):
-                    pose_obj["t"] = list(slam_result.pose.get("t") or [])
-                if "q" not in pose_obj and isinstance(slam_result.pose.get("q"), list):
-                    pose_obj["q"] = list(slam_result.pose.get("q") or [])
-                slam_payload_for_costmap["pose"] = pose_obj
-                slam_payload_for_costmap.setdefault("trackingState", slam_result.tracking_state)
 
-        if self.config.inference_enable_seg:
+        seg_enabled = self._target_enabled("seg")
+        run_seg = bool(seg_enabled) and should_run_mode_target(
+            frame_seq=event_frame_seq,
+            mode=mode,
+            target="seg",
+            profile=self.mode_profile,
+            force_on_mode_change=force_heavy_once,
+        )
+        if "seg" in forced_targets and bool(seg_enabled):
+            run_seg = True
+        if bool(seg_enabled) and not run_seg:
+            skipped_targets.append("seg")
+        if run_seg:
+            fired_targets.append("seg")
             seg_started_ms = _now_ms()
             seg_targets = [str(item).strip() for item in self.config.inference_seg_targets if str(item).strip()]
             seg_prompt = self._normalize_seg_prompt(self.config.inference_seg_prompt)
@@ -1062,17 +1876,22 @@ class GatewayApp:
                     tracking=bool(self.config.inference_seg_tracking),
                 )
             except Exception as exc:  # noqa: BLE001
+                seg_reason = _normalize_provider_failure_reason(str(exc))
                 seg_result = SegResult(
                     status="error",
                     error=exc.__class__.__name__,
                     payload={
-                        "reason": exc.__class__.__name__,
+                        "reason": seg_reason,
+                        "error": exc.__class__.__name__,
                         "segmentsCount": 0,
                         "targetsCount": len(seg_targets),
                         "targetsUsed": seg_targets,
                     },
                     latency_ms=max(0, _now_ms() - seg_started_ms),
                 )
+            seg_runtime_payload = seg_result.payload if isinstance(seg_result.payload, dict) else {}
+            seg_backend_effective = str(seg_runtime_payload.get("backend") or seg_backend_name or "").strip() or seg_backend_name
+            seg_model_effective = str(seg_runtime_payload.get("model") or seg_model_id or "").strip() or seg_model_id
             await emit_seg_events(
                 seg_result,
                 frame_seq=event_frame_seq,
@@ -1081,14 +1900,128 @@ class GatewayApp:
                 sink=self._emit_inference_event,
                 run_id=run_id,
                 component=component,
-                backend=seg_backend_name,
-                model=seg_model_id,
+                backend=seg_backend_effective,
+                model=seg_model_effective,
                 endpoint=seg_endpoint,
+            )
+            seg_overlay_payload = seg_result.payload if isinstance(seg_result.payload, dict) else {}
+            if isinstance(seg_result.segments, list):
+                seg_overlay_payload = dict(seg_overlay_payload)
+                seg_overlay_payload.setdefault(
+                    "segments",
+                    [row for row in seg_result.segments if isinstance(row, dict)],
+                )
+            await _emit_seg_mask_v1_event(
+                gateway=self,
+                run_id=run_id,
+                frame_seq=event_frame_seq,
+                component=component,
+                payload=seg_overlay_payload,
             )
             seg_payload_for_costmap = seg_result.payload if isinstance(seg_result.payload, dict) else {}
             if isinstance(seg_result.segments, list):
                 seg_payload_for_costmap = dict(seg_payload_for_costmap)
                 seg_payload_for_costmap["segments"] = [row for row in seg_result.segments if isinstance(row, dict)]
+
+        slam_enabled = self._target_enabled("slam")
+        run_slam = bool(slam_enabled) and should_run_mode_target(
+            frame_seq=event_frame_seq,
+            mode=mode,
+            target="slam",
+            profile=self.mode_profile,
+            force_on_mode_change=force_heavy_once,
+        )
+        if "slam" in forced_targets and bool(slam_enabled):
+            run_slam = True
+        if bool(slam_enabled) and not run_slam:
+            skipped_targets.append("slam")
+        if run_slam:
+            fired_targets.append("slam")
+            slam_started_ms = _now_ms()
+            slam_backend_name = getattr(self.slam_backend, "name", None)
+            slam_model_id = getattr(self.slam_backend, "model_id", None)
+            slam_endpoint = getattr(self.slam_backend, "endpoint", None)
+            try:
+                slam_result = await self.slam_backend.infer(
+                    frame_bytes,
+                    seq,
+                    ts_ms,
+                    run_id=run_id,
+                    targets=None,
+                    prompt=None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                slam_reason = _normalize_provider_failure_reason(str(exc))
+                slam_result = SlamResult(
+                    status="error",
+                    error=exc.__class__.__name__,
+                    payload={
+                        "reason": slam_reason,
+                        "error": exc.__class__.__name__,
+                    },
+                    latency_ms=max(0, _now_ms() - slam_started_ms),
+                )
+            await emit_slam_pose_events(
+                slam_result,
+                frame_seq=event_frame_seq,
+                ts_ms=_now_ms(),
+                started_ts_ms=slam_started_ms,
+                sink=self._emit_inference_event,
+                run_id=run_id,
+                component=component,
+                backend=slam_backend_name,
+                model=slam_model_id,
+                endpoint=slam_endpoint,
+            )
+            slam_overlay_payload = slam_result.payload if isinstance(slam_result.payload, dict) else {}
+            await _emit_slam_pose_v1_event(
+                gateway=self,
+                run_id=run_id,
+                frame_seq=event_frame_seq,
+                component=component,
+                payload=slam_overlay_payload,
+            )
+            await self._maybe_emit_slam_trajectory_v1(
+                run_id=run_id,
+                frame_seq=event_frame_seq,
+                device_id=device_id,
+                tracking_state=slam_result.tracking_state,
+                pose=slam_result.pose if isinstance(slam_result.pose, dict) else None,
+            )
+            slam_payload_for_costmap = slam_result.payload if isinstance(slam_result.payload, dict) else {}
+            if isinstance(slam_result.pose, dict):
+                slam_payload_for_costmap = dict(slam_payload_for_costmap)
+                pose_obj = slam_payload_for_costmap.get("pose")
+                pose_obj = pose_obj if isinstance(pose_obj, dict) else {}
+                if "t" not in pose_obj and isinstance(slam_result.pose.get("t"), list):
+                    pose_obj["t"] = list(slam_result.pose.get("t") or [])
+                if "q" not in pose_obj and isinstance(slam_result.pose.get("q"), list):
+                    pose_obj["q"] = list(slam_result.pose.get("q") or [])
+                slam_payload_for_costmap["pose"] = pose_obj
+                slam_payload_for_costmap.setdefault("trackingState", slam_result.tracking_state)
+
+        if self.config.emit_mode_profile_debug:
+            await self._emit_inference_event(
+                {
+                    "schemaVersion": "byes.event.v1",
+                    "tsMs": _now_ms(),
+                    "runId": run_id,
+                    "frameSeq": event_frame_seq,
+                    "component": component,
+                    "category": "debug",
+                    "name": "mode.profile",
+                    "phase": "result",
+                    "status": "ok",
+                    "latencyMs": 0,
+                    "payload": {
+                        "mode": mode,
+                        "deviceId": device_id,
+                        "modeChanged": bool(mode_changed),
+                        "targetsFired": fired_targets,
+                        "targetsSkipped": skipped_targets,
+                    },
+                }
+            )
 
         if self.config.inference_enable_costmap:
             costmap_started_ms = _now_ms()
@@ -1246,6 +2179,12 @@ class GatewayApp:
         if forced_crosscheck_kind != "none" and "forceCrosscheckKind" not in enriched_meta:
             enriched_meta["forceCrosscheckKind"] = forced_crosscheck_kind
         enriched_meta["fingerprint"] = hashlib.sha1(frame_bytes).hexdigest()
+        resolved_device_id, resolved_mode, mode_changed = self._resolve_mode_for_frame(enriched_meta)
+        if resolved_device_id is not None and "deviceId" not in enriched_meta:
+            enriched_meta["deviceId"] = resolved_device_id
+        if resolved_mode:
+            enriched_meta["mode"] = resolved_mode
+        enriched_meta["_modeChanged"] = bool(mode_changed)
 
         seq = await self.scheduler.submit_frame(
             frame_bytes=frame_bytes,
@@ -1262,6 +2201,7 @@ class GatewayApp:
 
     async def reset_runtime(self) -> dict[str, Any]:
         faults_snapshot = await self.faults.clear_faults()
+        self.mode_state.reset_runtime()
         self.degradation.reset_runtime()
         self.frame_tracker.reset_runtime()
         self.governor.reset_runtime()
@@ -1273,6 +2213,8 @@ class GatewayApp:
         self.fusion.reset_runtime()
         self.scheduler.reset_runtime()
         self._inference_events.clear()
+        self.frame_cache.reset()
+        self.recording.reset()
         self.costmap_fuser.reset()
         self.dynamic_mask_cache.reset()
         with _FRAME_E2E_STATE_LOCK:
@@ -1728,8 +2670,196 @@ class GatewayApp:
         )
 
 
+def _gateway_profile() -> str:
+    return str(os.getenv("BYES_GATEWAY_PROFILE", "local")).strip().lower() or "local"
+
+
+def _gateway_profile_is_hardened() -> bool:
+    return _gateway_profile() == "hardened"
+
+
+def _profile_bool(name: str, local_default: bool, hardened_default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return hardened_default if _gateway_profile_is_hardened() else local_default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _apply_gateway_profile_defaults() -> None:
+    if not _gateway_profile_is_hardened():
+        return
+    defaults = {
+        "BYES_GATEWAY_RATE_LIMIT_ENABLED": "1",
+        "BYES_GATEWAY_RATE_LIMIT_RPS": "10",
+        "BYES_GATEWAY_RATE_LIMIT_BURST": "20",
+        "BYES_GATEWAY_RATE_LIMIT_KEY_MODE": "api_key_or_ip",
+        "BYES_GATEWAY_MAX_FRAME_BYTES": str(10 * 1024 * 1024),
+        "BYES_GATEWAY_MAX_RUNPACKAGE_ZIP_BYTES": str(200 * 1024 * 1024),
+        "BYES_GATEWAY_MAX_JSON_BYTES": str(1 * 1024 * 1024),
+        "BYES_GATEWAY_DEV_ENDPOINTS_ENABLED": "0",
+        "BYES_GATEWAY_ALLOW_LOCAL_RUNPACKAGE_PATH": "0",
+        "BYES_GATEWAY_RUNPACKAGE_UPLOAD_ENABLED": "0",
+    }
+    for key, value in defaults.items():
+        os.environ.setdefault(key, value)
+
+
+_apply_gateway_profile_defaults()
+
 app = FastAPI(title="BeYourEyes Gateway")
 gateway = GatewayApp(app)
+app.add_middleware(
+    RequestSizeLimitMiddleware,
+    limits=RequestSizeLimits(
+        frame_bytes=max(0, int(gateway.config.gateway_max_frame_bytes)),
+        runpackage_zip_bytes=max(0, int(gateway.config.gateway_max_runpackage_zip_bytes)),
+        json_bytes=max(0, int(gateway.config.gateway_max_json_bytes)),
+    ),
+)
+app.add_middleware(
+    RateLimitMiddleware,
+    config=RateLimitConfig(
+        enabled=bool(gateway.config.gateway_rate_limit_enabled),
+        requests_per_second=max(0.1, float(gateway.config.gateway_rate_limit_rps)),
+        burst=max(1, int(gateway.config.gateway_rate_limit_burst)),
+        key_mode=str(gateway.config.gateway_rate_limit_key_mode or "ip"),
+    ),
+)
+
+_API_KEY_HEADER = "x-byes-api-key"
+
+
+def _csv_env_set(env_name: str) -> set[str]:
+    raw = str(os.getenv(env_name, "") or "").strip()
+    if not raw:
+        return set()
+    values: set[str] = set()
+    for token in raw.split(","):
+        value = token.strip().lower()
+        if value:
+            values.add(value)
+    return values
+
+
+def _normalize_host_header(host_header: str | None) -> str:
+    text = str(host_header or "").strip().lower()
+    if not text:
+        return ""
+    if text.startswith("["):
+        end = text.find("]")
+        if end > 1:
+            return text[1:end]
+    return text.split(":", 1)[0].strip()
+
+
+def _is_host_allowed(host_header: str | None, allowed_hosts: set[str]) -> bool:
+    if not allowed_hosts:
+        return True
+    host = _normalize_host_header(host_header)
+    if not host:
+        return False
+    return host in allowed_hosts
+
+
+def _is_origin_allowed(origin_header: str | None, allowed_origins: set[str]) -> bool:
+    if not allowed_origins:
+        return True
+    origin = str(origin_header or "").strip().lower()
+    if not origin:
+        return True
+    return origin in allowed_origins
+
+
+def _is_guarded_http_path(path: str) -> bool:
+    normalized = str(path or "").strip()
+    if normalized.startswith("/api/"):
+        return True
+    if normalized == "/metrics":
+        return True
+    if normalized == "/runs" or normalized.startswith("/runs/"):
+        return True
+    return False
+
+
+def _request_api_key(request: Request) -> str:
+    return str(request.headers.get("X-BYES-API-Key", "")).strip()
+
+
+def _websocket_api_key(websocket: WebSocket) -> str:
+    query_key = str(websocket.query_params.get("api_key", "")).strip()
+    if query_key:
+        return query_key
+    return str(websocket.headers.get(_API_KEY_HEADER, "")).strip()
+
+
+async def _reject_ws_policy_violation(websocket: WebSocket) -> None:
+    with contextlib.suppress(Exception):
+        await websocket.accept()
+    with contextlib.suppress(Exception):
+        await websocket.close(code=1008)
+
+
+async def _ws_guardrails_ok(websocket: WebSocket) -> bool:
+    allowed_hosts = _csv_env_set("BYES_GATEWAY_ALLOWED_HOSTS")
+    if not _is_host_allowed(websocket.headers.get("host"), allowed_hosts):
+        await _reject_ws_policy_violation(websocket)
+        return False
+
+    allowed_origins = _csv_env_set("BYES_GATEWAY_ALLOWED_ORIGINS")
+    if not _is_origin_allowed(websocket.headers.get("origin"), allowed_origins):
+        await _reject_ws_policy_violation(websocket)
+        return False
+
+    expected_key = str(os.getenv("BYES_GATEWAY_API_KEY", "")).strip()
+    if expected_key and _websocket_api_key(websocket) != expected_key:
+        await _reject_ws_policy_violation(websocket)
+        return False
+    return True
+
+
+@app.middleware("http")
+async def _gateway_guardrails(request: Request, call_next):  # type: ignore[no-untyped-def]
+    allowed_hosts = _csv_env_set("BYES_GATEWAY_ALLOWED_HOSTS")
+    if not _is_host_allowed(request.headers.get("host"), allowed_hosts):
+        return JSONResponse(status_code=400, content={"detail": "Invalid Host"})
+
+    allowed_origins = _csv_env_set("BYES_GATEWAY_ALLOWED_ORIGINS")
+    if not _is_origin_allowed(request.headers.get("origin"), allowed_origins):
+        return JSONResponse(status_code=400, content={"detail": "Invalid Origin"})
+
+    if str(request.method or "").upper() == "OPTIONS":
+        return await call_next(request)
+
+    expected_key = str(os.getenv("BYES_GATEWAY_API_KEY", "")).strip()
+    if expected_key and _is_guarded_http_path(request.url.path):
+        if _request_api_key(request) != expected_key:
+            return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+
+    return await call_next(request)
+
+
+def _ensure_dev_endpoints_enabled(path: str) -> None:
+    if _profile_bool("BYES_GATEWAY_DEV_ENDPOINTS_ENABLED", True, False):
+        return
+    raise HTTPException(status_code=403, detail=f"endpoint disabled by profile: {path}")
+
+
+def _ensure_runpackage_upload_enabled() -> None:
+    if _profile_bool("BYES_GATEWAY_RUNPACKAGE_UPLOAD_ENABLED", True, False):
+        return
+    raise HTTPException(status_code=403, detail="run package upload disabled by profile")
+
+
+def _allow_local_runpackage_path() -> bool:
+    return _profile_bool("BYES_GATEWAY_ALLOW_LOCAL_RUNPACKAGE_PATH", True, False)
+
+
+def _is_path_under(base_dir: Path, target_path: Path) -> bool:
+    try:
+        target_path.resolve().relative_to(base_dir.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 @app.on_event("startup")
@@ -1774,6 +2904,7 @@ def health() -> dict[str, Any]:
 
 @app.get("/api/mock_event", response_model=MockEvent)
 def mock_event() -> MockEvent:
+    _ensure_dev_endpoints_enabled("/api/mock_event")
     return gateway.build_mock_event()
 
 
@@ -1842,6 +2973,69 @@ async def frame(
         or str((meta_json.get("frameMeta") if isinstance(meta_json.get("frameMeta"), dict) else {}).get("mode", "")).strip()
         or str(mode or "").strip()
     )
+    forced_targets = sorted(_resolve_forced_targets(meta_json))
+    cache_device_id = device_id or "default"
+    try:
+        gateway.frame_cache.set(
+            device_id=cache_device_id,
+            frame_seq=seq,
+            frame_bytes=frame_bytes,
+            meta=meta_json,
+            run_id=run_id,
+            capture_ts_ms=capture_ts_ms,
+        )
+    except Exception:
+        pass
+    try:
+        frame_asset = gateway.asset_cache.put(
+            data=frame_bytes,
+            content_type="image/jpeg",
+            meta={
+                "kind": "frame.raw",
+                "runId": run_id,
+                "frameSeq": int(max(1, int(seq))),
+                "deviceId": cache_device_id,
+            },
+        )
+        gateway._latest_frame_asset_id = frame_asset.asset_id  # noqa: SLF001
+        latest_frame_meta = {
+            "runId": run_id,
+            "frameSeq": int(max(1, int(seq))),
+            "deviceId": cache_device_id,
+            "captureTsMs": _to_nonnegative_int_or_none(capture_ts_ms),
+            "recvTsMs": int(recv_ts_ms),
+            "sizeBytes": int(len(frame_bytes)),
+            "assetId": frame_asset.asset_id,
+        }
+        capture_payload = meta_json.get("capture")
+        if isinstance(capture_payload, dict):
+            for key, value in capture_payload.items():
+                if value is None:
+                    continue
+                latest_frame_meta[str(key)] = value
+        gateway._latest_frame_meta = latest_frame_meta  # noqa: SLF001
+        frame_truth = _normalize_frame_source_truth(latest_frame_meta)
+        gateway._ui_capture_state = {  # noqa: SLF001
+            "lastSuccessTsMs": _to_nonnegative_int_or_none(capture_ts_ms) or int(recv_ts_ms),
+            "frameSource": frame_truth.get("frameSource"),
+            "truthState": frame_truth.get("truthState"),
+            "status": frame_truth.get("status"),
+            "reason": frame_truth.get("reason"),
+            "assetId": frame_asset.asset_id,
+        }
+    except Exception:
+        pass
+    try:
+        gateway.recording.on_frame(
+            device_id=cache_device_id,
+            run_id=run_id,
+            frame_seq=seq,
+            frame_bytes=frame_bytes,
+            meta=meta_json,
+            recv_ts_ms=recv_ts_ms,
+        )
+    except Exception:
+        pass
     frame_input_payload = _build_frame_input_payload(
         run_id=run_id,
         frame_seq=event_frame_seq,
@@ -1850,6 +3044,7 @@ async def frame(
         device_time_base=raw_time_base,
         device_id=device_id,
         mode=raw_mode,
+        targets=forced_targets,
     )
     frame_input_event = _build_byes_event(
         run_id=run_id,
@@ -1897,13 +3092,43 @@ async def frame_ack(request: FrameAckRequest) -> dict[str, Any]:
     run_id = str(request.runId or "").strip() or "unknown-run"
     frame_seq = int(max(1, int(request.frameSeq)))
     feedback_ts_ms = int(max(0, int(request.feedbackTsMs)))
+    spoken_text = str(request.spokenText or "").strip() or None
+    muted = request.muted if isinstance(request.muted, bool) else None
     ack_payload = _build_frame_ack_payload(
         run_id=run_id,
         frame_seq=frame_seq,
         feedback_ts_ms=feedback_ts_ms,
         kind=request.kind,
         accepted=bool(request.accepted),
+        provider_backend=request.providerBackend,
+        provider_model=request.providerModel,
+        provider_device=request.providerDevice,
+        provider_reason=request.providerReason,
+        provider_is_mock=request.providerIsMock,
     )
+    if str(request.kind or "").strip().lower() == "tts":
+        if spoken_text:
+            gateway._ui_voice_state["lastSpoken"] = spoken_text  # noqa: SLF001
+            gateway._ui_voice_state["lastSpokenTsMs"] = feedback_ts_ms  # noqa: SLF001
+        elif gateway._ui_voice_state.get("lastSpokenTsMs") is None:  # noqa: SLF001
+            gateway._ui_voice_state["lastSpokenTsMs"] = feedback_ts_ms  # noqa: SLF001
+        if muted is not None:
+            gateway._ui_voice_state["ttsMuted"] = muted  # noqa: SLF001
+    elif str(request.kind or "").strip().lower() == "ar":
+        passthrough_reason = str(request.providerReason or "").strip() or ("ok" if bool(request.accepted) else "unavailable")
+        passthrough_truth = "real" if bool(request.accepted) else "unavailable"
+        if "fallback" in passthrough_reason.lower():
+            passthrough_truth = "fallback"
+        gateway._ui_passthrough_state = {  # noqa: SLF001
+            "truthState": passthrough_truth,
+            "truthLabel": passthrough_truth,
+            "backend": str(request.providerBackend or "quest_passthrough").strip() or "quest_passthrough",
+            "model": str(request.providerModel or "").strip() or None,
+            "device": str(request.providerDevice or "quest").strip() or "quest",
+            "enabled": bool(request.accepted),
+            "reason": _normalize_provider_failure_reason(passthrough_reason),
+            "lastChangedTsMs": feedback_ts_ms,
+        }
     ack_event = _build_byes_event(
         run_id=run_id,
         frame_seq=frame_seq,
@@ -1969,9 +3194,16 @@ async def mode_change(request: ModeChangeRequest) -> dict[str, Any]:
         ts_ms = _now_ms()
     mode = _normalize_mode_value(request.mode) or "walk"
     source = str(request.source or "system").strip().lower()
-    if source not in {"hotkey", "xr", "system"}:
+    if source not in {"hotkey", "xr", "system", "unity"}:
         source = "system"
     device_id = str(request.deviceId or "").strip() or None
+    gateway.mode_state.set_mode(
+        device_id=device_id,
+        run_id=run_id,
+        mode=mode,
+        ts_ms=ts_ms,
+        source=source,
+    )
     payload = {
         "schemaVersion": "ui.mode_change.v1",
         "runId": run_id,
@@ -2022,8 +3254,1809 @@ async def mode_change(request: ModeChangeRequest) -> dict[str, Any]:
     }
 
 
+@app.get("/api/mode")
+async def mode_get(deviceId: str | None = None) -> dict[str, Any]:
+    snapshot = gateway.mode_state.get_device_snapshot(device_id=deviceId)
+    return {
+        "deviceId": snapshot.device_id,
+        "mode": snapshot.mode,
+        "updatedTsMs": int(snapshot.updated_ts_ms),
+        "expiresInMs": snapshot.expires_in_ms,
+        "source": snapshot.source,
+    }
+
+
+@app.post("/api/ping")
+async def ping(request: PingRequest) -> dict[str, Any]:
+    server_recv_ts_ms = _now_ms()
+    payload = {
+        "deviceId": str(request.deviceId or "").strip() or "default",
+        "seq": int(max(0, int(request.seq))),
+        "clientSendTsMs": _to_nonnegative_int_or_none(request.clientSendTsMs),
+        "serverRecvTsMs": int(server_recv_ts_ms),
+        "serverSendTsMs": int(_now_ms()),
+    }
+    if gateway.config.emit_net_debug:
+        await gateway._emit_inference_event(  # noqa: SLF001
+            _build_byes_event(
+                run_id="unknown-run",
+                frame_seq=1,
+                category="debug",
+                name="net.ping",
+                payload=payload,
+            )
+        )
+    return payload
+
+
+@app.get("/api/version")
+async def api_version() -> dict[str, Any]:
+    return get_build_info(profile=gateway.config.gateway_profile)
+
+
+def _normalize_frame_source_truth(frame_meta: dict[str, Any] | None) -> dict[str, Any]:
+    meta = dict(frame_meta or {})
+    source = str(meta.get("frameSource", "") or "").strip().lower()
+    mode = str(meta.get("frameSourceMode", "") or "").strip().lower()
+    status = str(meta.get("frameSourceStatus", "") or meta.get("pcaStatus", "") or "").strip() or None
+    reason = str(meta.get("frameSourceReason", "") or meta.get("pcaReason", "") or "").strip() or None
+    provider = str(meta.get("frameSourceProvider", "") or "").strip() or None
+    provider_text = str(provider or "").strip().lower()
+    reason_text = str(reason or "").strip().lower()
+    pca_device_supported = bool(meta.get("pcaDeviceSupported") is True)
+    pca_runtime_supported = bool(meta.get("pcaRuntimeSupported") is True)
+    pca_permission_granted = bool(meta.get("pcaPermissionGranted") is True)
+    pca_provider_available = bool(meta.get("pcaProviderAvailable") is True)
+    pca_provider_ready = bool(meta.get("pcaProviderReady") is True)
+    proofs_all = (
+        pca_device_supported
+        and pca_runtime_supported
+        and pca_permission_granted
+        and pca_provider_available
+        and pca_provider_ready
+    )
+    pca_available = bool(meta.get("pcaAvailable") is True) and proofs_all
+
+    canonical = mode or source
+    if canonical == "rendertexture":
+        canonical = "rendertexture_fallback"
+    elif canonical == "pca":
+        canonical = "pca_real" if proofs_all else "ar_cpuimage_fallback"
+    elif canonical not in {"pca_real", "ar_cpuimage_fallback", "rendertexture_fallback", "unavailable"}:
+        canonical = "unavailable"
+
+    if canonical == "pca_real" and not proofs_all:
+        if "rendertexture" in reason_text or "rendertexture" in provider_text:
+            canonical = "rendertexture_fallback"
+        elif "ar_cpuimage" in reason_text or "cpuimage" in reason_text or "arcpuimage" in provider_text:
+            canonical = "ar_cpuimage_fallback"
+        else:
+            canonical = "unavailable"
+
+    if not canonical:
+        canonical = "unavailable"
+
+    if not reason:
+        if not pca_runtime_supported:
+            reason = "link_unsupported"
+        elif not pca_device_supported:
+            reason = "unsupported_device"
+        elif not pca_permission_granted:
+            reason = "no_permission"
+        elif canonical == "pca_real":
+            reason = "ok"
+        elif not pca_provider_available or not pca_provider_ready:
+            reason = "provider_init_failed"
+        elif canonical == "rendertexture_fallback":
+            reason = "using_rendertexture"
+        elif canonical == "ar_cpuimage_fallback":
+            reason = "using_ar_cpuimage"
+        else:
+            reason = "unavailable"
+
+    if not status:
+        status = ("ok:" + canonical) if canonical != "unavailable" else ("unavailable:" + str(reason or "unknown"))
+
+    if canonical == "pca_real":
+        truth_label = "real"
+    elif canonical.endswith("_fallback"):
+        truth_label = "fallback"
+    else:
+        truth_label = "unavailable"
+    return {
+        "frameSource": canonical,
+        "truthState": truth_label,
+        "truthLabel": truth_label,
+        "status": status,
+        "reason": reason,
+        "provider": provider,
+        "pcaAvailable": pca_available,
+        "proof": {
+            "deviceSupported": pca_device_supported,
+            "runtimeSupported": pca_runtime_supported,
+            "permissionGranted": pca_permission_granted,
+            "providerAvailable": pca_provider_available,
+            "providerReady": pca_provider_ready,
+        },
+    }
+
+
+def _resolve_provider_truth_state(
+    *,
+    enabled: bool,
+    is_mock: bool,
+    backend: str | None,
+    reason: str | None,
+    last_success_ts: int | None,
+    last_outcome: str | None,
+    consecutive_failures: int,
+) -> str:
+    if not enabled:
+        return "unavailable"
+
+    backend_text = str(backend or "").strip().lower()
+    reason_text = str(reason or "").strip().lower()
+    failure_tokens = (
+        "missing",
+        "disabled",
+        "not_ready",
+        "not_started",
+        "path_not_found",
+        "unresolved",
+        "unavailable",
+        "stub_no_inference",
+        "http_",
+        "endpoint_",
+        "timeout",
+        "error",
+    )
+    if last_outcome in {"error", "timeout"} or consecutive_failures > 0:
+        return "unavailable"
+    if any(token in reason_text for token in failure_tokens):
+        return "unavailable"
+    if is_mock:
+        return "mock"
+    if backend_text.endswith("_fallback") or "fallback" in reason_text:
+        return "fallback"
+    if last_success_ts is None:
+        return "unavailable"
+    return "real"
+
+
+def _first_nonempty_env(*names: str) -> str:
+    for name in names:
+        value = str(os.getenv(name, "")).strip()
+        if value:
+            return value
+    return ""
+
+
+def _looks_like_path_token(value: str | None) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(sep in text for sep in ("/", "\\")) or lowered.endswith((".pt", ".pth", ".onnx", ".ckpt", ".bin", ".safetensors"))
+
+
+def _normalize_provider_failure_reason(raw: str | None) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return "error"
+    lowered = text.lower()
+    match = re.search(r"(?:http|status)[_:]?(\d{3})", lowered)
+    if match:
+        code = match.group(1)
+        return "endpoint_404" if code == "404" else f"http_{code}"
+    if "timeout" in lowered:
+        return "timeout"
+    if "stub_no_inference" in lowered:
+        return "stub_no_inference"
+    if "missing_dependency" in lowered:
+        return lowered
+    if "not_installed" in lowered:
+        if "ultralytics" in lowered:
+            return "missing_dependency:ultralytics"
+        if "onnxruntime" in lowered:
+            return "missing_dependency:onnxruntime"
+        if "paddleocr" in lowered:
+            return "missing_dependency:paddleocr"
+    if "checkpoint_not_found" in lowered or "model_not_found" in lowered or "path_not_found" in lowered:
+        return "path_not_found"
+    if "missing_byes_" in lowered or lowered.startswith("missing_"):
+        return lowered.replace("missing_byes_", "missing_env:")
+    if "provider_not_started" in lowered or "not_ready" in lowered:
+        return "not_ready"
+    sanitized = re.sub(r"[^a-z0-9:_-]+", "_", lowered).strip("_")
+    return sanitized or "error"
+
+
+def _preflight_provider_reason(provider_key: str | None, backend: str | None, endpoint: str | None) -> str | None:
+    key = str(provider_key or "").strip().lower()
+    backend_text = str(backend or "").strip().lower()
+    endpoint_text = str(endpoint or "").strip()
+    if not key:
+        return None
+
+    if backend_text.startswith("mock") or backend_text in {"none", "reference"}:
+        return "mock_provider"
+
+    if key == "ocr":
+        service_provider = str(os.getenv("BYES_SERVICE_OCR_PROVIDER", "")).strip().lower()
+        if service_provider == "mock":
+            return "mock_provider"
+        if service_provider == "paddleocr" and importlib.util.find_spec("paddleocr") is None:
+            return "missing_dependency:paddleocr"
+        return None
+
+    if key == "det":
+        if backend_text == "http" and not endpoint_text:
+            return "missing_endpoint"
+        service_provider = str(os.getenv("BYES_SERVICE_DET_PROVIDER", "")).strip().lower()
+        if service_provider == "mock":
+            return "mock_provider"
+        if service_provider in {"yolo26", "ultralytics"}:
+            if importlib.util.find_spec("ultralytics") is None:
+                return "missing_dependency:ultralytics"
+            if service_provider == "yolo26":
+                weights_path = _first_nonempty_env("BYES_YOLO26_WEIGHTS", "BYES_SERVICE_DET_MODEL_PATH")
+                if not weights_path:
+                    return "missing_path:yolo26_weights"
+                if not Path(weights_path).expanduser().exists():
+                    return "path_not_found"
+                return None
+            model_ref = _first_nonempty_env("BYES_SERVICE_DET_MODEL_PATH", "BYES_SERVICE_DET_MODEL", "BYES_SERVICE_DET_MODEL_ID")
+            if not model_ref:
+                return "missing_path:det_model"
+            if _looks_like_path_token(model_ref) and not Path(model_ref).expanduser().exists():
+                return "path_not_found"
+        return None
+
+    if key == "seg":
+        if backend_text == "http" and not endpoint_text:
+            return "missing_endpoint"
+        service_provider = str(os.getenv("BYES_SERVICE_SEG_PROVIDER", "")).strip().lower()
+        if service_provider == "mock":
+            return "mock_provider"
+        if service_provider == "sam3":
+            ckpt_path = _first_nonempty_env(
+                "BYES_SAM3_CKPT_PATH",
+                "BYES_SAM3_CKPT",
+                "BYES_SERVICE_SEG_MODEL_PATH",
+                "BYES_SERVICE_SAM3_CKPT",
+                "BYES_SAM3_WEIGHTS",
+            )
+            if not ckpt_path:
+                return "missing_path:sam3_checkpoint"
+            if not Path(ckpt_path).expanduser().exists():
+                return "path_not_found"
+        return None
+
+    if key == "depth":
+        if backend_text == "http" and not endpoint_text:
+            return "missing_endpoint"
+        service_provider = str(os.getenv("BYES_SERVICE_DEPTH_PROVIDER", "")).strip().lower()
+        if service_provider in {"", "none"}:
+            return "disabled_by_provider"
+        if service_provider == "mock":
+            return "mock_provider"
+        if service_provider in {"da3", "onnx"}:
+            model_path = _first_nonempty_env(
+                "BYES_DA3_MODEL_PATH",
+                "BYES_SERVICE_DEPTH_MODEL_PATH",
+                "BYES_SERVICE_DEPTH_ONNX_PATH",
+                "BYES_DA3_WEIGHTS",
+            )
+            if not model_path:
+                return "missing_path:depth_model"
+            if not Path(model_path).expanduser().exists():
+                return "path_not_found"
+            if service_provider == "onnx" and importlib.util.find_spec("onnxruntime") is None:
+                return "missing_dependency:onnxruntime"
+        return None
+
+    if key == "slam":
+        if backend_text == "http" and endpoint_text:
+            lowered_endpoint = endpoint_text.rstrip("/").lower()
+            if lowered_endpoint.endswith("/slam"):
+                return "endpoint_404"
+        return None
+
+    return None
+
+
+def _normalize_provider_row(
+    name: str,
+    row: dict[str, Any] | None,
+    runtime_rows: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    source_row = dict(row or {})
+    runtime = dict(runtime_rows.get(name, {})) if isinstance(runtime_rows.get(name), dict) else {}
+
+    backend = str(runtime.get("backend") or source_row.get("backend") or "").strip() or None
+    model = str(runtime.get("model") or source_row.get("model") or "").strip() or None
+    device = str(runtime.get("device") or source_row.get("device") or "").strip() or None
+    device_reason = str(runtime.get("deviceReason") or source_row.get("deviceReason") or "").strip() or None
+    reason = str(runtime.get("reason") or source_row.get("reason") or "").strip() or None
+    reason = _normalize_provider_failure_reason(reason) if reason else None
+    enabled = bool(source_row.get("enabled"))
+    last_success_ts = _to_nonnegative_int_or_none(runtime.get("lastSuccessTsMs"))
+    if last_success_ts is None:
+        last_success_ts = _to_nonnegative_int_or_none(runtime.get("lastTsMs"))
+    if last_success_ts is None:
+        last_success_ts = _to_nonnegative_int_or_none(source_row.get("lastTsMs"))
+    last_error_ts = _to_nonnegative_int_or_none(runtime.get("lastErrorTsMs"))
+    last_infer_ms = _to_nonnegative_int_or_none(runtime.get("inferMs"))
+    if last_infer_ms is None:
+        last_infer_ms = _to_nonnegative_int_or_none(source_row.get("inferMs"))
+    age_ms = _to_nonnegative_int_or_none(runtime.get("ageMs"))
+    if age_ms is None:
+        age_ms = _to_nonnegative_int_or_none(source_row.get("ageMs"))
+    fps = runtime.get("fps")
+    if fps is None:
+        fps = source_row.get("fps")
+    try:
+        fps = float(fps) if fps is not None else None
+    except Exception:
+        fps = None
+    state = str(runtime.get("state") or source_row.get("state") or "").strip().lower() or None
+    last_outcome = str(runtime.get("lastOutcome") or "").strip().lower() or None
+    consecutive_failures = int(runtime.get("consecutiveFailures", 0) or 0)
+    if enabled and last_success_ts is None and reason in {None, "ready", "enabled"}:
+        reason = "not_started"
+    root_detected = runtime.get("rootDetected")
+    if not isinstance(root_detected, bool):
+        root_detected = source_row.get("rootDetected")
+    if not isinstance(root_detected, bool):
+        root_detected = True if source_row.get("root") else None
+
+    is_mock_value = runtime.get("isMock")
+    if not isinstance(is_mock_value, bool):
+        is_mock_value = source_row.get("isMock")
+    if not isinstance(is_mock_value, bool):
+        backend_lower = str(backend or "").lower()
+        is_mock_value = backend_lower.startswith("mock") or ("reference" in backend_lower) or backend_lower in {"", "none"}
+
+    truth_state = _resolve_provider_truth_state(
+        enabled=enabled,
+        is_mock=bool(is_mock_value),
+        backend=backend,
+        reason=reason,
+        last_success_ts=last_success_ts,
+        last_outcome=last_outcome,
+        consecutive_failures=consecutive_failures,
+    )
+    evidence = {
+        "backend": backend,
+        "model": model,
+        "device": device,
+        "device_reason": device_reason,
+        "is_mock": bool(is_mock_value),
+        "reason": reason,
+        "last_success_ts": last_success_ts,
+        "last_error_ts": last_error_ts,
+        "last_infer_ms": last_infer_ms,
+        "fps": fps,
+        "state": state,
+        "root_detected": root_detected,
+        "age_ms": age_ms,
+        "last_outcome": last_outcome,
+        "consecutive_failures": consecutive_failures,
+    }
+
+    runtime_snapshot = dict(runtime)
+    runtime_snapshot.update(
+        {
+            "backend": backend,
+            "model": model,
+            "device": device,
+            "deviceReason": device_reason,
+            "reason": reason,
+            "isMock": bool(is_mock_value),
+            "lastTsMs": _to_nonnegative_int_or_none(runtime.get("lastTsMs")),
+            "lastSuccessTsMs": last_success_ts,
+            "lastErrorTsMs": last_error_ts,
+            "inferMs": last_infer_ms,
+            "fps": fps,
+            "state": state,
+            "rootDetected": root_detected,
+            "ageMs": age_ms,
+            "lastOutcome": last_outcome,
+            "consecutiveFailures": consecutive_failures,
+        }
+    )
+
+    normalized = dict(source_row)
+    normalized.update(
+        {
+            "backend": backend,
+            "model": model,
+            "device": device,
+            "deviceReason": device_reason,
+            "reason": reason,
+            "enabled": enabled,
+            "isMock": bool(is_mock_value),
+            "lastSuccessTsMs": last_success_ts,
+            "lastErrorTsMs": last_error_ts,
+            "lastInferMs": last_infer_ms,
+            "fps": fps,
+            "state": state,
+            "rootDetected": root_detected,
+            "ageMs": age_ms,
+            "lastOutcome": last_outcome,
+            "consecutiveFailures": consecutive_failures,
+            "truthState": truth_state,
+            "truthLabel": truth_state,
+            "evidence": evidence,
+            "runtime": runtime_snapshot,
+        }
+    )
+    return normalized
+
+
+def _build_provider_truth_summary(providers: dict[str, dict[str, Any]]) -> str:
+    order = ("ocr", "risk", "det", "seg", "depth", "slam", "asr", "tts", "pyslamRealtime")
+    tokens: list[str] = []
+    for key in order:
+        row = providers.get(key, {}) if isinstance(providers, dict) else {}
+        state = str(row.get("truthState", "") or "unavailable").strip().lower() or "unavailable"
+        backend = str(row.get("backend", "") or "-").strip().lower() or "-"
+        tokens.append(f"{key}[{state}:{backend[:16]}]")
+    return " ".join(tokens)
+
+
+def _normalize_passthrough_truth(raw: dict[str, Any] | None) -> dict[str, Any]:
+    row = dict(raw or {})
+    truth_state = str(row.get("truthState") or row.get("truthLabel") or "").strip().lower()
+    if truth_state not in {"real", "fallback", "unavailable"}:
+        truth_state = "unavailable"
+    reason = str(row.get("reason") or "").strip() or ("ok" if truth_state != "unavailable" else "unknown")
+    return {
+        "truthState": truth_state,
+        "truthLabel": truth_state,
+        "backend": str(row.get("backend") or "quest_passthrough").strip() or "quest_passthrough",
+        "model": str(row.get("model") or "").strip() or None,
+        "device": str(row.get("device") or "quest").strip() or "quest",
+        "enabled": bool(row.get("enabled")) and truth_state != "unavailable",
+        "reason": _normalize_provider_failure_reason(reason),
+        "lastChangedTsMs": _to_nonnegative_int_or_none(row.get("lastChangedTsMs")),
+    }
+
+
+def _infer_overlay_reason(providers: dict[str, Any] | None) -> str:
+    provider_map = providers if isinstance(providers, dict) else {}
+    for key in ("det", "seg", "depth"):
+        row = provider_map.get(key)
+        if not isinstance(row, dict):
+            continue
+        truth_state = str(row.get("truthState") or row.get("truthLabel") or "unavailable").strip().lower() or "unavailable"
+        reason = str(row.get("reason") or "").strip() or "asset_not_emitted"
+        if truth_state in {"unavailable", "fallback"}:
+            return "endpoint_404" if reason == "http_404" else reason
+    return "asset_not_emitted"
+
+
+@app.get("/api/capabilities")
+async def api_capabilities() -> dict[str, Any]:
+    build = get_build_info(profile=gateway.config.gateway_profile)
+    asr_enabled = gateway._effective_asr_enabled()  # noqa: SLF001
+    asr_backend_name = gateway._effective_asr_backend()  # noqa: SLF001
+    asr_reason = "enabled"
+    if not asr_enabled:
+        asr_reason = "disabled_by_flag"
+    elif asr_backend_name == "faster_whisper" and importlib.util.find_spec("faster_whisper") is None:
+        asr_reason = "missing_dependency:faster_whisper"
+
+    def _provider_reason(*, provider_key: str, enabled: bool, backend: str | None, endpoint: str | None, service_key: str | None = None) -> str:
+        if not enabled:
+            return "disabled_by_flag"
+        backend_text = str(backend or "").strip().lower()
+        endpoint_text = str(endpoint or "").strip()
+        if backend_text == "http" and not endpoint_text:
+            return "missing_endpoint"
+        preflight_reason = _preflight_provider_reason(provider_key, backend_text, endpoint_text)
+        if preflight_reason:
+            return preflight_reason
+        if service_key:
+            readiness = gateway._external_readiness.get(service_key)  # noqa: SLF001
+            if isinstance(readiness, dict):
+                if bool(readiness.get("ready", False)):
+                    return "ready"
+                return str(readiness.get("reason", "not_ready") or "not_ready")
+        return "ready"
+
+    pyslam_enabled = gateway._effective_pyslam_enabled()  # noqa: SLF001
+    pyslam_root = str(os.getenv("BYES_PYSLAM_ROOT", "")).strip()
+    pyslam_reason = "enabled" if pyslam_enabled else "disabled_by_flag"
+    if pyslam_enabled and not pyslam_root:
+        pyslam_reason = "missing_env:BYES_PYSLAM_ROOT"
+    elif pyslam_enabled and not Path(pyslam_root).exists():
+        pyslam_reason = "path_not_found"
+
+    runtime_rows = gateway._provider_runtime_snapshot()  # noqa: SLF001
+    tts_runtime = runtime_rows.get("tts", {})
+    pyslam_runtime = runtime_rows.get("pyslamRealtime", {})
+    voice_state = dict(gateway._ui_voice_state)  # noqa: SLF001
+    capture_state = dict(gateway._ui_capture_state)  # noqa: SLF001
+    passthrough_state = _normalize_passthrough_truth(gateway._ui_passthrough_state)  # noqa: SLF001
+    tts_backend = str(tts_runtime.get("backend", "") or "client_ack").strip() or "client_ack"
+    tts_reason = str(tts_runtime.get("reason", "") or "").strip() or "client_ack"
+    tts_muted = bool(voice_state.get("ttsMuted") is True)
+    if tts_muted:
+        tts_reason = "muted"
+    tts_enabled = bool(tts_runtime.get("lastSuccessTsMs") or tts_runtime.get("lastTsMs")) and not tts_muted
+    pyslam_root_detected = bool(pyslam_root) and Path(pyslam_root).exists()
+    pyslam_state = str(pyslam_runtime.get("state", "") or "").strip().lower() or None
+    if not pyslam_state:
+        if pyslam_enabled and _to_nonnegative_int_or_none(pyslam_runtime.get("lastTsMs")) is not None:
+            pyslam_state = "active"
+        elif pyslam_enabled and pyslam_root_detected:
+            pyslam_state = "idle"
+        elif pyslam_enabled:
+            pyslam_state = "unavailable"
+        else:
+            pyslam_state = "disabled"
+
+    available_providers = {
+        "ocr": {
+            "backend": gateway._provider_backend_effective("ocr", getattr(gateway.ocr_backend, "name", "unknown")),
+            "model": getattr(gateway.ocr_backend, "model_id", None),
+            "endpoint": getattr(gateway.ocr_backend, "endpoint", None),
+            "enabled": bool(gateway._target_enabled("ocr")),
+            "requestedBackend": gateway._provider_backend_overrides.get("ocr"),
+            "reason": _provider_reason(
+                provider_key="ocr",
+                enabled=bool(gateway._target_enabled("ocr")),
+                backend=getattr(gateway.ocr_backend, "name", "unknown"),
+                endpoint=getattr(gateway.ocr_backend, "endpoint", None),
+                service_key="real_ocr",
+            ),
+        },
+        "risk": {
+            "backend": getattr(gateway.risk_backend, "name", "unknown"),
+            "model": getattr(gateway.risk_backend, "model_id", None),
+            "endpoint": getattr(gateway.risk_backend, "endpoint", None),
+            "enabled": bool(gateway._target_enabled("risk")),
+            "reason": _provider_reason(
+                provider_key="risk",
+                enabled=bool(gateway._target_enabled("risk")),
+                backend=getattr(gateway.risk_backend, "name", "unknown"),
+                endpoint=getattr(gateway.risk_backend, "endpoint", None),
+            ),
+        },
+        "det": {
+            "backend": gateway._provider_backend_effective("det", getattr(gateway.det_backend, "name", "unknown")),
+            "model": getattr(gateway.det_backend, "model_id", None),
+            "endpoint": getattr(gateway.det_backend, "endpoint", None),
+            "enabled": bool(gateway._target_enabled("det")),
+            "requestedBackend": gateway._provider_backend_overrides.get("det"),
+            "reason": _provider_reason(
+                provider_key="det",
+                enabled=bool(gateway._target_enabled("det")),
+                backend=getattr(gateway.det_backend, "name", "unknown"),
+                endpoint=getattr(gateway.det_backend, "endpoint", None),
+                service_key="real_det",
+            ),
+        },
+        "depth": {
+            "backend": gateway._provider_backend_effective("depth", getattr(gateway.depth_backend, "name", "unknown")),
+            "model": getattr(gateway.depth_backend, "model_id", None),
+            "endpoint": getattr(gateway.depth_backend, "endpoint", None),
+            "enabled": bool(gateway._target_enabled("depth")),
+            "requestedBackend": gateway._provider_backend_overrides.get("depth"),
+            "reason": _provider_reason(
+                provider_key="depth",
+                enabled=bool(gateway._target_enabled("depth")),
+                backend=getattr(gateway.depth_backend, "name", "unknown"),
+                endpoint=getattr(gateway.depth_backend, "endpoint", None),
+                service_key="real_depth",
+            ),
+        },
+        "seg": {
+            "backend": gateway._provider_backend_effective("seg", getattr(gateway.seg_backend, "name", "unknown")),
+            "model": getattr(gateway.seg_backend, "model_id", None),
+            "endpoint": getattr(gateway.seg_backend, "endpoint", None),
+            "enabled": bool(gateway._target_enabled("seg")),
+            "requestedBackend": gateway._provider_backend_overrides.get("seg"),
+            "reason": _provider_reason(
+                provider_key="seg",
+                enabled=bool(gateway._target_enabled("seg")),
+                backend=getattr(gateway.seg_backend, "name", "unknown"),
+                endpoint=getattr(gateway.seg_backend, "endpoint", None),
+            ),
+        },
+        "slam": {
+            "backend": gateway._provider_backend_effective("slam", getattr(gateway.slam_backend, "name", "unknown")),
+            "model": getattr(gateway.slam_backend, "model_id", None),
+            "endpoint": getattr(gateway.slam_backend, "endpoint", None),
+            "enabled": bool(gateway._target_enabled("slam")),
+            "requestedBackend": gateway._provider_backend_overrides.get("slam"),
+            "reason": _provider_reason(
+                provider_key="slam",
+                enabled=bool(gateway._target_enabled("slam")),
+                backend=getattr(gateway.slam_backend, "name", "unknown"),
+                endpoint=getattr(gateway.slam_backend, "endpoint", None),
+            ),
+        },
+        "asr": {
+            **asr_capabilities(),
+            "backend": asr_backend_name,
+            "requestedBackend": gateway._provider_backend_overrides.get("asr"),  # noqa: SLF001
+            "reason": asr_reason,
+            "enabled": bool(asr_enabled),
+        },
+        "tts": {
+            "backend": tts_backend,
+            "model": tts_runtime.get("model") or "quest-tts",
+            "device": tts_runtime.get("device") or "quest",
+            "enabled": tts_enabled,
+            "reason": tts_reason,
+            "muted": tts_muted,
+        },
+        "pyslamRealtime": {
+            "enabled": pyslam_enabled,
+            "backend": gateway._provider_backend_effective("pyslamRealtime", "pyslam_http" if pyslam_enabled else "mock"),  # noqa: SLF001
+            "requestedBackend": gateway._provider_backend_overrides.get("pyslamRealtime"),  # noqa: SLF001
+            "reason": pyslam_reason,
+            "root": pyslam_root or None,
+            "rootDetected": pyslam_root_detected,
+            "state": pyslam_state,
+            "fps": pyslam_runtime.get("fps"),
+            "inferMs": _to_nonnegative_int_or_none(pyslam_runtime.get("inferMs")),
+            "lastTsMs": _to_nonnegative_int_or_none(pyslam_runtime.get("lastTsMs")),
+        },
+    }
+    normalized_providers = {
+        key: _normalize_provider_row(str(key), row if isinstance(row, dict) else {}, runtime_rows)
+        for key, row in available_providers.items()
+    }
+    frame_source_truth = _normalize_frame_source_truth(gateway._latest_frame_meta)  # noqa: SLF001
+    capture_truth = {
+        "lastSuccessTsMs": _to_nonnegative_int_or_none(capture_state.get("lastSuccessTsMs")),
+        "assetId": capture_state.get("assetId") or gateway._latest_frame_asset_id,  # noqa: SLF001
+        "frameSource": frame_source_truth,
+    }
+    voice_truth = {
+        "asr": {
+            "truthState": normalized_providers.get("asr", {}).get("truthState", "unavailable"),
+            "truthLabel": normalized_providers.get("asr", {}).get("truthLabel", "unavailable"),
+            "backend": normalized_providers.get("asr", {}).get("backend"),
+            "model": normalized_providers.get("asr", {}).get("model"),
+            "device": normalized_providers.get("asr", {}).get("device"),
+            "reason": normalized_providers.get("asr", {}).get("reason"),
+            "transcript": voice_state.get("lastTranscript"),
+            "transcriptTsMs": _to_nonnegative_int_or_none(voice_state.get("lastTranscriptTsMs")),
+            "latencyMs": _to_nonnegative_int_or_none(voice_state.get("lastTranscriptLatencyMs")),
+        },
+        "tts": {
+            "truthState": normalized_providers.get("tts", {}).get("truthState", "unavailable"),
+            "truthLabel": normalized_providers.get("tts", {}).get("truthLabel", "unavailable"),
+            "backend": normalized_providers.get("tts", {}).get("backend"),
+            "model": normalized_providers.get("tts", {}).get("model"),
+            "device": normalized_providers.get("tts", {}).get("device"),
+            "reason": normalized_providers.get("tts", {}).get("reason"),
+            "muted": tts_muted,
+            "lastSpoken": voice_state.get("lastSpoken"),
+            "lastSpokenTsMs": _to_nonnegative_int_or_none(voice_state.get("lastSpokenTsMs")),
+        },
+    }
+    truth = {
+        "frameSource": frame_source_truth,
+        "providerSummary": _build_provider_truth_summary(normalized_providers),
+        "providers": normalized_providers,
+        "capture": capture_truth,
+        "voice": voice_truth,
+        "passthrough": passthrough_state,
+    }
+
+    enabled_flags = {
+        "ocr": bool(gateway._target_enabled("ocr")),
+        "risk": bool(gateway._target_enabled("risk")),
+        "det": bool(gateway._target_enabled("det")),
+        "depth": bool(gateway._target_enabled("depth")),
+        "seg": bool(gateway._target_enabled("seg")),
+        "slam": bool(gateway._target_enabled("slam")),
+        "costmap": bool(gateway.config.inference_enable_costmap),
+        "costmapFused": bool(gateway.config.inference_enable_costmap_fused),
+        "asr": asr_enabled,
+        "tts": tts_enabled,
+        "pyslamRealtime": pyslam_enabled,
+    }
+    return {
+        "version": build.get("version"),
+        "gitSha": build.get("gitSha"),
+        "startedTsMs": build.get("startedTsMs"),
+        "uptimeSec": build.get("uptimeSec"),
+        "profile": gateway.config.gateway_profile,
+        "available_providers": normalized_providers,
+        "enabled_flags": enabled_flags,
+        "frame_source": frame_source_truth.get("frameSource"),
+        "frame_source_kind": frame_source_truth.get("truthState"),
+        "frame_source_status": frame_source_truth.get("status"),
+        "frame_source_reason": frame_source_truth.get("reason"),
+        "mode_profile": gateway.mode_profile.profiles if gateway.mode_profile is not None else None,
+        "truth": truth,
+        "features": {
+            "assist": True,
+            "recording": True,
+            "findPromptable": True,
+            "targetTracking": True,
+            "roiAssist": True,
+            "visionHud": True,
+            "assetEndpoint": True,
+            "segMaskAsset": True,
+            "depthMapAsset": True,
+            "asr": True,
+            "pyslamRealtime": pyslam_enabled,
+        },
+    }
+
+
+class ProviderOverrideItem(BaseModel):
+    enabled: bool | None = None
+    backend: str | None = None
+
+
+class ProvidersOverrideRequest(BaseModel):
+    ocr: ProviderOverrideItem | None = None
+    risk: ProviderOverrideItem | None = None
+    det: ProviderOverrideItem | None = None
+    depth: ProviderOverrideItem | None = None
+    seg: ProviderOverrideItem | None = None
+    slam: ProviderOverrideItem | None = None
+    asr: ProviderOverrideItem | None = None
+    pyslamRealtime: ProviderOverrideItem | None = None
+
+
+def _resolve_inference_control_url() -> str | None:
+    candidate_urls = [
+        getattr(gateway.config, "inference_det_http_url", None),
+        getattr(gateway.config, "inference_seg_http_url", None),
+        getattr(gateway.config, "inference_depth_http_url", None),
+        getattr(gateway.config, "inference_ocr_http_url", None),
+        getattr(gateway.config, "inference_slam_http_url", None),
+        str(os.getenv("BYES_DET_HTTP_URL", "")).strip() or None,
+        str(os.getenv("BYES_SEG_HTTP_URL", "")).strip() or None,
+        str(os.getenv("BYES_DEPTH_HTTP_URL", "")).strip() or None,
+        str(os.getenv("BYES_OCR_HTTP_URL", "")).strip() or None,
+        str(os.getenv("BYES_SLAM_HTTP_URL", "")).strip() or None,
+    ]
+    for raw in candidate_urls:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        parsed = urlparse(text)
+        if not parsed.scheme or not parsed.netloc:
+            continue
+        return urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
+    return None
+
+
+async def _sync_provider_overrides_to_inference_service(updated: dict[str, Any]) -> dict[str, Any]:
+    # Inference service only understands backend overrides, not enable flags.
+    payload: dict[str, Any] = {}
+    backend_alias: dict[str, dict[str, str]] = {
+        "slam": {"pyslam_http": "http"},
+        "depth": {"none": "none", "da3": "da3", "onnx": "onnx", "mock": "mock", "http": "http"},
+    }
+    for target in ("ocr", "risk", "det", "depth", "seg", "slam"):
+        row = updated.get(target)
+        if not isinstance(row, dict):
+            continue
+        backend_raw = row.get("backend")
+        backend = str(backend_raw or "").strip().lower()
+        if not backend:
+            continue
+        mapped = backend_alias.get(target, {}).get(backend, backend)
+        payload[target] = {"backend": mapped}
+
+    if not payload:
+        return {"ok": True, "skipped": True, "reason": "no_backend_updates"}
+
+    base_url = _resolve_inference_control_url()
+    if not base_url:
+        return {"ok": False, "error": "inference_control_url_unresolved"}
+
+    control_url = f"{base_url.rstrip('/')}/providers/overrides"
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.post(control_url, json=payload)
+        body: Any = None
+        with contextlib.suppress(Exception):
+            body = response.json()
+        if response.status_code >= 400:
+            return {
+                "ok": False,
+                "status": int(response.status_code),
+                "url": control_url,
+                "error": f"http_{response.status_code}",
+                "body": body,
+            }
+        return {"ok": True, "status": int(response.status_code), "url": control_url, "body": body}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "url": control_url, "error": exc.__class__.__name__}
+
+
+@app.get("/api/providers")
+async def api_providers() -> dict[str, Any]:
+    caps = await api_capabilities()
+    return {
+        "ok": True,
+        "tsMs": _now_ms(),
+        "providers": caps.get("available_providers", {}),
+        "enabledFlags": caps.get("enabled_flags", {}),
+        "frame_source": caps.get("frame_source"),
+        "frame_source_kind": caps.get("frame_source_kind"),
+        "frame_source_status": caps.get("frame_source_status"),
+        "frame_source_reason": caps.get("frame_source_reason"),
+        "truth": caps.get("truth", {}),
+        "runtimeEvidence": gateway._provider_runtime_snapshot(),  # noqa: SLF001
+        "runtimeOverrides": {
+            "enabled": dict(gateway._runtime_target_enabled_overrides),  # noqa: SLF001
+            "backend": dict(gateway._provider_backend_overrides),  # noqa: SLF001
+            "updatedTsMs": gateway._providers_override_updated_ts_ms,  # noqa: SLF001
+        },
+    }
+
+
+@app.post("/api/providers/overrides")
+async def api_providers_overrides(request: ProvidersOverrideRequest) -> dict[str, Any]:
+    updated: dict[str, Any] = {}
+
+    def _apply(name: str, item: ProviderOverrideItem | None) -> None:
+        if item is None:
+            return
+        changes: dict[str, Any] = {}
+        if item.enabled is not None and name in gateway._runtime_target_enabled_overrides:  # noqa: SLF001
+            gateway._runtime_target_enabled_overrides[name] = bool(item.enabled)  # noqa: SLF001
+            changes["enabled"] = gateway._runtime_target_enabled_overrides[name]  # noqa: SLF001
+        if item.backend is not None:
+            backend_text = str(item.backend or "").strip().lower() or None
+            if name in gateway._provider_backend_overrides:  # noqa: SLF001
+                gateway._provider_backend_overrides[name] = backend_text  # noqa: SLF001
+                changes["backend"] = backend_text
+        if changes:
+            updated[name] = changes
+
+    _apply("ocr", request.ocr)
+    _apply("risk", request.risk)
+    _apply("det", request.det)
+    _apply("depth", request.depth)
+    _apply("seg", request.seg)
+    _apply("slam", request.slam)
+    _apply("asr", request.asr)
+    _apply("pyslamRealtime", request.pyslamRealtime)
+
+    gateway._providers_override_updated_ts_ms = _now_ms()  # noqa: SLF001
+    downstream = await _sync_provider_overrides_to_inference_service(updated)
+    providers = await api_providers()
+    providers["updated"] = updated
+    providers["downstreamSync"] = downstream
+    return providers
+
+
+@app.get("/api/ui/state")
+async def api_ui_state(limit: int = 60) -> dict[str, Any]:
+    safe_limit = max(10, min(240, int(limit)))
+    capabilities = await api_capabilities()
+    latest_events = gateway.snapshot_inference_events(limit=safe_limit)
+    overlay_assets_raw = dict(gateway._latest_overlay_assets)  # noqa: SLF001
+    frame_asset_id = gateway._latest_frame_asset_id  # noqa: SLF001
+    frame_meta = dict(gateway._latest_frame_meta)  # noqa: SLF001
+    frame_truth = _normalize_frame_source_truth(frame_meta)
+    frame_meta.update(
+        {
+            "frameSource": frame_truth.get("frameSource"),
+            "frameSourceKind": frame_truth.get("truthState"),
+            "frameSourceReason": frame_truth.get("reason"),
+            "frameSourceStatus": frame_truth.get("status"),
+        }
+    )
+    device_id = str(frame_meta.get("deviceId") or gateway._ui_recording_state.get("deviceId") or "default").strip() or "default"  # noqa: SLF001
+    mode_snapshot = gateway.mode_state.get_device_snapshot(device_id=device_id)
+    mode_state = {
+        "deviceId": mode_snapshot.device_id,
+        "mode": mode_snapshot.mode,
+        "updatedTsMs": int(mode_snapshot.updated_ts_ms),
+        "expiresInMs": mode_snapshot.expires_in_ms,
+        "source": mode_snapshot.source,
+    }
+    target_session = gateway.target_tracking.get_session(device_id=device_id)
+    target_payload = build_target_session_payload(target_session, status="active") if target_session is not None else None
+    recording_state = dict(gateway._ui_recording_state)  # noqa: SLF001
+    recording_state["lastRunPackage"] = recording_state.get("recordingPath")
+    providers = capabilities.get("available_providers", {})
+    overlay_assets: dict[str, dict[str, Any]] = {}
+    latest_overlay_asset_id: str | None = None
+    latest_overlay_kind: str | None = None
+    latest_overlay_available = False
+    latest_overlay_reason = "asset_not_emitted"
+    latest_overlay_ts_ms = -1
+    latest_overlay_freshness = "unavailable"
+    latest_overlay_age_ms: int | None = None
+    for key, raw_row in overlay_assets_raw.items():
+        kind = str(key or "").strip().lower()
+        if not kind:
+            continue
+        row = dict(raw_row) if isinstance(raw_row, dict) else {}
+        asset_id = str(row.get("assetId") or "").strip() or None
+        asset_meta = gateway.asset_cache.get_meta(asset_id) if asset_id else None  # noqa: SLF001
+        overlay_available = asset_meta is not None
+        provider_row = providers.get(kind, {}) if isinstance(providers, dict) else {}
+        provider_truth_state = str(provider_row.get("truthState") or provider_row.get("truthLabel") or "unavailable").strip().lower() or "unavailable"
+        provider_reason = str(provider_row.get("reason") or "").strip() or "asset_not_emitted"
+        if overlay_available:
+            overlay_reason = "ok"
+        elif provider_truth_state != "real":
+            overlay_reason = provider_reason
+        else:
+            overlay_reason = "asset_expired" if asset_id else "asset_not_emitted"
+        ts_ms = _to_nonnegative_int_or_none(row.get("tsMs"))
+        freshness, overlay_age_ms = _overlay_freshness_label(
+            overlay_available=overlay_available,
+            overlay_reason=overlay_reason,
+            asset_id=asset_id,
+            ts_ms=ts_ms,
+        )
+        normalized_row = dict(row)
+        normalized_row.update(
+            {
+                "assetId": asset_id,
+                "frameSeq": _to_nonnegative_int_or_none(row.get("frameSeq")),
+                "overlayAvailable": overlay_available,
+                "overlayReason": overlay_reason,
+                "freshness": freshness,
+                "ageMs": overlay_age_ms,
+                "lastInferMs": _to_nonnegative_int_or_none(row.get("inferMs")),
+                "device": str(row.get("device") or provider_row.get("device") or "").strip() or None,
+                "deviceReason": str(row.get("deviceReason") or provider_row.get("deviceReason") or "").strip() or None,
+                "truthState": provider_truth_state,
+                "assetMeta": asset_meta,
+                "expiresTsMs": asset_meta.get("expiresTsMs") if isinstance(asset_meta, dict) else None,
+            }
+        )
+        overlay_assets[kind] = normalized_row
+        compare_ts_ms = ts_ms or -1
+        if compare_ts_ms >= latest_overlay_ts_ms:
+            latest_overlay_ts_ms = compare_ts_ms
+            latest_overlay_kind = kind
+            latest_overlay_asset_id = asset_id
+            latest_overlay_available = overlay_available
+            latest_overlay_reason = overlay_reason
+            latest_overlay_freshness = freshness
+            latest_overlay_age_ms = overlay_age_ms
+    for kind in ("seg", "depth"):
+        if kind in overlay_assets:
+            continue
+        provider_row = providers.get(kind, {}) if isinstance(providers, dict) else {}
+        provider_truth_state = str(provider_row.get("truthState") or provider_row.get("truthLabel") or "unavailable").strip().lower() or "unavailable"
+        provider_reason = str(provider_row.get("reason") or "").strip() or "asset_not_emitted"
+        ts_ms = _to_nonnegative_int_or_none(provider_row.get("lastSuccessTsMs"))
+        freshness, overlay_age_ms = _overlay_freshness_label(
+            overlay_available=False,
+            overlay_reason=provider_reason,
+            asset_id=None,
+            ts_ms=ts_ms,
+        )
+        overlay_assets[kind] = {
+            "assetId": None,
+            "frameSeq": None,
+            "overlayAvailable": False,
+            "overlayReason": provider_reason,
+            "freshness": freshness,
+            "ageMs": overlay_age_ms,
+            "lastInferMs": _to_nonnegative_int_or_none(provider_row.get("lastInferMs")),
+            "device": str(provider_row.get("device") or "").strip() or None,
+            "deviceReason": str(provider_row.get("deviceReason") or "").strip() or None,
+            "truthState": provider_truth_state,
+            "assetMeta": None,
+            "expiresTsMs": None,
+        }
+    if latest_overlay_ts_ms < 0:
+        latest_overlay_reason = _infer_overlay_reason(providers)
+        latest_overlay_freshness = "unavailable"
+    overlay_kinds_available = sorted(kind for kind, row in overlay_assets.items() if bool(row.get("overlayAvailable")))
+    truth = dict(capabilities.get("truth") or {})
+    truth.update(
+        {
+            "frameSource": frame_truth,
+            "providers": providers,
+            "providerSummary": truth.get("providerSummary") or _build_provider_truth_summary(providers),
+            "capture": {
+                **(truth.get("capture") or {}),
+                "frameSource": frame_truth,
+            },
+            "voice": truth.get("voice") or {},
+            "passthrough": truth.get("passthrough") or _normalize_passthrough_truth(gateway._ui_passthrough_state),  # noqa: SLF001
+            "overlayKindsAvailable": overlay_kinds_available,
+            "latestOverlayKind": latest_overlay_kind,
+            "latestOverlayAssetId": latest_overlay_asset_id,
+            "overlayAvailable": latest_overlay_available,
+            "overlayReason": latest_overlay_reason,
+            "overlayFreshness": latest_overlay_freshness,
+            "overlayAgeMs": latest_overlay_age_ms,
+            "currentMode": mode_state.get("mode"),
+            "recording": recording_state,
+            "targetSession": target_payload,
+        }
+    )
+    now_ms = _now_ms()
+    return {
+        "ok": True,
+        "tsMs": now_ms,
+        "version": capabilities.get("version"),
+        "gitSha": capabilities.get("gitSha"),
+        "profile": capabilities.get("profile"),
+        "capabilities": capabilities,
+        "mode": mode_state,
+        "recording": recording_state,
+        "targetSession": target_payload,
+        "truth": truth,
+        "latest": {
+            "frameAssetId": frame_asset_id,
+            "frameMeta": frame_meta,
+            "overlayAssets": overlay_assets,
+            "overlayKindsAvailable": overlay_kinds_available,
+            "latestOverlayKind": latest_overlay_kind,
+            "latestOverlayAssetId": latest_overlay_asset_id,
+            "overlayAvailable": latest_overlay_available,
+            "overlayReason": latest_overlay_reason,
+            "overlayFreshness": latest_overlay_freshness,
+            "overlayAgeMs": latest_overlay_age_ms,
+            "eventCount": len(latest_events),
+            "lastEvent": latest_events[-1] if latest_events else None,
+            "eventsTail": latest_events[-20:],
+        },
+    }
+
+
+def _build_desktop_console_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BYES Desktop Console v5.08.2</title>
+  <style>
+    body{font-family:Segoe UI,Arial,sans-serif;background:#111;color:#eee;margin:0;padding:12px}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .card{background:#1b1b1b;border:1px solid #333;border-radius:8px;padding:10px}
+    .card h3{margin:0 0 8px 0;font-size:15px}
+    .mono{font-family:Consolas,Menlo,monospace;font-size:12px;white-space:pre-wrap}
+    button{margin:2px;padding:6px 10px;border-radius:6px;border:1px solid #444;background:#2a2a2a;color:#eee;cursor:pointer}
+    button:hover{background:#3a3a3a}
+    img{max-width:100%;height:auto;border:1px solid #444;border-radius:6px}
+    .w320{width:320px}
+    .w420{width:420px}
+    .grow{flex:1;min-width:360px}
+    .ok{color:#77e08c}.warn{color:#ffca70}.err{color:#ff8f8f}
+    .small{font-size:11px;color:#b8b8b8}
+    .runtime-line{margin:4px 0}
+    .provider-row{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid #2a2a2a}
+    .provider-row:first-child{border-top:none}
+    .provider-name{width:84px;font-weight:600;text-transform:uppercase}
+    .provider-meta{flex:1;min-width:0}
+    .badge{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid #444;font-size:11px;font-weight:700;text-transform:uppercase}
+    .badge.real{background:#17361f;color:#8be5a0;border-color:#27693a}
+    .badge.mock{background:#47330d;color:#ffd27a;border-color:#9a6a12}
+    .badge.fallback{background:#16344a;color:#95d0ff;border-color:#2f6c94}
+    .badge.unavailable{background:#4a1f1f;color:#ffabab;border-color:#8d3d3d}
+  </style>
+</head>
+<body>
+  <h2>BYES Desktop Console (v5.08.1)</h2>
+  <div class="row">
+    <div class="card w420">
+      <h3>Runtime Truth</h3>
+      <div id="runtime" class="mono">loading...</div>
+      <div>
+        <button onclick="postPing()">Ping</button>
+        <button onclick="setMode('walk')">Mode Walk</button>
+        <button onclick="setMode('read_text')">Mode Read</button>
+        <button onclick="setMode('inspect')">Mode Inspect</button>
+      </div>
+    </div>
+    <div class="card w420">
+      <h3>Operator Actions</h3>
+      <div class="small">Desktop Scan/Live re-submit the latest cached Quest frame through <code>/api/frame</code>. No desktop-only protocol is introduced.</div>
+      <div>
+        <button onclick="scanOnce()">Scan Once</button>
+        <button onclick="setDesktopLive(true)">Live Start</button>
+        <button onclick="setDesktopLive(false)">Live Stop</button>
+        <button onclick="assist('ocr')">Read Text</button>
+        <button onclick="assist('det')">Detect</button>
+        <button onclick="assist('find','door')">Find Door</button>
+        <button onclick="assist('find','exit sign')">Find Exit</button>
+        <button onclick="recordStart()">Record Start</button>
+        <button onclick="recordStop()">Record Stop</button>
+      </div>
+      <div id="actions" class="mono">-</div>
+    </div>
+    <div class="card grow">
+      <h3>Providers Truth</h3>
+      <div>
+        <button onclick="providerEnabled('det', true)">DET ON</button>
+        <button onclick="providerEnabled('det', false)">DET OFF</button>
+        <button onclick="providerBackend('det', 'yolo26')">DET->YOLO26</button>
+        <button onclick="providerEnabled('seg', true)">SEG ON</button>
+        <button onclick="providerEnabled('seg', false)">SEG OFF</button>
+        <button onclick="providerBackend('seg', 'sam3')">SEG->SAM3</button>
+        <button onclick="providerEnabled('depth', true)">DEPTH ON</button>
+        <button onclick="providerEnabled('depth', false)">DEPTH OFF</button>
+        <button onclick="providerBackend('depth', 'da3')">DEPTH->DA3</button>
+        <button onclick="providerEnabled('pyslamRealtime', true)">pySLAM ON</button>
+        <button onclick="providerEnabled('pyslamRealtime', false)">pySLAM OFF</button>
+        <button onclick="providerEnabled('asr', true)">ASR ON</button>
+        <button onclick="providerEnabled('asr', false)">ASR OFF</button>
+        <button onclick="providerBackend('asr', 'mock')">ASR->mock</button>
+        <button onclick="providerBackend('asr', 'faster_whisper')">ASR->whisper</button>
+      </div>
+      <div id="providers">-</div>
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:12px">
+    <div class="card w320"><h3>Latest Frame</h3><img id="imgFrame" alt="frame preview"/><div id="imgFrameMeta" class="small">-</div></div>
+    <div class="card w320"><h3>DET Overlay</h3><img id="imgDet" alt="det overlay"/><div id="imgDetMeta" class="small">-</div></div>
+    <div class="card w320"><h3>SEG Overlay</h3><img id="imgSeg" alt="seg overlay"/><div id="imgSegMeta" class="small">-</div></div>
+    <div class="card w320"><h3>DEPTH Overlay</h3><img id="imgDepth" alt="depth overlay"/><div id="imgDepthMeta" class="small">-</div></div>
+  </div>
+
+  <div class="row" style="margin-top:12px">
+    <div class="card grow">
+      <h3>Events Tail</h3>
+      <div id="events" class="mono">-</div>
+    </div>
+  </div>
+
+  <script>
+    let lastState = null;
+    let lastAction = "-";
+    let deviceId = "default";
+    let desktopLiveEnabled = false;
+    let desktopLiveBusy = false;
+
+    function htmlEscape(value){
+      return String(value ?? '-')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function truthState(value){
+      const token = String(value || 'unavailable').trim().toLowerCase();
+      return ['real','mock','fallback','unavailable'].includes(token) ? token : 'unavailable';
+    }
+
+    function badgeHtml(state, label){
+      const safeState = truthState(state);
+      const safeLabel = htmlEscape(label || safeState);
+      return `<span class="badge ${safeState}">${safeLabel}</span>`;
+    }
+
+    function formatMaybe(value, fallback='-'){
+      const text = String(value ?? '').trim();
+      return text ? text : fallback;
+    }
+
+    function buildRuntimeHtml(state){
+      const latest = state.latest || {};
+      const frameMeta = latest.frameMeta || {};
+      const truth = state.truth || {};
+      const providers = truth.providers || ((state.capabilities || {}).available_providers || {});
+      const frameTruth = truth.frameSource || {};
+      const capture = truth.capture || {};
+      const voice = truth.voice || {};
+      const asr = voice.asr || {};
+      const tts = voice.tts || {};
+      const passthrough = truth.passthrough || {};
+      const pyslam = providers.pyslamRealtime || {};
+      const pyslamEvidence = pyslam.evidence || {};
+      const mode = state.mode || {};
+      const recording = state.recording || {};
+      const target = state.targetSession || null;
+      const overlays = (truth.overlayKindsAvailable || []).join(', ') || '-';
+      const overlayAssets = latest.overlayAssets || {};
+      const overlayState = truthState(truth.overlayAvailable ? 'real' : 'unavailable');
+      const overlayPreviewIds = [
+        `det=${formatMaybe((overlayAssets.det || {}).assetId)}`,
+        `seg=${formatMaybe((overlayAssets.seg || {}).assetId)}`,
+        `depth=${formatMaybe((overlayAssets.depth || {}).assetId)}`
+      ].join(' ');
+      const overlayFreshness = formatMaybe(truth.overlayFreshness || latest.overlayFreshness);
+      const overlayAgeMs = formatMaybe(truth.overlayAgeMs ?? latest.overlayAgeMs);
+      const overlayKind = formatMaybe(truth.latestOverlayKind || latest.latestOverlayKind);
+      const recordLabel = recording.active ? 'active' : 'idle';
+      const recordState = recording.active ? 'real' : 'unavailable';
+
+      return [
+        `<div class="runtime-line"><strong>Version</strong> ${htmlEscape(formatMaybe(state.version))} git=${htmlEscape(formatMaybe(state.gitSha))}</div>`,
+        `<div class="runtime-line"><strong>Profile</strong> ${htmlEscape(formatMaybe(state.profile))}</div>`,
+        `<div class="runtime-line"><strong>Mode</strong> ${htmlEscape(formatMaybe(mode.mode))} <span class="small">source=${htmlEscape(formatMaybe(mode.source))}</span></div>`,
+        `<div class="runtime-line"><strong>Frame Source</strong> ${badgeHtml(frameTruth.truthState, frameTruth.truthLabel)} ${htmlEscape(formatMaybe(frameTruth.frameSource))}</div>`,
+        `<div class="runtime-line small">status=${htmlEscape(formatMaybe(frameTruth.status))} reason=${htmlEscape(formatMaybe(frameTruth.reason))}</div>`,
+        `<div class="runtime-line"><strong>Capture Success</strong> ${htmlEscape(formatMaybe(capture.assetId || latest.frameAssetId))} <span class="small">ts=${htmlEscape(formatMaybe(capture.lastSuccessTsMs))}</span></div>`,
+        `<div class="runtime-line"><strong>ASR</strong> ${badgeHtml(asr.truthState, asr.truthLabel)} <span class="small">backend=${htmlEscape(formatMaybe(asr.backend))} model=${htmlEscape(formatMaybe(asr.model))} device=${htmlEscape(formatMaybe(asr.device))}</span></div>`,
+        `<div class="runtime-line small">transcript=${htmlEscape(formatMaybe(asr.transcript))} ts=${htmlEscape(formatMaybe(asr.transcriptTsMs))} latency=${htmlEscape(formatMaybe(asr.latencyMs))}</div>`,
+        `<div class="runtime-line"><strong>TTS</strong> ${badgeHtml(tts.truthState, tts.truthLabel)} <span class="small">backend=${htmlEscape(formatMaybe(tts.backend))} model=${htmlEscape(formatMaybe(tts.model))} device=${htmlEscape(formatMaybe(tts.device))} muted=${htmlEscape(String(tts.muted === true))}</span></div>`,
+        `<div class="runtime-line small">spoken=${htmlEscape(formatMaybe(tts.lastSpoken))} ts=${htmlEscape(formatMaybe(tts.lastSpokenTsMs))} reason=${htmlEscape(formatMaybe(tts.reason))}</div>`,
+        `<div class="runtime-line"><strong>Passthrough</strong> ${badgeHtml(passthrough.truthState, passthrough.truthLabel)} <span class="small">backend=${htmlEscape(formatMaybe(passthrough.backend))} device=${htmlEscape(formatMaybe(passthrough.device))}</span></div>`,
+        `<div class="runtime-line small">reason=${htmlEscape(formatMaybe(passthrough.reason))} ts=${htmlEscape(formatMaybe(passthrough.lastChangedTsMs))}</div>`,
+        `<div class="runtime-line"><strong>pySLAM</strong> ${badgeHtml(pyslam.truthState, pyslam.truthLabel)} <span class="small">backend=${htmlEscape(formatMaybe(pyslam.backend || pyslamEvidence.backend))} state=${htmlEscape(formatMaybe(pyslam.state || pyslamEvidence.state))} fps=${htmlEscape(formatMaybe(pyslam.fps ?? pyslamEvidence.fps))} latency=${htmlEscape(formatMaybe(pyslam.lastInferMs ?? pyslamEvidence.last_infer_ms))} root=${htmlEscape(String((pyslam.rootDetected ?? pyslamEvidence.root_detected) === true))}</span></div>`,
+        `<div class="runtime-line"><strong>Overlays</strong> ${badgeHtml(overlayState, overlayState)} ${htmlEscape(overlays)}</div>`,
+        `<div class="runtime-line small">kind=${htmlEscape(overlayKind)} latest=${htmlEscape(formatMaybe(truth.latestOverlayAssetId || latest.latestOverlayAssetId))} available=${htmlEscape(String(truth.overlayAvailable === true || latest.overlayAvailable === true))} reason=${htmlEscape(formatMaybe(truth.overlayReason || latest.overlayReason))} freshness=${htmlEscape(overlayFreshness)} age=${htmlEscape(overlayAgeMs)}</div>`,
+        `<div class="runtime-line small">previewAssets=${htmlEscape(overlayPreviewIds)}</div>`,
+        `<div class="runtime-line"><strong>Recording</strong> ${badgeHtml(recordState, recordLabel)} <span class="small">${htmlEscape(formatMaybe(recording.lastRunPackage || recording.recordingPath))}</span></div>`,
+        `<div class="runtime-line"><strong>Target Session</strong> ${target ? htmlEscape(formatMaybe(target.sessionId)) + ' <span class="small">tracker=' + htmlEscape(formatMaybe(target.tracker)) + '</span>' : '-'}</div>`,
+        `<div class="runtime-line"><strong>Latest Frame</strong> ${htmlEscape(formatMaybe(latest.frameAssetId))} <span class="small">size=${htmlEscape(formatMaybe(frameMeta.sizeBytes))} device=${htmlEscape(formatMaybe(frameMeta.deviceId || deviceId))}</span></div>`,
+        `<div class="runtime-line"><strong>Events Tail</strong> ${htmlEscape(String(latest.eventCount || 0))}</div>`
+      ].join('');
+    }
+
+    function buildProviderHtml(providers){
+      const order = ['ocr','risk','det','seg','depth','slam','asr','tts','pyslamRealtime'];
+      return order.map((key) => {
+        const row = providers[key] || {};
+        const evidence = row.evidence || {};
+        const state = truthState(row.truthState || row.truthLabel);
+        const backend = formatMaybe(evidence.backend || row.backend);
+        const model = formatMaybe(evidence.model || row.model);
+        const device = formatMaybe(evidence.device || row.device);
+        const deviceReason = formatMaybe(evidence.device_reason || row.deviceReason);
+        const reason = formatMaybe(evidence.reason || row.reason);
+        const isMock = (evidence.is_mock === true || row.isMock === true) ? 'true' : 'false';
+        const muted = row.muted === true ? 'true' : 'false';
+        const lastSuccess = evidence.last_success_ts ?? row.lastSuccessTsMs ?? '-';
+        const lastInfer = evidence.last_infer_ms ?? row.lastInferMs ?? '-';
+        const fps = evidence.fps ?? row.fps ?? '-';
+        const runtimeState = formatMaybe(evidence.state || row.state);
+        const rootDetected = (evidence.root_detected ?? row.rootDetected) === true ? 'true' : 'false';
+        return `
+          <div class="provider-row">
+            <div class="provider-name">${htmlEscape(key)}</div>
+            <div class="provider-meta">
+              <div>${badgeHtml(state, state)} <span class="small">backend=${htmlEscape(backend)} model=${htmlEscape(model)} device=${htmlEscape(device)}</span></div>
+              <div class="small">is_mock=${htmlEscape(isMock)}${key === 'tts' ? ' muted=' + htmlEscape(muted) : ''} reason=${htmlEscape(reason)} device_reason=${htmlEscape(deviceReason)} last_success_ts=${htmlEscape(String(lastSuccess))} last_infer_ms=${htmlEscape(String(lastInfer))} fps=${htmlEscape(String(fps))}${key === 'pyslamRealtime' ? ' state=' + htmlEscape(runtimeState) + ' root_detected=' + htmlEscape(rootDetected) : ''}</div>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    async function refreshState(){
+      try{
+        const r = await fetch('/api/ui/state?limit=80',{cache:'no-store'});
+        const s = await r.json();
+        lastState = s;
+        const truth = s.truth || {};
+        const prov = truth.providers || (s.capabilities || {}).available_providers || {};
+        const latest = (s.latest || {});
+        const frameMeta = latest.frameMeta || {};
+        deviceId = frameMeta.deviceId || deviceId || 'default';
+        document.getElementById('runtime').innerHTML = buildRuntimeHtml(s);
+        let providerState = {providers: prov};
+        try{
+          const pr = await fetch('/api/providers',{cache:'no-store'});
+          if(pr.ok){
+            const pb = await pr.json();
+            providerState = {providers: (pb.truth || {}).providers || prov, runtimeOverrides: pb.runtimeOverrides || {}, enabledFlags: pb.enabledFlags || {}};
+          }
+        }catch(_ignored){}
+        document.getElementById('providers').innerHTML = buildProviderHtml(providerState.providers || {});
+        document.getElementById('events').textContent = JSON.stringify(latest.eventsTail || [], null, 2);
+        document.getElementById('actions').textContent = `${lastAction}\nlive=${desktopLiveEnabled ? 'ON' : 'OFF'} busy=${desktopLiveBusy ? 'yes' : 'no'}`;
+
+        setImg('imgFrame', latest.frameAssetId);
+        setMeta('imgFrameMeta', latest.frameAssetId ? `asset=${formatMaybe(latest.frameAssetId)} size=${formatMaybe(frameMeta.sizeBytes)}` : 'unavailable');
+        const overlays = latest.overlayAssets || {};
+        setPreview('imgDet', 'imgDetMeta', overlays.det || {});
+        setPreview('imgSeg', 'imgSegMeta', overlays.seg || {});
+        setPreview('imgDepth', 'imgDepthMeta', overlays.depth || {});
+      }catch(err){
+        document.getElementById('runtime').textContent = 'state refresh failed: ' + err;
+      }
+    }
+    function setImg(id, assetId){
+      const el = document.getElementById(id);
+      if(!el){return;}
+      const nextId = assetId ? String(assetId).trim() : '';
+      if(!nextId){
+        el.removeAttribute('src');
+        el.dataset.assetId = '';
+        return;
+      }
+      if(el.dataset.assetId === nextId){
+        return;
+      }
+      el.src = `/api/assets/${encodeURIComponent(nextId)}`;
+      el.dataset.assetId = nextId;
+    }
+    function setMeta(id, text){
+      const el = document.getElementById(id);
+      if(el){ el.textContent = text || '-'; }
+    }
+    function setPreview(imgId, metaId, row){
+      const assetId = row.assetId || null;
+      const available = row.overlayAvailable === true;
+      const reason = formatMaybe(row.overlayReason);
+      const freshness = formatMaybe(row.freshness);
+      const ageMs = formatMaybe(row.ageMs);
+      const device = formatMaybe(row.device);
+      const deviceReason = formatMaybe(row.deviceReason);
+      const inferMs = formatMaybe(row.lastInferMs);
+      if(available && assetId){
+        setImg(imgId, assetId);
+        setMeta(metaId, `asset=${formatMaybe(assetId)} freshness=${freshness} age=${ageMs} inferMs=${inferMs} device=${device} deviceReason=${deviceReason} reason=${reason}`);
+        return;
+      }
+      setImg(imgId, null);
+      setMeta(metaId, `unavailable freshness=${freshness} age=${ageMs} device=${device} deviceReason=${deviceReason} reason=${reason}`);
+    }
+    async function postJson(url, body){
+      const r = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+      let payload = null;
+      try{ payload = await r.json(); }catch(_){}
+      lastAction = `${url} -> ${r.status}\\n${JSON.stringify(payload || {}, null, 2)}`;
+      await refreshState();
+    }
+    async function postPing(){
+      await postJson('/api/ping',{deviceId, seq: Date.now()%100000, clientSendTsMs: Date.now()});
+    }
+    async function setMode(mode){
+      await postJson('/api/mode',{runId:'desktop-ui', frameSeq:1, mode, source:'ui', tsMs:Date.now(), deviceId});
+    }
+    async function fetchLatestFrameBlob(assetId){
+      const response = await fetch(`/api/assets/${encodeURIComponent(assetId)}`, {cache:'no-store'});
+      if(!response.ok){
+        throw new Error(`asset fetch failed: ${response.status}`);
+      }
+      return await response.blob();
+    }
+    function buildDesktopFrameMeta(forceTargets){
+      const state = lastState || {};
+      const latest = state.latest || {};
+      const truth = state.truth || {};
+      const frameTruth = truth.frameSource || {};
+      const capture = latest.frameMeta || {};
+      const mode = (state.mode || {}).mode || 'walk';
+      const meta = {
+        runId: 'desktop-ui',
+        deviceId,
+        captureTsMs: Date.now(),
+        mode,
+        capture: {
+          ...capture,
+          frameSource: formatMaybe(frameTruth.frameSource, 'unavailable'),
+          frameSourceMode: formatMaybe(frameTruth.frameSource, 'unavailable'),
+          frameSourceKind: formatMaybe(frameTruth.truthState, 'unavailable'),
+          frameSourceReason: formatMaybe(frameTruth.reason, 'unknown'),
+          frameSourceStatus: formatMaybe(frameTruth.status, 'unavailable')
+        }
+      };
+      if(Array.isArray(forceTargets) && forceTargets.length){
+        meta.targets = forceTargets;
+        meta.forceTargets = forceTargets;
+      }
+      return meta;
+    }
+    async function postLatestFrame(forceTargets, actionLabel){
+      if(!lastState || !lastState.latest || !lastState.latest.frameAssetId){
+        await refreshState();
+      }
+      const latest = (lastState || {}).latest || {};
+      const assetId = latest.frameAssetId;
+      if(!assetId){
+        throw new Error('latest frame unavailable');
+      }
+      const blob = await fetchLatestFrameBlob(assetId);
+      const form = new FormData();
+      form.append('image', blob, `desktop-${Date.now()}.jpg`);
+      form.append('meta', JSON.stringify(buildDesktopFrameMeta(forceTargets)));
+      const response = await fetch('/api/frame', {method:'POST', body: form});
+      let payload = null;
+      try{ payload = await response.json(); }catch(_){}
+      lastAction = `${actionLabel} -> ${response.status}\n${JSON.stringify(payload || {}, null, 2)}`;
+      await refreshState();
+      return payload;
+    }
+    async function scanOnce(){
+      try{
+        await postLatestFrame([], 'scan_once_resubmit_latest_frame');
+      }catch(err){
+        lastAction = `scan_once failed\n${String(err)}`;
+        await refreshState();
+      }
+    }
+    function setDesktopLive(enabled){
+      desktopLiveEnabled = !!enabled;
+      lastAction = desktopLiveEnabled
+        ? 'desktop live enabled (re-submit latest cached Quest frame)'
+        : 'desktop live disabled';
+      refreshState();
+    }
+    async function assist(action, prompt){
+      const body = {deviceId, action};
+      if(prompt){ body.prompt = {text: prompt, openVocab: true, task: 'find'}; }
+      await postJson('/api/assist', body);
+    }
+    async function providerEnabled(target, enabled){
+      const body = {};
+      body[target] = {enabled: !!enabled};
+      await postJson('/api/providers/overrides', body);
+    }
+    async function providerBackend(target, backend){
+      const body = {};
+      body[target] = {backend};
+      await postJson('/api/providers/overrides', body);
+    }
+    async function recordStart(){ await postJson('/api/record/start',{deviceId, note:'desktop-ui'}); }
+    async function recordStop(){ await postJson('/api/record/stop',{deviceId}); }
+    setInterval(async () => {
+      if(!desktopLiveEnabled || desktopLiveBusy){
+        return;
+      }
+      desktopLiveBusy = true;
+      try{
+        await postLatestFrame([], 'desktop_live_resubmit_latest_frame');
+      }catch(err){
+        lastAction = `desktop live failed\n${String(err)}`;
+        desktopLiveEnabled = false;
+        await refreshState();
+      }finally{
+        desktopLiveBusy = false;
+      }
+    }, 900);
+    setInterval(refreshState, 1500);
+    refreshState();
+  </script>
+</body>
+</html>"""
+
+
+@app.get("/ui")
+async def desktop_console_ui() -> HTMLResponse:
+    return HTMLResponse(content=_build_desktop_console_html())
+
+
+@app.get("/api/assets/{asset_id}")
+async def api_assets_get(asset_id: str) -> Response:
+    cached = gateway.asset_cache.get(asset_id)
+    if cached is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    headers = {
+        "Cache-Control": "public, max-age=30, immutable",
+        "X-BYES-Asset-Id": cached.asset_id,
+    }
+    return Response(content=bytes(cached.data), media_type=str(cached.content_type), headers=headers)
+
+
+@app.get("/api/assets/{asset_id}/meta")
+async def api_assets_meta(asset_id: str) -> dict[str, Any]:
+    meta = gateway.asset_cache.get_meta(asset_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="asset_not_found")
+    return meta
+
+
+@app.post("/api/asr")
+async def api_asr(
+    request: Request,
+    audio: UploadFile | None = File(default=None),
+    deviceId: str | None = Form(default=None),
+    runId: str | None = Form(default=None),
+    frameSeq: int | None = Form(default=None),
+    language: str | None = Form(default=None),
+) -> dict[str, Any]:
+    content_type = str(request.headers.get("content-type", "")).lower()
+    audio_bytes: bytes | None = None
+    if "multipart/form-data" in content_type and audio is not None:
+        audio_bytes = await audio.read()
+    else:
+        body = await request.body()
+        audio_bytes = body if body else None
+
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="audio is required")
+
+    asr_enabled = gateway._effective_asr_enabled()  # noqa: SLF001
+    if not asr_enabled:
+        raise HTTPException(status_code=503, detail="asr_disabled")
+
+    asr_backend = gateway._effective_asr_backend()  # noqa: SLF001
+
+    try:
+        transcript = gateway.asr_backend.transcribe(  # type: ignore[arg-type]
+            audio_bytes=audio_bytes,
+            language=language,
+            backend_override=asr_backend,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"asr_failed:{exc.__class__.__name__}") from exc
+
+    run_id = str(runId or "").strip() or "unknown-run"
+    frame_seq = max(1, int(frameSeq or 1))
+    device_id = str(deviceId or "").strip() or "default"
+    payload = {
+        "schemaVersion": "byes.asr.transcript.v1",
+        "deviceId": device_id,
+        "runId": run_id,
+        "frameSeq": frame_seq,
+        "text": str(transcript.text or "").strip(),
+        "language": transcript.language,
+        "backend": transcript.backend,
+        "model": transcript.model,
+        "device": transcript.device,
+        "latencyMs": int(max(0, transcript.latency_ms)),
+    }
+    event = _build_byes_event(
+        run_id=run_id,
+        frame_seq=frame_seq,
+        category="tool",
+        name="asr.transcript.v1",
+        payload=payload,
+    )
+    await gateway._emit_inference_event(event)  # noqa: SLF001
+    return payload
+
+
+@app.post("/api/assist")
+async def api_assist(request: Request, payload: AssistRequest) -> dict[str, Any]:
+    action_token = str(payload.action or "").strip().lower()
+    device_id = str(payload.deviceId or "").strip() or "default"
+
+    if action_token == "target_stop":
+        stopped = gateway.target_tracking.stop_session(device_id=device_id, session_id=payload.sessionId)
+        if stopped is None:
+            raise HTTPException(status_code=404, detail="target_session_not_found")
+        stop_run_id = str(payload.runId or "").strip() or str(stopped.run_id or "unknown-run")
+        stop_frame_seq = 1
+        cached_for_stop = gateway.frame_cache.get(device_id=device_id, max_age_ms=max(200, int(payload.maxAgeMs or 1500)))
+        if cached_for_stop is not None:
+            stop_frame_seq = int(max(1, int(cached_for_stop.frame_seq)))
+        stop_event = _build_byes_event(
+            run_id=stop_run_id,
+            frame_seq=stop_frame_seq,
+            category="tool",
+            name="target.session",
+            payload=build_target_session_payload(stopped, status="closed", reason="stopped"),
+        )
+        await gateway._emit_inference_event(stop_event)  # noqa: SLF001
+        return {
+            "ok": True,
+            "deviceId": device_id,
+            "action": action_token,
+            "sessionId": stopped.session_id,
+            "status": "closed",
+        }
+
+    max_age_ms = 1500 if payload.maxAgeMs is None else max(100, int(payload.maxAgeMs))
+    cached = gateway.frame_cache.get(device_id=device_id, max_age_ms=max_age_ms)
+    if cached is None:
+        raise HTTPException(status_code=404, detail="assist_cache_miss")
+
+    session = None
+    targets = _resolve_assist_targets(payload.action, payload.targets)
+    if action_token == "target_start":
+        prompt_text = _extract_assist_prompt_text(payload.prompt)
+        seg_enabled, seg_mode = _extract_assist_seg_options(payload)
+        session = gateway.target_tracking.start_session(
+            device_id=device_id,
+            run_id=str(payload.runId or "").strip() or str(cached.run_id or "unknown-run"),
+            roi=payload.roi if isinstance(payload.roi, dict) else {},
+            prompt=prompt_text,
+            tracker=str(payload.tracker or "botsort"),
+            seg_enabled=seg_enabled,
+            seg_mode=seg_mode,
+            session_id=payload.sessionId,
+        )
+        targets = ["det"]
+        if bool(session.seg_enabled):
+            targets.append("seg")
+    elif action_token == "target_step":
+        session = gateway.target_tracking.get_session(device_id=device_id, session_id=payload.sessionId)
+        if session is None:
+            raise HTTPException(status_code=404, detail="target_session_not_found")
+        gateway.target_tracking.touch_session(session)
+        targets = ["det"]
+        if bool(session.seg_enabled):
+            targets.append("seg")
+
+    if not targets:
+        raise HTTPException(status_code=400, detail="assist_targets_empty")
+
+    meta_json = dict(cached.meta or {})
+    meta_json["deviceId"] = device_id
+    meta_json["runId"] = str(payload.runId or "").strip() or str(cached.run_id or "unknown-run")
+    meta_json["targets"] = list(targets)
+    meta_json["forceTargets"] = list(targets)
+
+    normalized_mode = _normalize_mode_value(payload.mode)
+    if normalized_mode:
+        meta_json["mode"] = normalized_mode
+
+    if isinstance(payload.roi, dict):
+        meta_json["roi"] = dict(payload.roi)
+    if session is not None:
+        meta_json["sessionId"] = session.session_id
+        meta_json["roi"] = dict(session.roi)
+        meta_json["targetTracking"] = {
+            "enabled": True,
+            "sessionId": session.session_id,
+            "tracker": session.tracker,
+            "action": action_token,
+            "seg": {"enabled": bool(session.seg_enabled), "mode": session.seg_mode},
+        }
+
+    if "det" in targets:
+        prompt_obj: dict[str, Any] | None = None
+        if session is not None and session.prompt:
+            prompt_obj = {"text": session.prompt, "openVocab": True, "task": "find"}
+        elif isinstance(payload.prompt, dict):
+            prompt_obj = dict(payload.prompt)
+        elif isinstance(payload.prompt, str) and str(payload.prompt).strip():
+            prompt_obj = {"text": str(payload.prompt).strip()}
+        if prompt_obj is None:
+            prompt_obj = {}
+        if str(payload.action or "").strip().lower() == "find":
+            prompt_obj.setdefault("openVocab", True)
+            prompt_obj.setdefault("task", "find")
+        if prompt_obj:
+            meta_json["prompt"] = prompt_obj
+
+    recv_ts_ms = _now_ms()
+    seq = await gateway.submit_frame(
+        frame_bytes=cached.frame_bytes,
+        meta=meta_json,
+        request=request,
+        frame_meta=None,
+    )
+    run_id = gateway._extract_run_id(meta_json) or str(cached.run_id or "unknown-run")  # noqa: SLF001
+    event_frame_seq = gateway._resolve_event_frame_seq(seq, meta_json)  # noqa: SLF001
+    capture_ts_ms = _to_nonnegative_int_or_none(meta_json.get("captureTsMs"))
+    if capture_ts_ms is None:
+        capture_ts_ms = cached.capture_ts_ms
+    frame_input_payload = _build_frame_input_payload(
+        run_id=run_id,
+        frame_seq=event_frame_seq,
+        capture_ts_ms=capture_ts_ms,
+        recv_ts_ms=recv_ts_ms,
+        device_time_base=str(meta_json.get("deviceTimeBase", "")).strip() or None,
+        device_id=device_id,
+        mode=str(meta_json.get("mode", "")).strip() or None,
+        targets=targets,
+    )
+    frame_input_event = _build_byes_event(
+        run_id=run_id,
+        frame_seq=event_frame_seq,
+        category="frame",
+        name="frame.input",
+        payload=frame_input_payload,
+    )
+    await gateway._emit_inference_event(frame_input_event)  # noqa: SLF001
+
+    t0_for_state = _to_nonnegative_int_or_none(capture_ts_ms)
+    if t0_for_state is None:
+        t0_for_state = int(max(0, recv_ts_ms))
+    _frame_user_e2e_mark_input(run_id, event_frame_seq, t0_for_state)
+
+    assist_event = _build_byes_event(
+        run_id=run_id,
+        frame_seq=event_frame_seq,
+        category="ui",
+        name="assist.trigger",
+        payload={
+            "schemaVersion": "byes.assist_request.v1",
+            "deviceId": device_id,
+            "action": str(payload.action or "").strip().lower() or None,
+            "targets": targets,
+            "maxAgeMs": int(max_age_ms),
+            "cacheAgeMs": int(cached.age_ms),
+            "prompt": meta_json.get("prompt"),
+            "sessionId": session.session_id if session is not None else None,
+        },
+    )
+    await gateway._emit_inference_event(assist_event)  # noqa: SLF001
+
+    target_update_payload: dict[str, Any] | None = None
+    if session is not None and action_token in {"target_start", "target_step"}:
+        if action_token == "target_start":
+            target_session_event = _build_byes_event(
+                run_id=run_id,
+                frame_seq=event_frame_seq,
+                category="tool",
+                name="target.session",
+                payload=build_target_session_payload(session, status="active"),
+            )
+            await gateway._emit_inference_event(target_session_event)  # noqa: SLF001
+
+        det_payload = _find_recent_event_payload(run_id=run_id, frame_seq=event_frame_seq, event_name="det.objects")
+        seg_payload = _find_recent_event_payload(run_id=run_id, frame_seq=event_frame_seq, event_name="seg.masks")
+        target_update_payload = build_target_update_payload(
+            session,
+            step=max(1, int(event_frame_seq)),
+            det_payload=det_payload,
+            seg_payload=seg_payload,
+        )
+        target_update_event = _build_byes_event(
+            run_id=run_id,
+            frame_seq=event_frame_seq,
+            category="tool",
+            name="target.update",
+            payload=target_update_payload,
+        )
+        await gateway._emit_inference_event(target_update_event)  # noqa: SLF001
+
+    response: dict[str, Any] = {
+        "ok": True,
+        "deviceId": device_id,
+        "action": action_token or None,
+        "seq": int(seq),
+        "frameSeq": int(event_frame_seq),
+        "runId": run_id,
+        "targets": targets,
+        "cacheAgeMs": int(cached.age_ms),
+        "cacheFrameSeq": int(cached.frame_seq),
+    }
+    if session is not None:
+        response["sessionId"] = session.session_id
+        response["targetTracking"] = target_update_payload
+    return response
+
+
+@app.post("/api/record/start")
+async def api_record_start(payload: RecordStartRequest) -> dict[str, Any]:
+    device_id = str(payload.deviceId or "").strip() or "default"
+    try:
+        result = gateway.recording.start(
+            device_id=device_id,
+            note=str(payload.note or "").strip(),
+            max_sec=int(payload.maxSec or 120),
+            max_frames=int(payload.maxFrames or 0),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    gateway._ui_recording_state = {  # noqa: SLF001
+        "active": True,
+        "deviceId": device_id,
+        "runId": result.get("runId"),
+        "recordingPath": result.get("recordingPath"),
+        "manifestPath": None,
+        "startedTsMs": result.get("startedTsMs"),
+        "endedTsMs": None,
+    }
+    return result
+
+
+@app.post("/api/record/stop")
+async def api_record_stop(payload: RecordStopRequest, request: Request) -> dict[str, Any]:
+    device_id = str(payload.deviceId or "").strip() or "default"
+    host = str(request.headers.get("host", "127.0.0.1:8000")).strip() or "127.0.0.1:8000"
+    scheme = str(request.url.scheme or "http").strip() or "http"
+    base_url = f"{scheme}://{host}"
+    ws_scheme = "wss" if scheme == "https" else "ws"
+    ws_url = f"{ws_scheme}://{host}/ws/events"
+    try:
+        result = gateway.recording.stop(device_id=device_id, base_url=base_url, ws_url=ws_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    gateway._ui_recording_state = {  # noqa: SLF001
+        "active": False,
+        "deviceId": device_id,
+        "runId": result.get("runId"),
+        "recordingPath": result.get("recordingPath"),
+        "manifestPath": result.get("manifestPath"),
+        "startedTsMs": gateway._ui_recording_state.get("startedTsMs"),  # noqa: SLF001
+        "endedTsMs": result.get("endedTsMs"),
+    }
+    return result
+
+
 @app.post("/api/fault/set")
 async def fault_set(request: FaultSetRequest) -> dict[str, Any]:
+    _ensure_dev_endpoints_enabled("/api/fault/set")
     try:
         snapshot = await gateway.faults.set_fault(
             tool=request.tool,
@@ -2038,18 +5071,21 @@ async def fault_set(request: FaultSetRequest) -> dict[str, Any]:
 
 @app.post("/api/fault/clear")
 async def fault_clear() -> dict[str, Any]:
+    _ensure_dev_endpoints_enabled("/api/fault/clear")
     snapshot = await gateway.faults.clear_faults()
     return {"ok": True, **snapshot}
 
 
 @app.post("/api/dev/reset")
 async def dev_reset() -> dict[str, Any]:
+    _ensure_dev_endpoints_enabled("/api/dev/reset")
     runtime = await gateway.reset_runtime()
     return {"ok": True, **runtime}
 
 
 @app.post("/api/dev/intent")
 async def dev_intent(request: IntentRequest) -> dict[str, Any]:
+    _ensure_dev_endpoints_enabled("/api/dev/intent")
     duration_ms = int(request.durationMs or 0)
     try:
         snapshot = gateway.intent.set_intent(request.kind or "none", duration_ms, question=request.question)
@@ -2066,6 +5102,7 @@ async def dev_intent(request: IntentRequest) -> dict[str, Any]:
 
 @app.post("/api/dev/crosscheck")
 async def dev_crosscheck(request: CrossCheckRequest) -> dict[str, Any]:
+    _ensure_dev_endpoints_enabled("/api/dev/crosscheck")
     duration_ms = int(request.durationMs or 0)
     try:
         snapshot = gateway.set_forced_crosscheck(request.kind, duration_ms)
@@ -2076,6 +5113,7 @@ async def dev_crosscheck(request: CrossCheckRequest) -> dict[str, Any]:
 
 @app.post("/api/dev/performance")
 async def dev_performance(request: PerformanceRequest) -> dict[str, Any]:
+    _ensure_dev_endpoints_enabled("/api/dev/performance")
     duration_ms = int(request.durationMs or 0)
     try:
         snapshot = gateway.set_forced_performance(request.mode, request.reason or "manual_override", duration_ms)
@@ -2131,6 +5169,7 @@ async def run_package_upload(
     file: UploadFile = File(...),
     scenarioTag: str | None = Form(default=None),
 ) -> dict[str, Any]:
+    _ensure_runpackage_upload_enabled()
     filename = (file.filename or "").strip().lower()
     if not filename.endswith(".zip"):
         raise HTTPException(status_code=400, detail="file must be .zip")
@@ -3989,6 +7028,10 @@ def _resolve_context_run_package_input(run_package_raw: str) -> tuple[Path, Path
     source_path = Path(run_package_text)
     if not source_path.exists():
         raise HTTPException(status_code=404, detail=f"runPackage not found: {run_package_text}")
+    if not _allow_local_runpackage_path():
+        resolved_source = source_path.resolve()
+        if not _is_path_under(gateway.run_packages_root, resolved_source):
+            raise HTTPException(status_code=403, detail="local runPackage path input disabled by profile")
     if source_path.is_dir():
         return source_path.resolve(), None, True
     if source_path.is_file() and source_path.suffix.lower() == ".zip":
@@ -4416,10 +7459,733 @@ def _latest_event_latency_ms(
 
 
 def _normalize_mode_value(value: Any) -> str | None:
-    text = str(value or "").strip().lower()
-    if text in {"walk", "read_text", "inspect"}:
-        return text
+    return normalize_mode_token(value)
+
+
+_FORCED_TARGETS_ALLOWED = {"ocr", "risk", "det", "seg", "depth", "slam", "find"}
+
+
+def _normalize_target_token(value: Any) -> str | None:
+    token = str(value or "").strip().lower()
+    if token == "find":
+        return "det"
+    if token in _FORCED_TARGETS_ALLOWED:
+        return token
     return None
+
+
+def _resolve_forced_targets(meta: dict[str, Any]) -> set[str]:
+    targets: set[str] = set()
+
+    def collect(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                token = _normalize_target_token(item)
+                if token is not None:
+                    targets.add(token)
+        elif isinstance(value, str):
+            for piece in value.split(","):
+                token = _normalize_target_token(piece)
+                if token is not None:
+                    targets.add(token)
+
+    collect(meta.get("targets"))
+    collect(meta.get("forceTargets"))
+    frame_meta = meta.get("frameMeta")
+    if isinstance(frame_meta, dict):
+        collect(frame_meta.get("targets"))
+        collect(frame_meta.get("forceTargets"))
+    return targets
+
+
+def _resolve_assist_targets(action: str | None, raw_targets: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_targets or []:
+        token = _normalize_target_token(item)
+        if token is None or token in seen:
+            continue
+        seen.add(token)
+        normalized.append(token)
+    if normalized:
+        return normalized
+    action_token = str(action or "").strip().lower()
+    if action_token in {"target_start", "target_step"}:
+        return ["det"]
+    if action_token == "target_stop":
+        return []
+    mapped = _normalize_target_token(action_token)
+    if mapped is not None:
+        return [mapped]
+    return []
+
+
+def _resolve_det_overrides(meta: dict[str, Any]) -> tuple[list[str] | None, dict[str, Any] | None]:
+    targets: list[str] = []
+    seen: set[str] = set()
+
+    def collect_targets(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                token = _normalize_target_token(item)
+                if token is None or token in seen:
+                    continue
+                seen.add(token)
+                targets.append(token)
+        elif isinstance(value, str):
+            for item in value.split(","):
+                token = _normalize_target_token(item)
+                if token is None or token in seen:
+                    continue
+                seen.add(token)
+                targets.append(token)
+
+    collect_targets(meta.get("detTargets"))
+    frame_meta = meta.get("frameMeta")
+    if isinstance(frame_meta, dict):
+        collect_targets(frame_meta.get("detTargets"))
+    det_targets = targets or None
+
+    det_prompt: dict[str, Any] | None = None
+    prompt_raw = meta.get("detPrompt")
+    if isinstance(prompt_raw, dict):
+        det_prompt = dict(prompt_raw)
+    elif isinstance(meta.get("prompt"), dict):
+        det_prompt = dict(meta.get("prompt"))
+    elif isinstance(frame_meta, dict) and isinstance(frame_meta.get("detPrompt"), dict):
+        det_prompt = dict(frame_meta.get("detPrompt"))
+    elif isinstance(frame_meta, dict) and isinstance(frame_meta.get("prompt"), dict):
+        det_prompt = dict(frame_meta.get("prompt"))
+
+    return det_targets, det_prompt
+
+
+def _extract_assist_prompt_text(prompt: str | dict[str, Any] | None) -> str | None:
+    if isinstance(prompt, str):
+        text = str(prompt).strip()
+        return text or None
+    if isinstance(prompt, dict):
+        for key in ("text", "prompt", "label"):
+            value = str(prompt.get(key, "") or "").strip()
+            if value:
+                return value
+    return None
+
+
+def _extract_assist_seg_options(payload: AssistRequest) -> tuple[bool, str | None]:
+    if not isinstance(payload.seg, dict):
+        return False, None
+    enabled = bool(payload.seg.get("enabled", False))
+    mode = str(payload.seg.get("mode", "") or "").strip() or None
+    return enabled, mode
+
+
+def _find_recent_event_payload(run_id: str, frame_seq: int, event_name: str) -> dict[str, Any] | None:
+    target_run = str(run_id or "").strip()
+    target_seq = int(max(1, frame_seq))
+    for row in reversed(gateway._inference_events):  # noqa: SLF001
+        if str(row.get("runId", "")).strip() != target_run:
+            continue
+        if int(_to_nonnegative_int(row.get("frameSeq"), 0) or 0) != target_seq:
+            continue
+        if str(row.get("name", "")).strip() != str(event_name).strip():
+            continue
+        payload = row.get("payload")
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _build_depth_fused_risk_payload(depth_payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(depth_payload, dict):
+        return None
+    grid = depth_payload.get("grid")
+    if not isinstance(grid, dict):
+        return None
+    size = grid.get("size")
+    values = grid.get("values")
+    if not (isinstance(size, list) and len(size) == 2 and isinstance(values, list)):
+        return None
+    try:
+        gw = int(size[0])
+        gh = int(size[1])
+    except Exception:
+        return None
+    if gw <= 0 or gh <= 0 or len(values) != gw * gh:
+        return None
+    values_m: list[float] = []
+    for raw in values:
+        try:
+            mm = float(raw)
+        except Exception:
+            continue
+        if mm <= 0:
+            continue
+        values_m.append(mm / 1000.0)
+    if not values_m:
+        return {
+            "available": False,
+            "reason": "no_depth_values",
+            "suggested_dir": "stop",
+        }
+
+    cols = {"left": [], "center": [], "right": []}
+    for y in range(gh):
+        for x in range(gw):
+            idx = y * gw + x
+            try:
+                mm = float(values[idx])
+            except Exception:
+                continue
+            if mm <= 0:
+                continue
+            m = mm / 1000.0
+            if x < gw / 3.0:
+                cols["left"].append(m)
+            elif x < (2.0 * gw / 3.0):
+                cols["center"].append(m)
+            else:
+                cols["right"].append(m)
+
+    left_min = min(cols["left"]) if cols["left"] else float("inf")
+    center_min = min(cols["center"]) if cols["center"] else float("inf")
+    right_min = min(cols["right"]) if cols["right"] else float("inf")
+    global_min = min(left_min, center_min, right_min)
+
+    if center_min < 0.8:
+        if left_min < 1.0 and right_min < 1.0:
+            suggested = "stop"
+        else:
+            suggested = "left" if left_min > right_min else "right"
+    elif global_min < 0.6:
+        suggested = "stop"
+    else:
+        suggested = "forward"
+
+    payload: dict[str, Any] = {
+        "available": True,
+        "min_depth_m": round(global_min, 3) if global_min != float("inf") else None,
+        "left_min_m": round(left_min, 3) if left_min != float("inf") else None,
+        "center_min_m": round(center_min, 3) if center_min != float("inf") else None,
+        "right_min_m": round(right_min, 3) if right_min != float("inf") else None,
+        "suggested_dir": suggested,
+        "unit": "m",
+    }
+    for key in ("backend", "model", "endpoint"):
+        value = depth_payload.get(key)
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
+def _tiny_png() -> bytes:
+    # 1x1 transparent PNG
+    return (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+        b"\x00\x00\x00\x0bIDATx\x9cc`\x00\x02\x00\x00\x05\x00\x01\x0d\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+
+def _encode_det_overlay_to_png(payload: dict[str, Any]) -> tuple[bytes, int, int]:
+    image_w = _to_nonnegative_int(payload.get("imageWidth"), 0) or 0
+    image_h = _to_nonnegative_int(payload.get("imageHeight"), 0) or 0
+    image_w = max(1, int(image_w))
+    image_h = max(1, int(image_h))
+    objects = payload.get("objects")
+    if not isinstance(objects, list):
+        return (_tiny_png(), 1, 1)
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        return (_tiny_png(), 1, 1)
+    image = Image.new("RGBA", (image_w, image_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image, "RGBA")
+    for row in objects:
+        if not isinstance(row, dict):
+            continue
+        box = row.get("box_xyxy")
+        if not (isinstance(box, list) and len(box) == 4):
+            box_norm = row.get("box_norm")
+            if isinstance(box_norm, list) and len(box_norm) == 4:
+                try:
+                    box = [
+                        float(box_norm[0]) * float(image_w),
+                        float(box_norm[1]) * float(image_h),
+                        float(box_norm[2]) * float(image_w),
+                        float(box_norm[3]) * float(image_h),
+                    ]
+                except Exception:
+                    box = None
+        if not (isinstance(box, list) and len(box) == 4):
+            continue
+        try:
+            x0, y0, x1, y1 = [float(v) for v in box]
+        except Exception:
+            continue
+        if x1 < x0:
+            x0, x1 = x1, x0
+        if y1 < y0:
+            y0, y1 = y1, y0
+        x0 = max(0.0, min(float(image_w - 1), x0))
+        x1 = max(0.0, min(float(image_w - 1), x1))
+        y0 = max(0.0, min(float(image_h - 1), y0))
+        y1 = max(0.0, min(float(image_h - 1), y1))
+        if (x1 - x0) < 1.0 or (y1 - y0) < 1.0:
+            continue
+        label = str(row.get("label", "obj") or "obj").strip()
+        conf = row.get("conf")
+        try:
+            conf_text = f"{float(conf):0.2f}"
+        except Exception:
+            conf_text = ""
+        draw.rectangle((x0, y0, x1, y1), outline=(0, 255, 96, 230), width=3)
+        tag = f"{label} {conf_text}".strip()
+        if tag:
+            tx = max(0.0, x0 + 2.0)
+            ty = max(0.0, y0 - 18.0)
+            draw.rectangle((tx - 2, ty - 2, tx + min(280.0, max(20.0, len(tag) * 8.0)), ty + 16), fill=(0, 0, 0, 140))
+            draw.text((tx, ty), tag, fill=(200, 255, 220, 240))
+    out = io.BytesIO()
+    image.save(out, format="PNG", optimize=True)
+    return (out.getvalue(), image_w, image_h)
+
+
+def _overlay_fresh_threshold_ms() -> int:
+    raw = str(os.getenv("BYES_OVERLAY_FRESH_MS", "2500")).strip() or "2500"
+    try:
+        return max(250, int(raw))
+    except Exception:
+        return 2500
+
+
+def _overlay_frame_is_stale(gateway: GatewayApp, kind: str, frame_seq: int) -> bool:
+    safe_kind = str(kind or "").strip().lower()
+    safe_frame_seq = int(max(1, int(frame_seq)))
+    latest_frame_meta = gateway._latest_frame_meta if isinstance(gateway._latest_frame_meta, dict) else {}  # noqa: SLF001
+    latest_ingested_seq = _to_nonnegative_int_or_none(latest_frame_meta.get("frameSeq")) or 0
+    if latest_ingested_seq > safe_frame_seq:
+        return True
+    latest_overlay = gateway._latest_overlay_assets.get(safe_kind) if isinstance(gateway._latest_overlay_assets, dict) else None  # noqa: SLF001
+    latest_overlay_seq = _to_nonnegative_int_or_none((latest_overlay or {}).get("frameSeq")) or 0
+    return latest_overlay_seq > safe_frame_seq
+
+
+def _overlay_freshness_label(*, overlay_available: bool, overlay_reason: str | None, asset_id: str | None, ts_ms: int | None) -> tuple[str, int | None]:
+    ts_value = _to_nonnegative_int_or_none(ts_ms)
+    age_ms = max(0, _now_ms() - ts_value) if ts_value is not None else None
+    reason_text = str(overlay_reason or "").strip().lower()
+    if overlay_available:
+        if age_ms is None or age_ms <= _overlay_fresh_threshold_ms():
+            return "fresh", age_ms
+        return "stale_hold", age_ms
+    if asset_id and (reason_text.startswith("stale_hold:") or reason_text in {"asset_expired", "asset_missing", "asset_not_found"}):
+        return "stale_hold", age_ms
+    return "unavailable", age_ms
+
+
+async def _emit_vis_overlay_v1_event(
+    *,
+    gateway: GatewayApp,
+    run_id: str | None,
+    frame_seq: int,
+    kind: str,
+    asset: Any,
+    payload: dict[str, Any],
+    width: int,
+    height: int,
+) -> None:
+    kind_token = str(kind or "").strip().lower() or "unknown"
+    if _overlay_frame_is_stale(gateway, kind_token, frame_seq):
+        return
+    provider_meta = {
+        "backend": payload.get("backend"),
+        "model": payload.get("model"),
+        "endpoint": payload.get("endpoint"),
+        "device": payload.get("device"),
+        "deviceReason": payload.get("deviceReason") or payload.get("device_reason"),
+        "isMock": payload.get("isMock"),
+    }
+    infer_ms = _to_nonnegative_int_or_none(payload.get("latencyMs"))
+    if infer_ms is None:
+        infer_ms = _to_nonnegative_int_or_none(payload.get("inferMs"))
+    event_payload = {
+        "schemaVersion": "byes.vis.overlay.v1",
+        "kind": kind_token,
+        "assetId": str(asset.asset_id),
+        "frameSeq": int(max(1, int(frame_seq))),
+        "w": int(max(1, int(width))),
+        "h": int(max(1, int(height))),
+        "providerMeta": provider_meta,
+        "inferMs": infer_ms,
+        "tsMs": _now_ms(),
+    }
+    gateway._latest_overlay_assets[kind_token] = {  # noqa: SLF001
+        "assetId": str(asset.asset_id),
+        "frameSeq": int(max(1, int(frame_seq))),
+        "w": int(max(1, int(width))),
+        "h": int(max(1, int(height))),
+        "inferMs": infer_ms,
+        "device": payload.get("device"),
+        "deviceReason": payload.get("deviceReason") or payload.get("device_reason"),
+        "providerMeta": provider_meta,
+        "tsMs": _now_ms(),
+    }
+    event = _build_byes_event(
+        run_id=run_id or "unknown-run",
+        frame_seq=frame_seq,
+        category="tool",
+        name="vis.overlay.v1",
+        payload=event_payload,
+    )
+    await gateway._emit_inference_event(event)  # noqa: SLF001
+
+
+def _encode_rle_mask_to_png(mask: dict[str, Any], *, fallback_w: int = 64, fallback_h: int = 64) -> tuple[bytes, int, int]:
+    size = mask.get("size")
+    counts = mask.get("counts")
+    if not (isinstance(size, list) and len(size) == 2 and isinstance(counts, list)):
+        return (_tiny_png(), 1, 1)
+    try:
+        h = max(1, int(size[0]))
+        w = max(1, int(size[1]))
+    except Exception:
+        h = max(1, int(fallback_h))
+        w = max(1, int(fallback_w))
+    total = w * h
+    flat: list[int] = []
+    fill = 0
+    for raw in counts:
+        try:
+            run = max(0, int(raw))
+        except Exception:
+            run = 0
+        if run <= 0:
+            continue
+        flat.extend([255 if fill else 0] * run)
+        fill = 1 - fill
+        if len(flat) >= total:
+            break
+    if len(flat) < total:
+        flat.extend([0] * (total - len(flat)))
+    flat = flat[:total]
+    try:
+        from PIL import Image
+    except Exception:
+        return (_tiny_png(), 1, 1)
+    image = Image.frombytes("L", (w, h), bytes(flat))
+    out = io.BytesIO()
+    image.save(out, format="PNG", optimize=True)
+    return (out.getvalue(), w, h)
+
+
+def _encode_depth_grid_to_colormap_png(grid: dict[str, Any]) -> tuple[bytes, int, int, float | None, float | None]:
+    size = grid.get("size")
+    values = grid.get("values")
+    if not (isinstance(size, list) and len(size) == 2 and isinstance(values, list)):
+        return (_tiny_png(), 1, 1, None, None)
+    try:
+        gw = max(1, int(size[0]))
+        gh = max(1, int(size[1]))
+    except Exception:
+        return (_tiny_png(), 1, 1, None, None)
+    expected = gw * gh
+    nums: list[int] = []
+    for raw in values:
+        try:
+            nums.append(max(0, int(raw)))
+        except Exception:
+            nums.append(0)
+        if len(nums) >= expected:
+            break
+    if len(nums) < expected:
+        nums.extend([0] * (expected - len(nums)))
+    nums = nums[:expected]
+    positives = [float(v) for v in nums if v > 0]
+    min_mm = min(positives) if positives else None
+    max_mm = max(positives) if positives else None
+    if min_mm is None or max_mm is None or max_mm <= min_mm:
+        min_mm = 100.0
+        max_mm = 3000.0
+    span = max(1.0, max_mm - min_mm)
+
+    rgba = bytearray()
+    for mm in nums:
+        if mm <= 0:
+            rgba.extend((0, 0, 0, 0))
+            continue
+        t = max(0.0, min(1.0, (float(mm) - min_mm) / span))
+        # Blue (far) -> Red (near) ramp.
+        r = int(max(0, min(255, (1.0 - t) * 255.0)))
+        g = int(max(0, min(255, (1.0 - abs(t - 0.5) * 2.0) * 180.0)))
+        b = int(max(0, min(255, t * 255.0)))
+        rgba.extend((r, g, b, 200))
+
+    try:
+        from PIL import Image
+    except Exception:
+        return (_tiny_png(), 1, 1, min_mm / 1000.0, max_mm / 1000.0)
+    image = Image.frombytes("RGBA", (gw, gh), bytes(rgba))
+    out = io.BytesIO()
+    image.save(out, format="PNG", optimize=True)
+    return (out.getvalue(), gw, gh, min_mm / 1000.0, max_mm / 1000.0)
+
+
+async def _emit_det_objects_v1_event(
+    *,
+    gateway: GatewayApp,
+    run_id: str | None,
+    frame_seq: int,
+    component: str,
+    payload: dict[str, Any],
+) -> None:
+    objects = payload.get("objects")
+    if not isinstance(objects, list):
+        return
+    out_objects: list[dict[str, Any]] = []
+    for row in objects:
+        if not isinstance(row, dict):
+            continue
+        normalized = dict(row)
+        track_id = row.get("trackId")
+        if track_id is not None:
+            normalized["trackId"] = str(track_id)
+        out_objects.append(normalized)
+    if not out_objects:
+        return
+    image_w = _to_nonnegative_int(payload.get("imageWidth"), 0) or 0
+    image_h = _to_nonnegative_int(payload.get("imageHeight"), 0) or 0
+    event = _build_byes_event(
+        run_id=run_id or "unknown-run",
+        frame_seq=frame_seq,
+        category="tool",
+        name="det.objects.v1",
+        payload={
+            "schemaVersion": "byes.det.v1",
+            "objects": out_objects,
+            "objectsCount": int(len(out_objects)),
+            "imageWidth": image_w if image_w > 0 else None,
+            "imageHeight": image_h if image_h > 0 else None,
+        },
+    )
+    await gateway._emit_inference_event(event)  # noqa: SLF001
+    det_png, det_w, det_h = _encode_det_overlay_to_png(
+        {
+            "objects": out_objects,
+            "imageWidth": image_w if image_w > 0 else 1,
+            "imageHeight": image_h if image_h > 0 else 1,
+            "backend": payload.get("backend"),
+            "model": payload.get("model"),
+            "endpoint": payload.get("endpoint"),
+            "latencyMs": payload.get("latencyMs"),
+        }
+    )
+    det_asset = gateway.asset_cache.put(
+        data=det_png,
+        content_type="image/png",
+        meta={
+            "kind": "det.overlay",
+            "w": int(det_w),
+            "h": int(det_h),
+            "runId": run_id,
+            "frameSeq": int(frame_seq),
+        },
+    )
+    await _emit_vis_overlay_v1_event(
+        gateway=gateway,
+        run_id=run_id,
+        frame_seq=frame_seq,
+        kind="det",
+        asset=det_asset,
+        payload=payload,
+        width=int(det_w),
+        height=int(det_h),
+    )
+
+
+async def _emit_seg_mask_v1_event(
+    *,
+    gateway: GatewayApp,
+    run_id: str | None,
+    frame_seq: int,
+    component: str,
+    payload: dict[str, Any],
+) -> None:
+    if _overlay_frame_is_stale(gateway, "seg", frame_seq):
+        return
+    segments = payload.get("segments")
+    if not isinstance(segments, list):
+        return
+    selected: dict[str, Any] | None = None
+    for row in segments:
+        if isinstance(row, dict) and isinstance(row.get("mask"), dict):
+            selected = row
+            break
+    if selected is None:
+        return
+    mask = selected.get("mask")
+    if not isinstance(mask, dict):
+        return
+    image_bytes, w, h = _encode_rle_mask_to_png(
+        mask,
+        fallback_w=_to_nonnegative_int(payload.get("imageWidth"), 64) or 64,
+        fallback_h=_to_nonnegative_int(payload.get("imageHeight"), 64) or 64,
+    )
+    asset = gateway.asset_cache.put(
+        data=image_bytes,
+        content_type="image/png",
+        meta={
+            "kind": "seg.mask",
+            "w": int(w),
+            "h": int(h),
+            "runId": run_id,
+            "frameSeq": int(frame_seq),
+        },
+    )
+    bbox = selected.get("bbox")
+    event_payload: dict[str, Any] = {
+        "schemaVersion": "byes.seg.mask.v1",
+        "assetId": asset.asset_id,
+        "w": int(w),
+        "h": int(h),
+        "label": str(selected.get("label", "") or "").strip() or None,
+        "trackId": str(selected.get("trackId", "") or "").strip() or None,
+        "roi": _bbox_to_norm_roi(
+            bbox,
+            image_w=_to_nonnegative_int(payload.get("imageWidth"), w) or w,
+            image_h=_to_nonnegative_int(payload.get("imageHeight"), h) or h,
+        ),
+    }
+    event = _build_byes_event(
+        run_id=run_id or "unknown-run",
+        frame_seq=frame_seq,
+        category="tool",
+        name="seg.mask.v1",
+        payload=event_payload,
+    )
+    await gateway._emit_inference_event(event)  # noqa: SLF001
+    await _emit_vis_overlay_v1_event(
+        gateway=gateway,
+        run_id=run_id,
+        frame_seq=frame_seq,
+        kind="seg",
+        asset=asset,
+        payload=payload,
+        width=int(w),
+        height=int(h),
+    )
+
+
+async def _emit_depth_map_v1_event(
+    *,
+    gateway: GatewayApp,
+    run_id: str | None,
+    frame_seq: int,
+    component: str,
+    payload: dict[str, Any],
+) -> None:
+    if _overlay_frame_is_stale(gateway, "depth", frame_seq):
+        return
+    grid = payload.get("grid")
+    if not isinstance(grid, dict):
+        return
+    image_bytes, w, h, min_depth_m, max_depth_m = _encode_depth_grid_to_colormap_png(grid)
+    asset = gateway.asset_cache.put(
+        data=image_bytes,
+        content_type="image/png",
+        meta={
+            "kind": "depth.map",
+            "w": int(w),
+            "h": int(h),
+            "runId": run_id,
+            "frameSeq": int(frame_seq),
+        },
+    )
+    event_payload: dict[str, Any] = {
+        "schemaVersion": "byes.depth.map.v1",
+        "assetId": asset.asset_id,
+        "w": int(w),
+        "h": int(h),
+        "minDepthM": min_depth_m,
+        "maxDepthM": max_depth_m,
+    }
+    event = _build_byes_event(
+        run_id=run_id or "unknown-run",
+        frame_seq=frame_seq,
+        category="tool",
+        name="depth.map.v1",
+        payload=event_payload,
+    )
+    await gateway._emit_inference_event(event)  # noqa: SLF001
+    await _emit_vis_overlay_v1_event(
+        gateway=gateway,
+        run_id=run_id,
+        frame_seq=frame_seq,
+        kind="depth",
+        asset=asset,
+        payload=payload,
+        width=int(w),
+        height=int(h),
+    )
+
+
+async def _emit_slam_pose_v1_event(
+    *,
+    gateway: GatewayApp,
+    run_id: str | None,
+    frame_seq: int,
+    component: str,
+    payload: dict[str, Any],
+) -> None:
+    if not isinstance(payload, dict):
+        return
+    pose = payload.get("pose")
+    if not isinstance(pose, dict):
+        return
+    event_payload = {
+        "schemaVersion": "byes.slam.pose.v1",
+        "trackingState": str(payload.get("trackingState", "") or "").strip().lower() or None,
+        "pose": {
+            "t": pose.get("t"),
+            "q": pose.get("q"),
+            "frame": pose.get("frame"),
+        },
+        "backend": payload.get("backend"),
+        "model": payload.get("model"),
+        "endpoint": payload.get("endpoint"),
+    }
+    event = _build_byes_event(
+        run_id=run_id or "unknown-run",
+        frame_seq=frame_seq,
+        category="tool",
+        name="slam.pose.v1",
+        payload=event_payload,
+    )
+    await gateway._emit_inference_event(event)  # noqa: SLF001
+
+
+def _bbox_to_norm_roi(bbox: Any, *, image_w: int, image_h: int) -> dict[str, float] | None:
+    if not (isinstance(bbox, list) and len(bbox) == 4 and image_w > 0 and image_h > 0):
+        return None
+    try:
+        x0, y0, x1, y1 = [float(item) for item in bbox]
+    except Exception:
+        return None
+    if x0 > x1:
+        x0, x1 = x1, x0
+    if y0 > y1:
+        y0, y1 = y1, y0
+    x0 = max(0.0, min(float(image_w), x0))
+    x1 = max(0.0, min(float(image_w), x1))
+    y0 = max(0.0, min(float(image_h), y0))
+    y1 = max(0.0, min(float(image_h), y1))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return {
+        "x": max(0.0, min(1.0, x0 / float(image_w))),
+        "y": max(0.0, min(1.0, y0 / float(image_h))),
+        "w": max(0.0, min(1.0, (x1 - x0) / float(image_w))),
+        "h": max(0.0, min(1.0, (y1 - y0) / float(image_h))),
+    }
 
 
 def _build_frame_input_payload(
@@ -4431,12 +8197,14 @@ def _build_frame_input_payload(
     device_time_base: str | None,
     device_id: str | None,
     mode: str | None,
+    targets: list[str] | None = None,
 ) -> dict[str, Any]:
     normalized_time_base = str(device_time_base or "").strip().lower()
     if normalized_time_base not in {"unix_ms", "monotonic_ms"}:
         normalized_time_base = None
     normalized_device_id = str(device_id or "").strip() or None
     normalized_mode = _normalize_mode_value(mode)
+    normalized_targets = [token for token in (targets or []) if _normalize_target_token(token) is not None]
     return {
         "schemaVersion": "frame.input.v1",
         "runId": str(run_id or "").strip() or "unknown-run",
@@ -4447,6 +8215,7 @@ def _build_frame_input_payload(
             "deviceTimeBase": normalized_time_base,
             "deviceId": normalized_device_id,
             "mode": normalized_mode,
+            "targets": normalized_targets or None,
         },
     }
 
@@ -4458,6 +8227,11 @@ def _build_frame_ack_payload(
     feedback_ts_ms: int,
     kind: str,
     accepted: bool,
+    provider_backend: str | None = None,
+    provider_model: str | None = None,
+    provider_device: str | None = None,
+    provider_reason: str | None = None,
+    provider_is_mock: bool | None = None,
 ) -> dict[str, Any]:
     normalized_kind = str(kind or "any").strip().lower()
     if normalized_kind == "ar":
@@ -4466,7 +8240,7 @@ def _build_frame_ack_payload(
         normalized_kind = "any"
     if normalized_kind not in {"tts", "overlay", "haptic", "any"}:
         normalized_kind = "any"
-    return {
+    payload: dict[str, Any] = {
         "schemaVersion": "frame.ack.v1",
         "runId": str(run_id or "").strip() or "unknown-run",
         "frameSeq": int(max(1, int(frame_seq))),
@@ -4474,6 +8248,16 @@ def _build_frame_ack_payload(
         "kind": normalized_kind,
         "accepted": bool(accepted),
     }
+    provider_payload = {
+        "backend": str(provider_backend or "").strip() or None,
+        "model": str(provider_model or "").strip() or None,
+        "device": str(provider_device or "").strip() or None,
+        "reason": str(provider_reason or "").strip() or None,
+        "isMock": provider_is_mock,
+    }
+    if any(value is not None for value in provider_payload.values()):
+        payload["provider"] = provider_payload
+    return payload
 
 
 def _build_frame_user_e2e_event(
@@ -8279,6 +12063,9 @@ def metrics() -> Response:
 
 @app.websocket("/ws/events")
 async def ws_events(websocket: WebSocket) -> None:
+    if not await _ws_guardrails_ok(websocket):
+        return
+
     await gateway.connections.connect(websocket)
     gateway.degradation.set_ws_client_count(await gateway.connections.count())
     await gateway.emit_degradation_changes(

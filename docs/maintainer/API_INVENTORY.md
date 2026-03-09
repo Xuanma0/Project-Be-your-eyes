@@ -9,8 +9,21 @@
 | GET | `/api/tools` | Tool inventory/status snapshot | No explicit request body. | JSON dict/list (see handler). | Manual/API consumer (no single in-repo caller evidenced). | `Gateway/main.py:1781` (`list_tools`) |
 | GET | `/api/external_readiness` | External dependency readiness | No explicit request body. | JSON dict/list (see handler). | Unity capability status check (`Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs:1122`) | `Gateway/main.py:1786` (`external_readiness`) |
 | POST | `/api/frame` | Primary frame ingest | Multipart form/image bytes + optional `meta` (see `Gateway/main.py:1791-1799`). | JSON dict/list (see handler). | Unity (`Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs:597`); replay script (`Gateway/scripts/replay_run_package.py:263`); manual curl (`Gateway/README.md:1075`) | `Gateway/main.py:1791` (`frame`) |
-| POST | `/api/frame/ack` | User feedback ACK ingest | `FrameAckRequest` (`Gateway/main.py:416`). | JSON dict/list (see handler). | Unity telemetry (`Assets/Scripts/BYES/Telemetry/ByesFrameTelemetry.cs:166`); manual curl (`Gateway/README.md:1080`) | `Gateway/main.py:1895` (`frame_ack`) |
-| POST | `/api/mode` | Mode change event ingest | `ModeChangeRequest` (`Gateway/main.py:435`). | JSON dict/list (see handler). | Manual/API consumer (no single in-repo caller evidenced). | `Gateway/main.py:1963` (`mode_change`) |
+| POST | `/api/frame/ack` | User feedback ACK ingest | `FrameAckRequest` (`Gateway/main.py:416`) with optional provider evidence (`providerBackend/providerModel/providerDevice/providerReason/providerIsMock`). | JSON dict/list (see handler). | Unity telemetry (`Assets/Scripts/BYES/Telemetry/ByesFrameTelemetry.cs:166`); manual curl (`Gateway/README.md:1080`) | `Gateway/main.py:1895` (`frame_ack`) |
+| POST | `/api/mode` | Mode change event ingest + runtime mode-state update | `ModeChangeRequest` (`runId`, `frameSeq`, `mode`, `source`, `tsMs`, `deviceId`, optional `runPackage`). | JSON dict/list (`ok`, `runId`, `frameSeq`, `mode`, `source`, `tsMs`). | Unity mode manager (`Assets/Scripts/BYES/Core/ByesModeManager.cs:107-140`) via `GatewayClient.PostModeChange` (`Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs:417-460`). | `Gateway/main.py` (`@app.post("/api/mode") mode_change, gateway.mode_state.set_mode`) |
+| GET | `/api/mode` | Read current mode snapshot for device runtime | Query: `deviceId` optional. Reads in-memory mode state, not event replay. | JSON dict (`deviceId`, `mode`, `updatedTsMs`, `expiresInMs`, `source`). | Unity runtime panel / manual health check. | `Gateway/main.py` (`@app.get("/api/mode") mode_get`); `Gateway/byes/mode_state.py` (`get_device_snapshot`); `Assets/Scripts/BYES/UI/ByesConnectionPanel.cs` (`ReadModeRoutine`) |
+| POST | `/api/ping` | Lightweight RTT and connectivity probe | `PingRequest` (`deviceId`, `seq`, `clientSendTsMs`). | JSON dict (`deviceId`, `seq`, `clientSendTsMs`, `serverRecvTsMs`, `serverSendTsMs`). | Unity runtime panel / manual diagnostics. | `Gateway/main.py` (`@app.post("/api/ping") ping`); `Assets/Scripts/BYES/UI/ByesConnectionPanel.cs` (`PingRoutine`) |
+| GET | `/api/version` | Lightweight build/version diagnostics | No explicit request body. | JSON dict (`version`, `gitSha`, `startedTsMs`, `uptimeSec`, `profile`). | Unity runtime panel / manual diagnostics. | `Gateway/main.py` (`@app.get("/api/version") api_version`); `Gateway/byes/version_info.py`; `Assets/Scripts/BYES/UI/ByesConnectionPanel.cs` (`GetVersionRoutine`) |
+| GET | `/api/capabilities` | Runtime provider/feature matrix for Quest self-test and diagnostics | No explicit request body. | JSON dict (`version`, `available_providers`, `enabled_flags`, `mode_profile`). | Quest panel + self-test (`Assets/Scripts/BYES/Quest/ByesQuest3SelfTestRunner.cs`). | `Gateway/main.py` (`@app.get("/api/capabilities") api_capabilities`) |
+| GET | `/api/providers` | Provider evidence snapshot including runtime overrides (enabled/backend) for Quest/Desktop diagnostics. | No explicit request body. | JSON dict (`providers`, `enabledFlags`, `runtimeOverrides`). | Quest wrist menu provider page + desktop diagnostics. | `Gateway/main.py` (`@app.get("/api/providers") api_providers`) |
+| POST | `/api/providers/overrides` | Apply runtime provider overrides without process restart (target enable/disable + requested backend token). | `ProvidersOverrideRequest` (per-target optional `enabled`/`backend`). | JSON dict (`ok`, `providers`, `runtimeOverrides`, `updated`). | Quest wrist menu provider toggles. | `Gateway/main.py` (`@app.post("/api/providers/overrides") api_providers_overrides`) |
+| GET | `/api/ui/state` | Desktop console/state snapshot with capability evidence and latest frame/overlay/event tail | Query: `limit` optional (`10-240`). | JSON dict (`capabilities`, `latest.frameAssetId`, `latest.overlayAssets`, `latest.eventsTail`). | Desktop console `/ui`, manual diagnostics. | `Gateway/main.py` (`@app.get("/api/ui/state") api_ui_state`) |
+| GET | `/api/assets/{asset_id}` | Fetch binary visual asset referenced by WS events (mask/depth PNG/WebP). | Path parameter: `asset_id`. | Binary response (`image/png` or `image/webp`) + `X-BYES-Asset-Id`. | Quest HUD asset downloader (`Assets/Scripts/BYES/Quest/ByesVisionHudController.cs`). | `Gateway/main.py` (`@app.get("/api/assets/{asset_id}") api_assets_get`), `Gateway/byes/asset_cache.py` |
+| GET | `/api/assets/{asset_id}/meta` | Fetch visual asset metadata (size/type/ttl/dimensions). | Path parameter: `asset_id`. | JSON dict (`assetId`, `contentType`, `sizeBytes`, `createdTsMs`, `expiresTsMs`, `width`, `height`, `ageMs`, `meta`). | Quest diagnostics / manual tooling. | `Gateway/main.py` (`@app.get("/api/assets/{asset_id}/meta") api_assets_meta`), `Gateway/byes/asset_cache.py` |
+| POST | `/api/asr` | Optional ASR ingest endpoint (mock by default; faster-whisper optional). Emits `asr.transcript.v1` event. | Multipart (`audio`, optional `deviceId/runId/frameSeq/language`) or raw audio bytes body. | JSON dict (`schemaVersion`, `deviceId`, `runId`, `frameSeq`, `text`, `language`, `backend`, `model`, `latencyMs`). | Quest voice panel / self-test. | `Gateway/main.py` (`@app.post("/api/asr") api_asr`), `Gateway/byes/asr.py` |
+| POST | `/api/assist` | Run selected targets from latest cached frame (no re-upload required when cache is fresh); also supports ROI tracking session actions. | `AssistRequest` (`deviceId`, `action|targets`, optional `prompt`, optional `roi`, `maxAgeMs`, optional `runId`, optional `mode`, optional `sessionId`, optional `tracker`, optional `seg`). Actions include `ocr/det/find/risk/depth/seg/slam` and `target_start/target_step/target_stop`. | JSON dict (`ok`, `runId`, `frameSeq`, `targets`, `cacheAgeMs`, optional `sessionId`, optional `targetTracking`). | Quest panel/menu find/read/detect/track actions (`Assets/Scripts/BYES/Quest/ByesQuest3ConnectionPanelMinimal.cs`). | `Gateway/main.py` (`@app.post("/api/assist") api_assist`), `Gateway/byes/frame_cache.py`, `Gateway/byes/target_tracking/store.py` |
+| POST | `/api/record/start` | Start Quest recording session for a device | `RecordStartRequest` (`deviceId`, optional `note`, optional `maxSec`, optional `maxFrames`). | JSON dict (`ok`, `runId`, `recordingPath`, `startedTsMs`). | Quest menu action (`Start Record`). | `Gateway/main.py` (`@app.post("/api/record/start") api_record_start`), `Gateway/byes/recording/manager.py` |
+| POST | `/api/record/stop` | Stop Quest recording session and finalize run package-like artifact | `RecordStopRequest` (`deviceId`). | JSON dict (`ok`, `runId`, `recordingPath`, `manifestPath`, `framesCount`, `eventCount`). | Quest menu action (`Stop Record`). | `Gateway/main.py` (`@app.post("/api/record/stop") api_record_stop`), `Gateway/byes/recording/manager.py` |
 | POST | `/api/fault/set` | Inject fault (dev) | `FaultSetRequest` (`Gateway/main.py:263`). | JSON dict/list (see handler). | Manual/API consumer (no single in-repo caller evidenced). | `Gateway/main.py:2026` (`fault_set`) |
 | POST | `/api/fault/clear` | Clear fault (dev) | No explicit request body. | JSON dict/list (see handler). | Manual/API consumer (no single in-repo caller evidenced). | `Gateway/main.py:2040` (`fault_clear`) |
 | POST | `/api/dev/reset` | Reset runtime state (dev) | No explicit request body. | JSON dict/list (see handler). | Manual/API consumer (no single in-repo caller evidenced). | `Gateway/main.py:2046` (`dev_reset`) |
@@ -40,8 +53,32 @@
 | GET | `/runs` | Runs dashboard HTML | Query/Form parameters (see handler signature). | HTMLResponse (`Gateway/main.py:7125`). | Manual/API consumer (no single in-repo caller evidenced). | `Gateway/main.py:7126` (`runs_dashboard`) |
 | GET | `/runs/compare` | Runs compare HTML | Query/Form parameters (see handler signature). | HTMLResponse (`Gateway/main.py:8108`). | Manual/API consumer (no single in-repo caller evidenced). | `Gateway/main.py:8109` (`runs_compare_page`) |
 | GET | `/runs/{run_id}` | Run detail HTML | Query/Form parameters (see handler signature). | HTMLResponse (`Gateway/main.py:8187`). | Manual/API consumer (no single in-repo caller evidenced). | `Gateway/main.py:8188` (`run_details_page`) |
+| GET | `/ui` | Desktop realtime console page for provider evidence + previews + quick actions | No explicit request body. | HTML page (`BYES Desktop Console v5.05`). | Browser/manual diagnostics. | `Gateway/main.py` (`@app.get("/ui") desktop_console_ui`) |
 | GET | `/metrics` | Prometheus metrics | No explicit request body. | Prometheus response (`Gateway/main.py:8274-8277`). | Manual/API consumer (no single in-repo caller evidenced). | `Gateway/main.py:8275` (`metrics`) |
 | WEBSOCKET | `/ws/events` | Realtime websocket event stream | No explicit request body. | WebSocket text/json stream (`Gateway/main.py:8280-8302`). | Unity WS clients (`Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs:29`, `GatewayWsClient.cs:19`); replay client (`Gateway/scripts/replay_run_package.py:114`) | `Gateway/main.py:8281` (`ws_events`) |
+
+## v4.89 Endpoint Guard Toggles
+
+| Guard | Affected Endpoints | Default (`local`) | Hardened Default | Evidence |
+|---|---|---|---|---|
+| `BYES_GATEWAY_DEV_ENDPOINTS_ENABLED` | `/api/mock_event`, `/api/fault/*`, `/api/dev/*` | enabled | disabled | `Gateway/main.py` (`_ensure_dev_endpoints_enabled`) |
+| `BYES_GATEWAY_RUNPACKAGE_UPLOAD_ENABLED` | `/api/run_package/upload` | enabled | disabled | `Gateway/main.py` (`_ensure_runpackage_upload_enabled`) |
+| `BYES_GATEWAY_ALLOW_LOCAL_RUNPACKAGE_PATH` | Context APIs that accept `runPackage` local paths | enabled | disabled | `Gateway/main.py` (`_resolve_context_run_package_input`) |
+| `BYES_GATEWAY_API_KEY` | Guarded HTTP routes + `/ws/events` | disabled | disabled unless explicitly set | `Gateway/main.py` (`_gateway_guardrails`, `_ws_guardrails_ok`) |
+
+Profile defaults are applied in `Gateway/main.py` via `_apply_gateway_profile_defaults` when `BYES_GATEWAY_PROFILE=hardened`.
+
+## v4.90 Mode-Synced Scheduling Notes
+
+- Mode write path: Unity mode hotkey/UI -> `GatewayClient.PostModeChange` -> `POST /api/mode` -> `gateway.mode_state.set_mode(...)`.
+- Mode read path for frame scheduling: `submit_frame(...)` resolves mode/device (`_resolve_mode_for_frame`) and `_run_inference_for_frame(...)` applies `should_run_mode_target(...)`.
+- Endpoint auth note: when `BYES_GATEWAY_API_KEY` is set, both `GET /api/mode` and `POST /api/ping` require `X-BYES-API-Key` (same `/api/*` guard policy).
+- Optional per-mode stride source: `BYES_MODE_PROFILE_JSON` (empty = legacy behavior).
+- Optional observability: `BYES_EMIT_MODE_PROFILE_DEBUG=1` emits `mode.profile` debug events with fired/skipped targets.
+- Evidence:
+  - `Gateway/byes/mode_state.py`
+  - `Gateway/byes/scheduler.py` (`should_run_mode_target`)
+  - `Gateway/main.py` (`_resolve_mode_for_frame`, `_run_inference_for_frame`, `mode_change`)
 
 ## WebSocket Event Modes
 
@@ -53,11 +90,18 @@
 
 Unity parsing points: `GatewayClient.HandleWsMessage` (`Assets/BeYourEyes/Adapters/Networking/GatewayClient.cs:785-852`), `SpeechOrchestrator` (`Assets/BeYourEyes/Presenters/Audio/SpeechOrchestrator.cs:162-178`), legacy poller (`Assets/BeYourEyes/Adapters/Networking/GatewayPoller.cs:99-106`).
 
+v5.04 realtime additions for Quest HUD/SLAM:
+- `vis.overlay.v1` (overlay companion event with `kind + assetId + inferMs + providerMeta`)
+- `det.objects.v1` (normalized bbox + optional `trackId`)
+- `seg.mask.v1` / `depth.map.v1` (binary data fetched through `/api/assets/{asset_id}`)
+- `slam.pose.v1` (normalized pose payload)
+- `slam.trajectory.v1` (throttled recent trajectory points)
+
 ## Service Inventory (`Gateway/services/*/app.py`)
 
 | Service | Routes | Typical Port / Bind Evidence | Called By |
 |---|---|---|---|
-| `inference_service` | `GET /healthz`, `POST /ocr`, `POST /risk`, `POST /seg`, `POST /depth`, `POST /slam/pose` | `docs/English/COMMANDS.md:57` (`127.0.0.1:19120`) | Gateway `/api/frame` via HTTP backends (`Gateway/byes/inference/registry.py:24,36,46,67,84`) |
+| `inference_service` | `GET /healthz`, `POST /ocr`, `POST /risk`, `POST /det`, `POST /seg`, `POST /depth`, `POST /slam/pose` | `docs/English/COMMANDS.md:57` (`127.0.0.1:19120`) | Gateway `/api/frame` via HTTP backends (`Gateway/byes/inference/registry.py`) |
 | `planner_service` | `GET /healthz`, `POST /plan` | defaults `PLANNER_SERVICE_HOST=127.0.0.1`, `PLANNER_SERVICE_PORT=19211` (`Gateway/services/planner_service/app.py:775-777`) | Gateway plan backend (`Gateway/byes/planner_backends/http.py:15`; `/api/plan`) |
 | `reference_seg_service` | `GET /healthz`, `POST /seg` | `Gateway/services/inference_service/README.md:103` (`19231`) | inference_service when seg provider points to reference endpoint |
 | `reference_depth_service` | `GET /healthz`, `POST /depth` | `Gateway/services/inference_service/README.md:173` (`19241`) | inference_service depth provider chain |
@@ -65,3 +109,4 @@ Unity parsing points: `GatewayClient.HandleWsMessage` (`Assets/BeYourEyes/Adapte
 | `reference_slam_service` | `GET /healthz`, `POST /slam/pose` | `Gateway/services/inference_service/README.md:243` (`19261`) | inference_service slam provider chain |
 | `sam3_seg_service` | `GET /healthz`, `POST /seg` | `Gateway/services/inference_service/README.md:205` (`19271`) | inference_service seg provider alternative |
 | `da3_depth_service` | `GET /healthz`, `POST /depth` | `Gateway/services/inference_service/README.md:188` (`19281`) | inference_service depth provider alternative |
+| `pyslam_service` (optional) | `GET /health`, `POST /slam/reset`, `POST /slam/step` | default suggestion `127.0.0.1:19300` (`tools/quest3/quest3_usb_realstack_v5_03.cmd`) | Optional pySLAM HTTP bridge for future online slam backend |

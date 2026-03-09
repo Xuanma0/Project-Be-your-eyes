@@ -103,7 +103,17 @@ namespace BYES.Plan
                 TtsAudioSource.PlayOneShot(PlaceholderTtsClip);
             }
             Debug.Log("[ActionPlanExecutor] SPEAK: " + text);
-            ByesFrameTelemetry.AckFeedback(_runId, _frameSeq, "tts", true, ByesFrameTelemetry.NowUnixMs());
+            ByesFrameTelemetry.AckFeedback(
+                _runId,
+                _frameSeq,
+                "tts",
+                true,
+                ByesFrameTelemetry.NowUnixMs(),
+                providerBackend: "android_tts",
+                providerModel: "quest-tts",
+                providerDevice: "quest",
+                providerReason: "client_tts",
+                providerIsMock: false);
         }
 
         private void ExecuteOverlay(ActionPlanAction action)

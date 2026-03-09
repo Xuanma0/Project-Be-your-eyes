@@ -1,85 +1,272 @@
-Current development version is defined by `VERSION`; this file records historical milestones only.
+﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
-# 版本发布记录（v4.x）
+## v5.09.2
+- 收紧 `SEG=no_segments` 的 overlay truth 语义：Quest 与 Desktop 继续保持 `seg.truthState=real`，同时明确显示 `overlayAvailable=false` 与 `overlayReason=no_segments`，不再把这种帧误判成 overlay 管线故障。
+- Quest SelfTest 只对这一种情况做最小豁免：当且仅当 `seg=real + overlayAvailable=false + overlayReason=no_segments` 时，summary 会显示可读的 `overlay:seg=skip(no_segments)`；其它 overlay 失败原因仍然按失败处理。
+- 保留 `v5.09.1` 的 latest-frame-wins + stale-hold 行为，并继续把 `depth` 作为本轮最低 whole-FOV 成功标准；`seg` 某一帧没有 mask 不会把整体 overlay 稳定性拖成失败。
+- 不改 contracts、不改 provider 接口、不改菜单 IA，也不扩散到 OCR/DET/ASR/TTS/pySLAM；这只是一次 overlay 语义与验收口径的窄修复。
 
-本文档按版本总结 `v4.38` 到 `v4.82` 的核心能力闭环，便于评审与维护。
+## v5.09.1
+- 为 Blackwell 机器的 `SEG/DEPTH` bring-up 增加可选 `BYES_PYTHON_EXE_CUDA128` 路径：Quest realstack 启动时会先在独立 cu128 Python 环境里探测 CUDA，再决定是否把服务切到该环境，同时保留现有 CPU real baseline 作为回退。
+- GPU truth 继续收紧：只有真实 warmup infer 成功后才会显示 `device=cuda`；warmup 失败时会立即回退到 `cpu`，并明确暴露 `deviceReason`、`torchVersion`、`cudaRuntime`、device capability token。
+- `/api/providers`、`/api/capabilities`、`/api/ui/state`、Desktop Console、Quest Panel 现在优先使用下游 `sam3` / `da3` 真实 runtime evidence，而不是只显示外层 HTTP wrapper 的 backend/model。
+- Whole-FOV overlay 默认观感进一步收敛：默认优先让 depth 更容易看清，同时保留 stale-hold 语义；当 `seg` 返回 `no_segments` 时会诚实显示原因，而不是看起来像 overlay 管线坏掉。
+- 保持 contracts 与菜单 IA 不变：这次 patch 只做 Blackwell CUDA bring-up 稳定化和现有 SEG/DEPTH overlay 可用性热修。
+
+## v5.09
+- 将真实 `SEG/DEPTH` 从“单次可跑”推进到“持续 overlay loop 可用”：Gateway 现在对每种 overlay kind 只保留最新 pending frame，过期 `seg/depth` 结果会在发 asset 前被丢弃，Desktop 与 Quest 始终跟随最近一次成功 overlay，而不是积压旧帧。
+- 给 `sam3` 与 `da3` 增加试探式 GPU bring-up 真相：服务启动后先做 CUDA warmup infer，只有 warmup 成功才把 `device` 标成 `cuda`；否则立即回退到 `cpu`，并明确写出 `deviceReason`，不再伪装成 GPU 已启用。
+- 将 `deviceReason`、overlay freshness、overlay age、latest overlay asset id 接入 `/api/providers`、`/api/capabilities`、`/api/ui/state`、Desktop Console 与 Quest Panel，使 PC 与 Quest 两端看到的是同一份 `SEG/DEPTH` runtime truth。
+- 收紧 whole-FOV overlay 事件链路：Gateway 与 Quest 两端都会拒绝过期 overlay frame；Quest 仍保持 last-frame-hold，但只保留最近一次成功 asset，不会再把旧 pending frame 覆盖到较新的 overlay 上。
+- 保持 contracts 与 provider 语义不变：真实 `sam3` 继续通过现有 `seg.mask.v1` 资产链路发出，真实 `da3` 继续通过 `depth.map.v1` 资产链路发出，不新增协议。
+
+## v5.08.2
+- `v5.08.2` realstack 启动脚本改为 fail closed：YOLO26、SAM3、DA3、pySLAM 的启动前状态会先打印为 `READY_REAL`、`READY_MOCK`、`UNAVAILABLE_MISSING_PATH`、`UNAVAILABLE_RUNTIME` 四类之一，缺路径不再伪装成“已准备好”。
+- 修复 Quest realstack 对 `.env.example` / `.env` 空值的解析，避免空模型路径把 `BYES_MODE_PROFILE_JSON`、provider alias、pySLAM root 等变量污染成错误值。
+- Provider truth 与 bring-up 事实继续统一：`503`、`404`、timeout、missing-path、disabled 等原因现在通过同一套 Gateway normalization 同步到 Quest Panel、Desktop Console、`/api/providers`、`/api/capabilities`、`/api/ui/state`。
+- Overlay 资产热修继续收紧：Quest 按不可变 `assetId` 缓存纹理，同一失败 asset 不再重复拉取；当 provider unavailable 或纹理无效时，不再绘制 DET/SEG/DEPTH 空层。
+- Quest 交互不扩 IA，只做 UX 热修：passthrough 不可用时稳定回退到背景；Hand Menu 明确支持 hands/controllers/auto 模式；Smoke Panel 拖拽释放后保持 yaw-only 朝向用户。
+
+## v5.08.3
+- 将 `Gateway/services/sam3_seg_service/app.py` 里的 `sam3` stub 分支替换为真实推理，同时继续复用现有 `/seg` 返回格式；服务现在返回真实 `segments`、`inferMs`、`device` 与明确失败原因，不再停留在 `sam3_mode_stub_no_inference`。
+- 将 `Gateway/services/da3_depth_service/app.py` 里的 `da3` stub 分支替换为真实推理，同时继续复用现有 `/depth` 返回格式；服务现在返回真实 depth grid、`inferMs`、`device` 与可观测的加载状态。
+- 给两个服务都补了 lazy singleton + startup eager-load，避免每次请求重复加载大模型，也降低首帧把模型加载时间算进 Gateway 超时的概率。
+- SEG / DEPTH 一旦真实推理成功，Gateway 会把 `/api/providers`、`/api/capabilities`、`/api/ui/state`、Desktop Console、Quest provider summary 中的 truth 从 `unavailable(not_started)` 更新为 `real`。
+- 保持 contracts 与 overlay 资产机制不变：真实 SAM3 仍通过 `seg.mask.v1` 资产进入 whole-FOV overlay，真实 DA3 仍通过 `depth.map.v1` 资产进入现有 depth overlay 链路。
+
+## v5.08.4
+- 窄版本激活补丁：保留 `sam3` 与 `da3` 的真实推理路径，不再扩散 UI 或 contracts，只重新对齐并验证它们在现有 Gateway 主链、provider truth、overlay asset 链路中的真实状态。
+- 确认本机直接服务验证保持为真：`/seg` 返回 `200` 且产出真实 masks，`/depth` 返回 `200` 且产出真实 depth grid；两者都明确返回 `backend`、`model`、`device`、`inferMs` 与数量字段。
+- 确认主链 truth 已打通：跑一次 `/api/frame` 后，`seg.truthState` 与 `depth.truthState` 都能变为 `real`，而 `/api/ui/state.latest.overlayAssets` 同时出现 `seg` / `depth` 的 asset id，供 Desktop Console 与 Quest HUD 复用。
+
+## v5.08.1
+- Provider truth 热修：Quest Panel、Desktop Console、`/api/providers`、`/api/capabilities`、`/api/ui/state` 不再因为 provider “启用中”就把 DET / SLAM 等标成 `real`；最近 `503`、`404`、timeout、disabled、缺路径等情况现在统一显示 `unavailable`，并带明确 `reason`。
+- Overlay 资产链路热修：Quest 把 overlay asset 视为不可变 blob，仅在 `assetId` 变化时下载；下载成功后本地缓存纹理并保持 last-frame hold；同一失败 `assetId` 不再周期性重复 GET。
+- Whole-FOV overlay 渲染热修：DET / SEG / DEPTH 在没有有效纹理时不再继续渲染空层，从而去掉之前遮挡真实世界和面板的半透明白底 / 红底失败中间态。
+- Hand Menu 交互热修：Vision / Voice / Dev 页面压缩为更短的分组视图，slider 与文本重新排版，并加强系统手势冲突隔离，降低 palm-up 菜单与 Meta 系统手势互抢的问题。
+- Passthrough 热修：Quest 与 Desktop 都会明确显示 `Passthrough: unavailable|fallback|real` 及原因；当实际 provider 不可用时会稳定回退，不再留下模糊的半启用视觉状态。
+
+## v5.08
+- True PCA 进入 proof-gated 真相模型：Quest Panel、Desktop Console、`/api/capabilities`、`/api/providers`、`/api/ui/state` 中的 `pca_real` 只有在 Quest 3/3S、非 Link、相机权限已授予、provider 可用且 ready 时才成立。
+- Quest HUD 强化为 whole-FOV hold 风格叠加：DET、SEG、DEPTH 不追求每帧推理，而是采用 latest-frame-wins + last-frame-hold，优先保证视野内渲染稳定。
+- Desktop Console 升级为 operator UI，并继续只薄封装现有 API：新增 `Scan Once`、`Live Start/Stop`、`Read Text`、`Find Door`、`Record Start/Stop`，同时显示 frame source truth、provider truth、latest capture success 与 overlay preview。
+- Quest 与 Desktop 新增 pySLAM realtime 可视化字段：`backend`、`state`、`fps`、`latency`、`root detected`，但 pySLAM 仍保持外部可选，不进入默认 CI 成功标准。
+- Quest SelfTest 增加 PCA truth 与 whole-FOV overlay truth 检查；不改 contracts，不改 inference provider 语义。
+## v5.07
+- True Capture 统一说真话：Quest Panel、Desktop Console、`/api/capabilities`、`/api/providers`、`/api/ui/state` 中的 frame source 现在只允许显示 `pca_real`、`ar_cpuimage_fallback`、`rendertexture_fallback`、`unavailable` 四种之一。
+- True Voice 证据接通到 Quest 和 Desktop：新增 mic permission 状态、`Last Transcript`、`Last Spoken`、`TTS muted`、TTS/ASR backend truth 展示，明确 real/mock/muted/fallback。
+- Gateway 将 ASR/TTS runtime evidence 接入 `/api/providers` 与 `/api/ui/state`，Desktop Console 首页可以直接看到 transcript、spoken、capture success、backend/model/device/is_mock/reason。
+- Quest SelfTest 新增 capture truth 对齐检查，同时保留现有 TTS/ASR smoke；不改 contracts，不改 inference providers，不改 recording/replay/report/regression 语义。
+- 保持 v5.06 的交互边界：不新增新的主入口，不重构 Hand Menu，pySLAM 仍是外部可选链路，不揉进默认主链。
+
+## v5.06
+- Quest 交互入口统一为 `BYES_HandMenu`：legacy wrist menu 默认禁用，Smoke Panel 退回到状态摘要与少量 fallback 控件。
+- Frame source 真相统一到 Quest Panel、Desktop Console、`/api/capabilities`、`/api/providers`、`/api/ui/state`；fallback 采帧明确显示为 `ar_cpuimage_fallback` 或 `rendertexture_fallback`，不再暗示真 PCA。
+- Desktop Console 强化为运行时事实源：统一展示 provider evidence（`backend`、`model`、`device`、`is_mock`、`reason`、`last_success_ts`、`last_infer_ms`）、当前 mode、recording、target session、overlay kinds 与 latest frame。
+- 在不改 contracts 和 provider 语义的前提下，通过统一 mapping 层和兼容字段完成 Truth & Focus，对 smoke 主链保持兼容。
+- 维护文档层次中性化：仓库长期记忆保留在 `docs/maintainer/`，版本执行提示改为外部临时工作文档，不再作为仓库追踪内容。
+
+## v5.05
+- Added Quest real-frame source abstraction (IByesFrameSource) with PCA capture scaffolding (ByesPcaFrameSource) and render-texture fallback; frame-source metadata is now attached in /api/frame upload meta.
+- Added Desktop Console (GET /ui, GET /api/ui/state) to show provider real/mock evidence, latest frame/overlay preview, and quick actions (ping/mode/assist/record).
+- Extended Gateway overlay bus with vis.overlay.v1 companion events for DET/SEG/DEPTH assets and latest overlay index for Quest HUD + desktop preview.
+- Extended Quest smoke panel observability with provider summary (real/mock/off) and capture source/resolution stats, with low-frequency capabilities refresh.
+- Added one-command launcher tools/quest3/quest3_usb_realstack_v5_05.cmd (USB reverse + gateway/inference + optional pySLAM bridge + auto-open desktop console).
+
+## v5.04
+- 新增 Quest 视觉 HUD 资产闭环：支持 `det.objects.v1` 框/标签/trackId、`seg.mask.v1` 蒙版资产、`depth.map.v1` 深度资产叠加显示。
+- Gateway 新增资产接口：`GET /api/assets/{asset_id}` 与 `GET /api/assets/{asset_id}/meta`，避免在 WS 事件中传大体积 base64。
+- 新增可选语音输入入口 `POST /api/asr`：默认 `mock` 后端，支持可选 `faster-whisper`，并发出 `asr.transcript.v1`。
+- 录制链路增强：Quest recording 在生成 run package 时同步落盘引用的 `assets/` 文件，保持 replay/report 兼容。
+- 新增 v5.04 一键 USB realstack 脚本 `tools/quest3/quest3_usb_realstack_v5_04.cmd`（gateway + inference + 可选 pySLAM 检测）与配套验收指引。
+- Quest 手腕菜单信息架构收敛为 `Home / Vision / Guidance / Voice / Dev`，支持“Pin Last Action 到 Home”收藏动作，并保留显式 Move/Resize 保护。
+- 新增透视扩展控制（开关、透明度、彩色/灰度可选）与 v5.04 自检扩展（HUD 资产、TTS/ASR、可选 pySLAM realtime 状态）。
+
+## v5.03
+- 新增 Target Tracking Assist：`POST /api/assist` 支持 `target_start / target_step / target_stop`，并发出 `target.session` / `target.update` 事件。
+- Quest 面板新增 `Last TARGET`（含 Age），并接入 Guidance 文本 + 空间音频/触觉开关。
+- 新增可选 Passthrough 控制桥接（`ByesPassthroughController`）与菜单开关状态显示。
+- 新增可选 pySLAM 离线脚本 `Gateway/scripts/pyslam_run_package.py` 与 `services/pyslam_service` 桥接骨架。
+- 新增一键 USB realstack 脚本：`tools/quest3/quest3_usb_realstack_v5_03.cmd`。
+
+## v5.02
+- Promptable Find：在 real DET 基础上增加概念查找（Find Door / Exit Sign / Stairs / Elevator / Restroom / Person）。
+- Gateway 新增 `POST /api/assist`：复用最近帧缓存执行 `ocr/det/find/risk/depth/seg`，Quest 无需重复上传帧。
+- Gateway 新增录制链路：`POST /api/record/start` 与 `POST /api/record/stop`，生成可回放 run package（含 `frames_meta.jsonl` 与 `events/events_v1.jsonl`）。
+- Quest 面板新增 `Last FIND` 与 `Guidance`（含 Age），并支持 `Auto Speak FIND / Auto Guidance`（去重与冷却保护）。
+- 新增一键脚本 `tools/quest3/quest3_usb_realstack_v5_02.cmd`：USB reverse + gateway + inference + 能力检查提示。
+
+## v5.01
+- inference_service 新增真实 OCR provider（PaddleOCR）：`BYES_SERVICE_OCR_PROVIDER=paddleocr`，缺依赖时返回明确 `503` 提示。
+- inference_service 新增真实 DET provider（Ultralytics YOLO）：`BYES_SERVICE_DET_PROVIDER=ultralytics`，统一输出 `det.objects` 事件。
+- Gateway `/api/frame` 增强：支持 `meta.targets` 强制单次目标（OCR/DET/DEPTH/RISK 等），并新增 `GET /api/capabilities` 供 Quest 面板与自检读取能力状态。
+- 新增深度融合风险事件 `risk.fused`（基于 depth grid 的左右/中间最小距离与建议方向）。
+- Quest 面板新增可用输出：`Last OCR/DET/RISK + Age(ms)`；增加 `Read Text Once / Detect Once`；支持 `AutoSpeak OCR/DET/RISK` 与 `OCR Verbose`（带去重+冷却保护）。
+- 新增一键脚本 `tools/quest3/quest3_usb_realstack_v5_01.cmd`：USB reverse + 启动 gateway/inference + 依赖缺失提示。
+
+## v5.00
+- Quest 主入口交互切换为官方手掌菜单流程（XRI `HandMenu` + `MetaSystemGestureDetector`），替代旧自定义 wrist button 逻辑。
+- 手菜单支持多级分组页：`Connection / Actions / Mode / Panels / Settings / Debug`，包含 mode 设置与回读、panel 控制、debug 导出、passthrough 开关。
+- 新增 Safe 手势快捷模式：仅在菜单隐藏、无 UI/grab 冲突、无系统手势活跃时触发。
+- Smoke Panel 新增显式 Move/Resize 开关（默认关）、LockToHead、Reset Pose/Scale，减少 pinch 误拖动。
+- Quest3SmokeScene 新增 MR Template Guide/Coaching 运行时禁用器，默认隐藏干扰组件。
+- 场景安装器更新：自动配置 `BYES_HandMenuRoot` + `ByesMrTemplateGuideDisabler`，并默认将 Build Settings 收敛为 `Quest3SmokeScene`。
+
+## v4.99
+- Quest3 烟测交互升级为手腕/手掌菜单（`Actions / Panels / Debug`），默认不再依赖底部蓝色按钮。
+- 新增 XR Hands 手势快捷：右手拇指+食指=`Scan Once`，拇指+中指=`Live Toggle`，拇指+无名指=`Cycle Mode`。
+- 连接面板支持抓取拖拽、Pin/Unpin、距离与缩放调节、`Snap Default` 复位。
+- Quest3 场景安装器自动注入腕部菜单与手势组件，并默认关闭 Coaching/Tutorial UI。
+- 新增编辑器自动打开 `Quest3SmokeScene` 开关，并同步更新 Quest3 runbook。
+
+## v4.98
+- Quest3 卡顿缓解：采集链路支持 Async GPU Readback（Android 默认启用），不支持时自动回退同步路径。
+- 新增头显内卡顿观测指标：`Hitch30s`、`WorstDt`、`AvgDt`、`GC delta`，并在面板显示采集状态（CaptureHz / inflight / async）。
+- Quest 面板模式按钮可真正切换模式：`Walk / Read / Inspect`，通过 `POST /api/mode` 写入并 `GET /api/mode` 回读验证。
+- 烟测轮询节流：自动探测降低频率，提供显式 `Refresh` 按钮进行手动刷新。
+## v4.97
+- Quest3 最小连接面板新增 `Scan Once` 与 `Live Start/Stop`，并展示 `HTTP reachable / WS connected / Last Upload(ms) / Last E2E(ms) / Last Event Type`，支持仅手势点击完成闭环验证。
+- Quest3 自检流程更新为 `Ping -> Version -> Mode -> Scan Once + WS event`，并输出明确 `PASS/FAIL` 与失败原因（例如网关不可达、无 WS 回包）。
+- Quest3 场景安装器升级：自动在 `Quest3SmokeScene` 注入 `BYES_FrameRig`，包含 `GatewayClient + ScreenFrameGrabber + FrameCapture + GatewayFrameUploader + ScanController`，默认参数针对烟测带宽与背压。
+- USB 一键脚本默认开启 `BYES_INFERENCE_EMIT_WS_V1=1` 与 `BYES_EMIT_NET_DEBUG=1`，提高 Scan 后 WS 回包可观测性。
+## v4.96.1
+- Quest3 UI 可点击修复：MODE Overlay 在 Android 下默认禁用，并且非 Android 下关闭射线拦截，避免遮挡交互。
+- 强化 Quest 连接面板运行时配置：固定 WorldSpace + 主相机绑定 + 高 sortingOrder + 优先 TrackedDeviceGraphicRaycaster + 面板可交互。
+- 新增运行时守护 ByesXrUiWiringGuard：统一 EventSystem 使用 XRUIInputModule，并自动开启 XRRayInteractor 的 UI 交互开关。
+- 更新 Quest3 场景安装器：自动在 BYES_SmokeRig 下安装 BYES_XrUiWiringGuard。
+
+## v4.96
+- 新增 Quest3 Smoke 场景自动安装器，确保 `Quest3SmokeScene` 内自动存在 `BYES_SmokeRig/BYES_ConnectionPanel`。
+- 新增头锁定世界空间面板脚本 `ByesHeadLockedPanel`，面板自动跟随到用户前方并朝向用户。
+- 新增无 Prefab 依赖的最小连接面板 `ByesQuest3ConnectionPanelMinimal`，支持 `Ping / Version / Mode` 与周期性 HTTP 可达性探测。
+- 新增批处理入口 `BYES.Editor.ByesQuest3SmokeSceneInstaller.InstallFromBatch`，无需手动点菜单即可安装。
+- 更新 Quest3 运行手册，补充“只看到 MODE 文字但没有面板”排查步骤。
+
+## v4.95
+- 新增 Quest3 Android 批处理构建入口：BYES.Editor.ByesBuildQuest3.BuildQuest3SmokeApk，产物输出到 Builds/Quest3/。
+- 新增本地一键 Android 构建脚本：tools/unity/build_quest3_android.cmd，并补充 tools/unity/README_BUILD_ANDROID.md。
+- 新增 Unity 构建日志根因提取脚本：tools/unity/parse_unity_build_log.py，可定位首个真实报错并输出上下文摘要。
+- 新增 Quest3 USB 本机网关脚本：tools/quest3/quest3_usb_local_gateway.cmd（adb reverse + 本机 18000 端口）。
+- 更新 Quest3 runbook：补充 USB 推荐路径、WinError 10013 端口规避、以及可拍照核验清单。
+
+## v4.94
+- Quest3 新增“零控制器自检”闭环：启动后自动执行 ping/version/mode/live-loop，并在连接面板显示 RUNNING/PASS/FAIL 与关键指标。
+- 输入系统迁移加固：BYES 运行时脚本去除未加条件编译的 Input.GetKey* 调用，旧输入仅允许在 #if ENABLE_LEGACY_INPUT_MANAGER 内使用。
+- Quest3 运行时新增 XR 子系统护栏：当不存在可用 XRHandSubsystem 时自动禁用 XRInputModalityManager，避免 HandTracking spam。
+- 新增 Windows 一键脚本 tools/quest3/quest3_smoke.ps1，支持 USB/LAN 启动 Gateway 并可自动执行 adb reverse。
+- 新增 CI 防回归脚本 tools/check_unity_legacy_input.py，阻止旧输入 API 无条件回流。
+
+## v4.93
+- 修复 Unity 编译失败：移除 Assets/BeYourEyes/** 对 BYES 命名空间的编译期依赖。
+- 增加分层安全运行时桥接（GatewayRuntimeContext + BYES 侧注册），保持功能语义同时解耦 assembly 边界。
+- 新增仓库防回归脚本 tools/check_unity_layering.py，并接入 CI，阻止 Assets/BeYourEyes/** 再次引入 using BYES...。
+- Quest3 构建链路继续可用（连接面板 Ping/Version/Mode + Live Loop smoke）。
+## v4.92
+- Quest 3: added Live Loop controls (toggle/FPS/max in-flight/backpressure) in Unity scan flow.
+- Quest 3: added default downscale + JPEG quality controls for bandwidth stability.
+- Gateway: added GET /api/version (version/gitSha/uptime/profile) for runtime diagnostics.
+- Runtime panel: shows HTTP/WS status, ping RTT, last upload cost, coarse E2E, and version probe button.
+- Added tests/docs updates for v4.92 (/api/version, Quest runbook, config matrix, API inventory).
+
+## v4.91
+- 鏂板 Quest 3 鐑熸祴闂幆鏀寔锛?  - 杩愯鏃惰繛鎺ラ潰鏉匡紙涓绘満/IP銆佺鍙ｃ€丄PI Key銆侀噸杩烇級
+  - 鍙虫墜鎺у埗鍣ㄦ寜閽Е鍙戞壂鎻忎笂浼狅紙淇濈暀妗岄潰 `S` 浣滀负鍥為€€锛?  - 鏂板 `Quest3SmokeScene` 骞跺姞鍏?Build Settings锛屽鍔犺繍琛屾椂 passthrough 閰嶇疆杈呭姪鑴氭湰
+- 鏂板 Gateway 杩愯鎬佹煡璇㈢鐐癸細
+  - `GET /api/mode`锛堢洿鎺ヨ鍙?mode state store锛?  - `POST /api/ping`锛堣交閲?RTT 鎺㈡祴锛?- 鏂板/鏇存柊瀵瑰簲娴嬭瘯锛堝惈 API Key 寮€鍚椂鐨勯壌鏉冭涓猴級銆?- 鏇存柊 runbook 涓庨厤缃煩闃碉紝琛ュ厖 Quest 灞€鍩熺綉杩炴帴璇存槑鍜屾柊绔偣/閰嶇疆椤广€?
+## v4.90
+- 鏂板 mode 绔簯鍚屾璋冨害锛歎nity 妯″紡鍒囨崲閫氳繃 `/api/mode` 鍐欏叆 Gateway 杩愯鎬?mode store锛坄Gateway/byes/mode_state.py`锛夈€?- 鏂板 `BYES_MODE_PROFILE_JSON`锛屾敮鎸佹寜 mode 閰嶇疆鍚勬劅鐭ョ洰鏍囩殑 `every_n_frames`锛堢┖鍊兼椂淇濇寔鏃ц涓猴紝鍚戝悗鍏煎锛夈€?- 鏂板 `BYES_EMIT_MODE_PROFILE_DEBUG`锛屽彲杈撳嚭 `mode.profile` 璋冭瘯浜嬩欢锛屼究浜庢牳楠屾瘡甯цЕ鍙?璺宠繃鐩爣銆?- 鏂板鍗曞厓娴嬭瘯锛歮ode profile 瑙ｆ瀽涓庡洖閫€銆乵ode state TTL/LRU 涓?changed-flag銆乻tride 鍒ゅ畾瑙勫垯銆?
+## v4.89
+- 鏂板 Gateway 閮ㄧ讲妗ｄ綅锛歚BYES_GATEWAY_PROFILE=local|hardened`锛宍hardened` 涓嬮粯璁ゅ紑鍚祫婧愪笌鏆撮湶闈㈡姢鏍忋€?
+- 鏂板璧勬簮鎶ゆ爮锛氳姹備綋澶у皬闄愬埗锛坄BYES_GATEWAY_MAX_*_BYTES`锛変笌閫熺巼闄愬埗锛坄BYES_GATEWAY_RATE_LIMIT_*`锛夈€?
+- 鏂板鍏ュ彛鎶ゆ爮锛歚/api/dev/*`銆乣/api/mock_event`銆乣/api/run_package/upload` 涓庢湰鍦拌矾寰勮緭鍏ュ彲閫氳繃鐜鍙橀噺鎸夋。浣嶇鐢ㄣ€?
+- 鏂板 CI 妫€鏌ワ細Unity `.meta` 瀹屾暣鎬э紙`tools/check_unity_meta.py`锛変笌鏂囨。鐩稿閾炬帴鏈夋晥鎬э紙`tools/check_docs_links.py`锛夈€?
+
+## v4.88
+- Added `Gateway/scripts/dev_up.py` for one-command local orchestration (Gateway + optional inference/planner/reference services).
+- Added optional Gateway API key guard for HTTP + WebSocket (`BYES_GATEWAY_API_KEY`) and optional host/origin allowlists.
+- Added API key compatibility in Unity clients and `Gateway/scripts/replay_run_package.py` (`X-BYES-API-Key` + WS `api_key` query).
+
+# 鐗堟湰鍙戝竷璁板綍锛坴4.x锛?
+
+鏈枃妗ｆ寜鐗堟湰鎬荤粨 `v4.38` 鍒?`v4.82` 鐨勬牳蹇冭兘鍔涢棴鐜紝渚夸簬璇勫涓庣淮鎶ゃ€?
 
 ## v4.38
-- 规划评测指标、ablation 扫参（`provider/prompt/budget`）、排行榜/报告接入、回归门禁。
+- 瑙勫垝璇勬祴鎸囨爣銆乤blation 鎵弬锛坄provider/prompt/budget`锛夈€佹帓琛屾/鎶ュ憡鎺ュ叆銆佸洖褰掗棬绂併€?
 
 ## v4.39-v4.40
-- POV 规划适配器（`pov.ir.v1 -> action_plan.v1`）。
-- 在线 POV ingest API + 内存存储 + inline `povIr` 规划链路。
+- POV 瑙勫垝閫傞厤鍣紙`pov.ir.v1 -> action_plan.v1`锛夈€?
+- 鍦ㄧ嚎 POV ingest API + 鍐呭瓨瀛樺偍 + inline `povIr` 瑙勫垝閾捐矾銆?
 
 ## v4.41
-- 契约冻结机制（`Gateway/contracts/*` + `contract.lock.json`）。
-- `/api/contracts` 与 suite/CI 严格契约校验。
+- 濂戠害鍐荤粨鏈哄埗锛坄Gateway/contracts/*` + `contract.lock.json`锛夈€?
+- `/api/contracts` 涓?suite/CI 涓ユ牸濂戠害鏍￠獙銆?
 
 ## v4.42-v4.44
-- 分割 provider 链路（`mock/http`）与 `/seg`。
-- 分割质量指标 + GT fixture。
-- `byes.seg.v1` 冻结与 payload 归一化校验。
+- 鍒嗗壊 provider 閾捐矾锛坄mock/http`锛変笌 `/seg`銆?
+- 鍒嗗壊璐ㄩ噺鎸囨爣 + GT fixture銆?
+- `byes.seg.v1` 鍐荤粨涓?payload 褰掍竴鍖栨牎楠屻€?
 
 ## v4.45-v4.47
-- `reference_seg_service` 与 HTTP E2E。
-- 分割提示契约（`byes.seg_request.v1`）+ prompt 透传 + `seg.prompt` 事件。
+- `reference_seg_service` 涓?HTTP E2E銆?
+- 鍒嗗壊鎻愮ず濂戠害锛坄byes.seg_request.v1`锛? prompt 閫忎紶 + `seg.prompt` 浜嬩欢銆?
 
 ## v4.48-v4.50
-- `byes.seg.v1` 可选 mask（`rle_v1`）与 mask 质量指标。
-- prompt-conditioned 分割行为与 prompt+mask 契约覆盖。
+- `byes.seg.v1` 鍙€?mask锛坄rle_v1`锛変笌 mask 璐ㄩ噺鎸囨爣銆?
+- prompt-conditioned 鍒嗗壊琛屼负涓?prompt+mask 濂戠害瑕嗙洊銆?
 
 ## v4.51-v4.52
-- 分割提示预算/截断工程化。
-- Seg ContextPack（`seg.context.v1`）+ `/api/seg/context` + planner prompt v2 可选拼接。
+- 鍒嗗壊鎻愮ず棰勭畻/鎴柇宸ョ▼鍖栥€?
+- Seg ContextPack锛坄seg.context.v1`锛? `/api/seg/context` + planner prompt v2 鍙€夋嫾鎺ャ€?
 
 ## v4.53-v4.55
-- `byes.plan_request.v1` + 上下文感知 planner HTTP 请求。
-- 可解释 seg-hint 规则层。
-- plan-context 对齐指标（`plan.context_alignment.v1`）。
-- 统一 PlanContextPack（`plan.context_pack.v1`）+ `/api/plan/context`。
+- `byes.plan_request.v1` + 涓婁笅鏂囨劅鐭?planner HTTP 璇锋眰銆?
+- 鍙В閲?seg-hint 瑙勫垯灞傘€?
+- plan-context 瀵归綈鎸囨爣锛坄plan.context_alignment.v1`锛夈€?
+- 缁熶竴 PlanContextPack锛坄plan.context_pack.v1`锛? `/api/plan/context`銆?
 
 ## v4.56-v4.58
-- 单请求 plan context pack override。
-- context sweep 工具。
-- 帧级 E2E 延迟契约/事件（`frame.e2e.v1`）与唯一性/一致性加固。
+- 鍗曡姹?plan context pack override銆?
+- context sweep 宸ュ叿銆?
+- 甯х骇 E2E 寤惰繜濂戠害/浜嬩欢锛坄frame.e2e.v1`锛変笌鍞竴鎬?涓€鑷存€у姞鍥恒€?
 
 ## v4.59-v4.60
-- `frame.input.v1` + `frame.ack.v1` + capture->feedback user-E2E 指标。
-- 按 kind（`tts/ar/haptic`）分桶的 user-E2E 报告/排行榜。
+- `frame.input.v1` + `frame.ack.v1` + capture->feedback user-E2E 鎸囨爣銆?
+- 鎸?kind锛坄tts/ar/haptic`锛夊垎妗剁殑 user-E2E 鎶ュ憡/鎺掕姒溿€?
 
 ## v4.61-v4.64
-- 深度能力链路（`byes.depth.v1`、reference depth service、质量评测）。
-- 模型资产清单（`byes.models.v1`、`/api/models`、`verify_models.py`）。
-- OCR 能力链路（`byes.ocr.v1`、reference OCR、CER/完全匹配指标）。
-- SLAM pose 能力链路（`byes.slam_pose.v1`、reference SLAM、稳定性指标）。
+- 娣卞害鑳藉姏閾捐矾锛坄byes.depth.v1`銆乺eference depth service銆佽川閲忚瘎娴嬶級銆?
+- 妯″瀷璧勪骇娓呭崟锛坄byes.models.v1`銆乣/api/models`銆乣verify_models.py`锛夈€?
+- OCR 鑳藉姏閾捐矾锛坄byes.ocr.v1`銆乺eference OCR銆丆ER/瀹屽叏鍖归厤鎸囨爣锛夈€?
+- SLAM pose 鑳藉姏閾捐矾锛坄byes.slam_pose.v1`銆乺eference SLAM銆佺ǔ瀹氭€ф寚鏍囷級銆?
 
 ## v4.65-v4.66
-- `sam3_seg_service`（fixture/sam3）与下游切换。
-- `da3_depth_service`（fixture/da3）与下游切换。
-- SAM3/DA3 模型文件要求纳入模型清单校验。
+- `sam3_seg_service`锛坒ixture/sam3锛変笌涓嬫父鍒囨崲銆?
+- `da3_depth_service`锛坒ixture/da3锛変笌涓嬫父鍒囨崲銆?
+- SAM3/DA3 妯″瀷鏂囦欢瑕佹眰绾冲叆妯″瀷娓呭崟鏍￠獙銆?
 
 ## v4.67-v4.75
-- pySLAM TUM 轨迹注入为离线 `slam.pose` 事件。
-- 数据集导入器（Ego4D 视频 / 图片目录）与 benchmark 批跑 + matrix profiles。
-- pySLAM prehook（`pyslam_ingest`、`pyslam_run`）。
-- SLAM 轨迹误差指标（`ATE/RPE`）。
-- SlamContextPack（`slam.context.v1`）+ `/api/slam/context`。
+- pySLAM TUM 杞ㄨ抗娉ㄥ叆涓虹绾?`slam.pose` 浜嬩欢銆?
+- 鏁版嵁闆嗗鍏ュ櫒锛圗go4D 瑙嗛 / 鍥剧墖鐩綍锛変笌 benchmark 鎵硅窇 + matrix profiles銆?
+- pySLAM prehook锛坄pyslam_ingest`銆乣pyslam_run`锛夈€?
+- SLAM 杞ㄨ抗璇樊鎸囨爣锛坄ATE/RPE`锛夈€?
+- SlamContextPack锛坄slam.context.v1`锛? `/api/slam/context`銆?
 
 ## v4.76-v4.79
-- 将 SLAM context 接入 plan_request 与 planner prompt（`v3`）。
-- Local costmap（`byes.costmap.v1`）+ costmap context（`costmap.context.v1`）+ planner prompt（`v4`）。
-- Fused costmap（`byes.costmap_fused.v1`，EMA/可选 shift）。
-- Shift gate（可解释 reject 原因）与 online/final 轨迹 profile 对比。
+- 灏?SLAM context 鎺ュ叆 plan_request 涓?planner prompt锛坄v3`锛夈€?
+- Local costmap锛坄byes.costmap.v1`锛? costmap context锛坄costmap.context.v1`锛? planner prompt锛坄v4`锛夈€?
+- Fused costmap锛坄byes.costmap_fused.v1`锛孍MA/鍙€?shift锛夈€?
+- Shift gate锛堝彲瑙ｉ噴 reject 鍘熷洜锛変笌 online/final 杞ㄨ抗 profile 瀵规瘮銆?
 
 ## v4.80-v4.81
-- SAM3 tracking 透传（`trackId`、`trackState`）与 segTracking 指标。
-- 基于 trackId 的动态障碍时序缓存，接入 costmap/costmap_fused。
+- SAM3 tracking 閫忎紶锛坄trackId`銆乣trackState`锛変笌 segTracking 鎸囨爣銆?
+- 鍩轰簬 trackId 鐨勫姩鎬侀殰纰嶆椂搴忕紦瀛橈紝鎺ュ叆 costmap/costmap_fused銆?
 
 ## v4.82
-- DA3 `refViewStrategy` 端到端透传。
-- 深度时序一致性指标：
+- DA3 `refViewStrategy` 绔埌绔€忎紶銆?
+- 娣卞害鏃跺簭涓€鑷存€ф寚鏍囷細
   - `jitterAbs`
   - `flickerRateNear`
   - `scaleDriftProxy`
   - `refViewStrategyDiversityCount`
-- 接入 report/leaderboard/linter/contract gate/matrix summary。
+- 鎺ュ叆 report/leaderboard/linter/contract gate/matrix summary銆?
+

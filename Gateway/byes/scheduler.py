@@ -6,7 +6,7 @@ import time
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from byes.config import GatewayConfig
 from byes.degradation import DegradationState
@@ -22,6 +22,9 @@ from byes.tool_registry import ToolRegistry
 from byes.tool_cache import ToolCache
 from byes.tools.base import BaseTool, FrameInput, ToolContext, ToolLane
 from byes.world_state import WorldState
+
+if TYPE_CHECKING:
+    from byes.mode_state import ModeProfile
 
 OnLaneResults = Callable[[FrameInput, ToolLane, list[ToolResult]], Awaitable[None]]
 OnFrameTerminal = Callable[[FrameInput, str], None]
@@ -1073,3 +1076,22 @@ class Scheduler:
             return fn(*args)
         except Exception:  # noqa: BLE001
             return default
+
+
+def should_run_mode_target(
+    *,
+    frame_seq: int,
+    mode: str | None,
+    target: str,
+    profile: "ModeProfile | None",
+    force_on_mode_change: bool = False,
+) -> bool:
+    normalized_seq = max(1, int(frame_seq))
+    if profile is None:
+        return True
+    stride = profile.stride_for(mode, target)
+    if stride is None:
+        return True
+    if force_on_mode_change:
+        return True
+    return ((normalized_seq - 1) % max(1, int(stride))) == 0
