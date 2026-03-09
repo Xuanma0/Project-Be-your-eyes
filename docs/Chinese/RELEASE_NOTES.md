@@ -1,5 +1,11 @@
 ﻿Current development version is defined by `VERSION`; this file records historical milestones only.
 
+## v5.09.2
+- 收紧 `SEG=no_segments` 的 overlay truth 语义：Quest 与 Desktop 继续保持 `seg.truthState=real`，同时明确显示 `overlayAvailable=false` 与 `overlayReason=no_segments`，不再把这种帧误判成 overlay 管线故障。
+- Quest SelfTest 只对这一种情况做最小豁免：当且仅当 `seg=real + overlayAvailable=false + overlayReason=no_segments` 时，summary 会显示可读的 `overlay:seg=skip(no_segments)`；其它 overlay 失败原因仍然按失败处理。
+- 保留 `v5.09.1` 的 latest-frame-wins + stale-hold 行为，并继续把 `depth` 作为本轮最低 whole-FOV 成功标准；`seg` 某一帧没有 mask 不会把整体 overlay 稳定性拖成失败。
+- 不改 contracts、不改 provider 接口、不改菜单 IA，也不扩散到 OCR/DET/ASR/TTS/pySLAM；这只是一次 overlay 语义与验收口径的窄修复。
+
 ## v5.09.1
 - 为 Blackwell 机器的 `SEG/DEPTH` bring-up 增加可选 `BYES_PYTHON_EXE_CUDA128` 路径：Quest realstack 启动时会先在独立 cu128 Python 环境里探测 CUDA，再决定是否把服务切到该环境，同时保留现有 CPU real baseline 作为回退。
 - GPU truth 继续收紧：只有真实 warmup infer 成功后才会显示 `device=cuda`；warmup 失败时会立即回退到 `cpu`，并明确暴露 `deviceReason`、`torchVersion`、`cudaRuntime`、device capability token。

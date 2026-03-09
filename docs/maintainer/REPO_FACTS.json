@@ -15,8 +15,8 @@
   "capturedAt": "2026-03-09",
   "branch": "feature/unity-skeleton",
   "head": "run_git_rev_parse_HEAD",
-  "version": "v5.09.1",
-  "versionLabelNote": "Canonical facts reflect repository state during the v5.09.1 Blackwell CUDA bring-up and overlay usability patch focused on optional cu128 probing without breaking the CPU baseline, surfacing final device/deviceReason from live SEG/DEPTH runtime, and making the default whole-FOV overlay easier to see while preserving latest-frame-wins plus last-frame-hold.",
+  "version": "v5.09.2",
+  "versionLabelNote": "Canonical facts reflect repository state during the v5.09.2 overlay stabilization patch: SEG and DEPTH keep the v5.09.1 real runtime path and device/deviceReason truth, while overlay semantics now explicitly distinguish real-no-mask (`seg.truthState=real`, `overlayAvailable=false`, `overlayReason=no_segments`) from genuine overlay pipeline failure, with depth retained as the minimum visible whole-FOV success layer.",
   "unity": {
     "editorVersion": "6000.3.10f1",
     "primaryBuildScene": "Assets/Scenes/Quest3SmokeScene.unity",
@@ -57,6 +57,10 @@
     {
       "path": "Assets/Scripts/BYES/Quest/ByesQuest3ConnectionPanelMinimal.cs",
       "role": "Quest smoke panel, runtime subsystem assembly, action entry"
+    },
+    {
+      "path": "Assets/Scripts/BYES/Quest/ByesQuest3SelfTestRunner.cs",
+      "role": "Quest smoke self-test and overlay truth validation"
     },
     {
       "path": "Assets/Scripts/BYES/Quest/ByesHandMenuController.cs",

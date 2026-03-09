@@ -4,6 +4,12 @@ Current development version is defined by `VERSION`; this file records historica
 
 This changelog summarizes delivered capabilities from `v4.38` onward for reviewers and maintainers.
 
+## v5.09.2
+- Stabilized overlay truth semantics around the `SEG=no_segments` case: Quest and Desktop keep `seg.truthState=real` while surfacing `overlayAvailable=false` and `overlayReason=no_segments` instead of treating the frame as an overlay-pipeline failure.
+- Narrowed Quest self-test semantics to match runtime truth without broadening any other failure path: only `seg=real + overlayAvailable=false + overlayReason=no_segments` is downgraded to a readable skip note, while `depth` still requires a real observed overlay to pass.
+- Preserved the existing `v5.09.1` latest-frame-wins and stale-hold behavior so the depth layer remains the minimum visible whole-FOV success path even when segmentation produces no mask on a frame.
+- Kept contracts, provider interfaces, menu IA, and all non-overlay subsystems unchanged; this patch is only about making overlay status legible and non-misleading.
+
 ## v5.09.1
 - Added optional `BYES_PYTHON_EXE_CUDA128` launcher support for Blackwell-class SEG/DEPTH bring-up: the Quest realstack flow now probes CUDA in a separate cu128 Python environment before service launch and keeps the existing CPU baseline as the fallback.
 - Tightened GPU truth so `device=cuda` is only surfaced after a real warmup infer succeeds; failed warmups now fall back to `cpu` immediately and preserve an explicit `deviceReason`, `torchVersion`, `cudaRuntime`, and detected capability token.

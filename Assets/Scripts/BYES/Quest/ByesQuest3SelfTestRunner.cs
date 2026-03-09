@@ -1284,9 +1284,14 @@ namespace BYES.Quest
                 {
                     requiresWholeFov = true;
                 }
-                if (ProviderNeedsRealOverlay("seg", segExpected, truth, notes))
+                var segNoSegments = IsRealNoSegmentsOverlay("seg", segExpected, truth, overlayAssets);
+                if (!segNoSegments && ProviderNeedsRealOverlay("seg", segExpected, truth, notes))
                 {
                     requiresWholeFov = true;
+                }
+                else if (segNoSegments)
+                {
+                    notes.Add("seg=skip(no_segments)");
                 }
                 if (ProviderNeedsRealOverlay("depth", depthExpected, truth, notes))
                 {
@@ -1314,7 +1319,7 @@ namespace BYES.Quest
                     }
                 }
 
-                if (ProviderRequiresOverlayCheck("seg", segExpected, truth))
+                if (ProviderRequiresOverlayCheck("seg", segExpected, truth) && !segNoSegments)
                 {
                     var remoteSeg = remoteKinds.Contains("seg")
                                     || overlayAssets?["seg"]?.Value<bool?>("overlayAvailable") == true
@@ -1457,6 +1462,23 @@ namespace BYES.Quest
             var provider = truth?["providers"]?[providerName] as JObject;
             var reason = (provider?.Value<string>("reason") ?? string.Empty).Trim().ToLowerInvariant();
             return string.IsNullOrWhiteSpace(reason) ? "unknown" : reason;
+        }
+
+        private static bool IsRealNoSegmentsOverlay(string providerName, bool enabled, JObject truth, JObject overlayAssets)
+        {
+            if (!enabled || GetProviderTruthState(truth, providerName) != "real")
+            {
+                return false;
+            }
+
+            var overlay = overlayAssets?[providerName] as JObject;
+            if (overlay == null || overlay.Value<bool?>("overlayAvailable") == true)
+            {
+                return false;
+            }
+
+            var reason = (overlay.Value<string>("overlayReason") ?? string.Empty).Trim().ToLowerInvariant();
+            return string.Equals(reason, "no_segments", StringComparison.Ordinal);
         }
 
         private static string ExtractStatusState(string statusText)
