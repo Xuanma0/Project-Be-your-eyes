@@ -86,3 +86,6 @@ Gateway/external/modelpack/weights_test/
 
 # External version execution briefs are not tracked in repo memory
 docs/codex/
+.env.local
+.env.user
+docs/maintainer/LOCAL_PROVIDER_SCAN.md
