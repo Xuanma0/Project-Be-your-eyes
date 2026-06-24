@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>为你成眼 Prototype</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260526-tracker" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="camera-zone" aria-label="camera workspace">
+        <div class="video-frame">
+          <video id="video" autoplay playsinline muted></video>
+          <img id="annotated" alt="annotated camera frame" />
+          <canvas id="liveOverlay" aria-hidden="true"></canvas>
+          <div id="cameraStatus" class="camera-status">摄像头未启动</div>
+        </div>
+        <div class="quick-bar" role="toolbar">
+          <button id="startCamera" class="primary">启动摄像头</button>
+          <div class="camera-source" aria-label="摄像头来源">
+            <button id="serverCameraButton" type="button">后端</button>
+            <button id="browserCameraButton" type="button">浏览器</button>
+            <label>
+              <span>编号</span>
+              <input id="serverCameraIndex" type="number" min="0" max="10" step="1" value="0" />
+            </label>
+          </div>
+          <button class="tool-shortcut" data-mode="describe">场景</button>
+          <button class="tool-shortcut" data-mode="find">找物</button>
+          <button class="tool-shortcut" data-mode="ocr">读字</button>
+          <button class="tool-shortcut" data-mode="safety">安全</button>
+          <button class="tool-shortcut" data-mode="gesture">手势</button>
+          <button class="tool-shortcut" data-mode="memory">记忆</button>
+          <label class="toggle debug-toggle">
+            <input id="safetyLoop" type="checkbox" />
+            <span>安全快环</span>
+          </label>
+          <label class="toggle">
+            <input id="reachLoop" type="checkbox" />
+            <span>连续辅助</span>
+          </label>
+          <label class="toggle">
+            <input id="ptzAuto" type="checkbox" />
+            <span>自动云台</span>
+          </label>
+          <label class="toggle">
+            <input id="audioGuide" type="checkbox" />
+            <span>音频引导</span>
+          </label>
+        </div>
+      </section>
+
+      <section class="control-zone" aria-label="assistant controls">
+        <header class="topline">
+          <div>
+            <h1>为你成眼</h1>
+            <p id="systemStatus">连接中</p>
+          </div>
+          <button id="resetEvidence" class="ghost">清空证据</button>
+        </header>
+
+        <div class="ask-row">
+          <input id="question" type="text" placeholder="问一句，例如：帮我找水杯" />
+          <button id="micButton" title="语音输入">麦克风</button>
+          <button id="askButton" class="primary">询问</button>
+        </div>
+
+        <div class="goal-row" aria-label="连续辅助目标">
+          <span>当前目标</span>
+          <strong id="assistGoal">未设置</strong>
+          <button id="setAssistGoal" type="button">设目标</button>
+          <button id="clearAssistGoal" type="button">清除</button>
+        </div>
+
+        <div class="audio-row" aria-label="语音输入设置">
+          <label for="audioInputSelect">麦克风</label>
+          <select id="audioInputSelect">
+            <option value="">系统默认麦克风</option>
+          </select>
+          <button id="refreshAudioDevices" type="button">刷新</button>
+        </div>
+
+        <div class="speech-row" aria-label="语音输出设置">
+          <label for="voiceRate">语速</label>
+          <input id="voiceRate" type="range" min="0.7" max="1.8" step="0.05" value="1.05" />
+          <output id="voiceRateValue" for="voiceRate">1.05x</output>
+        </div>
+
+        <div class="guide-row" aria-label="音频引导设置">
+          <label for="audioGuideVolume">引导音量</label>
+          <input id="audioGuideVolume" type="range" min="0" max="1" step="0.05" value="0.75" />
+          <output id="audioGuideVolumeValue" for="audioGuideVolume">75%</output>
+        </div>
+
+        <section class="answer-panel">
+          <div class="answer-head">
+            <span id="actionBadge">待命</span>
+            <span id="latency">0 ms</span>
+          </div>
+          <p id="answer">启动摄像头后开始。</p>
+        </section>
+
+        <section class="status-grid">
+          <div>
+            <span>安全</span>
+            <strong id="safetyState">未知</strong>
+          </div>
+          <div>
+            <span>画面</span>
+            <strong id="qualityState">未知</strong>
+          </div>
+          <div>
+            <span>规划</span>
+            <strong id="plannerState">未知</strong>
+          </div>
+        </section>
+
+        <section class="evidence-panel">
+          <div class="section-title">
+            <h2>证据</h2>
+            <span id="evidenceCount">0</span>
+          </div>
+          <div id="evidenceList" class="evidence-list"></div>
+        </section>
+      </section>
+    </main>
+    <canvas id="captureCanvas" width="1280" height="720"></canvas>
+    <script src="/static/app.js?v=20260528-root-tracker"></script>
+  </body>
+</html>

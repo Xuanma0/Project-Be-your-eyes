@@ -1,0 +1,15 @@
+torch
+torchvision
+torchaudio
+ultralytics>=8.4.53
+openai-clip>=1.0.1
+ftfy>=6.3.1
+regex>=2024.0.0
+setuptools<81
+paddlepaddle>=3.0.0
+paddleocr>=3.0.0
+faster-whisper>=1.0.0
+rapidocr_onnxruntime>=1.4.4
+mediapipe>=0.10.14
+depth-anything-3==0.1.1
+addict>=2.4.0

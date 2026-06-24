@@ -1,0 +1,37 @@
+# Local secrets and machine-specific settings
+.env
+.env.*
+!.env.example
+
+# Python environments and caches
+.venv/
+.venv-*/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime data, logs, screenshots, generated reports
+data/
+logs/
+_tmp_be_your_eyes_images/
+
+# Downloaded model weights and local checkpoints
+models/
+third_party/
+*.pt
+*.pth
+*.onnx
+*.safetensors
+*.ckpt
+*.bin
+/mobileclip*.ts
+/sam3.pt
+
+# Local editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+

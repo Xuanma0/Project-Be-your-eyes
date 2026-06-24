@@ -1,0 +1,12 @@
+openai>=1.80.0
+python-dotenv>=1.0.1
+pydantic>=2.8.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+requests>=2.32.0
+rich>=13.7.0
+loguru>=0.7.2
+numpy>=1.26.0
+opencv-python>=4.10.0
+sounddevice>=0.4.6
+pyttsx3>=2.90
